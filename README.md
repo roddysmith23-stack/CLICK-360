@@ -56,14 +56,30 @@ Settings → Pages → Deploy from branch → main / root
 Esta versión guarda datos en el navegador del dispositivo. Sirve para pilotos y presentación comercial. Para uso masivo con varios celulares sincronizados se necesita backend real: CLICK 360 Cloud.
 
 
-## FULL SCANNER
+## CLICK 360 MVP FINAL v2 FULL POWER
 
-Esta versión agrega:
+Versión corregida desde la última publicación.
 
-- Lector QR nativo cuando el navegador soporta `BarcodeDetector`.
-- Soporte para librería local `vendor/jsQR.js` si se reemplaza el archivo placeholder por una copia real de jsQR.
-- Lector local CLICK 360 propio para los QR generados por esta app.
-- Botón “Leer QR desde foto” como respaldo.
-- Código manual siempre disponible.
+### Incluye
 
-La cámara en iPhone debe probarse desde HTTPS, por ejemplo GitHub Pages.
+- Inventario con imagen opcional de producto.
+- Registro/edición de producto con foto desde cámara o archivo.
+- Producto visible en inventario, buscador de venta y carrito.
+- QR más simple y más fácil de leer: el QR contiene el código interno del producto.
+- Código manual siempre visible bajo la etiqueta.
+- Venta por búsqueda, selección rápida o código manual.
+- Flujo de escaneo preparado con cámara, foto del QR y fallback manual.
+- Beep/vibración al agregar producto o cobrar.
+- Caja diaria, reportes, roles y respaldo local.
+- Favicon, iconos PWA y logo interno separados.
+
+### Accesos
+
+- Dueño: `demo` / `demo123`
+- Cajero: `cajero` / `cajero123`
+- Inventario: `inventario` / `inventario123`
+- Admin: `click360admin` / `click360admin`
+
+### Nota de producción
+
+Esta app sigue siendo PWA estática con almacenamiento local. Para vender con multiusuario real y respaldo automático para varias personas de la misma empresa, se necesita conectar CLICK 360 Cloud con Firebase/Supabase o backend propio, usando lenguaje simple en la app: Respaldo en la nube, Código de empresa y PIN de empresa.

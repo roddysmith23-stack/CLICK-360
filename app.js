@@ -21,7 +21,34 @@
   function today() { return new Date().toISOString().slice(0,10); }
   function nowLabel() { return new Date().toLocaleString('es-EC', { dateStyle:'short', timeStyle:'short' }); }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-  function parseMoney(value) {
+  
+  function imageThumb(product){
+    if(product?.imageData) return `<img class="productImg" src="${product.imageData}" alt="${escapeHtml(product.name || 'Producto')}" loading="lazy">`;
+    return `<div class="productImg emptyImg">▧</div>`;
+  }
+  function readImageInput(input, cb){
+    const file = input?.files?.[0];
+    if(!file) return cb('');
+    if(!file.type.startsWith('image/')) return toast('Selecciona una imagen válida','err');
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const max = 720;
+        const ratio = Math.min(1, max / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * ratio));
+        canvas.height = Math.max(1, Math.round(img.height * ratio));
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        cb(canvas.toDataURL('image/jpeg', .82));
+      };
+      img.onerror = () => toast('No se pudo leer la imagen','err');
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+function parseMoney(value) {
     if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value * 100) / 100 : NaN;
     let s = String(value ?? '').trim().replace(/\s/g,'');
     if (!s) return 0;
@@ -242,8 +269,12 @@
   }
   function codeExists(code, productId=null) { return state.products.some(p => p.code.toUpperCase() === String(code).toUpperCase() && p.id !== productId); }
   function productPayload(product) {
-    const b = state.businesses.find(x=>x.id===product.businessId) || currentBusiness();
-    return `C360|${b.code || b.id}|${product.code}`;
+    // QR ultra-simple for faster camera/photo decoding. The business is validated by the active inventory.
+    return String(product.code || '').trim().toUpperCase();
+  }
+  function productDeepLink(product){
+    const base = `${location.origin}${location.pathname}`;
+    return `${base}?scan=${encodeURIComponent(productPayload(product))}`;
   }
   function normalizeCode(input) {
     const s = String(input||'').trim();
@@ -251,11 +282,13 @@
     if (s.includes('C360|')) return s.split('|').pop().trim();
     if (s.includes('CLICK360|PRODUCT|')) return s.split('|').pop().trim();
     try {
-      const u = new URL(s);
+      const u = new URL(s, location.href);
+      const q = u.searchParams.get('scan') || u.searchParams.get('code') || '';
+      if (q) return normalizeCode(q);
       const scan = u.hash.startsWith('#scan=') ? decodeURIComponent(u.hash.slice(6)) : '';
       if (scan) return normalizeCode(scan);
     } catch {}
-    return s;
+    return s.replace(/[^a-zA-Z0-9_-]/g,'').toUpperCase();
   }
 
   function renderLogin(message='') {
@@ -378,7 +411,8 @@
   }
   function productList(products,v) {
     if(!products.length) return `<div class="card empty">Aún no hay ${escapeHtml(v.plural)}. Crea el primero con Nuevo.</div>`;
-    return products.map(p=>`<article class="card productCard" data-pid="${p.id}">
+    return products.map(p=>`<article class="card productCard hasImage" data-pid="${p.id}">
+      ${imageThumb(p)}
       <div class="productInfo"><h3>${escapeHtml(p.name)}</h3><div class="meta"><span>${escapeHtml(p.category||'General')}</span><span class="badge">${escapeHtml(p.code)}</span><span>Stock: <b>${p.qty}</b></span><span class="badge gold">${fmt(p.price)}</span></div></div>
       <div class="actions"><button class="iconBtn gold" data-label="${p.id}" title="Etiqueta QR">▦</button><button class="iconBtn" data-edit="${p.id}" title="Editar">✎</button><button class="iconBtn danger" data-del="${p.id}" title="Borrar">🗑</button></div>
     </article>`).join('');
@@ -478,9 +512,17 @@
   }
   function openProductModal(product=null){
     const b=currentBusiness(), v=businessVocabulary(b.type);
-    const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,notes:''};
+    const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,notes:'',imageData:''};
     showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
       <form id="productForm" class="formGrid">
+        <div class="field full productImageField">
+          <label>Imagen del producto (opcional)</label>
+          <div class="imagePicker">
+            <div id="imagePreview">${p.imageData ? `<img src="${p.imageData}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
+            <label class="btn silver"><input type="file" id="pImage" accept="image/*" capture="environment" hidden>Tomar / subir foto</label>
+            ${p.imageData ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
+          </div>
+        </div>
         <div class="field"><label>Código</label><input id="pCode" value="${escapeHtml(p.code)}" placeholder="Auto si vacío"></div>
         <div class="field"><label>${escapeHtml(v.category)}</label><input id="pCat" value="${escapeHtml(p.category)}" placeholder="${escapeHtml(v.examples)}"></div>
         <div class="field full"><label>Nombre</label><input id="pName" required value="${escapeHtml(p.name)}"></div>
@@ -490,6 +532,12 @@
         <div class="field full"><label>Notas</label><textarea id="pNotes">${escapeHtml(p.notes||'')}</textarea></div>
         <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button>
       </form>`);
+    let imageData = p.imageData || '';
+    $('#pImage').onchange = e => readImageInput(e.target, data => {
+      imageData = data;
+      $('#imagePreview').innerHTML = data ? `<img src="${data}" alt="Imagen del producto">` : '<span>Sin imagen</span>';
+    });
+    $('#removeImage')?.addEventListener('click',()=>{ imageData=''; $('#imagePreview').innerHTML='<span>Sin imagen</span>'; });
     $('#productForm').onsubmit=e=>{
       e.preventDefault();
       const name=$('#pName').value.trim();
@@ -502,8 +550,8 @@
       if(!Number.isFinite(cost)||cost<0) return toast('Costo inválido','err');
       if(!Number.isFinite(price)||price<0) return toast('Precio inválido','err');
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
-      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim()});
-      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim(),createdAt:new Date().toISOString()});
+      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim(),imageData});
+      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date().toISOString()});
       save(); closeModal(); renderApp('inventory'); toast(product?'Actualizado':'Producto creado');
     };
   }
@@ -515,7 +563,7 @@
       const subtotal=cart.reduce((a,i)=>a+i.price*i.qty,0), disc=parseMoney($('#discount')?.value||0);
       const total=Math.max(0, subtotal - (Number.isFinite(disc)?disc:0));
       $('#cartTotal').textContent=fmt(total);
-      $('#cartItems').innerHTML=cart.length?cart.map(i=>`<div class="cartItem"><div><b>${escapeHtml(i.name)}</b><br><small>${fmt(i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button data-minus="${i.id}">−</button><b>${i.qty}</b><button data-plus="${i.id}">＋</button><button class="iconBtn danger" data-remove="${i.id}">🗑</button></div></div>`).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
+      $('#cartItems').innerHTML=cart.length?cart.map(i=>`<div class="cartItem cartWithImage">${i.imageData ? `<img class="productImg small" src="${i.imageData}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button data-minus="${i.id}">−</button><b>${i.qty}</b><button data-plus="${i.id}">＋</button><button class="iconBtn danger" data-remove="${i.id}">🗑</button></div></div>`).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
       $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); if(it.qty>=p.qty)return toast('No hay más stock','err'); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
@@ -527,12 +575,12 @@
       if(p.qty<=0){ beep('err'); return toast('Sin stock disponible','err'); }
       const it=cart.find(x=>x.id===p.id);
       if(it){ if(it.qty>=p.qty){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
-      else cart.push({id:p.id,name:p.name,price:p.price,qty:1,code:p.code});
+      else cart.push({id:p.id,name:p.name,price:p.price,qty:1,code:p.code,imageData:p.imageData||''});
       renderCart(); beep(); toast(`${p.name} agregado`);
     };
     $('#addCode').onclick=()=>{addProduct($('#manualCode').value); $('#manualCode').value='';};
     $('#manualCode').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#addCode').click();}});
-    $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,6); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow" data-quick="${p.code}"><span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
+    $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${p.code}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
     $('#discount').oninput=renderCart;
     $('#openCamera').onclick=()=>startScanner(addProduct);
     $('#chargeBtn').onclick=()=>{
@@ -679,7 +727,7 @@
     for(let i=0;i<len;i++){ bytes.push(read(pos,8)); pos+=8; }
     let text;
     try{text=new TextDecoder().decode(new Uint8Array(bytes));}catch{return null;}
-    return (text.includes('C360|')||text.includes('CLICK360|')) ? text : null;
+    return text ? text : null;
   }
 
   async function startScanner(onCode){
@@ -716,7 +764,6 @@
           if(codes?.length){
             lastScanAt=Date.now();
             const raw=codes[0].rawValue||'';
-            if(!raw.includes('C360|')&&!raw.includes('CLICK360|')) return toast('Este QR no pertenece a CLICK 360','err');
             onCode(raw);
           }
         },420);
@@ -734,7 +781,6 @@
           if(!raw) raw=decodeLocalC360QR(img);
           if(raw){
             lastScanAt=Date.now();
-            if(!raw.includes('C360|')&&!raw.includes('CLICK360|')) return toast('Este QR no pertenece a CLICK 360','err');
             onCode(raw);
           }
         },300);
@@ -844,12 +890,30 @@
     ok('parse 12.99', parseMoney('12.99')===12.99);
     const p={id:'p1',businessId:state.businesses[0].id,code:'TEST01',name:'Buzo QA',category:'Prueba',qty:5,cost:2.25,price:5.5};
     state.products.push(p);
-    ok('qr payload local', productPayload(p).startsWith('C360|'));
+    ok('qr payload local', productPayload(p)==='TEST01');
     ok('normalize QR', normalizeCode(productPayload(p))==='TEST01');
     QR.make(productPayload(p)); ok('qr generator', true);
     const pre=document.createElement('pre'); pre.id='qa-results'; pre.textContent=results.join('\\n'); document.body.appendChild(pre);
     console.log(pre.textContent);
     state=oldState; session=oldSession; save();
+  }
+
+  function handleInitialScan(){
+    const url = new URL(location.href);
+    const scan = url.searchParams.get('scan') || (location.hash.startsWith('#scan=') ? decodeURIComponent(location.hash.slice(6)) : '');
+    if(!scan || !session || currentUser()?.role === 'admin') return false;
+    const code = normalizeCode(scan);
+    if(!code) return false;
+    const p = productsForBiz().find(x=>x.code.toUpperCase()===code.toUpperCase());
+    renderApp('sell');
+    setTimeout(()=>{
+      const input = $('#manualCode');
+      if(input) input.value = code;
+      const btn = $('#addCode');
+      if(btn) btn.click();
+      history.replaceState({}, '', location.pathname);
+    },200);
+    return !!p;
   }
   window.click360Route=renderApp;
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, runQa};
@@ -857,5 +921,5 @@
   window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator && !location.search.includes('nosw')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
   if(location.search.includes('qa')) { renderLogin(); setTimeout(runQa,300); }
-  else if(!session) renderLogin(); else if(session.role==='admin') renderAdmin(); else renderApp('home');
+  else if(!session) renderLogin(); else if(session.role==='admin') renderAdmin(); else if(!handleInitialScan()) renderApp('home');
 })();
