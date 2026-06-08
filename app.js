@@ -168,88 +168,26 @@ function parseMoney(value) {
     }[type] || { singular:'producto/activo', plural:'productos/activos', category:'Categoría', examples:'Notas' };
   }
 
-  // -------- QR GENERATOR: local QR Code Version 3-L, byte mode, no CDN --------
+  // -------- QR GENERATOR: real local library wrapper, no CDN --------
   const QR = (() => {
-    const GF_EXP = new Array(512), GF_LOG = new Array(256);
-    let x = 1;
-    for (let i=0;i<255;i++){ GF_EXP[i]=x; GF_LOG[x]=i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
-    for (let i=255;i<512;i++) GF_EXP[i]=GF_EXP[i-255];
-    const mul=(a,b)=> a&&b ? GF_EXP[GF_LOG[a]+GF_LOG[b]] : 0;
-    const polyMul=(p,q)=>{ const r=Array(p.length+q.length-1).fill(0); for(let i=0;i<p.length;i++) for(let j=0;j<q.length;j++) r[i+j]^=mul(p[i],q[j]); return r; };
-    const generator=(degree)=>{ let g=[1]; for(let i=0;i<degree;i++) g=polyMul(g,[1,GF_EXP[i]]); return g; };
-    const ecc=(data, ecLen)=>{ const gen=generator(ecLen); const rem=Array(ecLen).fill(0); for(const b of data){ const factor=b^rem.shift(); rem.push(0); for(let i=0;i<ecLen;i++) rem[i]^=mul(gen[i+1],factor); } return rem; };
-    function bitsToBytes(bits){
-      const out=[]; for(let i=0;i<bits.length;i+=8){ let v=0; for(let j=0;j<8;j++) v=(v<<1)|(bits[i+j]||0); out.push(v); } return out;
-    }
-    function pushBits(bits,val,len){ for(let i=len-1;i>=0;i--) bits.push((val>>>i)&1); }
-    function encodeBytes(text){
-      const bytes = [...new TextEncoder().encode(text)];
-      if (bytes.length > 45) throw new Error('Texto QR demasiado largo');
-      const bits=[];
-      pushBits(bits,0b0100,4); pushBits(bits,bytes.length,8);
-      bytes.forEach(b=>pushBits(bits,b,8));
-      const dataCw=55, totalBits=dataCw*8;
-      const terminator=Math.min(4,totalBits-bits.length); pushBits(bits,0,terminator);
-      while(bits.length%8) bits.push(0);
-      let data=bitsToBytes(bits);
-      for(let pad=0; data.length<dataCw; pad^=1) data.push(pad?0x11:0xEC);
-      return data.concat(ecc(data,15));
-    }
-    function formatBits(mask){
-      let data = (1<<3) | mask; // L = 01
-      let bits = data << 10;
-      const poly = 0x537;
-      for(let i=14;i>=10;i--) if((bits>>>i)&1) bits ^= poly << (i-10);
-      return ((data<<10)|bits) ^ 0x5412;
-    }
     function make(text){
-      const size=29; const m=Array.from({length:size},()=>Array(size).fill(null)); const res=Array.from({length:size},()=>Array(size).fill(false));
-      const set=(r,c,val,fun=true)=>{ if(r<0||c<0||r>=size||c>=size) return; m[r][c]=!!val; if(fun) res[r][c]=true; };
-      function finder(r,c){
-        for(let y=-1;y<=7;y++) for(let x=-1;x<=7;x++){
-          const rr=r+y, cc=c+x;
-          if(rr<0||cc<0||rr>=size||cc>=size) continue;
-          const inside=x>=0&&x<=6&&y>=0&&y<=6;
-          const dark=inside && (x===0||x===6||y===0||y===6||(x>=2&&x<=4&&y>=2&&y<=4));
-          set(rr,cc,dark,true);
-        }
+      const value = String(text || '').trim().toUpperCase();
+      if(!value) throw new Error('Código QR vacío');
+      if(window.qrcode){
+        const qr = window.qrcode(0, 'M');
+        qr.addData(value);
+        qr.make();
+        const n = qr.getModuleCount();
+        const mat = Array.from({length:n},(_,r)=>Array.from({length:n},(_,c)=>qr.isDark(r,c)));
+        return mat;
       }
-      finder(0,0); finder(0,size-7); finder(size-7,0);
-      for(let i=8;i<size-8;i++){ set(6,i,i%2===0,true); set(i,6,i%2===0,true); }
-      // alignment pattern v3 at 22,22
-      const ar=22, ac=22;
-      for(let y=-2;y<=2;y++) for(let x=-2;x<=2;x++) set(ar+y,ac+x,Math.max(Math.abs(x),Math.abs(y))!==1,true);
-      set(size-8,8,true,true);
-      // reserve format areas
-      for(let i=0;i<9;i++){ if(i!==6){ res[8][i]=true; res[i][8]=true; } }
-      for(let i=0;i<8;i++){ res[8][size-1-i]=true; res[size-1-i][8]=true; }
-      const words=encodeBytes(text); const bits=[];
-      words.forEach(b=>pushBits(bits,b,8));
-      let k=0, upward=true;
-      for(let right=size-1; right>=1; right-=2){
-        if(right===6) right--;
-        for(let vert=0; vert<size; vert++){
-          const r = upward ? size-1-vert : vert;
-          for(let j=0;j<2;j++){
-            const c=right-j;
-            if(res[r][c]) continue;
-            let bit = k<bits.length ? bits[k++]===1 : false;
-            if(((r+c)&1)===0) bit=!bit; // mask 0
-            m[r][c]=bit;
-          }
-        }
-        upward=!upward;
-      }
-      const fb=formatBits(0);
-      const bit=i=>((fb>>>i)&1)!==0;
-      for(let i=0;i<=5;i++) set(8,i,bit(i),true);
-      set(8,7,bit(6),true); set(8,8,bit(7),true); set(7,8,bit(8),true);
-      for(let i=9;i<15;i++) set(14-i,8,bit(i),true);
-      for(let i=0;i<8;i++) set(size-1-i,8,bit(i),true);
-      for(let i=8;i<15;i++) set(8,size-15+i,bit(i),true);
-      return m.map(row=>row.map(v=>!!v));
+      // Emergency fallback only. Normal build uses vendor/qrcode-generator.js.
+      const size=21;
+      const mat=Array.from({length:size},()=>Array(size).fill(false));
+      for(let i=0;i<size;i++){mat[0][i]=mat[size-1][i]=mat[i][0]=mat[i][size-1]=true;}
+      return mat;
     }
-    function draw(canvas,text,size=220,margin=3){
+    function draw(canvas,text,size=280,margin=5){
       const mat=make(text), n=mat.length;
       canvas.width=size; canvas.height=size;
       const ctx=canvas.getContext('2d');
@@ -569,9 +507,13 @@ function parseMoney(value) {
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
     };
     const addProduct=(input)=>{
-      const code=normalizeCode(input).toUpperCase();
-      const p=productsForBiz().find(x=>x.code.toUpperCase()===code);
-      if(!p){ beep('err'); return toast('Producto no encontrado en este negocio','err'); }
+      const code=normalizeCode(input).toUpperCase().trim();
+      let p=productsForBiz().find(x=>x.code.toUpperCase()===code);
+      if(!p){
+        const possible = String(input||'').toUpperCase().match(/[A-Z0-9_-]{3,17}/g) || [];
+        p = productsForBiz().find(x=>possible.includes(x.code.toUpperCase()));
+      }
+      if(!p){ beep('err'); return toast(`Producto no encontrado: ${code || 'sin código'}`,'err'); }
       if(p.qty<=0){ beep('err'); return toast('Sin stock disponible','err'); }
       const it=cart.find(x=>x.id===p.id);
       if(it){ if(it.qty>=p.qty){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
@@ -752,7 +694,7 @@ function parseMoney(value) {
       if(!navigator.mediaDevices?.getUserMedia) throw new Error('camera unavailable');
       scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
       video.srcObject=scanStream; await video.play();
-      status.textContent='Cámara activa. Apunta al QR de CLICK 360.';
+      status.textContent='Apunta al QR de la etiqueta. Si no lo lee, escribe el código que aparece debajo.';
       const canvas=document.createElement('canvas');
       const ctx=canvas.getContext('2d', { willReadFrequently:true });
 
@@ -784,11 +726,11 @@ function parseMoney(value) {
             onCode(raw);
           }
         },300);
-        status.textContent=window.jsQR ? 'Lector QR local activo.' : 'Lector QR local CLICK 360 activo. Apunta al QR de la etiqueta.';
+        status.textContent='Apunta al QR de la etiqueta. También puedes escribir el código debajo del QR.';
       }
     }catch(e){
-      status.textContent='No se pudo activar la cámara. Usa el ingreso manual de código o una foto del QR.';
-      toast('No se pudo activar la cámara. Usa código manual o foto.','err');
+      status.textContent='No se pudo activar la cámara. Escribe el código que aparece debajo del QR.';
+      toast('No se pudo activar la cámara. Usa el código manual.','err');
     }
   }
 
@@ -815,8 +757,8 @@ function parseMoney(value) {
             const codes=await detector.detect(img).catch(()=>[]);
             if(codes?.length){ onCode(codes[0].rawValue); status.textContent='QR leído desde foto.'; return; }
           }
-          status.textContent='No se pudo leer el QR de la foto. Usa el código manual.';
-          toast('No se pudo leer el QR de la foto','err');
+          status.textContent='No se pudo leer el QR de la foto. Escribe el código que aparece debajo del QR.';
+          toast('No se pudo leer el QR. Escribe el código visible.','err');
         }catch(err){
           status.textContent='Error leyendo la foto. Usa el código manual.';
           toast('Error leyendo la foto','err');
@@ -855,9 +797,10 @@ function parseMoney(value) {
   function closeModal(){ $('#modalRoot')?.remove(); }
 
   async function openLabelModal(product){
-    showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div><div class="labelPreview"><div class="sticker" id="sticker"><div class="biz">${escapeHtml(currentBusiness().name)}</div><canvas id="qrCanvas"></canvas><div class="code">${escapeHtml(product.code)}</div><div class="pname">${escapeHtml(product.name)}</div><div class="price">${fmt(product.price)}</div></div><div class="labelButtons"><button class="btn primary" id="printOne">Imprimir etiqueta</button><button class="btn silver" id="downloadPng">Descargar PNG</button><button class="btn" id="printStock">Imprimir según stock (${product.qty})</button><button class="btn" id="printAll">Imprimir todas</button></div></div>`);
+    showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div><div class="labelPreview"><div class="sticker" id="sticker"><div class="biz">${escapeHtml(currentBusiness().name)}</div><canvas id="qrCanvas"></canvas><div class="code">${escapeHtml(product.code)}</div><div class="pname">${escapeHtml(product.name)}</div><div class="price">${fmt(product.price)}</div></div><div class="labelButtons"><button class="btn primary" id="printOne">Imprimir etiqueta</button><button class="btn silver" id="downloadPng">Descargar PNG</button><button class="btn" id="copyLabelCode">Copiar código ${escapeHtml(product.code)}</button><button class="btn" id="printStock">Imprimir según stock (${product.qty})</button><button class="btn" id="printAll">Imprimir todas</button></div></div>`);
     QR.draw($('#qrCanvas'), productPayload(product), 220);
     $('#printOne').onclick=()=>printLabels([{product,copies:1}]);
+    $('#copyLabelCode').onclick=()=>{ navigator.clipboard?.writeText(product.code); toast('Código copiado'); };
     $('#printStock').onclick=()=>printLabels([{product,copies:Math.max(1,product.qty)}]);
     $('#printAll').onclick=()=>printLabels(productsForBiz().map(p=>({product:p,copies:1})));
     $('#downloadPng').onclick=()=>downloadLabelPng(product);

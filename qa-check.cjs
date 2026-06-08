@@ -29,3 +29,14 @@ assert('PWA manifest', fs.existsSync(path.join(__dirname, 'manifest.webmanifest'
 assert('service worker', fs.existsSync(path.join(__dirname, 'service-worker.js')));
 
 console.log('\\nCLICK 360 MVP FINAL v2 FULL POWER QA checks finished.');
+
+assert('logo no triangle CSS', fs.readFileSync(path.join(__dirname, 'styles.css'), 'utf8').includes('CLICK 360 v3 logo fix'));
+
+
+const jsqrSize = fs.statSync(path.join(__dirname, 'vendor', 'jsQR.js')).size;
+const qrgSize = fs.statSync(path.join(__dirname, 'vendor', 'qrcode-generator.js')).size;
+assert('jsQR real local incluido', jsqrSize > 200000);
+assert('qrcode-generator real local incluido', qrgSize > 50000);
+assert('HTML carga qrcode-generator antes de app', html.includes('vendor/qrcode-generator.js') && html.indexOf('vendor/qrcode-generator.js') < html.indexOf('app.js'));
+assert('HTML carga jsQR antes de app', html.includes('vendor/jsQR.js') && html.indexOf('vendor/jsQR.js') < html.indexOf('app.js'));
+assert('cache v4 real qr', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-mvp-final-v4-real-qr'));

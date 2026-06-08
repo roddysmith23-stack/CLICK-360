@@ -249,3 +249,19 @@ a{color:inherit;text-decoration:none}
   .cartWithImage{grid-template-columns:46px 1fr!important}
   .cartWithImage .qtyControls{grid-column:1/-1}
 }
+
+/* CLICK 360 v3 logo fix: no CSS triangle. */
+.logoIcon{position:relative;overflow:hidden}
+.logoIcon::before{
+  content:"CLICK\A360"!important;
+  width:auto!important;height:auto!important;border:0!important;
+  white-space:pre;text-align:center;line-height:1.08;letter-spacing:.16em;
+  font-size:10px;font-weight:950;color:#f6f6f2;transform:none!important;filter:none!important;
+}
+.logoIcon::after{
+  content:"";display:block;position:absolute;width:42%;height:2px;border-radius:999px;
+  background:linear-gradient(90deg,transparent,#d6aa2c,transparent);
+  bottom:25%;left:29%;
+}
+.loginBrand .logoIcon::before{font-size:14px}
+.topbar .logoIcon::before{font-size:8px}

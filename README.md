@@ -83,3 +83,19 @@ Versión corregida desde la última publicación.
 ### Nota de producción
 
 Esta app sigue siendo PWA estática con almacenamiento local. Para vender con multiusuario real y respaldo automático para varias personas de la misma empresa, se necesita conectar CLICK 360 Cloud con Firebase/Supabase o backend propio, usando lenguaje simple en la app: Respaldo en la nube, Código de empresa y PIN de empresa.
+
+
+## v3 LOGO FIX
+
+Se corrigió el logo interno, favicon e iconos PWA para eliminar el triángulo CSS y separar correctamente cada uso visual.
+
+
+## v4 REAL QR FIX
+
+Corrección crítica:
+- Se reemplazó el generador QR experimental por `qrcode-generator` local real.
+- Se reemplazó el lector placeholder por `jsQR` local real.
+- El QR de la etiqueta ahora contiene el código simple del producto para que sea más fácil de leer.
+- La etiqueta sigue mostrando el código visible debajo del QR para respaldo manual.
+- Se mantiene imagen opcional, ventas, stock, caja, reportes, impresión, PNG y roles.
+- Se actualizó el service worker a `click360-mvp-final-v4-real-qr` para forzar cache nuevo.
