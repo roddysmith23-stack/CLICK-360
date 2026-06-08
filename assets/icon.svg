@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<rect width="512" height="512" rx="108" fill="#050505"/>
+<path d="M256 95L389 318L256 246L123 318L256 95Z" fill="#F5F5F2"/>
+<text x="256" y="382" fill="#F5F5F2" font-family="Arial, Helvetica, sans-serif" font-size="56" font-weight="900" text-anchor="middle" letter-spacing="9">CLICK</text>
+<text x="256" y="433" fill="#D6AA2C" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="900" text-anchor="middle" letter-spacing="14">360</text>
+</svg>
