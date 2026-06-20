@@ -11,6 +11,7 @@ const STATE_DOC = window.click360Db
   .doc("main");
 
 let AUTH_APPROVED = false;
+let IS_RESTORING_REMOTE = false;
 
 window.click360Auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
 
@@ -40,14 +41,11 @@ function createAuthOverlay() {
       <div style="width:100%;max-width:420px;border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:28px;background:#111;box-shadow:0 30px 80px rgba(0,0,0,.5);">
         <h1 style="margin:0 0 8px;font-size:30px;">CLICK 360</h1>
         <p style="opacity:.75;margin:0 0 22px;">Acceso privado al sistema de inventario.</p>
-
         <input id="c360-email" placeholder="Correo" style="width:100%;padding:14px;margin-bottom:10px;border-radius:12px;border:1px solid #333;background:#000;color:#fff;">
         <input id="c360-pass" type="password" placeholder="Contraseña" style="width:100%;padding:14px;margin-bottom:14px;border-radius:12px;border:1px solid #333;background:#000;color:#fff;">
-
         <button id="c360-login" style="width:100%;padding:14px;border-radius:14px;border:0;background:#f4c431;font-weight:800;margin-bottom:10px;">Entrar</button>
         <button id="c360-register" style="width:100%;padding:14px;border-radius:14px;border:1px solid #444;background:#1a1a1a;color:#fff;font-weight:800;margin-bottom:10px;">Crear cuenta</button>
         <button id="c360-google" style="width:100%;padding:14px;border-radius:14px;border:1px solid #444;background:#fff;color:#000;font-weight:800;">Entrar con Google</button>
-
         <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;word-break:break-word;"></p>
       </div>
     </div>
@@ -101,9 +99,7 @@ function createLogoutButton() {
   `;
 
   btn.onclick = async () => {
-    try {
-      await pushLocalToFirestore("logout");
-    } catch(e) {}
+    try { await pushLocalToFirestore("logout"); } catch(e) {}
     localStorage.clear();
     sessionStorage.clear();
     await window.click360Auth.signOut();
@@ -117,9 +113,25 @@ function getLocalSnapshot() {
   const data = {};
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
+    if (key.startsWith("CLICK360_REMOTE_")) continue;
+    if (key.startsWith("CLICK360_FIREBASE_")) continue;
     data[key] = localStorage.getItem(key);
   }
   return data;
+}
+
+function snapshotString(obj) {
+  try { return JSON.stringify(obj || {}); }
+  catch(e) { return "{}"; }
+}
+
+function applyRemoteStorage(remoteStorage) {
+  IS_RESTORING_REMOTE = true;
+  Object.entries(remoteStorage || {}).forEach(([key, value]) => {
+    localStorage.setItem(key, value);
+  });
+  localStorage.setItem("CLICK360_REMOTE_HASH", snapshotString(remoteStorage));
+  IS_RESTORING_REMOTE = false;
 }
 
 async function isApprovedUser(user) {
@@ -132,7 +144,9 @@ async function isApprovedUser(user) {
 async function pushLocalToFirestore(reason = "auto") {
   try {
     const user = window.click360Auth.currentUser;
-    if (!user || !AUTH_APPROVED) return;
+    if (!user || !AUTH_APPROVED || IS_RESTORING_REMOTE) return;
+
+    const localSnapshot = getLocalSnapshot();
 
     await STATE_DOC.set({
       businessId: BUSINESS_ID,
@@ -140,7 +154,7 @@ async function pushLocalToFirestore(reason = "auto") {
       updatedBy: user.uid,
       updatedByEmail: user.email || null,
       reason,
-      localStorage: getLocalSnapshot()
+      localStorage: localSnapshot
     }, { merge: true });
 
     console.log("CLICK360 sincronizado con Firestore:", reason);
@@ -149,22 +163,49 @@ async function pushLocalToFirestore(reason = "auto") {
   }
 }
 
-async function pullFirestoreToLocal() {
+async function pullFirestoreToLocalAndReloadIfNeeded() {
   try {
     const snap = await STATE_DOC.get();
-    if (!snap.exists) return;
+    if (!snap.exists) return false;
 
-    const data = snap.data();
-    if (!data.localStorage) return;
+    const remoteStorage = snap.data().localStorage || {};
+    const remoteHash = snapshotString(remoteStorage);
+    const localHash = snapshotString(getLocalSnapshot());
 
-    Object.entries(data.localStorage).forEach(([key, value]) => {
-      localStorage.setItem(key, value);
-    });
+    if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash) {
+      applyRemoteStorage(remoteStorage);
+      console.log("CLICK360 restaurado desde Firestore. Recargando app...");
+      if (!sessionStorage.getItem("CLICK360_RELOADED_AFTER_PULL")) {
+        sessionStorage.setItem("CLICK360_RELOADED_AFTER_PULL", "1");
+        location.reload();
+        return true;
+      }
+    }
 
-    console.log("CLICK360 restaurado desde Firestore");
+    return false;
   } catch (err) {
     console.warn("CLICK360 no pudo restaurar Firestore:", err.message);
+    return false;
   }
+}
+
+function listenRemoteChanges() {
+  STATE_DOC.onSnapshot((snap) => {
+    if (!AUTH_APPROVED || !snap.exists) return;
+
+    const remoteStorage = snap.data().localStorage || {};
+    const remoteHash = snapshotString(remoteStorage);
+    const localHash = snapshotString(getLocalSnapshot());
+
+    if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash) {
+      applyRemoteStorage(remoteStorage);
+      console.log("CLICK360 recibió cambios remotos. Recargando...");
+      if (!sessionStorage.getItem("CLICK360_RELOADED_REMOTE_CHANGE")) {
+        sessionStorage.setItem("CLICK360_RELOADED_REMOTE_CHANGE", "1");
+        location.reload();
+      }
+    }
+  });
 }
 
 function debounce(fn, wait = 900) {
@@ -180,7 +221,7 @@ const debouncedSync = debounce(() => pushLocalToFirestore("local_change"), 1200)
 const originalSetItem = localStorage.setItem;
 localStorage.setItem = function(key, value) {
   originalSetItem.apply(this, arguments);
-  debouncedSync();
+  if (!IS_RESTORING_REMOTE) debouncedSync();
 };
 
 window.addEventListener("click", () => debouncedSync());
@@ -206,7 +247,11 @@ window.click360Auth.onAuthStateChanged(async (user) => {
   }
 
   console.log("CLICK360 usuario aprobado:", user.email || user.uid);
-  await pullFirestoreToLocal();
+
+  const reloading = await pullFirestoreToLocalAndReloadIfNeeded();
+  if (reloading) return;
+
   unlockApp();
+  listenRemoteChanges();
   await pushLocalToFirestore("startup");
 });
