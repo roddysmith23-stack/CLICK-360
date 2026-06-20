@@ -8,22 +8,35 @@
     firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
   }
 
-  window.click360Auth = firebase.auth();
-  window.click360Db = firebase.firestore();
+  const auth = firebase.auth();
+  const db = firebase.firestore();
+
+  window.click360Auth = auth;
+  window.click360Db = db;
 
   const BUSINESS_ID = "demo-click360";
-  const STATE_DOC = window.click360Db
-    .collection("businesses")
-    .doc(BUSINESS_ID)
-    .collection("state")
-    .doc("main");
+  const STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
 
   let AUTH_APPROVED = false;
-  let IS_RESTORING_REMOTE = false;
   let PULL_COMPLETE = false;
+  let IS_RESTORING_REMOTE = false;
   let REMOTE_UNSUBSCRIBE = null;
 
   const rawSetItem = localStorage.setItem.bind(localStorage);
+
+  function removeOldAuthElements() {
+    const ids = [
+      "click360-auth-gate",
+      "click360-cloud-controls",
+      "click360-firebase-logout",
+      "click360-refresh-cloud",
+      "click360-report-day"
+    ];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
+  }
 
   function normalizeCode(code) {
     return String(code || "")
@@ -65,15 +78,14 @@
     return changed;
   }
 
-  function normalizeAllLocalProductCodes(reason = "normalize") {
+  function normalizeAllLocalProductCodes() {
     let changedAny = false;
 
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (!key) continue;
       if (key.startsWith("firebase:")) continue;
-      if (key.startsWith("CLICK360_REMOTE_")) continue;
-      if (key.startsWith("CLICK360_FIREBASE_")) continue;
+      if (key.startsWith("CLICK360_")) continue;
 
       const raw = localStorage.getItem(key);
       const parsed = safeJsonParse(raw);
@@ -84,24 +96,154 @@
       }
     }
 
-    if (changedAny) console.log("CLICK360 códigos normalizados:", reason);
     return changedAny;
   }
 
-  function lockApp(message = "Inicia sesión con Google para continuar.") {
-    AUTH_APPROVED = false;
-    const gate = document.getElementById("click360-auth-gate");
+  function setAppBlocked(blocked) {
+    const app = document.getElementById("app");
+    if (!app) return;
+
+    if (blocked) {
+      app.style.pointerEvents = "none";
+      app.style.filter = "blur(2px)";
+      app.style.opacity = "0.18";
+    } else {
+      app.style.pointerEvents = "";
+      app.style.filter = "";
+      app.style.opacity = "";
+    }
+  }
+
+  function createAuthGate() {
+    removeOldAuthElements();
+
+    const gate = document.createElement("div");
+    gate.id = "click360-auth-gate";
+    gate.innerHTML = `
+      <div style="
+        position:fixed;
+        inset:0;
+        z-index:2147483647;
+        background:rgba(0,0,0,.96);
+        color:white;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-family:Arial,sans-serif;
+        padding:24px;
+        box-sizing:border-box;
+      ">
+        <div style="
+          width:100%;
+          max-width:430px;
+          border:1px solid rgba(255,255,255,.16);
+          border-radius:28px;
+          padding:30px;
+          background:#111;
+          box-shadow:0 30px 80px rgba(0,0,0,.65);
+        ">
+          <h1 style="margin:0 0 8px;font-size:36px;letter-spacing:.5px;">CLICK 360</h1>
+          <p style="opacity:.72;margin:0 0 24px;font-size:17px;line-height:1.35;">
+            Acceso privado con Google.
+          </p>
+
+          <button id="c360-google-login" style="
+            width:100%;
+            padding:17px;
+            border-radius:18px;
+            border:1px solid #444;
+            background:#fff;
+            color:#000;
+            font-weight:900;
+            font-size:17px;
+            margin-bottom:12px;
+          ">
+            Entrar con Google
+          </button>
+
+          <button id="c360-check-approval" style="
+            width:100%;
+            padding:14px;
+            border-radius:18px;
+            border:1px solid #444;
+            background:#1b1b1b;
+            color:#fff;
+            font-weight:800;
+            font-size:15px;
+            margin-bottom:12px;
+          ">
+            Ya me aprobaron / Actualizar acceso
+          </button>
+
+          <button id="c360-change-google" style="
+            width:100%;
+            padding:13px;
+            border-radius:18px;
+            border:1px solid #333;
+            background:#000;
+            color:#f4c431;
+            font-weight:800;
+            font-size:14px;
+          ">
+            Cambiar cuenta de Google
+          </button>
+
+          <p style="opacity:.55;font-size:12px;margin-top:14px;line-height:1.4;">
+            El acceso se aprueba desde Firebase creando el documento approvedUsers/UID con status active.
+          </p>
+
+          <p id="c360-auth-msg" style="
+            margin-top:14px;
+            color:#ffdc6b;
+            font-size:14px;
+            word-break:break-word;
+            line-height:1.45;
+          "></p>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(gate);
+
+    document.getElementById("c360-google-login").onclick = signInGoogleOnly;
+    document.getElementById("c360-check-approval").onclick = checkApprovalNow;
+    document.getElementById("c360-change-google").onclick = async () => {
+      try {
+        await auth.signOut();
+        await signInGoogleOnly();
+      } catch (e) {
+        showAuthMessage("No se pudo cambiar cuenta: " + e.message);
+      }
+    };
+  }
+
+  function showAuthMessage(html) {
     const msg = document.getElementById("c360-auth-msg");
-    if (gate) gate.style.display = "flex";
-    if (msg) msg.innerHTML = message;
-    document.documentElement.style.overflow = "hidden";
+    if (msg) msg.innerHTML = html;
+  }
+
+  function lockApp(message) {
+    AUTH_APPROVED = false;
+    setAppBlocked(true);
+
+    if (!document.getElementById("click360-auth-gate")) {
+      createAuthGate();
+    }
+
+    const gate = document.getElementById("click360-auth-gate");
+    if (gate) gate.style.display = "block";
+
+    showAuthMessage(message || "Inicia sesión con Google para continuar.");
   }
 
   function unlockApp() {
     AUTH_APPROVED = true;
+    setAppBlocked(false);
+
     const gate = document.getElementById("click360-auth-gate");
-    if (gate) gate.style.display = "none";
-    document.documentElement.style.overflow = "";
+    if (gate) gate.remove();
+
+    createControlButtons();
   }
 
   function googleProvider() {
@@ -110,101 +252,59 @@
     return provider;
   }
 
-  async function signInWithGoogleSmart() {
-    const msg = document.getElementById("c360-auth-msg");
+  async function signInGoogleOnly() {
     try {
-      if (msg) msg.textContent = "Abriendo Google...";
+      showAuthMessage("Abriendo Google...");
 
       const provider = googleProvider();
       const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
       if (isMobile) {
-        await window.click360Auth.signInWithRedirect(provider);
+        await auth.signInWithRedirect(provider);
         return;
       }
 
       try {
-        await window.click360Auth.signInWithPopup(provider);
-      } catch (popupErr) {
-        console.warn("Popup falló, usando redirect:", popupErr.message);
-        await window.click360Auth.signInWithRedirect(provider);
+        await auth.signInWithPopup(provider);
+      } catch (e) {
+        console.warn("Popup falló, usando redirect:", e.message);
+        await auth.signInWithRedirect(provider);
       }
     } catch (e) {
-      if (msg) {
-        msg.innerHTML = `
-          Google no pudo abrirse correctamente.<br><br>
-          <b>Solución rápida:</b> abre esta app desde Safari o Chrome normal, no desde navegador interno ni modo privado.<br><br>
-          Error: ${e.message}
-        `;
-      }
+      showAuthMessage(`
+        Google no pudo abrirse.<br><br>
+        Abre la app en Safari o Chrome normal, no desde navegador interno ni modo privado.<br><br>
+        Error: ${e.message}
+      `);
     }
   }
 
-  function createAuthOverlay() {
-    if (document.getElementById("click360-auth-gate")) return;
+  async function checkApprovalNow() {
+    const user = auth.currentUser;
 
-    const div = document.createElement("div");
-    div.id = "click360-auth-gate";
-    div.innerHTML = `
-      <div style="position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,.96);color:white;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;padding:24px;">
-        <div style="width:100%;max-width:420px;border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:28px;background:#111;box-shadow:0 30px 80px rgba(0,0,0,.5);">
-          <h1 style="margin:0 0 8px;font-size:34px;letter-spacing:.5px;">CLICK 360</h1>
-          <p style="opacity:.75;margin:0 0 22px;font-size:16px;line-height:1.4;">Acceso privado al sistema de inventario.</p>
+    if (!user) {
+      await signInGoogleOnly();
+      return;
+    }
 
-          <button id="c360-google" style="width:100%;padding:16px;border-radius:16px;border:1px solid #444;background:#fff;color:#000;font-weight:900;font-size:17px;margin-bottom:12px;">
-            Entrar con Google
-          </button>
+    const approved = await isApprovedUser(user);
 
-          <button id="c360-check-approval" style="width:100%;padding:14px;border-radius:16px;border:1px solid #444;background:#1a1a1a;color:#fff;font-weight:800;font-size:15px;margin-bottom:12px;">
-            Ya me aprobaron / Actualizar acceso
-          </button>
+    if (approved) {
+      location.reload();
+      return;
+    }
 
-          <button id="c360-change-account" style="width:100%;padding:12px;border-radius:16px;border:1px solid #333;background:#000;color:#f4c431;font-weight:800;font-size:14px;">
-            Cambiar cuenta de Google
-          </button>
-
-          <p style="opacity:.6;font-size:12px;margin-top:14px;line-height:1.4;">
-            El acceso se aprueba desde Firebase con tu UID. No se usan cuentas demo ni contraseña local.
-          </p>
-
-          <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;word-break:break-word;line-height:1.4;"></p>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(div);
-
-    document.getElementById("c360-google").onclick = signInWithGoogleSmart;
-
-    document.getElementById("c360-check-approval").onclick = async () => {
-      const user = window.click360Auth.currentUser;
-      if (!user) {
-        await signInWithGoogleSmart();
-        return;
-      }
-      const ok = await isApprovedUser(user);
-      if (ok) {
-        location.reload();
-      } else {
-        lockApp(`
-          Cuenta pendiente de aprobación.<br><br>
-          Email: <b>${user.email || "sin email"}</b><br>
-          UID:<br><b>${user.uid}</b><br><br>
-          Crea en Firestore: <b>approvedUsers/${user.uid}</b><br>
-          Campo: <b>status = active</b>
-        `);
-      }
-    };
-
-    document.getElementById("c360-change-account").onclick = async () => {
-      try {
-        await window.click360Auth.signOut();
-        sessionStorage.clear();
-        await signInWithGoogleSmart();
-      } catch (e) {
-        lockApp("No se pudo cambiar cuenta: " + e.message);
-      }
-    };
+    lockApp(`
+      Cuenta pendiente de aprobación.<br><br>
+      Email: <b>${user.email || "sin email"}</b><br>
+      UID:<br><b>${user.uid}</b><br><br>
+      En Firebase crea:<br>
+      <b>approvedUsers/${user.uid}</b><br><br>
+      Campos:<br>
+      <b>email</b> = ${user.email || ""}<br>
+      <b>status</b> = active<br>
+      <b>role</b> = owner
+    `);
   }
 
   function createControlButtons() {
@@ -221,7 +321,7 @@
       gap:8px;
       flex-wrap:wrap;
       justify-content:flex-end;
-      max-width:330px;
+      max-width:340px;
       font-family:Arial,sans-serif;
     `;
 
@@ -247,30 +347,28 @@
 
     document.getElementById("click360-firebase-logout").onclick = async () => {
       try { await pushLocalToFirestore("logout"); } catch(e) {}
-      await window.click360Auth.signOut();
-      sessionStorage.clear();
+      await auth.signOut();
       location.reload();
     };
   }
 
   function getLocalSnapshot() {
-    normalizeAllLocalProductCodes("snapshot");
+    normalizeAllLocalProductCodes();
 
     const data = {};
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (!key) continue;
       if (key.startsWith("firebase:")) continue;
-      if (key.startsWith("CLICK360_REMOTE_")) continue;
-      if (key.startsWith("CLICK360_FIREBASE_")) continue;
+      if (key.startsWith("CLICK360_")) continue;
       data[key] = localStorage.getItem(key);
     }
+
     return data;
   }
 
   function snapshotString(obj) {
-    try { return JSON.stringify(obj || {}); }
-    catch(e) { return "{}"; }
+    try { return JSON.stringify(obj || {}); } catch(e) { return "{}"; }
   }
 
   function applyRemoteStorage(remoteStorage) {
@@ -280,24 +378,24 @@
       rawSetItem(key, value);
     });
 
-    normalizeAllLocalProductCodes("remote_apply");
+    normalizeAllLocalProductCodes();
     rawSetItem("CLICK360_REMOTE_HASH", snapshotString(remoteStorage));
     IS_RESTORING_REMOTE = false;
   }
 
   async function isApprovedUser(user) {
     if (!user) return false;
-    const doc = await window.click360Db.collection("approvedUsers").doc(user.uid).get();
+
+    const doc = await db.collection("approvedUsers").doc(user.uid).get();
     if (!doc.exists) return false;
+
     return doc.data().status === "active";
   }
 
   async function pushLocalToFirestore(reason = "auto") {
     try {
-      const user = window.click360Auth.currentUser;
+      const user = auth.currentUser;
       if (!user || !AUTH_APPROVED || IS_RESTORING_REMOTE || !PULL_COMPLETE) return;
-
-      const localSnapshot = getLocalSnapshot();
 
       await STATE_DOC.set({
         businessId: BUSINESS_ID,
@@ -306,18 +404,19 @@
         updatedBy: user.uid,
         updatedByEmail: user.email || null,
         reason,
-        localStorage: localSnapshot
+        localStorage: getLocalSnapshot()
       }, { merge: true });
 
-      console.log("CLICK360 sincronizado con Firestore:", reason);
+      console.log("CLICK360 sincronizado:", reason);
     } catch (err) {
-      console.warn("CLICK360 no pudo sincronizar Firestore:", err.message);
+      console.warn("CLICK360 no pudo sincronizar:", err.message);
     }
   }
 
   async function pullFirestoreToLocalAndReloadIfNeeded(force = false) {
     try {
       const snap = await STATE_DOC.get();
+
       if (!snap.exists) {
         PULL_COMPLETE = true;
         return false;
@@ -334,8 +433,7 @@
         PULL_COMPLETE = true;
 
         if (force || lastHash !== remoteHash) {
-          console.log("CLICK360 restaurado desde Firestore. Recargando app...");
-          setTimeout(() => location.reload(), 300);
+          setTimeout(() => location.reload(), 250);
           return true;
         }
       }
@@ -344,7 +442,7 @@
       return false;
     } catch (err) {
       PULL_COMPLETE = true;
-      console.warn("CLICK360 no pudo restaurar Firestore:", err.message);
+      console.warn("CLICK360 no pudo restaurar:", err.message);
       return false;
     }
   }
@@ -363,8 +461,7 @@
       if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && lastHash !== remoteHash) {
         applyRemoteStorage(remoteStorage);
         sessionStorage.setItem("CLICK360_LAST_REMOTE_HASH", remoteHash);
-        console.log("CLICK360 recibió cambios remotos. Recargando...");
-        setTimeout(() => location.reload(), 300);
+        setTimeout(() => location.reload(), 250);
       }
     });
   }
@@ -382,7 +479,7 @@
   localStorage.setItem = function(key, value) {
     rawSetItem(key, value);
     if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE) {
-      normalizeAllLocalProductCodes("setItem");
+      normalizeAllLocalProductCodes();
       debouncedSync();
     }
   };
@@ -422,49 +519,18 @@
     return best || {};
   }
 
-  function getDateValue(item) {
-    const v = item.createdAt || item.date || item.timestamp || item.updatedAt || item.soldAt;
-    if (!v) return null;
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? null : d;
-  }
-
-  function inPeriod(item, period) {
-    const d = getDateValue(item);
-    if (!d) return true;
-
-    const now = new Date();
-
-    if (period === "day") {
-      return d.getFullYear() === now.getFullYear()
-        && d.getMonth() === now.getMonth()
-        && d.getDate() === now.getDate();
-    }
-
-    if (period === "month") {
-      return d.getFullYear() === now.getFullYear()
-        && d.getMonth() === now.getMonth();
-    }
-
-    if (period === "year") {
-      return d.getFullYear() === now.getFullYear();
-    }
-
-    return true;
-  }
-
   function money(n) {
     const num = Number(n || 0);
     return "$" + num.toFixed(2);
   }
 
   function printReport(period = "day") {
-    normalizeAllLocalProductCodes("report");
+    normalizeAllLocalProductCodes();
 
     const state = findMainState();
     const products = Array.isArray(state.products) ? state.products : [];
-    const sales = Array.isArray(state.sales) ? state.sales.filter(x => inPeriod(x, period)) : [];
-    const movements = Array.isArray(state.movements) ? state.movements.filter(x => inPeriod(x, period)) : [];
+    const sales = Array.isArray(state.sales) ? state.sales : [];
+    const movements = Array.isArray(state.movements) ? state.movements : [];
 
     const totalSales = sales.reduce((sum, s) => {
       return sum + Number(s.total || s.amount || s.price || 0);
@@ -472,18 +538,12 @@
 
     const lowStock = products.filter(p => Number(p.stock ?? p.quantity ?? 0) <= 1);
 
-    const titleMap = {
-      day: "CIERRE DEL DÍA",
-      month: "REPORTE MENSUAL",
-      year: "REPORTE ANUAL"
-    };
-
     const html = `
       <!doctype html>
       <html>
       <head>
         <meta charset="utf-8">
-        <title>${titleMap[period] || "REPORTE"} CLICK 360</title>
+        <title>CLICK 360 — Reporte</title>
         <style>
           body { font-family: Arial, sans-serif; color:#111; padding:24px; }
           h1 { margin:0 0 6px; font-size:28px; }
@@ -499,7 +559,7 @@
         </style>
       </head>
       <body>
-        <h1>CLICK 360 — ${titleMap[period] || "REPORTE"}</h1>
+        <h1>CLICK 360 — Reporte</h1>
         <div class="muted">Generado: ${new Date().toLocaleString()}</div>
 
         <div class="grid">
@@ -537,13 +597,12 @@
           </tbody>
         </table>
 
-        <h2>Ventas / movimientos del periodo</h2>
+        <h2>Ventas / movimientos</h2>
         <table>
-          <thead><tr><th>Fecha</th><th>Tipo</th><th>Producto</th><th>Cantidad</th><th>Total</th></tr></thead>
+          <thead><tr><th>Tipo</th><th>Producto</th><th>Cantidad</th><th>Total</th></tr></thead>
           <tbody>
             ${sales.map(s => `
               <tr>
-                <td>${getDateValue(s)?.toLocaleString() || "-"}</td>
                 <td>Venta</td>
                 <td>${s.productName || s.name || s.code || "-"}</td>
                 <td>${s.quantity || 1}</td>
@@ -552,14 +611,13 @@
             `).join("")}
             ${movements.map(m => `
               <tr>
-                <td>${getDateValue(m)?.toLocaleString() || "-"}</td>
                 <td>${m.type || "Movimiento"}</td>
                 <td>${m.productName || m.name || m.code || "-"}</td>
                 <td>${m.quantity || m.qty || "-"}</td>
                 <td>-</td>
               </tr>
             `).join("")}
-            ${(sales.length + movements.length) === 0 ? `<tr><td colspan="5">Sin ventas o movimientos registrados en este periodo.</td></tr>` : ""}
+            ${(sales.length + movements.length) === 0 ? `<tr><td colspan="4">Sin ventas o movimientos registrados.</td></tr>` : ""}
           </tbody>
         </table>
 
@@ -580,30 +638,22 @@
 
   async function boot() {
     try {
-      await window.click360Auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+      await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
     } catch (e) {
-      console.warn("No se pudo fijar persistencia LOCAL:", e.message);
+      console.warn("Persistencia local no disponible:", e.message);
     }
 
-    createAuthOverlay();
-    createControlButtons();
-    lockApp("Inicia sesión con Google para continuar.");
+    setAppBlocked(true);
+    createAuthGate();
 
     try {
-      await window.click360Auth.getRedirectResult();
+      await auth.getRedirectResult();
     } catch (e) {
-      console.warn("Redirect result error:", e.message);
-      const msg = document.getElementById("c360-auth-msg");
-      if (msg) {
-        msg.innerHTML = `
-          Google no completó el ingreso.<br><br>
-          Abre la app en Safari o Chrome normal y toca <b>Entrar con Google</b> nuevamente.<br><br>
-          Error: ${e.message}
-        `;
-      }
+      console.warn("Redirect error:", e.message);
+      showAuthMessage("Google no completó el ingreso. Toca Entrar con Google nuevamente.");
     }
 
-    window.click360Auth.onAuthStateChanged(async (user) => {
+    auth.onAuthStateChanged(async (user) => {
       if (!user) {
         lockApp("Inicia sesión con Google para continuar.");
         return;
@@ -623,11 +673,8 @@
           <b>status</b> = active<br>
           <b>role</b> = owner
         `);
-        console.log("CLICK360 usuario pendiente:", user.uid, user.email);
         return;
       }
-
-      console.log("CLICK360 usuario aprobado:", user.email || user.uid);
 
       const reloading = await pullFirestoreToLocalAndReloadIfNeeded(false);
       if (reloading) return;
