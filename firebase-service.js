@@ -10,20 +10,34 @@ const STATE_DOC = window.click360Db
   .collection("state")
   .doc("main");
 
+let AUTH_APPROVED = false;
+
+window.click360Auth.setPersistence(firebase.auth.Auth.Persistence.SESSION);
+
+function lockApp(message = "Inicia sesión para continuar.") {
+  AUTH_APPROVED = false;
+  const gate = document.getElementById("click360-auth-gate");
+  const msg = document.getElementById("c360-auth-msg");
+  if (gate) gate.style.display = "flex";
+  if (msg) msg.textContent = message;
+  document.documentElement.style.overflow = "hidden";
+}
+
+function unlockApp() {
+  AUTH_APPROVED = true;
+  const gate = document.getElementById("click360-auth-gate");
+  if (gate) gate.style.display = "none";
+  document.documentElement.style.overflow = "";
+}
+
 function createAuthOverlay() {
   if (document.getElementById("click360-auth-gate")) return;
 
   const div = document.createElement("div");
   div.id = "click360-auth-gate";
   div.innerHTML = `
-    <div style="
-      position:fixed; inset:0; z-index:99999;
-      background:rgba(0,0,0,.96); color:white;
-      display:flex; align-items:center; justify-content:center;
-      font-family:Arial,sans-serif; padding:24px;">
-      <div style="
-        width:100%; max-width:420px; border:1px solid rgba(255,255,255,.15);
-        border-radius:24px; padding:28px; background:#111;">
+    <div style="position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,.96);color:white;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;padding:24px;">
+      <div style="width:100%;max-width:420px;border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:28px;background:#111;box-shadow:0 30px 80px rgba(0,0,0,.5);">
         <h1 style="margin:0 0 8px;font-size:30px;">CLICK 360</h1>
         <p style="opacity:.75;margin:0 0 22px;">Acceso privado al sistema de inventario.</p>
 
@@ -34,7 +48,7 @@ function createAuthOverlay() {
         <button id="c360-register" style="width:100%;padding:14px;border-radius:14px;border:1px solid #444;background:#1a1a1a;color:#fff;font-weight:800;margin-bottom:10px;">Crear cuenta</button>
         <button id="c360-google" style="width:100%;padding:14px;border-radius:14px;border:1px solid #444;background:#fff;color:#000;font-weight:800;">Entrar con Google</button>
 
-        <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;"></p>
+        <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;word-break:break-word;"></p>
       </div>
     </div>
   `;
@@ -74,6 +88,31 @@ function createAuthOverlay() {
   };
 }
 
+function createLogoutButton() {
+  if (document.getElementById("click360-firebase-logout")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "click360-firebase-logout";
+  btn.textContent = "Cerrar sesión";
+  btn.style.cssText = `
+    position:fixed;right:18px;top:18px;z-index:999998;
+    padding:10px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.2);
+    background:#111;color:#fff;font-weight:800;box-shadow:0 10px 30px rgba(0,0,0,.35);
+  `;
+
+  btn.onclick = async () => {
+    try {
+      await pushLocalToFirestore("logout");
+    } catch(e) {}
+    localStorage.clear();
+    sessionStorage.clear();
+    await window.click360Auth.signOut();
+    location.reload();
+  };
+
+  document.body.appendChild(btn);
+}
+
 function getLocalSnapshot() {
   const data = {};
   for (let i = 0; i < localStorage.length; i++) {
@@ -93,10 +132,7 @@ async function isApprovedUser(user) {
 async function pushLocalToFirestore(reason = "auto") {
   try {
     const user = window.click360Auth.currentUser;
-    if (!user) return;
-
-    const approved = await isApprovedUser(user);
-    if (!approved) return;
+    if (!user || !AUTH_APPROVED) return;
 
     await STATE_DOC.set({
       businessId: BUSINESS_ID,
@@ -152,30 +188,25 @@ window.addEventListener("beforeunload", () => pushLocalToFirestore("beforeunload
 window.click360SyncNow = () => pushLocalToFirestore("manual");
 
 createAuthOverlay();
+createLogoutButton();
+lockApp("Inicia sesión para continuar.");
 
 window.click360Auth.onAuthStateChanged(async (user) => {
-  const gate = document.getElementById("click360-auth-gate");
-  const msg = document.getElementById("c360-auth-msg");
-
   if (!user) {
-    if (gate) gate.style.display = "flex";
+    lockApp("Inicia sesión para continuar.");
     return;
   }
 
   const approved = await isApprovedUser(user);
 
   if (!approved) {
-    if (gate) gate.style.display = "flex";
-    if (msg) {
-      msg.textContent = `Cuenta pendiente de aprobación. UID: ${user.uid}`;
-    }
+    lockApp(`Cuenta pendiente de aprobación. UID: ${user.uid}`);
     console.log("CLICK360 usuario pendiente:", user.uid, user.email);
     return;
   }
 
-  if (gate) gate.style.display = "none";
-  console.log("CLICK360 Firebase conectado y usuario aprobado:", user.email || user.uid);
-
+  console.log("CLICK360 usuario aprobado:", user.email || user.uid);
   await pullFirestoreToLocal();
+  unlockApp();
   await pushLocalToFirestore("startup");
 });
