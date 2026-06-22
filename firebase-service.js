@@ -11,7 +11,7 @@
 
   window.click360Auth = auth;
   window.click360Db = db;
-
+  let BUSINESS_ID = null;
   let STATE_DOC = null;
 
   let AUTH_APPROVED = false;
@@ -50,46 +50,82 @@
     }
   }
 
+  async function syncLocalToRemoteManual() {
+    await pushLocalToFirestore("manual_sync");
+    alert("Sincronización forzada completada");
+  }
+
+  async function reloadFromRemoteManual() {
+    if(confirm("¿Estás seguro? Esto reemplazará los datos locales con la nube.")){
+      await pullRemoteOnce({ force: true, reload: true });
+    }
+  }
+
+  function renderCloudControls() {
+    if (document.getElementById("click360-cloud-controls")) return;
+    const div = document.createElement("div");
+    div.id = "click360-cloud-controls";
+    div.style.position = "fixed";
+    div.style.bottom = "10px";
+    div.style.left = "10px";
+    div.style.zIndex = "999999";
+    div.style.background = "rgba(0,0,0,0.8)";
+    div.style.padding = "10px";
+    div.style.borderRadius = "8px";
+    div.style.border = "1px solid #444";
+    div.style.display = "flex";
+    div.style.gap = "8px";
+
+    const btnPush = document.createElement("button");
+    btnPush.textContent = "Forzar Subida";
+    btnPush.style.padding = "4px 8px";
+    btnPush.style.cursor = "pointer";
+    btnPush.onclick = syncLocalToRemoteManual;
+
+    const btnPull = document.createElement("button");
+    btnPull.textContent = "Forzar Bajada";
+    btnPull.style.padding = "4px 8px";
+    btnPull.style.cursor = "pointer";
+    btnPull.onclick = reloadFromRemoteManual;
+
+    div.appendChild(btnPush);
+    div.appendChild(btnPull);
+    document.body.appendChild(div);
+  }
+
+  function throttle(func, limit) {
+    let inThrottle;
+    return function(...args) {
+      const context = this;
+      if (!inThrottle) {
+        func.apply(context, args);
+        inThrottle = true;
+        setTimeout(() => inThrottle = false, limit);
+      }
+    };
+  }
+
   function safeJsonParse(value) {
     try { return JSON.parse(value); } catch (e) { return null; }
   }
 
-  function normalizeCode(code) {
-    if (!code) return "";
-    return String(code)
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-zA-Z0-9]/g, "")
-      .toUpperCase()
-      .trim();
-  }
-
   function deepNormalizeProductCodes(obj) {
-    if (!obj || typeof obj !== "object") return false;
     let changed = false;
-
     if (Array.isArray(obj)) {
-      obj.forEach(x => { if (deepNormalizeProductCodes(x)) changed = true; });
-      return changed;
-    }
-
-    if (obj.code && (obj.name || obj.title || obj.price !== undefined || obj.stock !== undefined || obj.quantity !== undefined)) {
-      const clean = normalizeCode(obj.code);
-      if (clean && obj.code !== clean) {
-        obj.originalCode = obj.originalCode || obj.code;
-        obj.code = clean;
-        obj.normalizedCode = clean;
-        changed = true;
-      } else if (!obj.normalizedCode || obj.normalizedCode !== clean) {
-        obj.normalizedCode = clean;
-        changed = true;
+      obj.forEach(item => { if (deepNormalizeProductCodes(item)) changed = true; });
+    } else if (obj !== null && typeof obj === 'object') {
+      if (obj.code && typeof obj.code === 'string') {
+        const oldCode = obj.code;
+        const newCode = oldCode.toUpperCase().trim();
+        if (oldCode !== newCode) {
+          obj.code = newCode;
+          changed = true;
+        }
       }
+      Object.values(obj).forEach(val => {
+        if (deepNormalizeProductCodes(val)) changed = true;
+      });
     }
-
-    Object.keys(obj).forEach(k => {
-      if (deepNormalizeProductCodes(obj[k])) changed = true;
-    });
-
     return changed;
   }
 
@@ -145,17 +181,34 @@
   async function isApprovedUser(user) {
     if (!user) return false;
     try {
-      const doc = await db.collection("approvedUsers").doc(user.uid).get();
+      let doc = await db.collection("approvedUsers").doc(user.uid).get();
+      let d = null;
+      
       if (doc.exists && doc.data().status === "active") {
-        const d = doc.data();
+        d = doc.data();
+      } else {
+        const emailDoc = await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).get();
+        if (emailDoc.exists && emailDoc.data().status === "active") {
+          d = emailDoc.data();
+          await db.collection("approvedUsers").doc(user.uid).set({
+            ...d,
+            uid: user.uid,
+            status: "active",
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).delete();
+        }
+      }
+
+      if (d) {
         window.click360User = {
           uid: user.uid,
           email: user.email || d.email,
           role: d.role || "worker",
           name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario")
         };
-        const bizId = d.ownerId || user.uid; // Si es worker debería tener ownerId, si no usa su propio uid como negocio
-        STATE_DOC = db.collection("businesses").doc(bizId).collection("state").doc("main");
+        BUSINESS_ID = d.ownerId || user.uid;
+        STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
         return true;
       }
       return false;
@@ -165,10 +218,41 @@
     }
   }
 
+  window.click360InviteWorker = async function(email) {
+    if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
+    const safeEmail = email.toLowerCase().trim();
+    await db.collection("approvedUsersByEmail").doc(safeEmail).set({
+       email: safeEmail,
+       role: "worker",
+       ownerId: window.click360User.uid,
+       status: "active",
+       invitedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  };
+
+  window.click360GetWorkers = async function() {
+    if(!window.click360User || window.click360User.role !== 'owner') return [];
+    const uid = window.click360User.uid;
+    const [byUid, byEmail] = await Promise.all([
+      db.collection("approvedUsers").where("ownerId", "==", uid).get(),
+      db.collection("approvedUsersByEmail").where("ownerId", "==", uid).get()
+    ]);
+    const workers = [];
+    byUid.forEach(d => workers.push({ id: d.id, ...d.data(), type: 'uid' }));
+    byEmail.forEach(d => workers.push({ id: d.id, ...d.data(), type: 'email' }));
+    return workers;
+  };
+
+  window.click360RevokeWorker = async function(id, type) {
+    if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
+    const col = type === 'email' ? "approvedUsersByEmail" : "approvedUsers";
+    await db.collection(col).doc(id).delete();
+  };
+
   async function pushLocalToFirestore(reason = "auto") {
     try {
       const user = auth.currentUser;
-      if (!user || !AUTH_APPROVED || IS_RESTORING_REMOTE || !PULL_COMPLETE) return;
+      if (!user || !AUTH_APPROVED || IS_RESTORING_REMOTE || !PULL_COMPLETE || !STATE_DOC || !BUSINESS_ID) return;
 
       const snapshot = getLocalSnapshot();
       if(Object.keys(snapshot).length === 0) return;

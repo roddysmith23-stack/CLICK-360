@@ -322,7 +322,13 @@ function parseMoney(value) {
   function inventoryView() {
     const b=currentBusiness(), v=businessVocabulary(b.type), products=productsForBiz();
     return `<div class="pageHead"><div><h1>Inventario</h1><p>Registra, controla y genera etiquetas.</p></div><div class="toolbar"><button class="btn primary" id="newProduct">＋ Nuevo</button></div></div>
-      <div class="searchBox"><input id="productSearch" placeholder="Buscar por nombre o código..." /></div>
+      <div class="searchBox" style="display:flex; gap:10px;">
+         <input id="productSearch" placeholder="Buscar por nombre o código..." style="flex:1;" />
+         <button type="button" class="iconBtn" id="openCamera" title="Escanear QR">
+           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+         </button>
+      </div>
+      <div id="cameraPanel" class="cameraPanel" style="margin-bottom:14px;"><video id="scanVideo" playsinline muted></video><div id="cameraStatus" class="cameraStatus">Listo para cámara.</div></div>
       <section id="productList" class="productList" style="margin-top:14px">${productList(products,v)}</section>`;
   }
   function productList(products,v) {
@@ -346,7 +352,7 @@ function parseMoney(value) {
                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                </button>
                <button type="button" class="iconBtn" id="openCamera" title="Escanear QR">
-                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
                </button>
             </div>
             <div id="quickProducts" class="productList"></div>
@@ -396,7 +402,6 @@ function parseMoney(value) {
      const last7Days = [];
      for(let i=6; i>=0; i--) {
        const d = new Date(); d.setDate(d.getDate() - i);
-       // YYYY-MM-DD
        const pad = (n) => n.toString().padStart(2, '0');
        last7Days.push(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`);
      }
@@ -408,27 +413,71 @@ function parseMoney(value) {
        }
      });
      
-     const max = Math.max(...Object.values(salesByDay), 1);
-     let barsHtml = '';
-     last7Days.forEach(d => {
-       const val = salesByDay[d];
-       const pct = (val / max) * 100;
-       const dayLabel = d.slice(-2);
-       barsHtml += `
-         <div style="display:flex; flex-direction:column; align-items:center; gap:6px; flex:1;" title="${d}: ${fmt(val)}">
-           <div style="height:120px; width:100%; display:flex; align-items:flex-end; background:var(--bg); border-radius:6px; overflow:hidden;">
-             <div style="width:100%; background:var(--gold); height:${pct}%; transition: height 0.3s; min-height:${val>0?'2px':'0'}; border-radius:4px 4px 0 0;"></div>
-           </div>
-           <small style="font-size:11px; color:var(--muted);">${dayLabel}</small>
-         </div>
-       `;
+     const vals = last7Days.map(d => salesByDay[d]);
+     const max = Math.max(...vals, 1);
+     
+     const width = 300;
+     const height = 120;
+     const padX = 20;
+     const padY = 25;
+     const chartW = width - padX * 2;
+     const chartH = height - padY * 1.5;
+     
+     const points = vals.map((val, i) => {
+         const x = padX + (i / 6) * chartW;
+         const y = padY + chartH - ((val / max) * chartH);
+         return {x, y, val, d: last7Days[i]};
      });
+     
+     let pathD = `M ${points[0].x} ${points[0].y}`;
+     for(let i=0; i<points.length - 1; i++) {
+         const p0 = points[i];
+         const p1 = points[i+1];
+         const cp1x = p0.x + (p1.x - p0.x) / 2;
+         const cp2x = cp1x;
+         pathD += ` C ${cp1x} ${p0.y}, ${cp2x} ${p1.y}, ${p1.x} ${p1.y}`;
+     }
+     
+     const fillPathD = pathD + ` L ${points[points.length-1].x} ${height} L ${points[0].x} ${height} Z`;
+
+     const circlesHtml = points.map(p => `
+       <g class="chart-point-group" transform="translate(${p.x}, ${p.y})">
+         <circle cx="0" cy="0" r="4" fill="var(--gold)" stroke="#111" stroke-width="2" />
+         <!-- hitbox invisible -->
+         <rect x="-15" y="-20" width="30" height="40" fill="transparent" style="cursor:pointer;" />
+         <g class="chart-tooltip" style="opacity:0; pointer-events:none; transition:0.2s;">
+            <rect x="-25" y="-32" width="50" height="20" rx="4" fill="#222" stroke="var(--gold)" stroke-width="1"/>
+            <text x="0" y="-18" fill="#fff" font-size="9" text-anchor="middle" font-family="monospace">${fmt(p.val)}</text>
+         </g>
+       </g>
+     `).join('');
+     
+     const daysHtml = points.map(p => `
+       <text x="${p.x}" y="${height - 4}" fill="var(--muted)" font-size="9" text-anchor="middle">${p.d.slice(-2)}</text>
+     `).join('');
 
      return `
-       <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:8px; padding:16px 12px; background:rgba(255,255,255,0.02); border-radius:12px; margin-bottom:8px; border: 1px solid var(--line);">
-         ${barsHtml}
+       <div style="position:relative; width:100%; overflow:hidden; background:rgba(255,255,255,0.02); border-radius:12px; border: 1px solid var(--line); margin-bottom:8px;">
+         <style>
+           .chart-point-group:hover .chart-tooltip { opacity: 1 !important; transform: translateY(-4px); }
+           .chart-point-group:active .chart-tooltip { opacity: 1 !important; transform: translateY(-4px); }
+         </style>
+         <svg viewBox="0 0 ${width} ${height}" style="width:100%; height:auto; display:block; overflow:visible;">
+            <defs>
+              <linearGradient id="curveGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--gold)" stop-opacity="0.3" />
+                <stop offset="100%" stop-color="var(--gold)" stop-opacity="0.0" />
+              </linearGradient>
+            </defs>
+            <path d="${fillPathD}" fill="url(#curveGradient)" />
+            <path d="${pathD}" fill="none" stroke="var(--gold)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+            <line x1="${padX}" y1="${padY}" x2="${width-padX}" y2="${padY}" stroke="var(--line)" stroke-dasharray="2 4" />
+            <line x1="${padX}" y1="${padY + chartH/2}" x2="${width-padX}" y2="${padY + chartH/2}" stroke="var(--line)" stroke-dasharray="2 4" />
+            ${daysHtml}
+            ${circlesHtml}
+         </svg>
        </div>
-       <div style="text-align:center; font-size:12px; color:var(--muted);">Ventas de los últimos 7 días</div>
+       <div style="text-align:center; font-size:12px; color:var(--muted);">Curva de Crecimiento - Últimos 7 Días</div>
      `;
   }
 
@@ -524,19 +573,46 @@ function parseMoney(value) {
       </section>`;
   }
   function workersView(){
-    const b=currentBusiness();
-    const users=state.users.filter(u=>u.businessIds?.includes(b.id) && u.role!=='admin');
-    return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Usuarios internos del negocio.</p></div></div>
-      <section class="card sectionCard"><h3>Accesos de prueba</h3>${users.map(u=>`<div class="movement"><span><b>${escapeHtml(u.label)}</b><br><small>Usuario: ${escapeHtml(u.username)}</small></span><b>${u.role}</b></div>`).join('')}</section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Nota</h3><p class="cloudStatus">Esta versión controla roles básicos localmente. Para varios celulares con datos sincronizados se necesita activar CLICK 360 Cloud con backend real.</p></section>`;
+    return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
+      <section class="card sectionCard">
+         <h3>Invitar Trabajador</h3>
+         <div style="display:flex; gap:10px; margin-top:8px;">
+            <input id="workerEmail" type="email" placeholder="correo@gmail.com" style="flex:1;">
+            <button class="btn primary" id="inviteWorkerBtn" type="button">Invitar</button>
+         </div>
+         <div id="inviteLinkBox" style="display:none; margin-top:14px; background:rgba(55,213,126,0.1); border:1px solid rgba(55,213,126,0.3); padding:10px; border-radius:8px;">
+            <small style="color:var(--green); display:block; margin-bottom:6px;">Invitación creada. Envía este enlace a tu trabajador:</small>
+            <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:6px; border-radius:4px;">
+            <button class="btn silver block" id="copyInviteLinkBtn" type="button">Copiar Enlace</button>
+         </div>
+      </section>
+      <section class="card sectionCard" style="margin-top:14px">
+         <h3>Trabajadores Activos</h3>
+         <div id="workersList"><p class="empty">Cargando...</p></div>
+      </section>`;
   }
   function settingsView(){
     const b=currentBusiness();
     const iva = state.settings?.iva || 0;
-    return `<div class="pageHead"><div><h1>Ajustes</h1><p>Negocios y perfil.</p></div></div>
+    const ruc = state.settings?.ruc || '';
+    const phone = state.settings?.phone || '';
+    const logoUrl = state.settings?.logoUrl || '';
+
+    return `<div class="pageHead"><div><h1>Ajustes</h1><p>Configura tu empresa.</p></div></div>
       <section class="card sectionCard">
-        <h3>Negocio actual</h3>
-        <div class="field"><label>Nombre</label><input id="bizName" value="${escapeHtml(b.name)}"></div>
+        <h3>Datos del Negocio</h3>
+        <div class="field" style="display:flex; flex-direction:column; align-items:center;">
+          <div style="width:80px; height:80px; border-radius:50%; background:#222; border:1px solid #444; overflow:hidden; margin-bottom:10px; display:flex; justify-content:center; align-items:center;">
+             ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`}
+          </div>
+          <label class="btn silver" style="font-size:12px; padding:4px 8px;">
+            Cambiar Logo
+            <input type="file" id="bizLogoUpload" accept="image/*" hidden>
+          </label>
+        </div>
+        <div class="field"><label>Nombre del Negocio</label><input id="bizName" value="${escapeHtml(b.name)}"></div>
+        <div class="field"><label>RUC o Identificación</label><input id="bizRuc" value="${escapeHtml(ruc)}" placeholder="1234567890001"></div>
+        <div class="field"><label>Teléfono</label><input id="bizPhone" type="tel" value="${escapeHtml(phone)}" placeholder="+593 999999999"></div>
         <div class="field"><label>¿Cuál es tu negocio?</label><select id="bizType">${typeOptions(b.type)}</select></div>
         <div class="field"><label>IVA Global (%)</label><input type="number" inputmode="numeric" id="bizIva" value="${iva}" placeholder="0 para desactivar"></div>
         <button type="button" class="btn primary block" id="saveBiz">Guardar cambios</button>
@@ -552,10 +628,20 @@ function parseMoney(value) {
     if(r==='more') bindMore();
     if(r==='backup') bindBackup();
     if(r==='settings') bindSettings();
+    if(r==='workers') bindWorkers();
   }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
     $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>x.name.toLowerCase().includes(q)||x.code.toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
+    if ($('#openCamera')) {
+       $('#openCamera').onclick=()=>startScanner((code) => {
+          $('#productSearch').value = code;
+          $('#productSearch').dispatchEvent(new Event('input'));
+          stopScanner();
+          $('#cameraPanel').classList.remove('show');
+          toast('Buscando: ' + code);
+       });
+    }
     bindInventoryActions();
   }
   function bindInventoryActions(){
@@ -912,17 +998,28 @@ function parseMoney(value) {
       const uploadBtn=document.createElement('button');
       uploadBtn.className='btn silver block';
       uploadBtn.id='scanUploadBtn';
-      uploadBtn.textContent='Leer foto';
+      uploadBtn.textContent='📸 Foto';
       uploadBtn.onclick=()=>input.click();
       
       const toggleBtn=document.createElement('button');
       toggleBtn.className='btn silver block';
       toggleBtn.id='scanToggleBtn';
-      toggleBtn.textContent='Girar cámara';
+      toggleBtn.textContent='🔄 Girar';
       toggleBtn.onclick=()=>startScanner(onCode, true);
+
+      const stopBtn=document.createElement('button');
+      stopBtn.className='btn danger block';
+      stopBtn.id='scanStopBtn';
+      stopBtn.textContent='❌ Apagar';
+      stopBtn.onclick=()=>{
+         stopScanner();
+         panel.classList.remove('show');
+         toast('Cámara apagada');
+      };
       
       btnRow.appendChild(uploadBtn);
       btnRow.appendChild(toggleBtn);
+      btnRow.appendChild(stopBtn);
       panel.appendChild(btnRow);
       
       input.onchange=e=>scanImageFile(e.target.files?.[0], onCode);
@@ -1052,10 +1149,16 @@ function parseMoney(value) {
          let totalItems = 0;
          sales.forEach(s => s.items?.forEach(i => totalItems += i.qty));
          
+         const ruc = state.settings?.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(state.settings.ruc)}</div>` : '';
+         const phone = state.settings?.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(state.settings.phone)}</div>` : '';
+         const logoUrl = state.settings?.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(state.settings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+
          const html = `
           <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
-          <h2 style="font-size:16px; margin:0 0 10px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
-          <div style="text-align:center; margin-bottom:10px;">CIERRE DE CAJA<br>${nowLabel()}</div>
+          ${logoUrl}
+          <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
+          ${ruc}${phone}
+          <div style="text-align:center; margin:10px 0;">CIERRE DE CAJA<br>${nowLabel()}</div>
           <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
           <div style="border-top:1px dashed #000; margin:8px 0;"></div>
           <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
@@ -1099,13 +1202,98 @@ function parseMoney(value) {
      });
   }
 
+  async function bindWorkers() {
+    const list = $('#workersList');
+    if (!window.click360User || window.click360User.role !== 'owner') {
+      list.innerHTML = '<p class="empty">Solo el dueño puede administrar trabajadores.</p>';
+      const invBtn = $('#inviteWorkerBtn');
+      const wEmail = $('#workerEmail');
+      if(invBtn) invBtn.disabled = true;
+      if(wEmail) wEmail.disabled = true;
+      return;
+    }
+
+    const loadWorkers = async () => {
+      try {
+        const workers = await window.click360GetWorkers();
+        if (workers.length === 0) {
+           list.innerHTML = '<p class="empty">No hay trabajadores. Invita a uno.</p>';
+           return;
+        }
+        list.innerHTML = workers.map(w => `
+          <div class="movement" style="align-items:center;">
+             <span><b>${escapeHtml(w.name || w.email)}</b><br><small>${escapeHtml(w.email)} · ${w.type === 'email' ? 'Invitado (Pendiente)' : 'Activo'}</small></span>
+             <button class="btn danger" style="padding:4px 8px; font-size:12px;" data-revoke="${w.id}" data-rtype="${w.type}">Eliminar</button>
+          </div>
+        `).join('');
+
+        $$('[data-revoke]').forEach(btn => {
+           btn.onclick = async () => {
+              if(!confirm('¿Eliminar este trabajador permanentemente?')) return;
+              btn.textContent = '...';
+              await window.click360RevokeWorker(btn.dataset.revoke, btn.dataset.rtype);
+              toast('Trabajador eliminado');
+              loadWorkers();
+           };
+        });
+      } catch(e) {
+        list.innerHTML = '<p class="empty">Error al cargar trabajadores o no es la versión conectada a la nube.</p>';
+      }
+    };
+
+    loadWorkers();
+
+    $('#inviteWorkerBtn').onclick = async () => {
+       const email = $('#workerEmail').value.trim();
+       if(!email) return toast('Ingresa un correo','err');
+       $('#inviteWorkerBtn').textContent = '...';
+       try {
+         await window.click360InviteWorker(email);
+         toast('Invitación creada exitosamente');
+         $('#workerEmail').value = '';
+         $('#inviteLinkBox').style.display = 'block';
+         const link = window.location.origin + window.location.pathname;
+         $('#inviteLinkVal').value = link;
+         loadWorkers();
+       } catch(e) {
+         toast('Error al invitar (Asegúrate de ser el dueño y tener la Nube activa)', 'err');
+       }
+       $('#inviteWorkerBtn').textContent = 'Invitar';
+    };
+
+    $('#copyInviteLinkBtn').onclick = () => {
+       const el = $('#inviteLinkVal');
+       el.select();
+       document.execCommand('copy');
+       toast('Enlace copiado al portapapeles');
+    };
+  }
+
   function bindSettings(){
+    let pendingLogoUrl = state.settings?.logoUrl || '';
+    const logoUpload = $('#bizLogoUpload');
+    if (logoUpload) {
+      logoUpload.addEventListener('change', (e) => {
+         const file = e.target.files[0];
+         if(!file) return;
+         const reader = new FileReader();
+         reader.onload = (ev) => {
+            pendingLogoUrl = ev.target.result;
+            e.target.parentElement.previousElementSibling.innerHTML = `<img src="${pendingLogoUrl}" style="width:100%; height:100%; object-fit:cover;">`;
+         };
+         reader.readAsDataURL(file);
+      });
+    }
+
     $('#saveBiz').onclick=()=>{
        const b=currentBusiness(); 
        b.name=$('#bizName').value.trim()||b.name; 
        b.type=$('#bizType').value; 
        state.settings = state.settings || {};
        state.settings.iva = parseFloat($('#bizIva').value) || 0;
+       state.settings.ruc = $('#bizRuc') ? $('#bizRuc').value.trim() : '';
+       state.settings.phone = $('#bizPhone') ? $('#bizPhone').value.trim() : '';
+       if (pendingLogoUrl) state.settings.logoUrl = pendingLogoUrl;
        save(); renderApp('settings'); toast('Guardado');
     };
     $('#createBiz').onclick=()=>{const name=$('#newBizName').value.trim(); if(!name)return toast('Falta el nombre','err'); const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08'}; state.businesses.push(b); state.activeBusinessId=b.id; const user=currentUser(); if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); save(); renderApp('inventory'); toast('Negocio creado');};
@@ -1230,10 +1418,16 @@ function parseMoney(value) {
   window.printReceipt = function(id) {
     const s = state.sales.find(x=>x.id===id);
     if(!s) return;
+    const ruc = state.settings?.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(state.settings.ruc)}</div>` : '';
+    const phone = state.settings?.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(state.settings.phone)}</div>` : '';
+    const logoUrl = state.settings?.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(state.settings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+    
     const html=`
       <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
-      <h2 style="font-size:16px; margin:0 0 10px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
-      <div style="text-align:center; margin-bottom:10px;">Ticket de Venta<br>${escapeHtml(s.when)}</div>
+      ${logoUrl}
+      <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
+      ${ruc}${phone}
+      <div style="text-align:center; margin-bottom:10px; margin-top:8px;">Ticket de Venta<br>${escapeHtml(s.when)}</div>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ticket #</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
       ${s.customer ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cliente:</span><span>${escapeHtml(s.customer)}</span></div>` : ''}
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Método:</span><span>${escapeHtml(s.method)}</span></div>

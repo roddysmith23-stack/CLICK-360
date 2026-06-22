@@ -85,10 +85,10 @@ a{color:inherit;text-decoration:none}
 .desktopLayout{display:block}
 .sidebar{display:none}
 .topbar{position:sticky;top:0;z-index:20;background:rgba(5,5,5,.90);backdrop-filter:blur(18px);border-bottom:1px solid var(--line);padding:calc(14px + env(safe-area-inset-top, 0px)) max(14px,env(safe-area-inset-right)) 13px max(14px,env(safe-area-inset-left));display:flex;align-items:center;justify-content:space-between;gap:12px}
-.topbar .logoIcon{display:none}
-.topbar .logoText{font-size:18px;display:flex;gap:4px;align-items:center}
-.topbar .logoText span{font-size:10px}
-.topbar .logoText small{font-size:11px}
+.topbar .logoIcon{display:block; width: 34px; height: 34px;}
+.topbar .logoText{font-size:22px;display:flex;gap:4px;align-items:center}
+.topbar .logoText span{font-size:12px; margin-top:0;}
+.topbar .logoText small{font-size:12px; display:none;}
 .businessSelect{max-width:42vw;border:1px solid var(--line);background:#090909;color:var(--text);border-radius:16px;padding:12px 10px;min-height:46px}
 .logoutBtn{width:42px;height:42px;border:1px solid var(--line);border-radius:14px;color:var(--silver);display:grid;place-items:center}
 .main{width:min(1100px,100%);margin:0 auto;padding:24px 16px 0}
