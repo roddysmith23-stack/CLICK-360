@@ -1507,7 +1507,7 @@ function parseMoney(value) {
     const mov = state.movements.find(m => m.saleId === sale.id);
     if(mov) mov.amount = 0; // Opcional: o borrarlo, pero es mejor ponerlo en 0 para registro
     
-    state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'retiro',amount:0,note:`Venta anulada ${saleId}`,user:session.username});
+    state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'retiro',amount:0,note:`Venta anulada`,user:session.username});
     
     save();
     renderApp('reports');
