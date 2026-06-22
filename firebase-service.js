@@ -295,6 +295,8 @@
         localStorage.setItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
         PULL_COMPLETE = true;
 
+        if (window.click360ReloadState) window.click360ReloadState();
+
         if (reload) {
           if(window.click360Route) {
             const currentRoute = window.location.hash.replace('#','') || 'home';
@@ -331,9 +333,16 @@
         applyRemoteStorage(remoteStorage);
         localStorage.setItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
         console.log("CLICK360 recibió cambios remotos.");
+        
+        if (window.click360ReloadState) window.click360ReloadState();
+
         if(window.click360Route) {
           const currentRoute = window.location.hash.replace('#','') || 'home';
           window.click360Route(currentRoute);
+          const toastEl = document.getElementById("toast");
+          if(toastEl) { toastEl.textContent = "Actualizado desde la nube"; toastEl.className = "toast show ok"; setTimeout(()=>toastEl.className="toast", 2800); }
+        } else {
+           location.reload();
         }
       }
     });

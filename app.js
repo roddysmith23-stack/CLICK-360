@@ -668,7 +668,7 @@ function parseMoney(value) {
           <div class="imagePicker">
             <div id="imagePreview">${p.imageData ? `<img src="${p.imageData}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
             <div style="display:flex; gap:8px;">
-               <label class="btn silver"><input type="file" id="pImageCam" accept="image/*" capture="environment" hidden>Tomar foto</label>
+               <label class="btn silver"><input type="file" id="pImageCam" accept="image/jpeg,image/png" capture="camera" hidden>Tomar foto</label>
                <label class="btn silver"><input type="file" id="pImageGal" accept="image/*" hidden>Galería</label>
             </div>
             ${p.imageData ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
@@ -805,7 +805,20 @@ function parseMoney(value) {
        };
     }
 
-    $('#addCode').onclick=()=>{addProduct($('#manualCode').value); $('#manualCode').value='';};
+    $('#addCode').onclick=()=>{ 
+        const v = $('#manualCode').value.trim();
+        if(v) { addProduct(v); $('#manualCode').value=''; }
+        else {
+            const name = prompt("Nombre del producto/servicio (Ej: Venta Libre):");
+            if (!name) return;
+            const priceRaw = prompt("Precio ($):");
+            const price = parseMoney(priceRaw);
+            if (!Number.isFinite(price) || price < 0) return toast("Precio inválido", "err");
+            cart.push({ id: 'custom_'+Date.now(), name, price, qty: 1, isCustom: true, category: 'Venta Libre', code: 'MANUAL' });
+            renderCart();
+            toast('Producto manual agregado');
+        }
+    };
     $('#manualCode').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#addCode').click();}});
     $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${p.code}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
     $('#discount').oninput=renderCart;
@@ -1192,9 +1205,35 @@ function parseMoney(value) {
           </div>`;
          
          closeModal();
-         const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-         root.innerHTML = html;
-         setTimeout(()=>window.print(), 250);
+         showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
+           <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
+             <div id="pdfContentPreview" style="transform: scale(0.85); transform-origin: top center;">
+               ${html}
+             </div>
+           </div>
+           <div style="display:flex; gap:10px;">
+               <button class="btn silver block" id="printCierreBtn">Imprimir</button>
+               <button class="btn primary block" id="pdfCierreBtn">Descargar PDF</button>
+           </div>
+         `);
+         
+         $('#printCierreBtn').onclick = () => {
+             const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+             root.innerHTML = html;
+             setTimeout(()=>window.print(), 250);
+         };
+         
+         $('#pdfCierreBtn').onclick = () => {
+             toast('Generando PDF...');
+             const opt = { margin: 10, filename: 'Cierre_Caja.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
+             const wrapper = document.createElement('div');
+             wrapper.innerHTML = html;
+             document.body.appendChild(wrapper);
+             wrapper.style.position = 'absolute';
+             wrapper.style.left = '-9999px';
+             html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
+         };
+         
          toast('Cierre del día generado');
       };
     };
@@ -1525,6 +1564,7 @@ function parseMoney(value) {
   }
   window.click360Route=renderApp;
   window.click360SetSession = setSession;
+  window.click360ReloadState = () => { state = loadState(); };
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, runQa};
 
   window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors'].includes(h)) renderApp(h); });
