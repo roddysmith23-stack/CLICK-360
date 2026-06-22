@@ -8,6 +8,17 @@
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
   const toastEl = $('#toast');
+  
+  window.onerror = function(msg, url, line) {
+    const m = String(msg);
+    if(m.includes('ResizeObserver')) return;
+    const link = `https://wa.me/593969399562?text=${encodeURIComponent("Error en CLICK 360:\\n" + m + "\\nLínea: " + line)}`;
+    if(toastEl) {
+      toastEl.innerHTML = `Algo falló. <a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;">Reportar a CLICK</a>`;
+      toastEl.className = 'toast show err';
+      setTimeout(()=>toastEl.className='toast', 8000);
+    }
+  };
 
   let state = loadState();
   let session = loadSession();
@@ -19,7 +30,7 @@
   function uid(prefix='id') { return `${prefix}_${Math.random().toString(36).slice(2,8)}${Date.now().toString(36).slice(-4)}`; }
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
   function today() { return new Date().toISOString().slice(0,10); }
-  function nowLabel() { return new Date().toLocaleString('es-EC', { dateStyle:'short', timeStyle:'short' }); }
+  function nowLabel() { return new Date().toLocaleString('es-EC', { dateStyle:'short', timeStyle:'medium' }); }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
   
   function imageThumb(product){
@@ -118,7 +129,7 @@ function parseMoney(value) {
   function normalizeState(s) {
     const d = seed();
     const out = Object.assign(d, s || {});
-    out.users ||= d.users; out.businesses ||= d.businesses; out.products ||= []; out.sales ||= []; out.movements ||= [];
+    out.users ||= d.users; out.businesses ||= d.businesses; out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     return out;
   }
   function seed() {
@@ -136,6 +147,7 @@ function parseMoney(value) {
       products:[],
       sales:[],
       movements:[],
+      dailyReports:[],
       settings:{}
     };
   }
@@ -263,16 +275,23 @@ function parseMoney(value) {
     const b=currentBusiness();
     const bizOptions=state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
     return `<div class="app"><div class="desktopLayout">
-      <aside class="sidebar">
-        <div class="logoMark"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
-        <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
-        <nav class="sideNav">${navButtons(active, true)}</nav>
+      <aside class="sidebar" style="display:flex; flex-direction:column; height:100vh;">
+        <div>
+          <div class="logoMark"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
+          <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
+          <nav class="sideNav">${navButtons(active, true)}</nav>
+        </div>
+        <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px;">
+          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold);" title="Ajustes">${(currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
+          <button class="logoutBtn" id="logoutSide" title="Cerrar sesión" style="flex:1;">Cerrar sesión ↗</button>
+        </div>
       </aside>
       <div>
         <header class="topbar">
           <div class="logoMark"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
           <select class="businessSelect" id="businessPickerTop">${bizOptions}</select>
-          <button class="logoutBtn" id="logoutTop" title="Salir">↗</button>
+          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:10px; border: 1px solid var(--gold);" title="Ajustes">${(currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
+          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión">Cerrar sesión ↗</button>
         </header>
         <main class="main">${content}</main>
       </div>
@@ -299,6 +318,7 @@ function parseMoney(value) {
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
     ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;save();renderApp(route);}; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
+    $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
   }
   function renderApp(r='home') {
     if(!checkAuth('business')) return;
@@ -403,7 +423,10 @@ function parseMoney(value) {
     return `<div class="pageHead"><div><h1>Caja diaria</h1><p>Ingresos, egresos y cierre del día.</p></div><button class="btn primary" id="newMove">＋ Movimiento</button></div>
       <section class="grid cashGrid"><div class="card kpi"><small>Ingresos</small><strong class="goldText">${fmt(income)}</strong></div><div class="card kpi"><small>Egresos</small><strong>${fmt(out)}</strong></div><div class="card kpi"><small>Saldo</small><strong class="goldText">${fmt(income-out)}</strong></div><div class="card kpi"><small>Gastos</small><strong>${fmt(expenses)}</strong></div><div class="card kpi"><small>Compras</small><strong>${fmt(compras)}</strong></div><div class="card kpi"><small>Retiros</small><strong>${fmt(retiros)}</strong></div></section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Movimientos de hoy</h3><div class="movementList">${mov.slice().reverse().map(m=>`<div class="movement"><span>${escapeHtml(labelKind(m.kind))}<br><small>${escapeHtml(m.note||'')}</small><br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||'Sistema')}</span></span><b class="${m.kind==='ingreso'?'pos':'neg'}">${m.kind==='ingreso'?'+':'−'}${fmt(m.amount)}</b></div>`).join('') || '<p class="empty">No hay movimientos.</p>'}</div></section>
-      <button class="btn silver block" style="margin-top:14px" id="closeDayBtn">Cerrar día</button>`;
+      <button class="btn silver block" style="margin-top:14px" id="closeDayBtn">Cerrar día</button>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Historial de Cierres</h3><div class="movementList">
+         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)}<br><small>Caja F.: ${fmt(r.closeCash)}</small></span><button class="btn silver" onclick="window.viewDailyReport('${r.id}')">Ver PDF</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
+      </div></section>`;
   }
   function labelKind(k){ return ({ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
 
@@ -490,15 +513,34 @@ function parseMoney(value) {
      `;
   }
 
+  function labelStatus(s) {
+    if(s==='paid')return'Pagado';
+    if(s==='pending_payment')return'Por cobrar';
+    if(s==='layaway')return'Apartado';
+    if(s==='cancelled')return'Anulado';
+    return s;
+  }
+
   function reportsView() {
-    const sales=salesForBiz(), tickets=sales.length;
+    state.reportsFrom = state.reportsFrom || today();
+    state.reportsTo = state.reportsTo || today();
+    const allSales = salesForBiz();
+    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
+    const tickets=sales.length;
     // Calculate total taking into account statuses
     const total=sales.filter(s=>s.status==='paid'||s.status==='layaway').reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
     const counts={}; sales.filter(s=>s.status!=='cancelled').forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
     const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-    return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div><button class="btn silver" onclick="window.printReports()">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Imprimir
-      </button></div>
+    return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
+          <button class="btn primary" onclick="window.printReports('pdf')">Descargar PDF</button>
+        </div>
+      </div>
+      <div class="card sectionCard" style="display:flex; gap:10px; margin-bottom:14px; align-items:center;">
+        <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${state.reportsFrom}"></div>
+        <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${state.reportsTo}"></div>
+      </div>
       <section class="grid cashGrid"><div class="card kpi"><small>Ingreso Ventas</small><strong class="goldText">${fmt(total)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio</small><strong>${fmt(tickets?total/tickets:0)}</strong></div></section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Crecimiento</h3>${buildChartHtml(sales)}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
@@ -602,10 +644,11 @@ function parseMoney(value) {
   }
   function settingsView(){
     const b=currentBusiness();
-    const iva = state.settings?.iva || 0;
-    const ruc = state.settings?.ruc || '';
-    const phone = state.settings?.phone || '';
-    const logoUrl = state.settings?.logoUrl || '';
+    const bizSettings = currentBusiness().settings || {};
+    const iva = bizSettings.iva || 0;
+    const ruc = bizSettings.ruc || '';
+    const phone = bizSettings.phone || '';
+    const logoUrl = bizSettings.logoUrl || '';
 
     return `<div class="pageHead"><div><h1>Ajustes</h1><p>Configura tu empresa.</p></div></div>
       <section class="card sectionCard">
@@ -638,6 +681,7 @@ function parseMoney(value) {
     if(r==='backup') bindBackup();
     if(r==='settings') bindSettings();
     if(r==='workers') bindWorkers();
+    if(r==='reports') bindReports();
   }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
@@ -712,7 +756,7 @@ function parseMoney(value) {
 
   function bindSell(){
     let cart=[];
-    let currentIva = state.settings?.iva || 0;
+    let currentIva = (currentBusiness().settings || {}).iva || 0;
     
     const renderCart=()=>{
       const subtotal=cart.reduce((a,i)=>a+i.price*i.qty,0), disc=parseMoney($('#discount')?.value||0);
@@ -1141,9 +1185,10 @@ function parseMoney(value) {
       };
     };
     $('#closeDayBtn').onclick=()=>{
+      const lastCash = currentBusiness().lastCashBalance || 0;
       showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
         <form id="closeDayForm" class="formGrid">
-          <div class="field full"><label>Caja Inicial</label><input id="cajaInicial" value="0" inputmode="decimal"></div>
+          <div class="field full"><label>Caja Inicial (Auto-cuadre)</label><input id="cajaInicial" value="${lastCash}" inputmode="decimal"></div>
           <div class="field full"><label>Efectivo Físico (Contado)</label><input id="efectivoFisico" value="0" inputmode="decimal"></div>
           <div class="field full"><label>Observaciones</label><input id="cierreObs"></div>
           <button class="btn silver" type="button" data-close>Cancelar</button>
@@ -1171,9 +1216,10 @@ function parseMoney(value) {
          let totalItems = 0;
          sales.forEach(s => s.items?.forEach(i => totalItems += i.qty));
          
-         const ruc = state.settings?.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(state.settings.ruc)}</div>` : '';
-         const phone = state.settings?.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(state.settings.phone)}</div>` : '';
-         const logoUrl = state.settings?.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(state.settings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+         const bizSettings = currentBusiness().settings || {};
+         const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
+         const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
+         const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
 
          const html = `
           <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
@@ -1234,6 +1280,12 @@ function parseMoney(value) {
              html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
          };
          
+         const repId = uid('rep');
+         state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
+         currentBusiness().lastCashBalance = eFisico;
+         save();
+         renderApp('cash');
+         
          toast('Cierre del día generado');
       };
     };
@@ -1274,6 +1326,17 @@ function parseMoney(value) {
              <button class="btn danger" style="padding:4px 8px; font-size:12px;" data-revoke="${w.id}" data-rtype="${w.type}">Eliminar</button>
           </div>
         `).join('');
+        
+        if (workers.length >= 1) {
+           const banner = document.createElement('div');
+           banner.style = "margin-top:14px; background:linear-gradient(135deg, #2a2a2a, #111); border:1px solid var(--gold); padding:16px; border-radius:12px; text-align:center;";
+           banner.innerHTML = `
+             <div style="color:var(--gold); font-size:18px; font-weight:bold; margin-bottom:6px;">🚀 Sube al Siguiente Nivel</div>
+             <p style="font-size:13px; color:#ccc; margin-bottom:12px;">Tu plan actual permite 1 trabajador. Adquiere el plan PRO y añade trabajadores ilimitados, sucursales y reportes avanzados.</p>
+             <button class="btn primary" onclick="window.open('https://wa.me/593969399562?text=Deseo%20el%20plan%20PRO%20para%20trabajadores%20ilimitados', '_blank')">Contactar Asesor</button>
+           `;
+           list.appendChild(banner);
+        }
 
         $$('[data-revoke]').forEach(btn => {
            btn.onclick = async () => {
@@ -1292,6 +1355,11 @@ function parseMoney(value) {
     loadWorkers();
 
     $('#inviteWorkerBtn').onclick = async () => {
+       const workers = await window.click360GetWorkers().catch(()=>[]);
+       if (workers.length >= 1) {
+           return toast('Límite alcanzado. Adquiere el plan PRO.', 'err');
+       }
+       
        const email = $('#workerEmail').value.trim();
        if(!email) return toast('Ingresa un correo','err');
        $('#inviteWorkerBtn').textContent = '...';
@@ -1317,8 +1385,13 @@ function parseMoney(value) {
     };
   }
 
+  function bindReports(){
+      $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; save(); renderApp('reports'); };
+      $('#repTo').onchange = (e) => { state.reportsTo = e.target.value; save(); renderApp('reports'); };
+  }
+
   function bindSettings(){
-    let pendingLogoUrl = state.settings?.logoUrl || '';
+    let pendingLogoUrl = (currentBusiness().settings || {}).logoUrl || '';
     const logoUpload = $('#bizLogoUpload');
     if (logoUpload) {
       logoUpload.addEventListener('change', (e) => {
@@ -1337,11 +1410,11 @@ function parseMoney(value) {
        const b=currentBusiness(); 
        b.name=$('#bizName').value.trim()||b.name; 
        b.type=$('#bizType').value; 
-       state.settings = state.settings || {};
-       state.settings.iva = parseFloat($('#bizIva').value) || 0;
-       state.settings.ruc = $('#bizRuc') ? $('#bizRuc').value.trim() : '';
-       state.settings.phone = $('#bizPhone') ? $('#bizPhone').value.trim() : '';
-       if (pendingLogoUrl) state.settings.logoUrl = pendingLogoUrl;
+       currentBusiness().settings = currentBusiness().settings || {};
+       currentBusiness().settings.iva = parseFloat($('#bizIva').value) || 0;
+       currentBusiness().settings.ruc = $('#bizRuc') ? $('#bizRuc').value.trim() : '';
+       currentBusiness().settings.phone = $('#bizPhone') ? $('#bizPhone').value.trim() : '';
+       if (pendingLogoUrl) currentBusiness().settings.logoUrl = pendingLogoUrl;
        save(); renderApp('settings'); toast('Guardado');
     };
     $('#createBiz').onclick=()=>{const name=$('#newBizName').value.trim(); if(!name)return toast('Falta el nombre','err'); const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08'}; state.businesses.push(b); state.activeBusinessId=b.id; const user=currentUser(); if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); save(); renderApp('inventory'); toast('Negocio creado');};
@@ -1427,6 +1500,8 @@ function parseMoney(value) {
     });
     
     sale.status = 'cancelled';
+    sale.cancelledBy = currentUser()?.label || 'Usuario';
+    sale.cancelledAt = nowLabel();
     
     // Anular movimiento si existe
     const mov = state.movements.find(m => m.saleId === sale.id);
@@ -1466,9 +1541,10 @@ function parseMoney(value) {
   window.printReceipt = function(id) {
     const s = state.sales.find(x=>x.id===id);
     if(!s) return;
-    const ruc = state.settings?.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(state.settings.ruc)}</div>` : '';
-    const phone = state.settings?.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(state.settings.phone)}</div>` : '';
-    const logoUrl = state.settings?.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(state.settings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+    const bizSettings = currentBusiness().settings || {};
+    const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
+    const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
+    const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
     
     const html=`
       <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
@@ -1496,20 +1572,61 @@ function parseMoney(value) {
     setTimeout(()=>window.print(), 250);
   };
 
-  window.printReports = function() {
-    const sales = salesForBiz().filter(s => s.status!=='cancelled');
-    const total = sales.reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
-    const tickets = sales.length;
-    const counts={}; sales.forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
+  window.viewDailyReport = function(id) {
+     const r = state.dailyReports?.find(x=>x.id===id);
+     if(!r) return;
+     showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
+       <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
+         <div id="pdfContentPreview" style="transform: scale(0.85); transform-origin: top center;">
+           ${r.html}
+         </div>
+       </div>
+       <div style="display:flex; gap:10px;">
+           <button class="btn silver block" id="printCierreBtn">Imprimir</button>
+           <button class="btn primary block" id="pdfCierreBtn">Descargar PDF</button>
+       </div>
+     `);
+     $('#printCierreBtn').onclick = () => {
+         const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+         root.innerHTML = r.html;
+         setTimeout(()=>window.print(), 250);
+     };
+     $('#pdfCierreBtn').onclick = () => {
+         toast('Generando PDF...');
+         const opt = { margin: 10, filename: 'Cierre_Caja_'+r.date+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
+         const wrapper = document.createElement('div'); wrapper.innerHTML = r.html; document.body.appendChild(wrapper); wrapper.style.position='absolute'; wrapper.style.left='-9999px';
+         html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
+     };
+  };
+
+  window.printReports = function(mode = 'print') {
+    state.reportsFrom = state.reportsFrom || today();
+    state.reportsTo = state.reportsTo || today();
+    const allSales = salesForBiz();
+    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
+    const validSales = sales.filter(s => s.status!=='cancelled');
+    const total = validSales.reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
+    const tickets = validSales.length;
+    const counts={}; validSales.forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
     const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    
+    // Anulados
+    const cancelled = sales.filter(s => s.status==='cancelled');
     
     const html = `
       <div style="font-family:sans-serif; color:#000; font-size:12px; margin:0; padding:20px; background:white;">
       <h2 style="font-size:20px; margin:0 0 10px;">${escapeHtml(currentBusiness().name)} - Reporte General</h2>
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Fecha:</span><span>${nowLabel()}</span></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Periodo:</span><span>${state.reportsFrom} a ${state.reportsTo}</span></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Impreso:</span><span>${nowLabel()}</span></div>
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
+      
+      <div style="width:100%; max-width:400px; margin:0 auto 20px;">
+        <h3 style="margin-top:10px; text-align:center;">Crecimiento de Ventas (7 días)</h3>
+        ${buildChartHtml(allSales).replace(/var\\(--gold\\)/g, '#D4AF37').replace(/var\\(--line\\)/g, '#ddd').replace(/var\\(--muted\\)/g, '#666')}
+      </div>
+      
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingreso Ventas:</span><strong>${fmt(total)}</strong></div>
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tickets:</span><strong>${tickets}</strong></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tickets Exitosos:</span><strong>${tickets}</strong></div>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio por Ticket:</span><strong>${fmt(tickets?total/tickets:0)}</strong></div>
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
       <h3 style="margin-top:10px;">Productos Más Vendidos</h3>
@@ -1518,15 +1635,33 @@ function parseMoney(value) {
         ${top.map(([n,c])=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(n)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${c}</td></tr>`).join('')}
       </table>
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
-      <h3 style="margin-top:10px;">Historial de Tickets Hoy</h3>
+      <h3 style="margin-top:10px;">Historial de Tickets</h3>
       <table style="width:100%; border-collapse:collapse; margin-top:10px;">
-        <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Hora</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Vendedor</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Método</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Estado</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Total</th></tr>
-        ${sales.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.when.split(' ')[1] || s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.createdBy || s.user || 'Sistema')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.method)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.status)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
-      </table></div>`;
+        <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Fecha/Hora</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Vendedor</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Método</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Estado</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Total</th></tr>
+        ${sales.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.createdBy || s.user || 'Sistema')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.method)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(labelStatus(s.status))}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
+      </table>
       
-    const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-    root.innerHTML = html;
-    setTimeout(()=>window.print(), 250);
+      ${cancelled.length > 0 ? `
+      <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
+      <h3 style="margin-top:10px; color:#d9534f;">Anulaciones</h3>
+      <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+        <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Fecha Anulación</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Anulado por</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Vendedor Orig.</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Total</th></tr>
+        ${cancelled.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.cancelledAt || s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee; color:#d9534f;">${escapeHtml(s.cancelledBy || 'Desconocido')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.createdBy || s.user || 'Sistema')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
+      </table>
+      ` : ''}
+      
+      </div>`;
+      
+    if (mode === 'print') {
+        const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+        root.innerHTML = html;
+        setTimeout(()=>window.print(), 250);
+    } else if (mode === 'pdf') {
+        toast('Generando PDF...');
+        const opt = { margin: 10, filename: 'Reporte_Ventas_'+state.reportsFrom+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
+        const wrapper = document.createElement('div'); wrapper.innerHTML = html; document.body.appendChild(wrapper); wrapper.style.position='absolute'; wrapper.style.left='-9999px'; wrapper.style.width='800px';
+        html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
+    }
   };
 
   function runQa(){
