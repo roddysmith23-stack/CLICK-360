@@ -1203,7 +1203,7 @@ function parseMoney(value) {
      $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more)); 
      $('#logoutMore')?.addEventListener('click',()=>{
          if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
-         else window.click360AppLogout(); }
+         else window.click360AppLogout();
      }); 
      $('#forceSyncCloud')?.addEventListener('click', ()=>{
          if(window.click360RefreshNow) window.click360RefreshNow();
