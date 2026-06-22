@@ -344,28 +344,7 @@
   }
 
   function createControls() {
-    if (document.getElementById("click360-cloud-controls")) return;
-
-    const wrap = document.createElement("div");
-    wrap.id = "click360-cloud-controls";
-    wrap.style.cssText = "position:fixed;right:12px;top:calc(env(safe-area-inset-top, 0px) + 12px);z-index:999998;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:340px;font-family:Arial,sans-serif;";
-
-    wrap.innerHTML = `
-      <button id="click360-refresh-cloud" style="padding:9px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.2);background:#f4c431;color:#111;font-weight:900;cursor:pointer;">Actualizar</button>
-      <button id="click360-firebase-logout" style="padding:9px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.2);background:#111;color:#fff;font-weight:800;cursor:pointer;">Salir (Google)</button>
-    `;
-
-    document.body.appendChild(wrap);
-
-    document.getElementById("click360-refresh-cloud").onclick = async () => {
-      await pullRemoteOnce({ force: true, reload: true });
-    };
-
-    document.getElementById("click360-firebase-logout").onclick = async () => {
-      await pushLocalToFirestore("logout");
-      await auth.signOut();
-      location.reload();
-    };
+    // Los controles ahora se manejan en la pestaña "Más" de app.js nativamente.
   }
 
   function debounce(fn, wait = 1000) {

@@ -290,7 +290,7 @@ function parseMoney(value) {
     if(!can(r)) r='home';
     stopScanner(); route=r;
     history.replaceState(null, '', '#' + r);
-    const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView};
+    const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView};
     app.innerHTML=shell((views[r]||homeView)(), r);
     bindShell(); bindView(r);
   }
@@ -353,9 +353,17 @@ function parseMoney(value) {
             <div class="field"><label>Método</label><select id="payMethod"><option value="Efectivo">Efectivo</option><option value="Transferencia">Transferencia</option><option value="Tarjeta">Tarjeta</option><option value="Pendiente">Pendiente</option><option value="Apartado">Apartado</option></select></div>
             <div class="field" id="receivedField" style="display:none;"><label>Efectivo Recibido</label><input id="cashReceived" inputmode="decimal" /></div>
             <div class="field" id="changeField" style="display:none;"><label>Vuelto</label><input id="cashChange" readonly style="background:#111;color:var(--gold);" /></div>
-            <div class="field full"><label>Cliente (opcional)</label><input id="customer" /></div>
+            <div class="field full"><label id="lblCustomer">Cliente (opcional)</label><input id="customer" placeholder="Ej. Juan Pérez - 0990000000" /></div>
           </div>
-          <div class="totalRow"><div><small>Total</small><strong id="cartTotal">$0.00</strong></div><button class="btn primary" id="chargeBtn">Cobrar</button></div>
+          <div class="totalRow">
+             <div><small>Total</small><strong id="cartTotal">$0.00</strong></div>
+             <div style="display:flex; gap:10px;">
+                <button class="btn silver" id="clearCartBtn" title="Limpiar carrito">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+                <button class="btn primary" id="chargeBtn">Cobrar</button>
+             </div>
+          </div>
         </div>
       </section>`;
   }
@@ -404,6 +412,36 @@ function parseMoney(value) {
             </button>` : ''}
           </div>
         </div>`).join('') || '<p class="empty">Sin ventas.</p>'}
+      </section>`;
+  }
+
+  function debtorsView() {
+    const pendings = salesForBiz().filter(s=>s.status==='layaway' || s.status==='pending_payment');
+    const totalPending = pendings.reduce((a,s)=>a+(s.balance||0),0);
+    return `<div class="pageHead"><div><h1>Por Cobrar</h1><p>Apartados y deudas pendientes.</p></div></div>
+      <section class="grid cashGrid"><div class="card kpi"><small>Saldo en la calle</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Cuentas activas</small><strong>${pendings.length}</strong></div></section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Listado de Pendientes</h3>
+        ${pendings.slice().reverse().map(s=>`
+        <div class="movement" style="flex-direction:column; gap:8px;">
+          <div style="display:flex; justify-content:space-between; width:100%;">
+             <span>${escapeHtml(s.customer || 'Cliente sin nombre')} <br>
+               <small>${escapeHtml(s.when)} · ${Math.floor((new Date()-new Date(s.date))/(1000*60*60*24))} días transcurridos</small><br>
+               <span class="badge ${s.status==='layaway'?'gold':'danger'}">${s.status==='layaway'?'Apartado':'Pendiente'}</span>
+             </span>
+             <div style="text-align:right;">
+                <b class="neg">${fmt(s.balance)}</b><br>
+                <small>de ${fmt(s.total)}</small>
+             </div>
+          </div>
+          <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
+            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${s.id}')">
+               Ticket
+            </button>
+            <button class="btn primary" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.payLayaway('${s.id}')">
+               Abonar
+            </button>
+          </div>
+        </div>`).join('') || '<p class="empty">No hay apartados ni deudas pendientes.</p>'}
       </section>`;
   }
 
@@ -521,7 +559,14 @@ function parseMoney(value) {
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
       
       const method = $('#payMethod').value;
-      const recF = $('#receivedField'), chgF = $('#changeField');
+      const recF = $('#receivedField'), chgF = $('#changeField'), lblCustomer = $('#lblCustomer');
+      
+      if (method === 'Apartado' || method === 'Pendiente') {
+        lblCustomer.innerHTML = 'Nombre y Teléfono del Cliente <b>*Obligatorio</b>';
+      } else {
+        lblCustomer.textContent = 'Cliente (opcional)';
+      }
+
       if (method === 'Efectivo') {
         recF.style.display = 'grid'; chgF.style.display = 'grid';
         const rec = parseMoney($('#cashReceived').value);
@@ -564,6 +609,21 @@ function parseMoney(value) {
       else cart.push({id:p.id,name:p.name,price:p.price,qty:1,code:p.code,imageData:p.imageData||''});
       renderCart(); beep(); toast(`${p.name} agregado`);
     };
+
+    if($('#clearCartBtn')) {
+       $('#clearCartBtn').onclick = () => {
+          if(!cart.length) return;
+          if(confirm('¿Limpiar todo el carrito?')) {
+             cart = [];
+             $('#discount').value = '0';
+             $('#cashReceived').value = '';
+             $('#customer').value = '';
+             renderCart();
+             toast('Carrito limpio');
+          }
+       };
+    }
+
     $('#addCode').onclick=()=>{addProduct($('#manualCode').value); $('#manualCode').value='';};
     $('#manualCode').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#addCode').click();}});
     $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${p.code}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
@@ -582,6 +642,11 @@ function parseMoney(value) {
       const rec = parseMoney($('#cashReceived').value);
       let received = 0; let change = 0; let balance = 0;
       let status = "paid";
+
+      const customerName = $('#customer').value.trim();
+      if ((method === 'Apartado' || method === 'Pendiente') && !customerName) {
+         beep('err'); return toast('Debe ingresar el Nombre y Teléfono del Cliente para cuentas por cobrar','err');
+      }
 
       if(method === 'Efectivo') {
          if(!Number.isFinite(rec) || rec < total) { beep('err'); return toast('Efectivo recibido es menor al total','err'); }
@@ -884,43 +949,48 @@ function parseMoney(value) {
          const abonosApartado = sales.filter(s=>s.method==='Apartado').reduce((a,s)=>a+s.received,0);
          
          const html = `
-          <!doctype html><html><head><title>Cierre de Caja - CLICK360</title>
-          <style>body{font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm;} h2{font-size:16px; margin:0 0 10px; text-align:center;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px dashed #000; margin:8px 0;}</style>
-          </head><body>
-          <h2>${escapeHtml(currentBusiness().name)}</h2>
-          <div style="text-align:center; margin-bottom:10px;">Cierre de Día<br>${nowLabel()}</div>
-          <div class="row"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
-          <div class="line"></div>
+          <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
+          <h2 style="font-size:16px; margin:0 0 10px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
+          <div style="text-align:center; margin-bottom:10px;">CIERRE DE CAJA<br>${nowLabel()}</div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
+          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
           <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
-          <div class="row"><span>Ventas Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
-          <div class="row"><span>Ventas Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
-          <div class="row"><span>Ventas Transf:</span><span>${fmt(salesTransf)}</span></div>
-          <div class="row"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
-          <div class="line"></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(salesTransf)}</span></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
+          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
           <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
-          <div class="row"><span>Ingresos Registrados:</span><span style="color:green">+${fmt(income)}</span></div>
-          <div class="row"><span>Egresos/Retiros/Compras:</span><span style="color:red">-${fmt(out)}</span></div>
-          <div class="line"></div>
-          <div class="row" style="font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
-          <div class="row"><span>Efectivo Declarado:</span><span>${fmt(eFisico)}</span></div>
-          <div class="line"></div>
-          <div class="row" style="font-size:13px;"><b>Diferencia (Sobrante/Faltante):</b><b>${fmt(diferencia)}</b></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Ingresos:</span><span>+${fmt(income)}</span></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Salidas:</span><span>-${fmt(out)}</span></div>
+          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo Declarado:</span><span>${fmt(eFisico)}</span></div>
+          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
           <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
           <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(currentUser()?.label || 'Usuario')}</div>
-          <script>setTimeout(()=>window.print(),500);</script>
-          </body></html>`;
+          </div>`;
          
          closeModal();
-         const w = window.open("", "_blank");
-         if(!w) return alert("Permite ventanas emergentes para imprimir.");
-         w.document.write(html);
-         w.document.close();
+         const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+         root.innerHTML = html;
+         setTimeout(()=>window.print(), 250);
          toast('Cierre del día generado');
       };
     };
   }
-  function moveSubmit(e){ if(e.target.id!=='moveForm')return; e.preventDefault(); const amount=parseMoney($('#mAmount').value); if(!Number.isFinite(amount)||amount<0)return toast('Monto inválido','err'); state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:$('#mKind').value,amount,note:$('#mNote').value.trim(),user:session.username}); save(); closeModal(); renderApp('cash'); toast('Movimiento registrado'); }
-  function bindMore(){ $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more)); $('#logoutMore')?.addEventListener('click',()=>{setSession(null);renderLogin();}); }
+  function bindMore(){ 
+     $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more)); 
+     $('#logoutMore')?.addEventListener('click',()=>{
+         if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
+         else { setSession(null); renderLogin(); }
+     }); 
+     $('#forceSyncCloud')?.addEventListener('click', ()=>{
+         if(window.click360RefreshNow) window.click360RefreshNow();
+         else toast('Nube no disponible en este entorno', 'err');
+     });
+  }
   function bindBackup(){ $('#backupBtn').onclick=downloadBackup; $('#restoreFile').onchange=restoreBackup; $('#cloudSoon').onclick=()=>toast('Preparado para CLICK 360 Cloud. Requiere backend real.'); }
   function bindSettings(){
     $('#saveBiz').onclick=()=>{const b=currentBusiness(); b.name=$('#bizName').value.trim()||b.name; b.type=$('#bizType').value; save(); renderApp('settings'); toast('Guardado');};
@@ -941,7 +1011,7 @@ function parseMoney(value) {
   function closeModal(){ $('#modalRoot')?.remove(); }
 
   async function openLabelModal(product){
-    showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div><div class="labelPreview"><div class="sticker" id="sticker"><div class="biz">${escapeHtml(currentBusiness().name)}</div><canvas id="qrCanvas"></canvas><div class="code">${escapeHtml(product.code)}</div><div class="pname">${escapeHtml(product.name)}</div><div class="price">${fmt(product.price)}</div></div><div class="labelButtons"><button class="btn primary" id="printOne">Imprimir etiqueta</button><button class="btn silver" id="downloadPng">Descargar PNG</button><button class="btn" id="copyLabelCode">Copiar código ${escapeHtml(product.code)}</button><button class="btn" id="printStock">Imprimir según stock (${product.qty})</button><button class="btn" id="printAll">Imprimir todas</button></div></div>`);
+    showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div><div class="labelPreview"><div class="sticker" id="sticker"><div class="biz">${escapeHtml(currentBusiness().name)}</div><canvas id="qrCanvas"></canvas><div class="code">${escapeHtml(product.code)}</div><div class="pname">${escapeHtml(product.name)}</div><div class="price">${fmt(product.price)}</div></div><div class="labelButtons"><button class="btn primary" id="printOne">Imprimir etiqueta</button><button class="btn silver" id="downloadPng">Descargar Imagen</button><button class="btn" id="copyLabelCode">Copiar código ${escapeHtml(product.code)}</button><button class="btn" id="printStock">Imprimir según stock (${product.qty})</button><button class="btn" id="printAll">Imprimir todas</button></div></div>`);
     QR.draw($('#qrCanvas'), productPayload(product), 220);
     $('#printOne').onclick=()=>printLabels([{product,copies:1}]);
     $('#copyLabelCode').onclick=()=>{ navigator.clipboard?.writeText(product.code); toast('Código copiado'); };
@@ -993,40 +1063,54 @@ function parseMoney(value) {
     toast('Venta anulada y stock devuelto');
   };
 
-  window.printReceipt = function(saleId) {
+  window.payLayaway = function(saleId) {
     const sale = state.sales.find(s=>s.id === saleId);
-    if(!sale) return;
+    if(!sale) return toast('Venta no encontrada', 'err');
     
-    const html = `
-      <!doctype html><html><head><title>Comprobante de Venta</title>
-      <style>body{font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm;} h2{font-size:16px; margin:0 0 10px; text-align:center;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px dashed #000; margin:8px 0;} table{width:100%; border-collapse:collapse;} th,td{text-align:left; padding:2px 0; border-bottom:1px dashed #ccc;} .total{font-size:14px; font-weight:bold;}</style>
-      </head><body>
-      <h2>${escapeHtml(currentBusiness().name)}</h2>
-      <div style="text-align:center; margin-bottom:10px;">${escapeHtml(sale.when)}</div>
-      <div class="row"><span>Atiende:</span><span>${escapeHtml(sale.user || '')}</span></div>
-      ${sale.customer ? `<div class="row"><span>Cliente:</span><span>${escapeHtml(sale.customer)}</span></div>` : ''}
-      <div class="row"><span>Estado:</span><span>${escapeHtml(sale.status||'Pagada')}</span></div>
-      <div class="line"></div>
-      <table>
-        <tr><th>Cant</th><th>Item</th><th>Total</th></tr>
-        ${sale.items.map(i=>`<tr><td>${i.qty}</td><td>${escapeHtml(i.name)}</td><td>${fmt(i.qty * i.price)}</td></tr>`).join('')}
-      </table>
-      <div class="line"></div>
-      <div class="row"><span>Subtotal:</span><span>${fmt(sale.subtotal)}</span></div>
-      ${sale.discount > 0 ? `<div class="row"><span>Descuento:</span><span>-${fmt(sale.discount)}</span></div>` : ''}
-      <div class="row total"><span>TOTAL:</span><span>${fmt(sale.total)}</span></div>
-      <div class="row"><span>Pago (${escapeHtml(sale.method)}):</span><span>${fmt(sale.received || sale.total)}</span></div>
-      ${sale.change > 0 ? `<div class="row"><span>Vuelto:</span><span>${fmt(sale.change)}</span></div>` : ''}
-      ${sale.balance > 0 ? `<div class="row"><span>Saldo Pendiente:</span><span>${fmt(sale.balance)}</span></div>` : ''}
-      <div class="line"></div>
-      <div style="text-align:center; font-size:10px; margin-top:10px;">Comprobante interno de venta. No válido como factura electrónica.</div>
-      <script>setTimeout(()=>window.print(),500);</script>
-      </body></html>`;
-      
-    const w = window.open("", "_blank");
-    if(!w) return alert("Permite ventanas emergentes para imprimir.");
-    w.document.write(html);
-    w.document.close();
+    const amountStr = prompt(`Saldo pendiente: ${fmt(sale.balance)}\nIngrese el monto a abonar:`);
+    if(!amountStr) return;
+    const amount = parseMoney(amountStr);
+    if(!Number.isFinite(amount) || amount <= 0) return toast('Monto inválido', 'err');
+    if(amount > sale.balance) return toast('El abono no puede superar el saldo pendiente', 'err');
+    
+    sale.received = (sale.received || 0) + amount;
+    sale.balance -= amount;
+    
+    if(sale.balance <= 0) {
+       sale.status = 'paid';
+       toast('Cuenta saldada en su totalidad');
+    } else {
+       toast(`Abono registrado. Nuevo saldo: ${fmt(sale.balance)}`);
+    }
+    
+    state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:amount,note:`Abono a ticket ${saleId}`,user:session.username, saleId: sale.id});
+    save(); renderApp(route);
+  };
+
+  window.printReceipt = function(id) {
+    const s = state.sales.find(x=>x.id===id);
+    if(!s) return;
+    const html=`
+      <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
+      <h2 style="font-size:16px; margin:0 0 10px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
+      <div style="text-align:center; margin-bottom:10px;">Ticket de Venta<br>${escapeHtml(s.when)}</div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ticket #</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
+      ${s.customer ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cliente:</span><span>${escapeHtml(s.customer)}</span></div>` : ''}
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Método:</span><span>${escapeHtml(s.method)}</span></div>
+      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+      ${s.items.map(i=>`<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>${i.qty}x ${escapeHtml(i.name)}</span><span>${fmt(i.price*i.qty)}</span></div>`).join('')}
+      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>
+      ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:16px; font-weight:bold;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(s.received||s.total)}</span></div>
+      ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Saldo pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
+      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+      <div style="text-align:center; margin-top:10px;">¡Gracias por su compra!<br><small>Atendido por: ${escapeHtml(s.user)}</small></div>
+      </div>`;
+    const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+    root.innerHTML = html;
+    setTimeout(()=>window.print(), 250);
   };
 
   window.printReports = function() {
@@ -1037,34 +1121,29 @@ function parseMoney(value) {
     const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
     
     const html = `
-      <!doctype html><html><head><title>Reporte de Ventas</title>
-      <style>body{font-family:sans-serif; color:#000; font-size:12px; margin:0; padding:20px;} h2{font-size:20px; margin:0 0 10px;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px solid #ccc; margin:12px 0;} table{width:100%; border-collapse:collapse; margin-top:10px;} th,td{text-align:left; padding:6px; border-bottom:1px solid #eee;}</style>
-      </head><body>
-      <h2>${escapeHtml(currentBusiness().name)} - Reporte General</h2>
-      <div class="row"><span>Fecha:</span><span>${nowLabel()}</span></div>
-      <div class="line"></div>
-      <div class="row"><span>Ingreso Ventas:</span><strong>${fmt(total)}</strong></div>
-      <div class="row"><span>Tickets:</span><strong>${tickets}</strong></div>
-      <div class="row"><span>Promedio por Ticket:</span><strong>${fmt(tickets?total/tickets:0)}</strong></div>
-      <div class="line"></div>
-      <h3>Productos Más Vendidos</h3>
-      <table>
-        <tr><th>Producto</th><th>Cant. Vendida</th></tr>
-        ${top.map(([n,c])=>`<tr><td>${escapeHtml(n)}</td><td>${c}</td></tr>`).join('')}
+      <div style="font-family:sans-serif; color:#000; font-size:12px; margin:0; padding:20px; background:white;">
+      <h2 style="font-size:20px; margin:0 0 10px;">${escapeHtml(currentBusiness().name)} - Reporte General</h2>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Fecha:</span><span>${nowLabel()}</span></div>
+      <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingreso Ventas:</span><strong>${fmt(total)}</strong></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tickets:</span><strong>${tickets}</strong></div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio por Ticket:</span><strong>${fmt(tickets?total/tickets:0)}</strong></div>
+      <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
+      <h3 style="margin-top:10px;">Productos Más Vendidos</h3>
+      <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+        <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Producto</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Cant. Vendida</th></tr>
+        ${top.map(([n,c])=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(n)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${c}</td></tr>`).join('')}
       </table>
-      <div class="line"></div>
-      <h3>Historial de Tickets Hoy</h3>
-      <table>
-        <tr><th>Hora</th><th>Vendedor</th><th>Método</th><th>Estado</th><th>Total</th></tr>
-        ${sales.slice().reverse().map(s=>`<tr><td>${escapeHtml(s.when.split(' ')[1] || s.when)}</td><td>${escapeHtml(s.user)}</td><td>${escapeHtml(s.method)}</td><td>${escapeHtml(s.status)}</td><td>${fmt(s.total)}</td></tr>`).join('')}
-      </table>
-      <script>setTimeout(()=>window.print(),500);</script>
-      </body></html>`;
+      <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
+      <h3 style="margin-top:10px;">Historial de Tickets Hoy</h3>
+      <table style="width:100%; border-collapse:collapse; margin-top:10px;">
+        <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Hora</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Vendedor</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Método</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Estado</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Total</th></tr>
+        ${sales.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.when.split(' ')[1] || s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.user)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.method)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.status)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
+      </table></div>`;
       
-    const w = window.open("", "_blank");
-    if(!w) return alert("Permite ventanas emergentes para imprimir.");
-    w.document.write(html);
-    w.document.close();
+    const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+    root.innerHTML = html;
+    setTimeout(()=>window.print(), 250);
   };
 
   function runQa(){
@@ -1103,8 +1182,12 @@ function parseMoney(value) {
   window.click360Route=renderApp;
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, runQa};
 
-  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more'].includes(h)) renderApp(h); });
+  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator && !location.search.includes('nosw')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
   if(location.search.includes('qa')) { renderLogin(); setTimeout(runQa,300); }
-  else if(!session) renderLogin(); else if(session.role==='admin') renderAdmin(); else if(!handleInitialScan()) renderApp('home');
+  else if(!session) renderLogin(); else if(session.role==='admin') renderAdmin(); else if(!handleInitialScan()) {
+    const h = location.hash.replace('#','');
+    if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors'].includes(h)) renderApp(h);
+    else renderApp('home');
+  }
 })();
