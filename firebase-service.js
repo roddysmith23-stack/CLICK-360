@@ -503,14 +503,18 @@
         return;
       }
 
+      const s = JSON.parse(localStorage.getItem('click360_mvp_qa_final_session_v1') || 'null');
+      if(!s) {
+          const newSession = {username: 'demo', role: 'owner'};
+          localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify(newSession));
+          if(window.click360SetSession) window.click360SetSession(newSession);
+      } else {
+          if(window.click360SetSession) window.click360SetSession(s);
+      }
+
       await pullRemoteOnce({ force: true, reload: false });
       unlockApp();
       listenRemoteChanges();
-      
-      const s = JSON.parse(localStorage.getItem('click360_mvp_qa_final_session_v1') || 'null');
-      if(!s) {
-          localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify({username: 'demo', role: 'owner'}));
-      }
     });
   }
 

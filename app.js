@@ -1524,6 +1524,7 @@ function parseMoney(value) {
     return !!p;
   }
   window.click360Route=renderApp;
+  window.click360SetSession = setSession;
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, runQa};
 
   window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors'].includes(h)) renderApp(h); });
