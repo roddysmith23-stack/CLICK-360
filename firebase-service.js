@@ -12,8 +12,7 @@
   window.click360Auth = auth;
   window.click360Db = db;
 
-  const BUSINESS_ID = "demo-click360";
-  const STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
+  let STATE_DOC = null;
 
   let AUTH_APPROVED = false;
   let PULL_COMPLETE = false;
@@ -155,6 +154,8 @@
           role: d.role || "worker",
           name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario")
         };
+        const bizId = d.ownerId || user.uid; // Si es worker debería tener ownerId, si no usa su propio uid como negocio
+        STATE_DOC = db.collection("businesses").doc(bizId).collection("state").doc("main");
         return true;
       }
       return false;

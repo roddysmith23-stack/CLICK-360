@@ -342,10 +342,10 @@ function parseMoney(value) {
             <div class="searchBox"><input id="sellSearch" placeholder="Buscar por nombre o código..." /></div>
             <div class="manualRow">
                <input id="manualCode" placeholder="Código manual" />
-               <button class="btn silver" id="addCode" title="Agregar a carrito">
+               <button type="button" class="btn silver" id="addCode" title="Agregar a carrito">
                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                </button>
-               <button class="iconBtn" id="openCamera" title="Escanear QR">
+               <button type="button" class="iconBtn" id="openCamera" title="Escanear QR">
                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
                </button>
             </div>
@@ -361,13 +361,17 @@ function parseMoney(value) {
             <div class="field" id="changeField" style="display:none;"><label>Vuelto</label><input id="cashChange" readonly style="background:#111;color:var(--gold);" /></div>
             <div class="field full"><label id="lblCustomer">Cliente (opcional)</label><input id="customer" placeholder="Ej. Juan Pérez - 0990000000" /></div>
           </div>
+          <div class="cartSummary" style="margin-bottom:10px; font-size:13px; color:var(--muted); text-align:right;">
+             <div id="cartSubtotalView" style="display:none; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span> <b>$0.00</b></div>
+             <div id="cartIvaView" style="display:none; justify-content:space-between;"><span>IVA:</span> <b>$0.00</b></div>
+          </div>
           <div class="totalRow">
              <div><small>Total</small><strong id="cartTotal">$0.00</strong></div>
              <div style="display:flex; gap:10px;">
-                <button class="btn silver" id="clearCartBtn" title="Limpiar carrito">
+                <button type="button" class="btn silver" id="clearCartBtn" title="Limpiar carrito">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                 </button>
-                <button class="btn primary" id="chargeBtn">Cobrar</button>
+                <button type="button" class="btn primary" id="chargeBtn">Cobrar</button>
              </div>
           </div>
         </div>
@@ -388,6 +392,46 @@ function parseMoney(value) {
   }
   function labelKind(k){ return ({ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
 
+  function buildChartHtml(sales) {
+     const last7Days = [];
+     for(let i=6; i>=0; i--) {
+       const d = new Date(); d.setDate(d.getDate() - i);
+       // YYYY-MM-DD
+       const pad = (n) => n.toString().padStart(2, '0');
+       last7Days.push(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`);
+     }
+     const salesByDay = {};
+     last7Days.forEach(d => salesByDay[d] = 0);
+     sales.filter(s=>s.status!=='cancelled').forEach(s => {
+       if (salesByDay[s.date] !== undefined) {
+         salesByDay[s.date] += (s.status==='layaway' ? (s.received||0) : s.total);
+       }
+     });
+     
+     const max = Math.max(...Object.values(salesByDay), 1);
+     let barsHtml = '';
+     last7Days.forEach(d => {
+       const val = salesByDay[d];
+       const pct = (val / max) * 100;
+       const dayLabel = d.slice(-2);
+       barsHtml += `
+         <div style="display:flex; flex-direction:column; align-items:center; gap:6px; flex:1;" title="${d}: ${fmt(val)}">
+           <div style="height:120px; width:100%; display:flex; align-items:flex-end; background:var(--bg); border-radius:6px; overflow:hidden;">
+             <div style="width:100%; background:var(--gold); height:${pct}%; transition: height 0.3s; min-height:${val>0?'2px':'0'}; border-radius:4px 4px 0 0;"></div>
+           </div>
+           <small style="font-size:11px; color:var(--muted);">${dayLabel}</small>
+         </div>
+       `;
+     });
+
+     return `
+       <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:8px; padding:16px 12px; background:rgba(255,255,255,0.02); border-radius:12px; margin-bottom:8px; border: 1px solid var(--line);">
+         ${barsHtml}
+       </div>
+       <div style="text-align:center; font-size:12px; color:var(--muted);">Ventas de los últimos 7 días</div>
+     `;
+  }
+
   function reportsView() {
     const sales=salesForBiz(), tickets=sales.length;
     // Calculate total taking into account statuses
@@ -398,6 +442,7 @@ function parseMoney(value) {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Imprimir
       </button></div>
       <section class="grid cashGrid"><div class="card kpi"><small>Ingreso Ventas</small><strong class="goldText">${fmt(total)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio</small><strong>${fmt(tickets?total/tickets:0)}</strong></div></section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Crecimiento</h3>${buildChartHtml(sales)}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
         ${sales.slice().reverse().map(s=>`
@@ -462,12 +507,21 @@ function parseMoney(value) {
     </section>`;
   }
   function backupView(){
-    return `<div class="pageHead"><div><h1>Respaldo</h1><p>Protege la información del negocio.</p></div></div>
+    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronización y reportes contables.</p></div></div>
       <section class="card sectionCard">
-        <h3>Respaldo local</h3><p class="cloudStatus">Guarda un archivo para recuperar datos si cambias de celular o navegador.</p>
-        <div class="split"><button class="btn primary" id="backupBtn">Guardar respaldo</button><label class="btn silver"><input type="file" id="restoreFile" accept="application/json" hidden/>Restaurar respaldo</label></div>
+        <h3>Nube CLICK 360</h3>
+        <p class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">★ Sincronización en la nube Activa.</p>
+        <p class="cloudStatus">Tus datos se guardan y protegen en tiempo real. Abre tu cuenta en cualquier dispositivo con tu correo y tendrás la misma información.</p>
       </section>
-      <section class="card sectionCard cloudBox" style="margin-top:14px"><h3>Nube CLICK 360</h3><p class="cloudStatus">Modo preparado para conectar base de datos real. Para clientes finales no se mostrará lenguaje técnico; solo “Código de empresa” y “PIN de empresa”.</p><button class="btn silver block" id="cloudSoon">Ver estado</button></section>`;
+      <section class="card sectionCard" style="margin-top:14px">
+        <h3>Reporte Contable General</h3>
+        <p class="cloudStatus">Descarga todo el historial de ventas y movimientos de caja en Excel (CSV).</p>
+        <button type="button" class="btn primary block" id="exportCsvBtn">Descargar Historial (CSV)</button>
+      </section>
+      <section class="card sectionCard" style="margin-top:14px">
+        <h3>Base de Datos (Avanzado)</h3><p class="cloudStatus">Archivo interno para restaurar sistema.</p>
+        <div class="split"><button type="button" class="btn silver" id="backupBtn">Bajar DB</button><label class="btn silver"><input type="file" id="restoreFile" accept="application/json" hidden/>Subir DB</label></div>
+      </section>`;
   }
   function workersView(){
     const b=currentBusiness();
@@ -478,9 +532,16 @@ function parseMoney(value) {
   }
   function settingsView(){
     const b=currentBusiness();
+    const iva = state.settings?.iva || 0;
     return `<div class="pageHead"><div><h1>Ajustes</h1><p>Negocios y perfil.</p></div></div>
-      <section class="card sectionCard"><h3>Negocio actual</h3><div class="field"><label>Nombre</label><input id="bizName" value="${escapeHtml(b.name)}"></div><div class="field"><label>¿Cuál es tu negocio?</label><select id="bizType">${typeOptions(b.type)}</select></div><button class="btn primary block" id="saveBiz">Guardar cambios</button></section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Agregar otro negocio</h3><div class="field"><label>Nombre</label><input id="newBizName"></div><div class="field"><label>Tipo</label><select id="newBizType">${typeOptions('otro')}</select></div><button class="btn silver block" id="createBiz">Crear negocio</button></section>`;
+      <section class="card sectionCard">
+        <h3>Negocio actual</h3>
+        <div class="field"><label>Nombre</label><input id="bizName" value="${escapeHtml(b.name)}"></div>
+        <div class="field"><label>¿Cuál es tu negocio?</label><select id="bizType">${typeOptions(b.type)}</select></div>
+        <div class="field"><label>IVA Global (%)</label><input type="number" inputmode="numeric" id="bizIva" value="${iva}" placeholder="0 para desactivar"></div>
+        <button type="button" class="btn primary block" id="saveBiz">Guardar cambios</button>
+      </section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Agregar otro negocio</h3><div class="field"><label>Nombre</label><input id="newBizName"></div><div class="field"><label>Tipo</label><select id="newBizType">${typeOptions('otro')}</select></div><button type="button" class="btn silver block" id="createBiz">Crear negocio</button></section>`;
   }
   function typeOptions(selected){ return [['ropa','Ropa'],['restaurante','Restaurante'],['barberia','Barbería'],['ganaderia','Ganadería'],['ferreteria','Ferretería'],['otro','Otro']].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
 
@@ -556,13 +617,31 @@ function parseMoney(value) {
 
   function bindSell(){
     let cart=[];
+    let currentIva = state.settings?.iva || 0;
+    
     const renderCart=()=>{
       const subtotal=cart.reduce((a,i)=>a+i.price*i.qty,0), disc=parseMoney($('#discount')?.value||0);
-      const total=Math.max(0, subtotal - (Number.isFinite(disc)?disc:0));
+      let base = Math.max(0, subtotal - (Number.isFinite(disc)?disc:0));
+      let ivaAmount = 0;
+      if (currentIva > 0) {
+         ivaAmount = base * (currentIva / 100);
+      }
+      const total = base + ivaAmount;
+      
       $('#cartTotal').textContent=fmt(total);
-      $('#cartItems').innerHTML=cart.length?cart.map(i=>`<div class="cartItem cartWithImage">${i.imageData ? `<img class="productImg small" src="${i.imageData}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button data-minus="${i.id}">−</button><b>${i.qty}</b><button data-plus="${i.id}">＋</button><button class="iconBtn danger" data-remove="${i.id}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
+      
+      const subView = $('#cartSubtotalView'), ivaView = $('#cartIvaView');
+      if (currentIva > 0) {
+         subView.style.display = 'flex'; ivaView.style.display = 'flex';
+         subView.querySelector('b').textContent = fmt(base);
+         ivaView.querySelector('b').textContent = fmt(ivaAmount);
+      } else {
+         subView.style.display = 'none'; ivaView.style.display = 'none';
+      }
+
+      $('#cartItems').innerHTML=cart.length?cart.map(i=>`<div class="cartItem cartWithImage">${i.imageData ? `<img class="productImg small" src="${i.imageData}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button type="button" data-minus="${i.id}">−</button><b>${i.qty}</b><button type="button" data-plus="${i.id}">＋</button><button type="button" class="iconBtn danger" data-remove="${i.id}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
-      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); if(it.qty>=p.qty)return toast('No hay más stock','err'); it.qty++; renderCart();});
+      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
       
       const method = $('#payMethod').value;
@@ -642,8 +721,13 @@ function parseMoney(value) {
       if(!Number.isFinite(disc)||disc<0){ beep('err'); return toast('Descuento inválido','err'); }
       const subtotal=cart.reduce((a,i)=>a+i.price*i.qty,0);
       if(disc>subtotal){ beep('err'); return toast('El descuento supera el subtotal','err'); }
+      
+      let base = Math.max(0, subtotal - disc);
+      let ivaAmount = 0;
+      if (currentIva > 0) ivaAmount = base * (currentIva / 100);
+      const total = base + ivaAmount;
+
       for(const i of cart){ const p=state.products.find(p=>p.id===i.id); if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); } }
-      const total=Math.max(0, subtotal-disc);
       
       const method = $('#payMethod').value;
       const rec = parseMoney($('#cashReceived').value);
@@ -667,7 +751,7 @@ function parseMoney(value) {
          received = total;
       }
 
-      const sale={id:uid('sale'),businessId:currentBusiness().id,date:today(),when:nowLabel(),items:cart.map(i=>({...i})),subtotal,discount:disc,total,method,customer:$('#customer').value.trim(),user:session.username, status, received, change, balance, createdBy: authUser().name};
+      const sale={id:uid('sale'),businessId:currentBusiness().id,date:today(),when:nowLabel(),items:cart.map(i=>({...i})),subtotal:base,iva:ivaAmount,discount:disc,total,method,customer:$('#customer').value.trim(),user:session.username, status, received, change, balance, createdBy: authUser().name};
       state.sales.push(sale);
       cart.forEach(i=>{ const p=state.products.find(p=>p.id===i.id); p.qty-=i.qty; });
       
@@ -964,6 +1048,10 @@ function parseMoney(value) {
          const salesTransf = sales.filter(s=>s.method==='Transferencia').reduce((a,s)=>a+s.total,0);
          const abonosApartado = sales.filter(s=>s.method==='Apartado').reduce((a,s)=>a+s.received,0);
          
+         const totalIva = sales.reduce((a,s)=>a+(s.iva||0),0);
+         let totalItems = 0;
+         sales.forEach(s => s.items?.forEach(i => totalItems += i.qty));
+         
          const html = `
           <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
           <h2 style="font-size:16px; margin:0 0 10px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
@@ -971,6 +1059,9 @@ function parseMoney(value) {
           <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
           <div style="border-top:1px dashed #000; margin:8px 0;"></div>
           <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Productos Vendidos:</span><span>${totalItems}</span></div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA Recaudado:</span><span>${fmt(totalIva)}</span></div>
+          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
           <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
           <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
           <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(salesTransf)}</span></div>
@@ -1007,9 +1098,16 @@ function parseMoney(value) {
          else toast('Nube no disponible en este entorno', 'err');
      });
   }
-  function bindBackup(){ $('#backupBtn').onclick=downloadBackup; $('#restoreFile').onchange=restoreBackup; $('#cloudSoon').onclick=()=>toast('Preparado para CLICK 360 Cloud. Requiere backend real.'); }
+
   function bindSettings(){
-    $('#saveBiz').onclick=()=>{const b=currentBusiness(); b.name=$('#bizName').value.trim()||b.name; b.type=$('#bizType').value; save(); renderApp('settings'); toast('Guardado');};
+    $('#saveBiz').onclick=()=>{
+       const b=currentBusiness(); 
+       b.name=$('#bizName').value.trim()||b.name; 
+       b.type=$('#bizType').value; 
+       state.settings = state.settings || {};
+       state.settings.iva = parseFloat($('#bizIva').value) || 0;
+       save(); renderApp('settings'); toast('Guardado');
+    };
     $('#createBiz').onclick=()=>{const name=$('#newBizName').value.trim(); if(!name)return toast('Falta el nombre','err'); const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08'}; state.businesses.push(b); state.activeBusinessId=b.id; const user=currentUser(); if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); save(); renderApp('inventory'); toast('Negocio creado');};
   }
 
@@ -1053,7 +1151,33 @@ function parseMoney(value) {
   }
 
   function downloadBackup(){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{type:'application/json'})); a.download=`click360-respaldo-${today()}.json`; a.click(); toast('Respaldo guardado'); }
-  function restoreBackup(e){ const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{state=normalizeState(JSON.parse(reader.result));save();renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file); }
+  function restoreBackup(e){ 
+    const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{state=normalizeState(JSON.parse(reader.result));save();renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file); 
+  }
+  function bindBackup(){ 
+    $('#backupBtn').onclick=downloadBackup; 
+    $('#restoreFile').onchange = (e) => {
+        const file = e.target.files[0]; if(!file) return;
+        const r = new FileReader();
+        r.onload = (ev) => {
+          try { const data = JSON.parse(ev.target.result); Object.assign(state, data); save(); location.reload(); }
+          catch { toast('Error leyendo archivo', 'err'); }
+        };
+        r.readAsText(file);
+    };
+    const exp = $('#exportCsvBtn');
+    if(exp) exp.onclick = () => {
+      let csv = "FECHA,TIPO,MONTO,NOTA,USUARIO\n";
+      const allMovs = [...state.movements].sort((a,b)=>a.date.localeCompare(b.date));
+      allMovs.forEach(m => { csv += `${m.date},${m.kind},${m.amount},"${(m.note || '').replace(/"/g,'""')}","${m.createdBy || 'Sistema'}"\n`; });
+      const a = document.createElement('a');
+      a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+      a.download = `contabilidad_click360_${today()}.csv`;
+      a.click();
+      toast('Reporte Contable Generado');
+    };
+    $('#cloudSoon').onclick=()=>toast('Preparado para CLICK 360 Cloud. Requiere backend real.'); 
+  }
 
   window.cancelSale = function(saleId) {
     if(!confirm('¿Seguro que deseas anular esta venta? Esto no se puede deshacer y devolverá el stock.')) return;
@@ -1117,6 +1241,7 @@ function parseMoney(value) {
       ${s.items.map(i=>`<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>${i.qty}x ${escapeHtml(i.name)}</span><span>${fmt(i.price*i.qty)}</span></div>`).join('')}
       <div style="border-top:1px dashed #000; margin:8px 0;"></div>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>
+      ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA:</span><span>${fmt(s.iva)}</span></div>` : ''}
       ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
       <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:16px; font-weight:bold;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(s.received||s.total)}</span></div>
