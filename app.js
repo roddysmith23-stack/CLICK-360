@@ -14,9 +14,9 @@
     if(m.includes('ResizeObserver')) return;
     const link = `https://wa.me/593969399562?text=${encodeURIComponent("Error en CLICK 360:\\n" + m + "\\nLínea: " + line)}`;
     if(toastEl) {
-      toastEl.innerHTML = `Algo falló. <a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;">Reportar a CLICK</a>`;
+      toastEl.innerHTML = `Algo falló. <a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;pointer-events:auto;">Reportar a CLICK</a>`;
       toastEl.className = 'toast show err';
-      setTimeout(()=>toastEl.className='toast', 8000);
+      clearTimeout(toastEl._t);
     }
   };
 
@@ -130,6 +130,14 @@ function parseMoney(value) {
     const d = seed();
     const out = Object.assign(d, s || {});
     out.users ||= d.users; out.businesses ||= d.businesses; out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
+    
+    // Migración para limpiar "sale_..." de movimientos antiguos
+    out.movements.forEach(m => {
+       if (m.note && m.note.includes('Venta anulada sale_')) {
+          m.note = 'Venta anulada (Registro histórico)';
+       }
+    });
+    
     return out;
   }
   function seed() {
@@ -275,22 +283,23 @@ function parseMoney(value) {
     const b=currentBusiness();
     const bizOptions=state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
     return `<div class="app"><div class="desktopLayout">
-      <aside class="sidebar" style="display:flex; flex-direction:column; height:100vh;">
+      <aside class="sidebar flex-sidebar">
         <div>
-          <div class="logoMark"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
+          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;"><div class="logoIcon" style="width:40px;height:40px;"></div><div class="logoText" style="font-size:26px;"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
           <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
           <nav class="sideNav">${navButtons(active, true)}</nav>
         </div>
         <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px;">
-          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold);" title="Ajustes">${(currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
+          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${currentBusiness()?.settings?.logoUrl ? `<img src="${currentBusiness().settings.logoUrl}" style="width:100%;height:100%;object-fit:cover;">` : (currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
           <button class="logoutBtn" id="logoutSide" title="Cerrar sesión" style="flex:1;">Cerrar sesión ↗</button>
         </div>
       </aside>
       <div>
         <header class="topbar">
-          <div class="logoMark"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
-          <select class="businessSelect" id="businessPickerTop">${bizOptions}</select>
-          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:10px; border: 1px solid var(--gold);" title="Ajustes">${(currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
+          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;"><div class="logoIcon" style="width:36px;height:36px;"></div><div class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
+          <div style="flex:1; text-align:center; color:#ccc; font-size:14px; font-weight:bold;">${nowLabel().split(' ')[0]}</div>
+          <select class="businessSelect" id="businessPickerTop" style="display:none;">${bizOptions}</select>
+          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:10px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${currentBusiness()?.settings?.logoUrl ? `<img src="${currentBusiness().settings.logoUrl}" style="width:100%;height:100%;object-fit:cover;">` : (currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
           <button class="logoutBtn" id="logoutTop" title="Cerrar sesión">Cerrar sesión ↗</button>
         </header>
         <main class="main">${content}</main>
@@ -619,8 +628,8 @@ function parseMoney(value) {
         <button type="button" class="btn primary block" id="exportCsvBtn">Descargar Historial (CSV)</button>
       </section>
       <section class="card sectionCard" style="margin-top:14px">
-        <h3>Base de Datos (Avanzado)</h3><p class="cloudStatus">Archivo interno para restaurar sistema.</p>
-        <div class="split"><button type="button" class="btn silver" id="backupBtn">Bajar DB</button><label class="btn silver"><input type="file" id="restoreFile" accept="application/json" hidden/>Subir DB</label></div>
+        <h3>Respaldo Manual (Copia de Seguridad)</h3><p class="cloudStatus">Guarda una copia de toda tu información en tu dispositivo o restáurala si cambiaste de equipo.</p>
+        <div class="split" style="gap:10px;"><button type="button" class="btn silver" id="backupBtn">Guardar Respaldo</button><label class="btn silver" style="flex:1; text-align:center; display:flex; align-items:center; justify-content:center;"><input type="file" id="restoreFile" accept="application/json" hidden/>Restaurar Respaldo</label></div>
       </section>`;
   }
   function workersView(){
@@ -655,7 +664,7 @@ function parseMoney(value) {
         <h3>Datos del Negocio</h3>
         <div class="field" style="display:flex; flex-direction:column; align-items:center;">
           <div style="width:80px; height:80px; border-radius:50%; background:#222; border:1px solid #444; overflow:hidden; margin-bottom:10px; display:flex; justify-content:center; align-items:center;">
-             ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`}
+             ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`}
           </div>
           <label class="btn silver" style="font-size:12px; padding:4px 8px;">
             Cambiar Logo
@@ -669,7 +678,26 @@ function parseMoney(value) {
         <div class="field"><label>IVA Global (%)</label><input type="number" inputmode="numeric" id="bizIva" value="${iva}" placeholder="0 para desactivar"></div>
         <button type="button" class="btn primary block" id="saveBiz">Guardar cambios</button>
       </section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Agregar otro negocio</h3><div class="field"><label>Nombre</label><input id="newBizName"></div><div class="field"><label>Tipo</label><select id="newBizType">${typeOptions('otro')}</select></div><button type="button" class="btn silver block" id="createBiz">Crear negocio</button></section>`;
+      <section class="card sectionCard" style="margin-top:14px">
+        <h3>Agregar otro negocio</h3>
+        <div class="field"><label>Nombre</label><input id="newBizName"></div>
+        <div class="field"><label>Tipo</label><select id="newBizType">${typeOptions('otro')}</select></div>
+        <div class="field"><label>RUC (Opcional)</label><input id="newBizRuc"></div>
+        <div class="field"><label>Teléfono (Opcional)</label><input id="newBizPhone"></div>
+        <button type="button" class="btn silver block" id="createBiz">Crear negocio</button>
+      </section>
+
+      <section class="card sectionCard" style="margin-top:14px; border:1px solid #4a1c1c;">
+        <h3 style="color:#d9534f;">Zona de Peligro</h3>
+        <button type="button" class="btn danger block" id="resetInventoryBtn" style="margin-bottom:10px;">Reiniciar Inventario</button>
+        <button type="button" class="btn danger block" id="resetSystemBtn">Borrar Todo el Sistema (Empezar de cero)</button>
+      </section>
+
+      <section class="card sectionCard" style="margin-top:14px; text-align:center;">
+        <h3>Soporte y Legales</h3>
+        <button type="button" class="btn" style="border:1px solid #25D366; color:#25D366; background:transparent; width:100%; margin-bottom:12px;" onclick="window.open('https://wa.me/593969399562?text=Hola,%20necesito%20soporte%20con%20CLICK%20360', '_blank')">📱 Contactar Soporte (WhatsApp)</button>
+        <p style="font-size:11px; color:#888; line-height:1.4;">Al usar el sistema, aceptas los <a href="#" id="showTerms" style="color:var(--gold); text-decoration:underline;">Términos y Condiciones</a>. El software se provee "tal cual". No nos hacemos responsables de daños indirectos ni pérdida de datos accidental.</p>
+      </section>`;
   }
   function typeOptions(selected){ return [['ropa','Ropa'],['restaurante','Restaurante'],['barberia','Barbería'],['ganaderia','Ganadería'],['ferreteria','Ferretería'],['otro','Otro']].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
 
@@ -712,7 +740,7 @@ function parseMoney(value) {
           <div class="imagePicker">
             <div id="imagePreview">${p.imageData ? `<img src="${p.imageData}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
             <div style="display:flex; gap:8px;">
-               <label class="btn silver"><input type="file" id="pImageCam" accept="image/jpeg,image/png" capture="environment" hidden>Tomar foto</label>
+               <label class="btn silver"><input type="file" id="pImageCam" accept="image/jpeg,image/png" hidden>Tomar foto</label>
                <label class="btn silver"><input type="file" id="pImageGal" accept="image/*" hidden>Galería</label>
             </div>
             ${p.imageData ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
@@ -1372,7 +1400,7 @@ function parseMoney(value) {
          $('#inviteLinkVal').value = link;
          loadWorkers();
        } catch(e) {
-         toast('Error al invitar (Asegúrate de ser el dueño y tener la Nube activa)', 'err');
+         toast('Acceso denegado: Usa el entorno Nube para esta función', 'err');
        }
        $('#inviteWorkerBtn').textContent = 'Invitar';
     };
@@ -1417,7 +1445,46 @@ function parseMoney(value) {
        if (pendingLogoUrl) currentBusiness().settings.logoUrl = pendingLogoUrl;
        save(); renderApp('settings'); toast('Guardado');
     };
-    $('#createBiz').onclick=()=>{const name=$('#newBizName').value.trim(); if(!name)return toast('Falta el nombre','err'); const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08'}; state.businesses.push(b); state.activeBusinessId=b.id; const user=currentUser(); if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); save(); renderApp('inventory'); toast('Negocio creado');};
+    $('#createBiz').onclick=()=>{
+      const name=$('#newBizName').value.trim(); 
+      if(!name)return toast('Falta el nombre','err'); 
+      const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08', settings:{}}; 
+      b.settings.ruc = $('#newBizRuc').value.trim();
+      b.settings.phone = $('#newBizPhone').value.trim();
+      state.businesses.push(b); 
+      state.activeBusinessId=b.id; 
+      const user=currentUser(); 
+      if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); 
+      save(); renderApp('settings'); toast('Negocio creado');
+    };
+
+    $('#resetInventoryBtn').onclick = () => {
+       if(!confirm('¿ESTÁS SEGURO? Se borrarán todas las prendas y stock del inventario actual. Esto no se puede deshacer.')) return;
+       state.products = state.products.filter(p => p.businessId !== currentBusiness().id);
+       save();
+       toast('Inventario reiniciado.');
+    };
+
+    $('#resetSystemBtn').onclick = () => {
+       if(!confirm('🚨 ALERTA CRÍTICA: ¿Estás seguro de borrar TODA la información de la cuenta (Inventarios, Ventas, Reportes)? Empezarás totalmente de cero.')) return;
+       state.products = [];
+       state.sales = [];
+       state.movements = [];
+       state.dailyReports = [];
+       save();
+       window.location.reload();
+    };
+
+    $('#showTerms').onclick = (e) => {
+       e.preventDefault();
+       showModal(`<div class="modalHeader"><h2>Términos y Condiciones</h2><button class="closeBtn" data-close>×</button></div>
+       <div style="padding:16px; font-size:13px; line-height:1.5; color:#ccc;">
+         <b>1. Aceptación:</b> Al utilizar CLICK 360, aceptas estos términos.<br><br>
+         <b>2. Responsabilidad:</b> La plataforma se ofrece en fase MVP. CLICK 360 no asume responsabilidad civil ni legal por pérdida de información, errores de contabilidad o daños derivados del uso del software.<br><br>
+         <b>3. Respaldo:</b> Es responsabilidad del usuario realizar respaldos de su información periódicamente desde la sección correspondiente.<br><br>
+         <b>4. Límite de soporte:</b> El soporte técnico atiende solicitudes operativas según el plan del usuario.<br><br>
+       </div>`);
+    };
   }
 
   function renderAdmin(){
