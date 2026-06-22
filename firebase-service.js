@@ -184,11 +184,11 @@
       let doc = await db.collection("approvedUsers").doc(user.uid).get();
       let d = null;
       
-      if (doc.exists && doc.data().status === "active") {
+      if (doc.exists && doc.data().status !== "inactive") {
         d = doc.data();
-      } else {
+      } else if (user.email) {
         const emailDoc = await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).get();
-        if (emailDoc.exists && emailDoc.data().status === "active") {
+        if (emailDoc.exists && emailDoc.data().status !== "inactive") {
           d = emailDoc.data();
           await db.collection("approvedUsers").doc(user.uid).set({
             ...d,
@@ -355,7 +355,6 @@
           <button id="c360-google-login" style="width:100%;padding:17px;border-radius:18px;border:1px solid #444;background:#fff;color:#000;font-weight:900;font-size:17px;margin-bottom:12px;cursor:pointer;">Entrar con Google</button>
           <button id="c360-change-google" style="width:100%;padding:13px;border-radius:18px;border:1px solid #333;background:#000;color:#f4c431;font-weight:800;font-size:14px;cursor:pointer;">Cambiar cuenta / Cerrar sesión</button>
 
-          <p style="opacity:.55;font-size:12px;margin-top:14px;line-height:1.4;">El acceso se aprueba desde Firebase: approvedUsers/UID con status active.</p>
           <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;word-break:break-word;line-height:1.45;"></p>
         </div>
       `;
@@ -363,8 +362,11 @@
 
       document.getElementById("c360-google-login").onclick = signInGoogle;
       document.getElementById("c360-change-google").onclick = async () => {
-        await auth.signOut();
-        await signInGoogle();
+        if(window.click360Logout) await window.click360Logout();
+        else {
+           await auth.signOut();
+           location.reload();
+        }
       };
     }
 
@@ -374,15 +376,8 @@
 
   function showPending(user) {
     showGate(`
-      Cuenta pendiente de aprobación.<br><br>
-      Email: <b>${user.email || "sin email"}</b><br>
-      UID:<br><b>${user.uid}</b><br><br>
-      En Firebase crea:<br>
-      <b>approvedUsers/${user.uid}</b><br><br>
-      Campos:<br>
-      <b>email</b> = ${user.email || ""}<br>
-      <b>status</b> = active<br>
-      <b>role</b> = owner
+      Tu cuenta (<b>${user.email || "sin email"}</b>) está pendiente de aprobación por el dueño del negocio.<br><br>
+      Por favor, dile a tu administrador que envíe la invitación a este correo desde el sistema.
     `);
     
     const loginBtn = document.getElementById("c360-google-login");
@@ -466,6 +461,13 @@
 
   window.click360SyncNow = () => pushLocalToFirestore("manual");
   window.click360RefreshNow = () => pullRemoteOnce({ force: true, reload: true });
+  window.click360Logout = async () => {
+    try {
+      await auth.signOut();
+      localStorage.removeItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
+      location.reload(); // Force reload to ensure everything is cleared properly
+    } catch(e) {}
+  };
 
   let HAS_BOOTED = false;
 

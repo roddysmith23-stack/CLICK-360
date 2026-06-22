@@ -105,7 +105,14 @@ function parseMoney(value) {
     return seed();
   }
   function loadSession() { try { return JSON.parse(localStorage.getItem(SESSION) || 'null'); } catch { return null; } }
-  function setSession(s) { session=s; s ? localStorage.setItem(SESSION, JSON.stringify(s)) : localStorage.removeItem(SESSION); }
+  function setSession(s) { 
+    session=s; 
+    if(s) localStorage.setItem(SESSION, JSON.stringify(s)); 
+    else { 
+       localStorage.removeItem(SESSION); 
+       if(window.click360Logout) window.click360Logout(); 
+    } 
+  }
   function normalizeState(s) {
     const d = seed();
     const out = Object.assign(d, s || {});
