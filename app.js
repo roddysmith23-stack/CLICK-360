@@ -108,11 +108,13 @@ function parseMoney(value) {
   function setSession(s) { 
     session=s; 
     if(s) localStorage.setItem(SESSION, JSON.stringify(s)); 
-    else { 
-       localStorage.removeItem(SESSION); 
-       if(window.click360Logout) window.click360Logout(); 
-    } 
+    else localStorage.removeItem(SESSION);
   }
+  window.click360AppLogout = async function() {
+    setSession(null);
+    if(window.click360Logout) await window.click360Logout();
+    else renderLogin();
+  };
   function normalizeState(s) {
     const d = seed();
     const out = Object.assign(d, s || {});
@@ -254,7 +256,7 @@ function parseMoney(value) {
 
   function renderPaused(b) {
     app.innerHTML = `<main class="pausedPage"><section class="card"><div class="logoMark" style="justify-content:center;margin-bottom:18px"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360</span></div></div><h1>Cuenta ${escapeHtml(b.status)}</h1><p>Tu cuenta está ${escapeHtml(b.status)}. Contacta a CLICK 360 para reactivar tu servicio.</p><button class="btn primary block" id="logoutPaused">Cerrar sesión</button></section></main>`;
-    $('#logoutPaused').onclick=()=>{setSession(null);renderLogin();};
+    $('#logoutPaused').onclick=()=>window.click360AppLogout();
   }
 
   function shell(content, active='home') {
@@ -296,7 +298,7 @@ function parseMoney(value) {
   function bindShell(){
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
     ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;save();renderApp(route);}; });
-    $('#logoutTop')?.addEventListener('click',()=>{setSession(null);renderLogin();});
+    $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
   }
   function renderApp(r='home') {
     if(!checkAuth('business')) return;
@@ -1201,7 +1203,7 @@ function parseMoney(value) {
      $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more)); 
      $('#logoutMore')?.addEventListener('click',()=>{
          if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
-         else { setSession(null); renderLogin(); }
+         else window.click360AppLogout(); }
      }); 
      $('#forceSyncCloud')?.addEventListener('click', ()=>{
          if(window.click360RefreshNow) window.click360RefreshNow();
@@ -1310,7 +1312,7 @@ function parseMoney(value) {
     if(!checkAuth('admin'))return;
     const rows=state.businesses.map(b=>`<div class="card adminRow"><div><h3>${escapeHtml(b.name)} <span class="status ${b.status}">${escapeHtml(b.status)}</span></h3><p>Código: ${escapeHtml(b.code||b.id)} · Vence: ${escapeHtml(b.due||'')}</p></div><div class="actions"><button class="btn primary" data-admin-act="${b.id}">Activar</button><button class="btn" data-admin-pause="${b.id}">Pausar</button><button class="btn silver" data-admin-month="${b.id}">+ Mes</button></div></div>`).join('');
     app.innerHTML=`<div class="app"><header class="topbar" style="display:flex"><div class="logoMark"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360 · ADMIN</span><small>Panel de administración</small></div></div><button class="logoutBtn" id="adminLogout">↗</button></header><main class="main"><div class="pageHead"><div><h1>Clientes y negocios</h1><p>Gestiona acceso, estados y vencimientos.</p></div></div><section class="adminList">${rows}</section></main></div>`;
-    $('#adminLogout').onclick=()=>{setSession(null);renderLogin();};
+    $('#adminLogout').onclick=()=>window.click360AppLogout();
     $$('[data-admin-act]').forEach(btn=>btn.onclick=()=>{const b=state.businesses.find(x=>x.id===btn.dataset.adminAct); b.status='activo'; save(); renderAdmin();});
     $$('[data-admin-pause]').forEach(btn=>btn.onclick=()=>{const b=state.businesses.find(x=>x.id===btn.dataset.adminPause); b.status='pausado'; save(); renderAdmin();});
     $$('[data-admin-month]').forEach(btn=>btn.onclick=()=>{const b=state.businesses.find(x=>x.id===btn.dataset.adminMonth); const d=new Date(b.due||Date.now()); d.setMonth(d.getMonth()+1); b.due=d.toISOString().slice(0,10); b.status='activo'; save(); renderAdmin();});
