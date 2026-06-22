@@ -226,52 +226,23 @@ function parseMoney(value) {
       const scan = u.hash.startsWith('#scan=') ? decodeURIComponent(u.hash.slice(6)) : '';
       if (scan) return normalizeCode(scan);
     } catch {}
-    return s.replace(/[^a-zA-Z0-9_-]/g,'').toUpperCase();
+    return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
   }
 
   function renderLogin(message='') {
     stopScanner();
     app.innerHTML = `
       <main class="loginPage">
-        <section class="loginShell">
+        <section class="loginShell" style="text-align:center;">
           <div class="loginBrand">
-            <div class="logoIcon"></div>
-            <div class="logoText"><b>CLICK</b><span>360</span></div>
-            <p>Control total de tu negocio</p>
+            <div class="logoIcon" style="margin: 0 auto;"></div>
+            <div class="logoText" style="margin-top:20px;"><b>CLICK</b><span>360</span></div>
           </div>
-          <form id="loginForm" class="card loginCard">
-            <div class="roleTabs">
-              <button type="button" data-role="business" class="active">▣ Negocio</button>
-              <button type="button" data-role="admin">⬡ Admin</button>
-            </div>
-            <input type="hidden" id="loginRole" value="business" />
-            <div class="field"><label>Usuario</label><input id="user" autocomplete="username" /></div>
-            <div class="field"><label>Contraseña</label><input id="pass" type="password" autocomplete="current-password" /></div>
-            <div id="loginError" class="errorBox ${message ? 'show':''}">${escapeHtml(message || 'Datos incorrectos. Revisa tu usuario o contraseña.')}</div>
-            <button class="btn primary block" type="submit">Entrar</button>
-            <p class="hint">Acceso interno de prueba. Para clientes finales se crean usuarios propios.</p>
-          </form>
+          <div style="margin-top:30px;color:var(--gold);font-weight:bold;">
+            ${escapeHtml(message || 'Validando seguridad...')}
+          </div>
         </section>
       </main>`;
-    $$('.roleTabs button').forEach(btn => btn.onclick = () => {
-      $$('.roleTabs button').forEach(b=>b.classList.remove('active'));
-      btn.classList.add('active'); $('#loginRole').value = btn.dataset.role;
-    });
-    $('#loginForm').onsubmit = e => {
-      e.preventDefault();
-      const username=$('#user').value.trim(), password=$('#pass').value, selected=$('#loginRole').value;
-      const user=state.users.find(u=>u.username===username && u.password===password);
-      if(!user || (selected==='admin' && user.role!=='admin') || (selected==='business' && user.role==='admin')) {
-        beep('err'); $('#loginError').classList.add('show'); return;
-      }
-      setSession({username:user.username, role:user.role});
-      if(user.role==='admin') renderAdmin();
-      else {
-        const allowed=state.businesses.find(b=>user.businessIds.includes(b.id)) || state.businesses[0];
-        state.activeBusinessId=allowed.id; save();
-        renderApp('home');
-      }
-    };
   }
 
   function renderPaused(b) {
@@ -368,7 +339,13 @@ function parseMoney(value) {
           </div>
         </div>
         <div class="card cartPanel"><h3>Carrito</h3><div id="cartItems"><p class="empty">Vacío. Agrega productos para vender.</p></div>
-          <div class="formGrid"><div class="field"><label>Descuento</label><input id="discount" value="0" inputmode="decimal" /></div><div class="field"><label>Método</label><select id="payMethod"><option>Efectivo</option><option>Transferencia</option><option>Tarjeta</option><option>Crédito</option></select></div><div class="field full"><label>Cliente (opcional)</label><input id="customer" /></div></div>
+          <div class="formGrid">
+            <div class="field"><label>Descuento</label><input id="discount" value="0" inputmode="decimal" /></div>
+            <div class="field"><label>Método</label><select id="payMethod"><option value="Efectivo">Efectivo</option><option value="Transferencia">Transferencia</option><option value="Tarjeta">Tarjeta</option><option value="Pendiente">Pendiente</option><option value="Apartado">Apartado</option></select></div>
+            <div class="field" id="receivedField" style="display:none;"><label>Efectivo Recibido</label><input id="cashReceived" inputmode="decimal" /></div>
+            <div class="field" id="changeField" style="display:none;"><label>Vuelto</label><input id="cashChange" readonly style="background:#111;color:var(--gold);" /></div>
+            <div class="field full"><label>Cliente (opcional)</label><input id="customer" /></div>
+          </div>
           <div class="totalRow"><div><small>Total</small><strong id="cartTotal">$0.00</strong></div><button class="btn primary" id="chargeBtn">Cobrar</button></div>
         </div>
       </section>`;
@@ -384,18 +361,35 @@ function parseMoney(value) {
     return `<div class="pageHead"><div><h1>Caja diaria</h1><p>Ingresos, egresos y cierre del día.</p></div><button class="btn primary" id="newMove">＋ Movimiento</button></div>
       <section class="grid cashGrid"><div class="card kpi"><small>Ingresos</small><strong class="goldText">${fmt(income)}</strong></div><div class="card kpi"><small>Egresos</small><strong>${fmt(out)}</strong></div><div class="card kpi"><small>Saldo</small><strong class="goldText">${fmt(income-out)}</strong></div><div class="card kpi"><small>Gastos</small><strong>${fmt(expenses)}</strong></div><div class="card kpi"><small>Compras</small><strong>${fmt(compras)}</strong></div><div class="card kpi"><small>Retiros</small><strong>${fmt(retiros)}</strong></div></section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Movimientos de hoy</h3><div class="movementList">${mov.slice().reverse().map(m=>`<div class="movement"><span>${escapeHtml(labelKind(m.kind))}<br><small>${escapeHtml(m.note||'')}</small></span><b class="${m.kind==='ingreso'?'pos':'neg'}">${m.kind==='ingreso'?'+':'−'}${fmt(m.amount)}</b></div>`).join('') || '<p class="empty">No hay movimientos.</p>'}</div></section>
-      <button class="btn silver block" style="margin-top:14px" id="closeDay">Cerrar día / imprimir</button>`;
+      <button class="btn silver block" style="margin-top:14px" id="closeDayBtn">Cerrar día</button>`;
   }
   function labelKind(k){ return ({ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
 
   function reportsView() {
-    const sales=salesForBiz(), total=sales.reduce((a,s)=>a+s.total,0), tickets=sales.length;
-    const counts={}; sales.forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
+    const sales=salesForBiz(), tickets=sales.length;
+    // Calculate total taking into account statuses
+    const total=sales.filter(s=>s.status==='paid'||s.status==='layaway').reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
+    const counts={}; sales.filter(s=>s.status!=='cancelled').forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
     const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
     return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div><button class="btn silver" onclick="window.print()">▣ Imprimir</button></div>
-      <section class="grid cashGrid"><div class="card kpi"><small>Ventas</small><strong class="goldText">${fmt(total)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio</small><strong>${fmt(tickets?total/tickets:0)}</strong></div></section>
+      <section class="grid cashGrid"><div class="card kpi"><small>Ingreso Ventas</small><strong class="goldText">${fmt(total)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio</small><strong>${fmt(tickets?total/tickets:0)}</strong></div></section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>${sales.slice().reverse().map(s=>`<div class="movement"><span>${escapeHtml(s.when)}<br><small>${s.items.length} items · ${escapeHtml(s.method)} ${s.customer?'· '+escapeHtml(s.customer):''}</small></span><b class="goldText">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>`;
+      <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
+        ${sales.slice().reverse().map(s=>`
+        <div class="movement" style="flex-direction:column; gap:8px;">
+          <div style="display:flex; justify-content:space-between; width:100%;">
+             <span>${escapeHtml(s.when)}<br>
+               <small>${s.items.length} items · ${escapeHtml(s.method)} ${s.customer?'· '+escapeHtml(s.customer):''}</small><br>
+               <span class="badge ${s.status==='cancelled'?'danger':'gold'}">${s.status==='cancelled'?'Anulada':s.status==='pending_payment'?'Pendiente':s.status==='layaway'?'Apartado':'Pagada'}</span>
+             </span>
+             <b class="${s.status==='cancelled'?'neg':'goldText'}">${fmt(s.total)}</b>
+          </div>
+          <div style="display:flex; gap:8px; align-self:flex-end;">
+            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${s.id}')">Imprimir</button>
+            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.cancelSale('${s.id}')">Anular</button>` : ''}
+          </div>
+        </div>`).join('') || '<p class="empty">Sin ventas.</p>'}
+      </section>`;
   }
 
   function moreView(){
@@ -457,7 +451,10 @@ function parseMoney(value) {
           <label>Imagen del producto (opcional)</label>
           <div class="imagePicker">
             <div id="imagePreview">${p.imageData ? `<img src="${p.imageData}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
-            <label class="btn silver"><input type="file" id="pImage" accept="image/*" capture="environment" hidden>Tomar / subir foto</label>
+            <div style="display:flex; gap:8px;">
+               <label class="btn silver"><input type="file" id="pImageCam" accept="image/*" capture="environment" hidden>Tomar foto</label>
+               <label class="btn silver"><input type="file" id="pImageGal" accept="image/*" hidden>Galería</label>
+            </div>
             ${p.imageData ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
           </div>
         </div>
@@ -471,10 +468,12 @@ function parseMoney(value) {
         <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button>
       </form>`);
     let imageData = p.imageData || '';
-    $('#pImage').onchange = e => readImageInput(e.target, data => {
+    const imgHandler = e => readImageInput(e.target, data => {
       imageData = data;
       $('#imagePreview').innerHTML = data ? `<img src="${data}" alt="Imagen del producto">` : '<span>Sin imagen</span>';
     });
+    $('#pImageCam').onchange = imgHandler;
+    $('#pImageGal').onchange = imgHandler;
     $('#removeImage')?.addEventListener('click',()=>{ imageData=''; $('#imagePreview').innerHTML='<span>Sin imagen</span>'; });
     $('#productForm').onsubmit=e=>{
       e.preventDefault();
@@ -505,13 +504,43 @@ function parseMoney(value) {
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
       $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); if(it.qty>=p.qty)return toast('No hay más stock','err'); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
+      
+      const method = $('#payMethod').value;
+      const recF = $('#receivedField'), chgF = $('#changeField');
+      if (method === 'Efectivo') {
+        recF.style.display = 'grid'; chgF.style.display = 'grid';
+        const rec = parseMoney($('#cashReceived').value);
+        if(Number.isFinite(rec) && rec >= total) {
+           $('#cashChange').value = fmt(rec - total);
+        } else {
+           $('#cashChange').value = '$0.00';
+        }
+      } else if(method === 'Apartado') {
+        recF.style.display = 'grid'; chgF.style.display = 'grid';
+        $('#receivedField label').textContent = 'Abono Inicial';
+        $('#changeField label').textContent = 'Saldo Pendiente';
+        const rec = parseMoney($('#cashReceived').value);
+        if(Number.isFinite(rec)) {
+           $('#cashChange').value = fmt(Math.max(0, total - rec));
+        } else {
+           $('#cashChange').value = fmt(total);
+        }
+      } else {
+        recF.style.display = 'none'; chgF.style.display = 'none';
+        $('#receivedField label').textContent = 'Efectivo Recibido';
+        $('#changeField label').textContent = 'Vuelto';
+      }
     };
+    
+    $('#payMethod').onchange = renderCart;
+    $('#cashReceived').oninput = renderCart;
+
     const addProduct=(input)=>{
       const code=normalizeCode(input).toUpperCase().trim();
-      let p=productsForBiz().find(x=>x.code.toUpperCase()===code);
+      let p=productsForBiz().find(x=>normalizeCode(x.code)===code);
       if(!p){
         const possible = String(input||'').toUpperCase().match(/[A-Z0-9_-]{3,17}/g) || [];
-        p = productsForBiz().find(x=>possible.includes(x.code.toUpperCase()));
+        p = productsForBiz().find(x=>possible.includes(normalizeCode(x.code)));
       }
       if(!p){ beep('err'); return toast(`Producto no encontrado: ${code || 'sin código'}`,'err'); }
       if(p.qty<=0){ beep('err'); return toast('Sin stock disponible','err'); }
@@ -533,11 +562,35 @@ function parseMoney(value) {
       if(disc>subtotal){ beep('err'); return toast('El descuento supera el subtotal','err'); }
       for(const i of cart){ const p=state.products.find(p=>p.id===i.id); if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); } }
       const total=Math.max(0, subtotal-disc);
-      const sale={id:uid('sale'),businessId:currentBusiness().id,date:today(),when:nowLabel(),items:cart.map(i=>({...i})),subtotal,discount:disc,total,method:$('#payMethod').value,customer:$('#customer').value.trim(),user:session.username};
+      
+      const method = $('#payMethod').value;
+      const rec = parseMoney($('#cashReceived').value);
+      let received = 0; let change = 0; let balance = 0;
+      let status = "paid";
+
+      if(method === 'Efectivo') {
+         if(!Number.isFinite(rec) || rec < total) { beep('err'); return toast('Efectivo recibido es menor al total','err'); }
+         received = rec; change = rec - total;
+      } else if (method === 'Apartado') {
+         if(!Number.isFinite(rec) || rec < 0) { beep('err'); return toast('Monto de abono inválido','err'); }
+         received = rec; balance = total - rec; status = 'layaway';
+      } else if (method === 'Pendiente') {
+         status = 'pending_payment';
+      } else {
+         received = total;
+      }
+
+      const sale={id:uid('sale'),businessId:currentBusiness().id,date:today(),when:nowLabel(),items:cart.map(i=>({...i})),subtotal,discount:disc,total,method,customer:$('#customer').value.trim(),user:session.username, status, received, change, balance};
       state.sales.push(sale);
       cart.forEach(i=>{ const p=state.products.find(p=>p.id===i.id); p.qty-=i.qty; });
-      state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:total,note:`Venta ${sale.method}`,user:session.username});
-      save(); cart=[]; renderCart(); beep('sale'); toast(`Venta registrada · ${fmt(total)}`);
+      
+      // Registramos movimiento de caja real (para ingresos y abonos)
+      let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
+      if(movAmount > 0) {
+        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:session.username, saleId: sale.id});
+      }
+      
+      save(); cart=[]; renderCart(); $('#cashReceived').value=''; beep('sale'); toast(`Venta registrada · ${fmt(total)}`);
     };
   }
 
@@ -672,27 +725,42 @@ function parseMoney(value) {
     return text ? text : null;
   }
 
-  async function startScanner(onCode){
+  let currentFacingMode = 'environment';
+  async function startScanner(onCode, toggleMode=false){
+    if(toggleMode) currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
     const panel=$('#cameraPanel'), video=$('#scanVideo'), status=$('#cameraStatus');
     panel.classList.add('show');
     if(!$('#scanUpload')){
       const input=document.createElement('input');
       input.type='file'; input.accept='image/*'; input.id='scanUpload'; input.style.display='none';
       panel.appendChild(input);
+      
+      const btnRow = document.createElement('div');
+      btnRow.style.display = 'flex'; btnRow.style.gap = '10px'; btnRow.style.margin = '10px';
+      
       const uploadBtn=document.createElement('button');
       uploadBtn.className='btn silver block';
       uploadBtn.id='scanUploadBtn';
-      uploadBtn.textContent='Leer QR desde foto';
-      uploadBtn.style.margin='10px';
-      panel.appendChild(uploadBtn);
+      uploadBtn.textContent='Leer foto';
       uploadBtn.onclick=()=>input.click();
+      
+      const toggleBtn=document.createElement('button');
+      toggleBtn.className='btn silver block';
+      toggleBtn.id='scanToggleBtn';
+      toggleBtn.textContent='Girar cámara';
+      toggleBtn.onclick=()=>startScanner(onCode, true);
+      
+      btnRow.appendChild(uploadBtn);
+      btnRow.appendChild(toggleBtn);
+      panel.appendChild(btnRow);
+      
       input.onchange=e=>scanImageFile(e.target.files?.[0], onCode);
     }
     status.textContent='Solicitando permiso de cámara...';
     try{
       stopScanner(false);
       if(!navigator.mediaDevices?.getUserMedia) throw new Error('camera unavailable');
-      scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+      scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:currentFacingMode}});
       video.srcObject=scanStream; await video.play();
       status.textContent='Apunta al QR de la etiqueta. Si no lo lee, escribe el código que aparece debajo.';
       const canvas=document.createElement('canvas');
@@ -773,7 +841,54 @@ function parseMoney(value) {
   function bindCash(){
     $('#newMove').onclick=()=>showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><input id="mAmount" inputmode="decimal" value="0"></div><div class="field"><label>Nota</label><input id="mNote"></div><button class="btn primary block">Guardar</button></form>`);
     document.addEventListener('submit', moveSubmit, {once:true});
-    $('#closeDay').onclick=()=>{ window.print(); toast('Cierre listo para imprimir'); };
+    $('#closeDayBtn').onclick=()=>{
+      showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
+        <form id="closeDayForm" class="formGrid">
+          <div class="field full"><label>Caja Inicial</label><input id="cajaInicial" value="0" inputmode="decimal"></div>
+          <div class="field full"><label>Efectivo Físico (Contado)</label><input id="efectivoFisico" value="0" inputmode="decimal"></div>
+          <div class="field full"><label>Observaciones</label><input id="cierreObs"></div>
+          <button class="btn silver" type="button" data-close>Cancelar</button>
+          <button class="btn primary block" type="submit">Generar Cierre</button>
+        </form>`);
+      $('#closeDayForm').onsubmit = (e) => {
+         e.preventDefault();
+         const cInicial = parseMoney($('#cajaInicial').value);
+         const eFisico = parseMoney($('#efectivoFisico').value);
+         if(!Number.isFinite(cInicial) || !Number.isFinite(eFisico)){ return toast('Montos inválidos', 'err'); }
+         
+         const mov=movementsForBiz().filter(m=>m.date===today());
+         const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
+         const out=mov.filter(m=>m.kind!=='ingreso').reduce((a,m)=>a+m.amount,0);
+         const balanceCalculado = cInicial + income - out;
+         const diferencia = eFisico - balanceCalculado;
+         
+         const html = `
+          <!doctype html><html><head><title>Cierre de Caja - CLICK360</title>
+          <style>body{font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px;} h2{font-size:16px; margin:0 0 10px; text-align:center;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px dashed #000; margin:8px 0;}</style>
+          </head><body>
+          <h2>${escapeHtml(currentBusiness().name)}</h2>
+          <div style="text-align:center; margin-bottom:10px;">Cierre de Día<br>${nowLabel()}</div>
+          <div class="row"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
+          <div class="row"><span>Ingresos Totales:</span><span>${fmt(income)}</span></div>
+          <div class="row"><span>Egresos/Retiros:</span><span>${fmt(out)}</span></div>
+          <div class="line"></div>
+          <div class="row"><b>Balance Calculado:</b><b>${fmt(balanceCalculado)}</b></div>
+          <div class="row"><span>Efectivo en Caja:</span><span>${fmt(eFisico)}</span></div>
+          <div class="line"></div>
+          <div class="row"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
+          <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
+          <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(currentUser()?.label || 'Usuario')}</div>
+          <script>setTimeout(()=>window.print(),500);</script>
+          </body></html>`;
+         
+         closeModal();
+         const w = window.open("", "_blank");
+         if(!w) return alert("Permite ventanas emergentes para imprimir.");
+         w.document.write(html);
+         w.document.close();
+         toast('Cierre del día generado');
+      };
+    };
   }
   function moveSubmit(e){ if(e.target.id!=='moveForm')return; e.preventDefault(); const amount=parseMoney($('#mAmount').value); if(!Number.isFinite(amount)||amount<0)return toast('Monto inválido','err'); state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:$('#mKind').value,amount,note:$('#mNote').value.trim(),user:session.username}); save(); closeModal(); renderApp('cash'); toast('Movimiento registrado'); }
   function bindMore(){ $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more)); $('#logoutMore')?.addEventListener('click',()=>{setSession(null);renderLogin();}); }
@@ -824,6 +939,66 @@ function parseMoney(value) {
 
   function downloadBackup(){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{type:'application/json'})); a.download=`click360-respaldo-${today()}.json`; a.click(); toast('Respaldo guardado'); }
   function restoreBackup(e){ const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{state=normalizeState(JSON.parse(reader.result));save();renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file); }
+
+  window.cancelSale = function(saleId) {
+    if(!confirm('¿Seguro que deseas anular esta venta? Esto no se puede deshacer y devolverá el stock.')) return;
+    const sale = state.sales.find(s=>s.id === saleId);
+    if(!sale) return toast('Venta no encontrada', 'err');
+    
+    // Devolver stock
+    sale.items.forEach(i => {
+       const p = state.products.find(prod=>prod.id === i.id);
+       if(p) p.qty += i.qty;
+    });
+    
+    sale.status = 'cancelled';
+    
+    // Anular movimiento si existe
+    const mov = state.movements.find(m => m.saleId === sale.id);
+    if(mov) mov.amount = 0; // Opcional: o borrarlo, pero es mejor ponerlo en 0 para registro
+    
+    state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'retiro',amount:0,note:`Venta anulada ${saleId}`,user:session.username});
+    
+    save();
+    renderApp('reports');
+    toast('Venta anulada y stock devuelto');
+  };
+
+  window.printReceipt = function(saleId) {
+    const sale = state.sales.find(s=>s.id === saleId);
+    if(!sale) return;
+    
+    const html = `
+      <!doctype html><html><head><title>Comprobante de Venta</title>
+      <style>body{font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm;} h2{font-size:16px; margin:0 0 10px; text-align:center;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px dashed #000; margin:8px 0;} table{width:100%; border-collapse:collapse;} th,td{text-align:left; padding:2px 0; border-bottom:1px dashed #ccc;} .total{font-size:14px; font-weight:bold;}</style>
+      </head><body>
+      <h2>${escapeHtml(currentBusiness().name)}</h2>
+      <div style="text-align:center; margin-bottom:10px;">${escapeHtml(sale.when)}</div>
+      <div class="row"><span>Atiende:</span><span>${escapeHtml(sale.user || '')}</span></div>
+      ${sale.customer ? `<div class="row"><span>Cliente:</span><span>${escapeHtml(sale.customer)}</span></div>` : ''}
+      <div class="row"><span>Estado:</span><span>${escapeHtml(sale.status||'Pagada')}</span></div>
+      <div class="line"></div>
+      <table>
+        <tr><th>Cant</th><th>Item</th><th>Total</th></tr>
+        ${sale.items.map(i=>`<tr><td>${i.qty}</td><td>${escapeHtml(i.name)}</td><td>${fmt(i.qty * i.price)}</td></tr>`).join('')}
+      </table>
+      <div class="line"></div>
+      <div class="row"><span>Subtotal:</span><span>${fmt(sale.subtotal)}</span></div>
+      ${sale.discount > 0 ? `<div class="row"><span>Descuento:</span><span>-${fmt(sale.discount)}</span></div>` : ''}
+      <div class="row total"><span>TOTAL:</span><span>${fmt(sale.total)}</span></div>
+      <div class="row"><span>Pago (${escapeHtml(sale.method)}):</span><span>${fmt(sale.received || sale.total)}</span></div>
+      ${sale.change > 0 ? `<div class="row"><span>Vuelto:</span><span>${fmt(sale.change)}</span></div>` : ''}
+      ${sale.balance > 0 ? `<div class="row"><span>Saldo Pendiente:</span><span>${fmt(sale.balance)}</span></div>` : ''}
+      <div class="line"></div>
+      <div style="text-align:center; font-size:10px; margin-top:10px;">Comprobante interno de venta. No válido como factura electrónica.</div>
+      <script>setTimeout(()=>window.print(),500);</script>
+      </body></html>`;
+      
+    const w = window.open("", "_blank");
+    if(!w) return alert("Permite ventanas emergentes para imprimir.");
+    w.document.write(html);
+    w.document.close();
+  };
 
   function runQa(){
     const results=[]; const ok=(name,cond)=>results.push(`${cond?'PASS':'FAIL'} ${name}`);
