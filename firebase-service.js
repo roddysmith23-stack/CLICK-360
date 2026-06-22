@@ -147,7 +147,17 @@
     if (!user) return false;
     try {
       const doc = await db.collection("approvedUsers").doc(user.uid).get();
-      return doc.exists && doc.data().status === "active";
+      if (doc.exists && doc.data().status === "active") {
+        const d = doc.data();
+        window.click360User = {
+          uid: user.uid,
+          email: user.email || d.email,
+          role: d.role || "worker",
+          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario")
+        };
+        return true;
+      }
+      return false;
     } catch(e) {
       console.error("Error al verificar aprobación", e);
       return false;

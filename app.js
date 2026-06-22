@@ -132,15 +132,15 @@ function parseMoney(value) {
   }
 
   function currentUser(){ return session ? state.users.find(u=>u.username===session.username) : null; }
+  function authUser() { return window.click360User || { name: 'Sistema', role: 'owner', email: '' }; }
   function currentBusiness(){ return state.businesses.find(b=>b.id===state.activeBusinessId) || state.businesses[0]; }
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
   function can(section) {
-    const role = currentUser()?.role;
+    const role = authUser().role;
     if (role === 'owner') return true;
-    if (role === 'cashier') return ['home','sell','cash','more','reports'].includes(section);
-    if (role === 'inventory') return ['home','inventory','more','reports','settings'].includes(section);
+    if (role === 'worker') return true; // Para esta iteración, los trabajadores pueden hacer todo, pero dejan rastro.
     return false;
   }
   function checkAuth(required='business') {
@@ -276,7 +276,13 @@ function parseMoney(value) {
     return ['home','inventory','sell','cash','more'];
   }
   function navButtons(active, side=false) {
-    const items=[['home','⌂','Inicio'],['inventory','▧','Inventario'],['sell','🛒','Vender'],['cash','▣','Caja'],['more','⋯','Más']].filter(x=>allowedRoutes().includes(x[0]));
+    const items = [
+      ['home', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>', 'Inicio'],
+      ['inventory', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>', 'Inventario'],
+      ['sell', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>', 'Vender'],
+      ['cash', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg>', 'Caja'],
+      ['more', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>', 'Más']
+    ].filter(x=>allowedRoutes().includes(x[0]));
     return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}">${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${label}</span></button>`).join('');
   }
   function bottomNav(active){ return `<nav class="bottomNav">${navButtons(active)}</nav>`; }
@@ -377,7 +383,7 @@ function parseMoney(value) {
     const out=expenses+compras+retiros;
     return `<div class="pageHead"><div><h1>Caja diaria</h1><p>Ingresos, egresos y cierre del día.</p></div><button class="btn primary" id="newMove">＋ Movimiento</button></div>
       <section class="grid cashGrid"><div class="card kpi"><small>Ingresos</small><strong class="goldText">${fmt(income)}</strong></div><div class="card kpi"><small>Egresos</small><strong>${fmt(out)}</strong></div><div class="card kpi"><small>Saldo</small><strong class="goldText">${fmt(income-out)}</strong></div><div class="card kpi"><small>Gastos</small><strong>${fmt(expenses)}</strong></div><div class="card kpi"><small>Compras</small><strong>${fmt(compras)}</strong></div><div class="card kpi"><small>Retiros</small><strong>${fmt(retiros)}</strong></div></section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Movimientos de hoy</h3><div class="movementList">${mov.slice().reverse().map(m=>`<div class="movement"><span>${escapeHtml(labelKind(m.kind))}<br><small>${escapeHtml(m.note||'')}</small></span><b class="${m.kind==='ingreso'?'pos':'neg'}">${m.kind==='ingreso'?'+':'−'}${fmt(m.amount)}</b></div>`).join('') || '<p class="empty">No hay movimientos.</p>'}</div></section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Movimientos de hoy</h3><div class="movementList">${mov.slice().reverse().map(m=>`<div class="movement"><span>${escapeHtml(labelKind(m.kind))}<br><small>${escapeHtml(m.note||'')}</small><br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||'Sistema')}</span></span><b class="${m.kind==='ingreso'?'pos':'neg'}">${m.kind==='ingreso'?'+':'−'}${fmt(m.amount)}</b></div>`).join('') || '<p class="empty">No hay movimientos.</p>'}</div></section>
       <button class="btn silver block" style="margin-top:14px" id="closeDayBtn">Cerrar día</button>`;
   }
   function labelKind(k){ return ({ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
@@ -400,6 +406,7 @@ function parseMoney(value) {
              <span>${escapeHtml(s.when)}<br>
                <small>${s.items.length} items · ${escapeHtml(s.method)} ${s.customer?'· '+escapeHtml(s.customer):''}</small><br>
                <span class="badge ${s.status==='cancelled'?'danger':'gold'}">${s.status==='cancelled'?'Anulada':s.status==='pending_payment'?'Pendiente':s.status==='layaway'?'Apartado':'Pagada'}</span>
+               <br><small style="font-size:10px;color:var(--gold);">🧑‍💻 ${escapeHtml(s.createdBy||'Sistema')}</small>
              </span>
              <b class="${s.status==='cancelled'?'neg':'goldText'}">${fmt(s.total)}</b>
           </div>
@@ -540,12 +547,12 @@ function parseMoney(value) {
       if(!Number.isFinite(cost)||cost<0) return toast('Costo inválido','err');
       if(!Number.isFinite(price)||price<0) return toast('Precio inválido','err');
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
-      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim(),imageData});
-      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date().toISOString()});
+      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name});
+      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date().toISOString(), createdBy: authUser().name});
       save(); closeModal(); renderApp('inventory'); toast(product?'Actualizado':'Producto creado');
     };
   }
-  function deleteProduct(id){ if(confirm('¿Borrar este registro?')){ state.products=state.products.filter(p=>p.id!==id); save(); renderApp('inventory'); toast('Eliminado'); } }
+  function deleteProduct(id){ if(confirm('¿Borrar este registro?')){ const p=state.products.find(x=>x.id===id); if(p) { state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name}); } state.products=state.products.filter(x=>x.id!==id); save(); renderApp('inventory'); toast('Eliminado'); } }
 
   function bindSell(){
     let cart=[];
@@ -660,14 +667,14 @@ function parseMoney(value) {
          received = total;
       }
 
-      const sale={id:uid('sale'),businessId:currentBusiness().id,date:today(),when:nowLabel(),items:cart.map(i=>({...i})),subtotal,discount:disc,total,method,customer:$('#customer').value.trim(),user:session.username, status, received, change, balance};
+      const sale={id:uid('sale'),businessId:currentBusiness().id,date:today(),when:nowLabel(),items:cart.map(i=>({...i})),subtotal,discount:disc,total,method,customer:$('#customer').value.trim(),user:session.username, status, received, change, balance, createdBy: authUser().name};
       state.sales.push(sale);
       cart.forEach(i=>{ const p=state.products.find(p=>p.id===i.id); p.qty-=i.qty; });
       
       // Registramos movimiento de caja real (para ingresos y abonos)
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
-        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:session.username, saleId: sale.id});
+        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:session.username, saleId: sale.id, createdBy: authUser().name});
       }
       
       save(); cart=[]; renderCart(); $('#cashReceived').value=''; beep('sale'); toast(`Venta registrada · ${fmt(total)}`);
@@ -919,8 +926,17 @@ function parseMoney(value) {
   function stopScanner(hide=true){ if(scanTimer) clearInterval(scanTimer); scanTimer=null; if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } const p=$('#cameraPanel'); if(p&&hide)p.classList.remove('show'); }
 
   function bindCash(){
-    $('#newMove').onclick=()=>showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><input id="mAmount" inputmode="decimal" value="0"></div><div class="field"><label>Nota</label><input id="mNote"></div><button class="btn primary block">Guardar</button></form>`);
-    document.addEventListener('submit', moveSubmit, {once:true});
+    $('#newMove').onclick=()=>{
+      showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><input id="mAmount" inputmode="decimal" value="0"></div><div class="field"><label>Nota</label><input id="mNote" required></div><button type="submit" class="btn primary block">Guardar</button></form>`);
+      $('#moveForm').onsubmit = (e) => {
+        e.preventDefault();
+        const k=$('#mKind').value, a=parseMoney($('#mAmount').value), n=$('#mNote').value.trim();
+        if(!Number.isFinite(a)||a<=0) return toast('Monto inválido','err');
+        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:k,amount:a,note:n, createdBy: authUser().name});
+        save();
+        closeModal(); renderApp('cash'); toast('Guardado');
+      };
+    };
     $('#closeDayBtn').onclick=()=>{
       showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
         <form id="closeDayForm" class="formGrid">
@@ -1138,7 +1154,7 @@ function parseMoney(value) {
       <h3 style="margin-top:10px;">Historial de Tickets Hoy</h3>
       <table style="width:100%; border-collapse:collapse; margin-top:10px;">
         <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Hora</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Vendedor</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Método</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Estado</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Total</th></tr>
-        ${sales.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.when.split(' ')[1] || s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.user)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.method)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.status)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
+        ${sales.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.when.split(' ')[1] || s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.createdBy || s.user || 'Sistema')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.method)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.status)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
       </table></div>`;
       
     const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
