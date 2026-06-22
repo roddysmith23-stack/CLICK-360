@@ -431,11 +431,9 @@
       } catch (err) {
         console.warn("Popup falló:", err.message);
         if (err.code === 'auth/popup-blocked') {
-          if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> para CLICK 360.";
-          // As a last resort, try redirect
-          await auth.signInWithRedirect(providerGoogle());
+          if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> o intenta desde Chrome/Safari normal.";
         } else if (err.code !== 'auth/popup-closed-by-user') {
-          await auth.signInWithRedirect(providerGoogle());
+          if (msg) msg.innerHTML = "Error al iniciar sesión con Google. Intenta abrir la app directamente desde Safari o Chrome.<br><br>Error: " + err.message;
         }
       }
     } catch (e) {
@@ -493,11 +491,6 @@
 
     showGate("Verificando acceso Google...");
 
-    try {
-      await auth.getRedirectResult();
-    } catch (e) {
-      console.warn("Redirect error:", e.message);
-    }
 
     auth.onAuthStateChanged(async user => {
       if (!user) {

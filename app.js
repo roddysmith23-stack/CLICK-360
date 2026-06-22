@@ -712,7 +712,7 @@ function parseMoney(value) {
           <div class="imagePicker">
             <div id="imagePreview">${p.imageData ? `<img src="${p.imageData}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
             <div style="display:flex; gap:8px;">
-               <label class="btn silver"><input type="file" id="pImageCam" accept="image/jpeg,image/png" capture="camera" hidden>Tomar foto</label>
+               <label class="btn silver"><input type="file" id="pImageCam" accept="image/jpeg,image/png" capture="environment" hidden>Tomar foto</label>
                <label class="btn silver"><input type="file" id="pImageGal" accept="image/*" hidden>Galería</label>
             </div>
             ${p.imageData ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
