@@ -416,15 +416,16 @@
     const msg = document.getElementById("c360-auth-msg");
     try {
       if (msg) msg.textContent = "Abriendo Google...";
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
-      if (isMobile) {
-        await auth.signInWithRedirect(providerGoogle());
-      } else {
-        try {
-          await auth.signInWithPopup(providerGoogle());
-        } catch (e) {
-          console.warn("Popup falló, usando redirect:", e.message);
+      
+      try {
+        await auth.signInWithPopup(providerGoogle());
+      } catch (err) {
+        console.warn("Popup falló:", err.message);
+        if (err.code === 'auth/popup-blocked') {
+          if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> para CLICK 360.";
+          // As a last resort, try redirect
+          await auth.signInWithRedirect(providerGoogle());
+        } else if (err.code !== 'auth/popup-closed-by-user') {
           await auth.signInWithRedirect(providerGoogle());
         }
       }
