@@ -289,6 +289,7 @@ function parseMoney(value) {
     if(!checkAuth('business')) return;
     if(!can(r)) r='home';
     stopScanner(); route=r;
+    history.replaceState(null, '', '#' + r);
     const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView};
     app.innerHTML=shell((views[r]||homeView)(), r);
     bindShell(); bindView(r);
@@ -332,10 +333,18 @@ function parseMoney(value) {
       <section class="sellWrap">
         <div class="card scanBox">
           <div class="scanRows">
-            <div class="searchBox"><input id="sellSearch" placeholder="Buscar por nombre..." /></div>
-            <div class="manualRow"><input id="manualCode" placeholder="Código manual / QR" /><button class="btn silver" id="addCode">Agregar</button><button class="iconBtn" id="openCamera" title="Escanear QR">📷</button></div>
+            <div class="searchBox"><input id="sellSearch" placeholder="Buscar por nombre o código..." /></div>
+            <div class="manualRow">
+               <input id="manualCode" placeholder="Código manual" />
+               <button class="btn silver" id="addCode" title="Agregar a carrito">
+                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+               </button>
+               <button class="iconBtn" id="openCamera" title="Escanear QR">
+                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+               </button>
+            </div>
             <div id="quickProducts" class="productList"></div>
-            <div id="cameraPanel" class="cameraPanel"><video id="scanVideo" playsinline muted></video><div id="cameraStatus" class="cameraStatus">Listo para solicitar cámara.</div></div>
+            <div id="cameraPanel" class="cameraPanel"><video id="scanVideo" playsinline muted></video><div id="cameraStatus" class="cameraStatus">Listo para cámara.</div></div>
           </div>
         </div>
         <div class="card cartPanel"><h3>Carrito</h3><div id="cartItems"><p class="empty">Vacío. Agrega productos para vender.</p></div>
@@ -371,7 +380,9 @@ function parseMoney(value) {
     const total=sales.filter(s=>s.status==='paid'||s.status==='layaway').reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
     const counts={}; sales.filter(s=>s.status!=='cancelled').forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
     const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-    return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div><button class="btn silver" onclick="window.print()">▣ Imprimir</button></div>
+    return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div><button class="btn silver" onclick="window.printReports()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Imprimir
+      </button></div>
       <section class="grid cashGrid"><div class="card kpi"><small>Ingreso Ventas</small><strong class="goldText">${fmt(total)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio</small><strong>${fmt(tickets?total/tickets:0)}</strong></div></section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
@@ -384,9 +395,13 @@ function parseMoney(value) {
              </span>
              <b class="${s.status==='cancelled'?'neg':'goldText'}">${fmt(s.total)}</b>
           </div>
-          <div style="display:flex; gap:8px; align-self:flex-end;">
-            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${s.id}')">Imprimir</button>
-            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.cancelSale('${s.id}')">Anular</button>` : ''}
+          <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
+            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${s.id}')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Ticket
+            </button>
+            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.cancelSale('${s.id}')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg> Anular
+            </button>` : ''}
           </div>
         </div>`).join('') || '<p class="empty">Sin ventas.</p>'}
       </section>`;
@@ -500,7 +515,7 @@ function parseMoney(value) {
       const subtotal=cart.reduce((a,i)=>a+i.price*i.qty,0), disc=parseMoney($('#discount')?.value||0);
       const total=Math.max(0, subtotal - (Number.isFinite(disc)?disc:0));
       $('#cartTotal').textContent=fmt(total);
-      $('#cartItems').innerHTML=cart.length?cart.map(i=>`<div class="cartItem cartWithImage">${i.imageData ? `<img class="productImg small" src="${i.imageData}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button data-minus="${i.id}">−</button><b>${i.qty}</b><button data-plus="${i.id}">＋</button><button class="iconBtn danger" data-remove="${i.id}">🗑</button></div></div>`).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
+      $('#cartItems').innerHTML=cart.length?cart.map(i=>`<div class="cartItem cartWithImage">${i.imageData ? `<img class="productImg small" src="${i.imageData}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button data-minus="${i.id}">−</button><b>${i.qty}</b><button data-plus="${i.id}">＋</button><button class="iconBtn danger" data-remove="${i.id}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
       $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); if(it.qty>=p.qty)return toast('No hay más stock','err'); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
@@ -861,21 +876,35 @@ function parseMoney(value) {
          const out=mov.filter(m=>m.kind!=='ingreso').reduce((a,m)=>a+m.amount,0);
          const balanceCalculado = cInicial + income - out;
          const diferencia = eFisico - balanceCalculado;
+
+         const sales = salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled');
+         const salesEfectivo = sales.filter(s=>s.method==='Efectivo').reduce((a,s)=>a+s.total,0);
+         const salesTarjeta = sales.filter(s=>s.method==='Tarjeta').reduce((a,s)=>a+s.total,0);
+         const salesTransf = sales.filter(s=>s.method==='Transferencia').reduce((a,s)=>a+s.total,0);
+         const abonosApartado = sales.filter(s=>s.method==='Apartado').reduce((a,s)=>a+s.received,0);
          
          const html = `
           <!doctype html><html><head><title>Cierre de Caja - CLICK360</title>
-          <style>body{font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px;} h2{font-size:16px; margin:0 0 10px; text-align:center;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px dashed #000; margin:8px 0;}</style>
+          <style>body{font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm;} h2{font-size:16px; margin:0 0 10px; text-align:center;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px dashed #000; margin:8px 0;}</style>
           </head><body>
           <h2>${escapeHtml(currentBusiness().name)}</h2>
           <div style="text-align:center; margin-bottom:10px;">Cierre de Día<br>${nowLabel()}</div>
           <div class="row"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
-          <div class="row"><span>Ingresos Totales:</span><span>${fmt(income)}</span></div>
-          <div class="row"><span>Egresos/Retiros:</span><span>${fmt(out)}</span></div>
           <div class="line"></div>
-          <div class="row"><b>Balance Calculado:</b><b>${fmt(balanceCalculado)}</b></div>
-          <div class="row"><span>Efectivo en Caja:</span><span>${fmt(eFisico)}</span></div>
+          <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
+          <div class="row"><span>Ventas Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
+          <div class="row"><span>Ventas Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
+          <div class="row"><span>Ventas Transf:</span><span>${fmt(salesTransf)}</span></div>
+          <div class="row"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
           <div class="line"></div>
-          <div class="row"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
+          <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
+          <div class="row"><span>Ingresos Registrados:</span><span style="color:green">+${fmt(income)}</span></div>
+          <div class="row"><span>Egresos/Retiros/Compras:</span><span style="color:red">-${fmt(out)}</span></div>
+          <div class="line"></div>
+          <div class="row" style="font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
+          <div class="row"><span>Efectivo Declarado:</span><span>${fmt(eFisico)}</span></div>
+          <div class="line"></div>
+          <div class="row" style="font-size:13px;"><b>Diferencia (Sobrante/Faltante):</b><b>${fmt(diferencia)}</b></div>
           <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
           <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(currentUser()?.label || 'Usuario')}</div>
           <script>setTimeout(()=>window.print(),500);</script>
@@ -991,6 +1020,44 @@ function parseMoney(value) {
       ${sale.balance > 0 ? `<div class="row"><span>Saldo Pendiente:</span><span>${fmt(sale.balance)}</span></div>` : ''}
       <div class="line"></div>
       <div style="text-align:center; font-size:10px; margin-top:10px;">Comprobante interno de venta. No válido como factura electrónica.</div>
+      <script>setTimeout(()=>window.print(),500);</script>
+      </body></html>`;
+      
+    const w = window.open("", "_blank");
+    if(!w) return alert("Permite ventanas emergentes para imprimir.");
+    w.document.write(html);
+    w.document.close();
+  };
+
+  window.printReports = function() {
+    const sales = salesForBiz().filter(s => s.status!=='cancelled');
+    const total = sales.reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
+    const tickets = sales.length;
+    const counts={}; sales.forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
+    const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    
+    const html = `
+      <!doctype html><html><head><title>Reporte de Ventas</title>
+      <style>body{font-family:sans-serif; color:#000; font-size:12px; margin:0; padding:20px;} h2{font-size:20px; margin:0 0 10px;} .row{display:flex; justify-content:space-between; margin-bottom:4px;} .line{border-top:1px solid #ccc; margin:12px 0;} table{width:100%; border-collapse:collapse; margin-top:10px;} th,td{text-align:left; padding:6px; border-bottom:1px solid #eee;}</style>
+      </head><body>
+      <h2>${escapeHtml(currentBusiness().name)} - Reporte General</h2>
+      <div class="row"><span>Fecha:</span><span>${nowLabel()}</span></div>
+      <div class="line"></div>
+      <div class="row"><span>Ingreso Ventas:</span><strong>${fmt(total)}</strong></div>
+      <div class="row"><span>Tickets:</span><strong>${tickets}</strong></div>
+      <div class="row"><span>Promedio por Ticket:</span><strong>${fmt(tickets?total/tickets:0)}</strong></div>
+      <div class="line"></div>
+      <h3>Productos Más Vendidos</h3>
+      <table>
+        <tr><th>Producto</th><th>Cant. Vendida</th></tr>
+        ${top.map(([n,c])=>`<tr><td>${escapeHtml(n)}</td><td>${c}</td></tr>`).join('')}
+      </table>
+      <div class="line"></div>
+      <h3>Historial de Tickets Hoy</h3>
+      <table>
+        <tr><th>Hora</th><th>Vendedor</th><th>Método</th><th>Estado</th><th>Total</th></tr>
+        ${sales.slice().reverse().map(s=>`<tr><td>${escapeHtml(s.when.split(' ')[1] || s.when)}</td><td>${escapeHtml(s.user)}</td><td>${escapeHtml(s.method)}</td><td>${escapeHtml(s.status)}</td><td>${fmt(s.total)}</td></tr>`).join('')}
+      </table>
       <script>setTimeout(()=>window.print(),500);</script>
       </body></html>`;
       
