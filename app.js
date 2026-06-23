@@ -45,14 +45,14 @@
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const max = 720;
+        const max = 400; // REDUCED TO PREVENT 1MB LIMIT
         const ratio = Math.min(1, max / Math.max(img.width, img.height));
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(img.width * ratio));
         canvas.height = Math.max(1, Math.round(img.height * ratio));
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img,0,0,canvas.width,canvas.height);
-        cb(canvas.toDataURL('image/jpeg', .82));
+        cb(canvas.toDataURL('image/jpeg', 0.6)); // LOWER QUALITY
       };
       img.onerror = () => toast('No se pudo leer la imagen','err');
       img.src = reader.result;
@@ -107,7 +107,18 @@ function parseMoney(value) {
     try { if (navigator.vibrate) navigator.vibrate(kind === 'err' ? [50,30,50] : 35); } catch {}
   }
 
-  function save() { localStorage.setItem(LS, JSON.stringify(state)); }
+  function save() { 
+    try {
+      localStorage.setItem(LS, JSON.stringify(state)); 
+    } catch(e) {
+      console.error(e);
+      if(e.name === 'QuotaExceededError' || e.message.includes('quota')) {
+        toast('Almacenamiento lleno. Elimina imágenes o productos viejos para liberar espacio.', 'err');
+      } else {
+        toast('Error al guardar datos.', 'err');
+      }
+    }
+  }
   function loadState() {
     try {
       const raw = localStorage.getItem(LS);
@@ -696,7 +707,7 @@ function parseMoney(value) {
       <section class="card sectionCard" style="margin-top:14px; text-align:center;">
         <h3>Soporte y Legales</h3>
         <button type="button" class="btn" style="border:1px solid #25D366; color:#25D366; background:transparent; width:100%; margin-bottom:12px;" onclick="window.open('https://wa.me/593969399562?text=Hola,%20necesito%20soporte%20con%20CLICK%20360', '_blank')">📱 Contactar Soporte (WhatsApp)</button>
-        <p style="font-size:11px; color:#888; line-height:1.4;">Al usar el sistema, aceptas los <a href="#" id="showTerms" style="color:var(--gold); text-decoration:underline;">Términos y Condiciones</a>. El software se provee "tal cual". No nos hacemos responsables de daños indirectos ni pérdida de datos accidental.</p>
+        <p style="font-size:11px; color:#888; line-height:1.4;">Al usar el sistema, aceptas los <a href="#" id="showTerms" style="color:var(--gold); text-decoration:underline;">Términos y Condiciones</a>.</p>
       </section>`;
   }
   function typeOptions(selected){ return [['ropa','Ropa'],['restaurante','Restaurante'],['barberia','Barbería'],['ganaderia','Ganadería'],['ferreteria','Ferretería'],['otro','Otro']].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
@@ -733,14 +744,14 @@ function parseMoney(value) {
   function openProductModal(product=null){
     const b=currentBusiness(), v=businessVocabulary(b.type);
     const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,notes:'',imageData:''};
-    showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
+    showModal(`<div class="modalHeader"><h2>${product?'Editar':(v.singular==='prenda'?'Nueva':'Nuevo')} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
       <form id="productForm" class="formGrid">
         <div class="field full productImageField">
           <label>Imagen del producto (opcional)</label>
           <div class="imagePicker">
             <div id="imagePreview">${p.imageData ? `<img src="${p.imageData}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
             <div style="display:flex; gap:8px;">
-               <label class="btn silver"><input type="file" id="pImageCam" accept="image/jpeg,image/png" capture="environment" hidden>Tomar foto</label>
+               <label class="btn silver"><input type="file" id="pImageCam" accept="image/*" capture="environment" hidden>Tomar foto</label>
                <label class="btn silver"><input type="file" id="pImageGal" accept="image/*" hidden>Galería</label>
             </div>
             ${p.imageData ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
@@ -1127,7 +1138,11 @@ function parseMoney(value) {
     try{
       stopScanner(false);
       if(!navigator.mediaDevices?.getUserMedia) throw new Error('camera unavailable');
-      scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:currentFacingMode}});
+      try {
+        scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:currentFacingMode}});
+      } catch(e) {
+        scanStream=await navigator.mediaDevices.getUserMedia({video:true});
+      }
       video.srcObject=scanStream; await video.play();
       status.textContent='Apunta al QR de la etiqueta. Si no lo lee, escribe el código que aparece debajo.';
       const canvas=document.createElement('canvas');
@@ -1401,7 +1416,7 @@ function parseMoney(value) {
          toast('Invitación creada exitosamente');
          $('#workerEmail').value = '';
          $('#inviteLinkBox').style.display = 'block';
-         const link = window.location.origin + window.location.pathname;
+         const link = window.location.origin + window.location.pathname + "?invite=true";
          $('#inviteLinkVal').value = link;
          loadWorkers();
        } catch(e) {
@@ -1484,10 +1499,8 @@ function parseMoney(value) {
        e.preventDefault();
        showModal(`<div class="modalHeader"><h2>Términos y Condiciones</h2><button class="closeBtn" data-close>×</button></div>
        <div style="padding:16px; font-size:13px; line-height:1.5; color:#ccc;">
-         <b>1. Aceptación:</b> Al utilizar CLICK 360, aceptas estos términos.<br><br>
-         <b>2. Responsabilidad:</b> La plataforma se ofrece en fase MVP. CLICK 360 no asume responsabilidad civil ni legal por pérdida de información, errores de contabilidad o daños derivados del uso del software.<br><br>
-         <b>3. Respaldo:</b> Es responsabilidad del usuario realizar respaldos de su información periódicamente desde la sección correspondiente.<br><br>
-         <b>4. Límite de soporte:</b> El soporte técnico atiende solicitudes operativas según el plan del usuario.<br><br>
+         <p>El usuario reconoce que el software está sujeto a cambios o a ediciones y ha sido entregado, revisado y aprobado por el cliente final.</p>
+         <p>Al usar el sistema, aceptas estas condiciones.</p>
        </div>`);
     };
   }
@@ -1666,7 +1679,9 @@ function parseMoney(value) {
      $('#pdfCierreBtn').onclick = () => {
          toast('Generando PDF...');
          const opt = { margin: 10, filename: 'Cierre_Caja_'+r.date+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
-         const wrapper = document.createElement('div'); wrapper.innerHTML = r.html; document.body.appendChild(wrapper); wrapper.style.position='absolute'; wrapper.style.left='-9999px';
+         const wrapper = document.createElement('div'); wrapper.innerHTML = r.html; 
+         wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+         document.body.appendChild(wrapper); 
          html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
      };
   };
@@ -1731,7 +1746,10 @@ function parseMoney(value) {
     } else if (mode === 'pdf') {
         toast('Generando PDF...');
         const opt = { margin: 10, filename: 'Reporte_Ventas_'+state.reportsFrom+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
-        const wrapper = document.createElement('div'); wrapper.innerHTML = html; document.body.appendChild(wrapper); wrapper.style.position='absolute'; wrapper.style.left='-9999px'; wrapper.style.width='800px';
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = html;
+        wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '-9999px'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-1';
+        document.body.appendChild(wrapper);
         html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
     }
   };
