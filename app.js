@@ -301,7 +301,7 @@ function parseMoney(value) {
           <nav class="sideNav">${navButtons(active, true)}</nav>
         </div>
         <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px;">
-          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${currentBusiness()?.settings?.logoUrl ? `<img src="${currentBusiness().settings.logoUrl}" style="width:100%;height:100%;object-fit:cover;">` : (currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
+          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${authUser().photoURL ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%;height:100%;object-fit:cover;">` : (authUser().name || 'U').charAt(0).toUpperCase()}</div>
           <button class="logoutBtn" id="logoutSide" title="Cerrar sesión" style="flex:1;">Cerrar sesión ↗</button>
         </div>
       </aside>
@@ -310,8 +310,8 @@ function parseMoney(value) {
           <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;"><div class="logoIcon" style="width:36px;height:36px;"></div><div class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
           <div style="flex:1; text-align:center; color:#ccc; font-size:14px; font-weight:bold;">${nowLabel().split(' ')[0]}</div>
           <select class="businessSelect" id="businessPickerTop" style="display:none;">${bizOptions}</select>
-          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:10px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${currentBusiness()?.settings?.logoUrl ? `<img src="${currentBusiness().settings.logoUrl}" style="width:100%;height:100%;object-fit:cover;">` : (currentUser()?.label || 'U').charAt(0).toUpperCase()}</div>
-          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión">Cerrar sesión ↗</button>
+          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:10px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${authUser().photoURL ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%;height:100%;object-fit:cover;">` : (authUser().name || 'U').charAt(0).toUpperCase()}</div>
+          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión">↗</button>
         </header>
         <main class="main">${content}</main>
       </div>
@@ -621,7 +621,13 @@ function parseMoney(value) {
     return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
       <button class="card bigRow" data-more="reports"><span>▥ Reportes</span><b>›</b></button>
       <button class="card bigRow" data-more="backup"><span>☁ Respaldo y nube</span><b>›</b></button>
-      <button class="card bigRow" data-more="workers"><span>👥 Trabajadores</span><b>›</b></button>
+      <button class="card bigRow" data-more="workers">
+        <span>👥 Trabajadores</span>
+        <span style="display:flex; align-items:center; gap:6px;">
+          <span id="pendingWorkersBadge" class="badge danger" style="display:none; padding:2px 6px; font-size:11px; border-radius:10px; background:#ff5c62; color:#fff;">0</span>
+          <b>›</b>
+        </span>
+      </button>
       <button class="card bigRow" data-more="settings"><span>⚙ Ajustes</span><b>›</b></button>
       <button class="btn block" id="logoutMore">Cerrar sesión</button>
     </section>`;
@@ -647,18 +653,16 @@ function parseMoney(value) {
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
       <section class="card sectionCard">
          <h3>Invitar Trabajador</h3>
-         <div style="display:flex; gap:10px; margin-top:8px;">
-            <input id="workerEmail" type="email" placeholder="correo@gmail.com" style="flex:1;">
-            <button class="btn primary" id="inviteWorkerBtn" type="button">Invitar</button>
-         </div>
-         <div id="inviteLinkBox" style="display:none; margin-top:14px; background:rgba(55,213,126,0.1); border:1px solid rgba(55,213,126,0.3); padding:10px; border-radius:8px;">
-            <small style="color:var(--green); display:block; margin-bottom:6px;">Invitación creada. Envía este enlace a tu trabajador:</small>
-            <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:6px; border-radius:4px;">
+         <p style="font-size:13px; color:#ccc; margin-bottom:12px; line-height:1.4;">Genera un enlace de invitación para que tu trabajador se registre con su cuenta de Google. Las solicitudes aparecerán abajo para tu aprobación.</p>
+         <button class="btn primary block" id="inviteWorkerBtn" type="button">🔗 Generar Enlace de Invitación</button>
+         <div id="inviteLinkBox" style="display:none; margin-top:14px; background:rgba(55,213,126,0.1); border:1px solid rgba(55,213,126,0.3); padding:12px; border-radius:12px;">
+            <small style="color:var(--green); display:block; margin-bottom:6px; font-weight:bold;">Enlace de Invitación Listo:</small>
+            <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:8px; border-radius:8px;">
             <button class="btn silver block" id="copyInviteLinkBtn" type="button">Copiar Enlace</button>
          </div>
       </section>
       <section class="card sectionCard" style="margin-top:14px">
-         <h3>Trabajadores Activos</h3>
+         <h3>Solicitudes de Acceso y Trabajadores</h3>
          <div id="workersList"><p class="empty">Cargando...</p></div>
       </section>`;
   }
@@ -675,9 +679,10 @@ function parseMoney(value) {
         <h3>Datos del Negocio</h3>
         <div class="field" style="display:flex; flex-direction:column; align-items:center;">
           <div style="width:80px; height:80px; border-radius:50%; background:#222; border:1px solid #444; overflow:hidden; margin-bottom:10px; display:flex; justify-content:center; align-items:center;">
-             ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`}
+             ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" style="display:block; margin:0;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`}
           </div>
-          <label class="btn silver" style="font-size:12px; padding:4px 8px;">
+          <label class="btn silver" style="font-size:12px; padding:4px 8px; position:relative; display:inline-flex; justify-content:center; align-items:center; min-height:28px; gap:6px;">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="display:block; margin:0;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
             Cambiar Logo
             <input type="file" id="bizLogoUpload" accept="image/*" hidden>
           </label>
@@ -689,6 +694,23 @@ function parseMoney(value) {
         <div class="field"><label>IVA Global (%)</label><input type="number" inputmode="numeric" id="bizIva" value="${iva}" placeholder="0 para desactivar"></div>
         <button type="button" class="btn primary block" id="saveBiz">Guardar cambios</button>
       </section>
+
+      <section class="card sectionCard" style="margin-top:14px">
+        <h3>Mi Perfil (Usuario)</h3>
+        <div class="field" style="display:flex; flex-direction:column; align-items:center;">
+          <div style="width:80px; height:80px; border-radius:50%; background:#222; border:1px solid #444; overflow:hidden; margin-bottom:10px; display:flex; justify-content:center; align-items:center;">
+             ${authUser().photoURL ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" style="display:block; margin:0;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`}
+          </div>
+          <label class="btn silver" style="font-size:12px; padding:4px 8px; position:relative; display:inline-flex; justify-content:center; align-items:center; min-height:28px; gap:6px;">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="display:block; margin:0;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            Cambiar Foto de Perfil
+            <input type="file" id="userPhotoUpload" accept="image/*" hidden>
+          </label>
+        </div>
+        <div class="field"><label>Nombre de Usuario</label><input id="userName" value="${escapeHtml(authUser().name)}"></div>
+        <button type="button" class="btn primary block" id="saveUser">Guardar Perfil</button>
+      </section>
+
       <section class="card sectionCard" style="margin-top:14px">
         <h3>Agregar otro negocio</h3>
         <div class="field"><label>Nombre</label><input id="newBizName"></div>
@@ -1348,6 +1370,22 @@ function parseMoney(value) {
          if(window.click360RefreshNow) window.click360RefreshNow();
          else toast('Nube no disponible en este entorno', 'err');
      });
+     
+     // Check for pending workers in background to toggle badge
+     if (window.click360User && window.click360User.role === 'owner') {
+        window.click360GetWorkers().then(workers => {
+           const pendingCount = workers.filter(w => w.status === 'pending').length;
+           const badge = $('#pendingWorkersBadge');
+           if (badge) {
+              if (pendingCount > 0) {
+                 badge.textContent = pendingCount;
+                 badge.style.display = 'inline-block';
+              } else {
+                 badge.style.display = 'none';
+              }
+           }
+        }).catch(err => console.warn("Error background checking pending workers:", err));
+     }
   }
 
   async function bindWorkers() {
@@ -1355,9 +1393,7 @@ function parseMoney(value) {
     if (!window.click360User || window.click360User.role !== 'owner') {
       list.innerHTML = '<p class="empty">Solo el dueño puede administrar trabajadores.</p>';
       const invBtn = $('#inviteWorkerBtn');
-      const wEmail = $('#workerEmail');
       if(invBtn) invBtn.disabled = true;
-      if(wEmail) wEmail.disabled = true;
       return;
     }
 
@@ -1365,36 +1401,80 @@ function parseMoney(value) {
       try {
         const workers = await window.click360GetWorkers();
         if (workers.length === 0) {
-           list.innerHTML = '<p class="empty">No hay trabajadores. Invita a uno.</p>';
-           return;
+            list.innerHTML = '<p class="empty">No hay trabajadores ni solicitudes pendientes.</p>';
+            return;
         }
-        list.innerHTML = workers.map(w => `
-          <div class="movement" style="align-items:center;">
-             <span><b>${escapeHtml(w.name || w.email)}</b><br><small>${escapeHtml(w.email)} · ${w.type === 'email' ? 'Invitado (Pendiente)' : 'Activo'}</small></span>
-             <button class="btn danger" style="padding:4px 8px; font-size:12px;" data-revoke="${w.id}" data-rtype="${w.type}">Eliminar</button>
-          </div>
-        `).join('');
         
-        if (workers.length >= 1) {
+        list.innerHTML = workers.map(w => {
+          const isPending = w.status === 'pending';
+          const avatarHtml = w.photoURL ? `<img src="${escapeHtml(w.photoURL)}" style="width:32px; height:32px; border-radius:50%; object-fit:cover;">` : `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${(w.name || 'W').charAt(0).toUpperCase()}</div>`;
+          
+          return `
+            <div class="movement" style="align-items:center; gap:10px; padding:12px 0;">
+               ${avatarHtml}
+               <div style="flex:1;">
+                 <b>${escapeHtml(w.name || w.email)}</b>
+                 <span class="badge ${isPending ? 'gold' : 'green'}" style="margin-left:6px; font-size:10px; padding:2px 6px;">${isPending ? 'Pendiente' : 'Activo'}</span>
+                 <br><small style="color:#aaa;">${escapeHtml(w.email)}</small>
+               </div>
+               <div style="display:flex; gap:6px;">
+                  ${isPending ? `
+                    <button class="btn primary" style="padding:4px 8px; font-size:12px; min-height:28px; background:var(--green); border-color:#2aa05e; color:#111;" data-approve="${w.id}">Aprobar</button>
+                    <button class="btn danger" style="padding:4px 8px; font-size:12px; min-height:28px;" data-reject="${w.id}">Rechazar</button>
+                  ` : `
+                    <button class="btn danger" style="padding:4px 8px; font-size:12px; min-height:28px;" data-reject="${w.id}">Eliminar</button>
+                  `}
+               </div>
+            </div>
+          `;
+        }).join('');
+        
+        // Show support upsell banner (free version allows max 1 worker)
+        const activeCount = workers.filter(w => w.status === 'active').length;
+        if (activeCount >= 1) {
            const banner = document.createElement('div');
-           banner.style = "margin-top:14px; background:linear-gradient(135deg, #2a2a2a, #111); border:1px solid var(--gold); padding:16px; border-radius:12px; text-align:center;";
+           banner.style = "margin-top:16px; background:linear-gradient(135deg, #2a2a2a, #111); border:1px solid var(--gold); padding:16px; border-radius:12px; text-align:center;";
            banner.innerHTML = `
              <div style="color:var(--gold); font-size:18px; font-weight:bold; margin-bottom:6px;">🚀 Sube al Siguiente Nivel</div>
-             <p style="font-size:13px; color:#ccc; margin-bottom:12px;">Tu plan actual permite 1 trabajador. Adquiere el plan PRO y añade trabajadores ilimitados, sucursales y reportes avanzados.</p>
-             <button class="btn primary" onclick="window.open('https://wa.me/593969399562?text=Deseo%20el%20plan%20PRO%20para%20trabajadores%20ilimitados', '_blank')">Contactar Asesor</button>
+             <p style="font-size:13px; color:#ccc; margin-bottom:12px;">Tu plan gratuito permite 1 trabajador activo. Adquiere el plan PRO para añadir trabajadores ilimitados, sucursales y reportes avanzados.</p>
+             <button class="btn primary" type="button" onclick="window.open('https://wa.me/593969399562?text=Deseo%20el%20plan%20PRO%20para%20trabajadores%20ilimitados', '_blank')">Contactar Asesor</button>
            `;
            list.appendChild(banner);
         }
 
-        $$('[data-revoke]').forEach(btn => {
+        // Bind approval handlers
+        $$('[data-approve]').forEach(btn => {
            btn.onclick = async () => {
-              if(!confirm('¿Eliminar este trabajador permanentemente?')) return;
               btn.textContent = '...';
-              await window.click360RevokeWorker(btn.dataset.revoke, btn.dataset.rtype);
-              toast('Trabajador eliminado');
-              loadWorkers();
+              btn.disabled = true;
+              try {
+                await window.click360ApproveWorker(btn.dataset.approve);
+                toast('Trabajador aprobado exitosamente');
+                loadWorkers();
+              } catch(e) {
+                toast(e.message || 'Error al aprobar', 'err');
+                loadWorkers();
+              }
            };
         });
+
+        // Bind rejection/revocation handlers
+        $$('[data-reject]').forEach(btn => {
+           btn.onclick = async () => {
+              if(!confirm('¿Estás seguro de rechazar/eliminar este trabajador?')) return;
+              btn.textContent = '...';
+              btn.disabled = true;
+              try {
+                await window.click360RejectWorker(btn.dataset.reject);
+                toast('Acceso removido');
+                loadWorkers();
+              } catch(e) {
+                toast('Error al remover acceso', 'err');
+                loadWorkers();
+              }
+           };
+        });
+
       } catch(e) {
         list.innerHTML = '<p class="empty">Error al cargar trabajadores o no es la versión conectada a la nube.</p>';
       }
@@ -1404,25 +1484,15 @@ function parseMoney(value) {
 
     $('#inviteWorkerBtn').onclick = async () => {
        const workers = await window.click360GetWorkers().catch(()=>[]);
-       if (workers.length >= 1) {
+       const activeCount = workers.filter(w => w.status === 'active').length;
+       if (activeCount >= 1) {
            return toast('Límite alcanzado. Adquiere el plan PRO.', 'err');
        }
        
-       const email = $('#workerEmail').value.trim();
-       if(!email) return toast('Ingresa un correo','err');
-       $('#inviteWorkerBtn').textContent = '...';
-       try {
-         await window.click360InviteWorker(email);
-         toast('Invitación creada exitosamente');
-         $('#workerEmail').value = '';
-         $('#inviteLinkBox').style.display = 'block';
-         const link = window.location.origin + window.location.pathname + "?invite=true";
-         $('#inviteLinkVal').value = link;
-         loadWorkers();
-       } catch(e) {
-         toast('Acceso denegado: Usa el entorno Nube para esta función', 'err');
-       }
-       $('#inviteWorkerBtn').textContent = 'Invitar';
+       $('#inviteLinkBox').style.display = 'block';
+       const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + window.click360User.uid;
+       $('#inviteLinkVal').value = inviteLink;
+       toast('Enlace de invitación generado');
     };
 
     $('#copyInviteLinkBtn').onclick = () => {
@@ -1453,6 +1523,53 @@ function parseMoney(value) {
          reader.readAsDataURL(file);
       });
     }
+
+    let pendingUserPhotoUrl = authUser().photoURL || '';
+    const userPhotoUpload = $('#userPhotoUpload');
+    if (userPhotoUpload) {
+      userPhotoUpload.addEventListener('change', (e) => {
+         readImageInput(e.target, (data) => {
+            if (data) {
+              pendingUserPhotoUrl = data;
+              e.target.parentElement.previousElementSibling.innerHTML = `<img src="${data}" style="width:100%; height:100%; object-fit:cover;">`;
+            }
+         });
+      });
+    }
+
+    $('#saveUser').onclick = async () => {
+       const newName = $('#userName').value.trim();
+       if(!newName) return toast('Falta el nombre de usuario', 'err');
+       
+       if (window.click360User) {
+         window.click360User.name = newName;
+         window.click360User.photoURL = pendingUserPhotoUrl;
+         
+         // Update in Firestore approvedUsers if DB available
+         if (window.click360Db && window.click360User.uid) {
+           try {
+             $('#saveUser').textContent = 'Guardando...';
+             $('#saveUser').disabled = true;
+             await window.click360Db.collection("approvedUsers").doc(window.click360User.uid).update({
+               name: newName,
+               photoURL: pendingUserPhotoUrl
+             });
+             toast('Perfil actualizado en la nube');
+           } catch(e) {
+             console.error("Error actualizando perfil en nube:", e);
+             toast('Error al actualizar en la nube', 'err');
+           } finally {
+             $('#saveUser').textContent = 'Guardar Perfil';
+             $('#saveUser').disabled = false;
+           }
+         } else {
+           toast('Perfil guardado localmente');
+         }
+       } else {
+         toast('Perfil guardado localmente');
+       }
+       renderApp('settings');
+    };
 
     $('#saveBiz').onclick=()=>{
        const b=currentBusiness(); 
@@ -1499,8 +1616,7 @@ function parseMoney(value) {
        e.preventDefault();
        showModal(`<div class="modalHeader"><h2>Términos y Condiciones</h2><button class="closeBtn" data-close>×</button></div>
        <div style="padding:16px; font-size:13px; line-height:1.5; color:#ccc;">
-         <p>El usuario reconoce que el software está sujeto a cambios o a ediciones y ha sido entregado, revisado y aprobado por el cliente final.</p>
-         <p>Al usar el sistema, aceptas estas condiciones.</p>
+         <p>Al usar el sistema, aceptas los Términos y Condiciones. El usuario reconoce y acepta que el software está sujeto a cambios o a ediciones, y que ha sido entregado, revisado y aprobado por el cliente final.</p>
        </div>`);
     };
   }
@@ -1553,24 +1669,85 @@ function parseMoney(value) {
     $('#restoreFile').onchange = (e) => {
         const file = e.target.files[0]; if(!file) return;
         const r = new FileReader();
-        r.onload = (ev) => {
-          try { const data = JSON.parse(ev.target.result); Object.assign(state, data); save(); location.reload(); }
-          catch { toast('Error leyendo archivo', 'err'); }
+        r.onload = async (ev) => {
+          try {
+             const data = JSON.parse(ev.target.result);
+             state = normalizeState(data);
+             save();
+             if (window.click360SyncNow) {
+                await window.click360SyncNow();
+             }
+             toast('Respaldo restaurado exitosamente');
+             setTimeout(() => location.reload(), 1200);
+          }
+          catch(err) {
+             toast('Error leyendo archivo de respaldo', 'err');
+          }
         };
         r.readAsText(file);
     };
     const exp = $('#exportCsvBtn');
     if(exp) exp.onclick = () => {
-      let csv = "FECHA,TIPO,MONTO,NOTA,USUARIO\n";
-      const allMovs = [...state.movements].sort((a,b)=>a.date.localeCompare(b.date));
-      allMovs.forEach(m => { csv += `${m.date},${m.kind},${m.amount},"${(m.note || '').replace(/"/g,'""')}","${m.createdBy || 'Sistema'}"\n`; });
+      const BOM = "\ufeff";
+      let csv = BOM + "FECHA_HORA,CATEGORIA,DETALLE,MONTO,CLIENTE,ATENDIDO_POR\n";
+      
+      const escapeCsv = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+      const rows = [];
+      
+      // 1. Process Sales (only active business, exclude cancelled)
+      state.sales.filter(s => s.businessId === currentBusiness().id && s.status !== 'cancelled').forEach(s => {
+         s.items.forEach(item => {
+            rows.push({
+               date: s.when || s.date,
+               category: `Venta - ${item.category || 'General'}`,
+               detail: `${item.qty}x ${item.name} [${item.code}]`,
+               amount: item.price * item.qty,
+               customer: s.customer || '',
+               user: s.createdBy || s.user || 'Sistema'
+            });
+         });
+      });
+      
+      // 2. Process Movements (only active business)
+      state.movements.filter(m => m.businessId === currentBusiness().id).forEach(m => {
+         const isOutflow = m.kind !== 'ingreso';
+         const signedAmount = isOutflow ? -m.amount : m.amount;
+         const linkedSale = m.saleId ? state.sales.find(x => x.id === m.saleId) : null;
+         
+         rows.push({
+            date: m.when || m.date,
+            category: m.saleId ? `Pago Venta - ${m.kind.toUpperCase()}` : `Caja - ${m.kind.toUpperCase()}`,
+            detail: m.note || (m.saleId ? `Pago de venta ${m.saleId}` : 'Movimiento de caja'),
+            amount: signedAmount,
+            customer: linkedSale ? (linkedSale.customer || '') : '',
+            user: m.createdBy || m.user || 'Sistema'
+         });
+      });
+      
+      // Sort all by date/time
+      rows.sort((a, b) => a.date.localeCompare(b.date));
+      
+      // Build CSV string
+      rows.forEach(r => {
+         csv += `${escapeCsv(r.date)},${escapeCsv(r.category)},${escapeCsv(r.detail)},${r.amount},${escapeCsv(r.customer)},${escapeCsv(r.user)}\n`;
+      });
+
       const a = document.createElement('a');
       a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
       a.download = `contabilidad_click360_${today()}.csv`;
       a.click();
       toast('Reporte Contable Generado');
     };
-    $('#cloudSoon').onclick=()=>toast('Preparado para CLICK 360 Cloud. Requiere backend real.'); 
+    const cloudBtn = $('#cloudSoon');
+    if (cloudBtn) {
+       cloudBtn.onclick = () => {
+          if (window.click360SyncNow) {
+             window.click360SyncNow().then(() => toast('Sincronizado con la nube')).catch(() => toast('Error al sincronizar', 'err'));
+          } else {
+             toast('Preparado para CLICK 360 Cloud. Requiere backend real.');
+          }
+       };
+    }
   }
 
   window.cancelSale = function(saleId) {

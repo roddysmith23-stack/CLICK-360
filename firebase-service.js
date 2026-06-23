@@ -181,6 +181,11 @@
   async function isApprovedUser(user) {
     if (!user) return false;
     try {
+      // Check if there is an invite in URL
+      const urlParams = new URLSearchParams(location.search);
+      const isInvite = urlParams.get("invite") === "true";
+      const inviteOwnerId = urlParams.get("ownerId");
+
       let doc = await db.collection("approvedUsers").doc(user.uid).get();
       let d = null;
       
@@ -200,12 +205,56 @@
         }
       }
 
+      // Auto-register new users
+      if (!d) {
+        if (isInvite && inviteOwnerId) {
+          // Register as a pending worker
+          d = {
+            uid: user.uid,
+            email: user.email,
+            role: "worker",
+            ownerId: inviteOwnerId,
+            name: user.displayName || (user.email ? user.email.split('@')[0] : "Trabajador"),
+            status: "pending",
+            photoURL: user.photoURL || '',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          };
+          await db.collection("approvedUsers").doc(user.uid).set(d);
+        } else {
+          // Register as a new owner
+          d = {
+            uid: user.uid,
+            email: user.email,
+            role: "owner",
+            ownerId: user.uid,
+            name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
+            status: "active",
+            photoURL: user.photoURL || '',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          };
+          await db.collection("approvedUsers").doc(user.uid).set(d);
+        }
+      }
+
       if (d) {
+        if (d.status === "pending") {
+          window.click360User = {
+            uid: user.uid,
+            email: user.email || d.email,
+            role: "worker",
+            name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
+            photoURL: d.photoURL || user.photoURL || '',
+            status: "pending"
+          };
+          return false;
+        }
+
         window.click360User = {
           uid: user.uid,
           email: user.email || d.email,
           role: d.role || "worker",
-          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario")
+          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
+          photoURL: d.photoURL || user.photoURL || ''
         };
         BUSINESS_ID = d.ownerId || user.uid;
         STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
@@ -215,38 +264,42 @@
     } catch(e) {
       console.error("Error al verificar aprobación", e);
       return false;
-    }
-  }
-
-  window.click360InviteWorker = async function(email) {
+    }  window.click360InviteWorker = async function(email) {
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
-    const safeEmail = email.toLowerCase().trim();
-    await db.collection("approvedUsersByEmail").doc(safeEmail).set({
-       email: safeEmail,
-       role: "worker",
-       ownerId: window.click360User.uid,
-       status: "active",
-       invitedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
   };
 
   window.click360GetWorkers = async function() {
     if(!window.click360User || window.click360User.role !== 'owner') return [];
     const uid = window.click360User.uid;
-    const [byUid, byEmail] = await Promise.all([
-      db.collection("approvedUsers").where("ownerId", "==", uid).get(),
-      db.collection("approvedUsersByEmail").where("ownerId", "==", uid).get()
-    ]);
+    const snap = await db.collection("approvedUsers").where("ownerId", "==", uid).get();
     const workers = [];
-    byUid.forEach(d => workers.push({ id: d.id, ...d.data(), type: 'uid' }));
-    byEmail.forEach(d => workers.push({ id: d.id, ...d.data(), type: 'email' }));
+    snap.forEach(d => {
+      if (d.id !== uid) {
+        workers.push({ id: d.id, ...d.data() });
+      }
+    });
     return workers;
   };
 
-  window.click360RevokeWorker = async function(id, type) {
+  window.click360ApproveWorker = async function(workerUid) {
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
-    const col = type === 'email' ? "approvedUsersByEmail" : "approvedUsers";
-    await db.collection(col).doc(id).delete();
+    
+    // Enforce 1 active worker limit
+    const workers = await window.click360GetWorkers();
+    const activeCount = workers.filter(w => w.status === 'active').length;
+    if (activeCount >= 1) {
+      throw new Error("Límite de trabajadores alcanzado (Máximo 1 en plan gratuito).");
+    }
+    
+    await db.collection("approvedUsers").doc(workerUid).update({
+      status: "active",
+      approvedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  };
+
+  window.click360RejectWorker = async function(workerUid) {
+    if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
+    await db.collection("approvedUsers").doc(workerUid).delete();
   };
 
   async function pushLocalToFirestore(reason = "auto") {
@@ -472,8 +525,11 @@
   window.click360Logout = async () => {
     try {
       await auth.signOut();
+      localStorage.removeItem("click360_mvp_qa_final_state_v1");
+      localStorage.removeItem("click360_mvp_qa_final_session_v1");
       localStorage.removeItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
-      location.reload(); // Force reload to ensure everything is cleared properly
+      sessionStorage.clear();
+      location.reload();
     } catch(e) {}
   };
 
@@ -502,7 +558,19 @@
       const approved = await isApprovedUser(user);
 
       if (!approved) {
-        showPending(user);
+        if (window.click360User && window.click360User.status === "pending") {
+          showGate(`
+            Tu solicitud de acceso como trabajador (<b>${user.email || "sin email"}</b>) está <b>pendiente de aprobación</b> por el dueño del negocio.<br><br>
+            Por favor, pídele al administrador que apruebe tu acceso desde la sección "Trabajadores" en su sistema.
+          `);
+          const loginBtn = document.getElementById("c360-google-login");
+          if (loginBtn) {
+            loginBtn.textContent = "Ya me aprobaron (Actualizar)";
+            loginBtn.onclick = () => location.reload();
+          }
+        } else {
+          showPending(user);
+        }
         return;
       }
 
