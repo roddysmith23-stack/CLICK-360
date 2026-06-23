@@ -172,7 +172,18 @@ function parseMoney(value) {
   }
 
   function currentUser(){ return session ? state.users.find(u=>u.username===session.username) : null; }
-  function authUser() { return window.click360User || { name: 'Sistema', role: 'owner', email: '' }; }
+  function authUser() {
+    if (window.click360User) return window.click360User;
+    const u = currentUser();
+    if (u) {
+      return {
+        name: u.label || u.username,
+        role: u.role,
+        email: ''
+      };
+    }
+    return { name: 'Sistema', role: 'owner', email: '' };
+  }
   function currentBusiness(){ return state.businesses.find(b=>b.id===state.activeBusinessId) || state.businesses[0]; }
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
@@ -355,7 +366,7 @@ function parseMoney(value) {
     const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
     const out=mov.filter(m=>m.kind!=='ingreso').reduce((a,m)=>a+m.amount,0);
     const low=products.filter(p=>p.qty<=3).length;
-    return `<div class="pageHead"><div><h1>Hola 👋</h1><p>${escapeHtml(b.name)} · ${escapeHtml(currentUser()?.label || 'Usuario')}</p></div></div>
+    return `<div class="pageHead"><div><h1>Hola, ${escapeHtml(authUser().name || 'Usuario')} 👋</h1><p>${escapeHtml(b.name)}</p></div></div>
       <section class="grid kpis">
         <div class="card kpi gold"><div class="icon">↗</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
         <div class="card kpi"><div class="icon">▣</div><small>Caja</small><strong>${fmt(income-out)}</strong></div>
@@ -1317,7 +1328,7 @@ function parseMoney(value) {
           <div style="border-top:1px dashed #000; margin:8px 0;"></div>
           <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
           <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
-          <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(currentUser()?.label || 'Usuario')}</div>
+          <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(authUser().name || 'Usuario')}</div>
           </div>`;
          
          closeModal();
@@ -1344,9 +1355,8 @@ function parseMoney(value) {
              const opt = { margin: 10, filename: 'Cierre_Caja.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
              const wrapper = document.createElement('div');
              wrapper.innerHTML = html;
+             wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
              document.body.appendChild(wrapper);
-             wrapper.style.position = 'absolute';
-             wrapper.style.left = '-9999px';
              html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
          };
          
@@ -1595,20 +1605,42 @@ function parseMoney(value) {
       save(); renderApp('settings'); toast('Negocio creado');
     };
 
-    $('#resetInventoryBtn').onclick = () => {
+    $('#resetInventoryBtn').onclick = async () => {
        if(!confirm('¿ESTÁS SEGURO? Se borrarán todas las prendas y stock del inventario actual. Esto no se puede deshacer.')) return;
        state.products = state.products.filter(p => p.businessId !== currentBusiness().id);
        save();
+       if (window.click360SyncNow) {
+         toast('Sincronizando...');
+         await window.click360SyncNow();
+       }
        toast('Inventario reiniciado.');
+       renderApp('settings');
     };
 
-    $('#resetSystemBtn').onclick = () => {
+    $('#resetSystemBtn').onclick = async () => {
+       if (authUser().role !== 'owner') {
+         return toast('Solo el dueño de la cuenta puede borrar el sistema.', 'err');
+       }
        if(!confirm('🚨 ALERTA CRÍTICA: ¿Estás seguro de borrar TODA la información de la cuenta (Inventarios, Ventas, Reportes)? Empezarás totalmente de cero.')) return;
        state.products = [];
        state.sales = [];
-       state.movements = [];
        state.dailyReports = [];
+       state.movements = [{
+         id: uid('mov'),
+         businessId: currentBusiness().id,
+         date: today(),
+         when: nowLabel(),
+         kind: 'retiro',
+         amount: 0,
+         note: `Sistema reiniciado por: ${authUser().name}`,
+         createdBy: authUser().name
+       }];
        save();
+       if (window.click360SyncNow) {
+         toast('Sincronizando...');
+         await window.click360SyncNow();
+       }
+       toast('Sistema reiniciado.');
        window.location.reload();
     };
 
@@ -1762,14 +1794,14 @@ function parseMoney(value) {
     });
     
     sale.status = 'cancelled';
-    sale.cancelledBy = currentUser()?.label || 'Usuario';
+    sale.cancelledBy = authUser().name || 'Usuario';
     sale.cancelledAt = nowLabel();
     
     // Anular movimiento si existe
     const mov = state.movements.find(m => m.saleId === sale.id);
     if(mov) mov.amount = 0; // Opcional: o borrarlo, pero es mejor ponerlo en 0 para registro
     
-    state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'retiro',amount:0,note:`Venta anulada`,user:session.username});
+    state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'retiro',amount:0,note:`Venta anulada`,user:session.username, createdBy: authUser().name});
     
     save();
     renderApp('reports');
@@ -1800,38 +1832,111 @@ function parseMoney(value) {
     save(); renderApp(route);
   };
 
-  window.printReceipt = function(id) {
+  window.showSaleCompleteModal = function(id) {
     const s = state.sales.find(x=>x.id===id);
     if(!s) return;
     const bizSettings = currentBusiness().settings || {};
     const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
     const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
     const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+    const currentIva = bizSettings.iva || 0;
     
-    const html=`
-      <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
-      ${logoUrl}
-      <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
-      ${ruc}${phone}
-      <div style="text-align:center; margin-bottom:10px; margin-top:8px;">Ticket de Venta<br>${escapeHtml(s.when)}</div>
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ticket #</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
-      ${s.customer ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cliente:</span><span>${escapeHtml(s.customer)}</span></div>` : ''}
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Método:</span><span>${escapeHtml(s.method)}</span></div>
-      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-      ${s.items.map(i=>`<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>${i.qty}x ${escapeHtml(i.name)}</span><span>${fmt(i.price*i.qty)}</span></div>`).join('')}
-      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>
-      ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA:</span><span>${fmt(s.iva)}</span></div>` : ''}
-      ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:16px; font-weight:bold;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(s.received||s.total)}</span></div>
-      ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Saldo pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
-      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-      <div style="text-align:center; margin-top:10px;">¡Gracias por su compra!<br><small>Atendido por: ${escapeHtml(s.user)}</small></div>
-      </div>`;
-    const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-    root.innerHTML = html;
-    setTimeout(()=>window.print(), 250);
+    const receiptHtml = `
+      <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:15px; width:80mm; background:white; line-height:1.4;">
+        ${logoUrl}
+        <h2 style="font-size:16px; margin:0 0 2px; text-align:center; font-weight:bold;">${escapeHtml(currentBusiness().name)}</h2>
+        ${ruc}${phone}
+        <div style="text-align:center; margin:8px 0; font-weight:bold; font-size:13px; border-top:1px dashed #000; border-bottom:1px dashed #000; padding:4px 0;">COMPROBANTE DE VENTA</div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>No. Ticket:</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Fecha/Hora:</span><span>${escapeHtml(s.when)}</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Método:</span><span>${escapeHtml(s.method)}</span></div>
+        ${s.customer ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cliente:</span><span>${escapeHtml(s.customer)}</span></div>` : ''}
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendedor:</span><span>${escapeHtml(s.createdBy || s.user || 'Sistema')}</span></div>
+        <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+        <table style="width:100%; font-size:11px; border-collapse:collapse;">
+          <thead>
+            <tr style="border-bottom:1px solid #000;"><th style="text-align:left;">Detalle</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Total</th></tr>
+          </thead>
+          <tbody>
+            ${s.items.map(i=>`<tr><td style="padding:4px 0;">${escapeHtml(i.name)}</td><td style="text-align:center;">${i.qty}</td><td style="text-align:right;">${fmt(i.price*i.qty)}</td></tr>`).join('')}
+          </tbody>
+        </table>
+        <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>
+        ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA (${currentIva}%):</span><span>${fmt(s.iva)}</span></div>` : ''}
+        ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px; font-weight:bold; border-top:1px solid #000; padding-top:4px;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(s.received||s.total)}</span></div>
+        ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#d9534f; font-weight:bold;"><span>Saldo Pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
+        <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
+        <div style="text-align:center; font-size:10px;">¡Gracias por su compra!<br><small>CLICK 360 - Control de Negocios</small></div>
+      </div>
+    `;
+
+    showModal(`
+      <div class="modalHeader"><h2>Venta Completada</h2><button class="closeBtn" data-close>×</button></div>
+      <p style="color:var(--green); text-align:center; font-weight:bold; margin-bottom:12px;">✓ Guardado exitosamente</p>
+      
+      <div style="display:flex; justify-content:center; margin-bottom:16px;">
+        <div style="max-height:220px; overflow-y:auto; border:1px solid #444; border-radius:12px; background:#fff; padding:4px;">
+          ${receiptHtml}
+        </div>
+      </div>
+      
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+        <button class="btn primary" id="printReceiptBtn">🖨️ Imprimir Ticket</button>
+        <button class="btn silver" id="downloadPdfBtn">📥 Descargar PDF</button>
+        <button class="btn silver" id="downloadImgBtn" style="grid-column: 1/-1;">🖼️ Descargar Imagen (PNG)</button>
+      </div>
+      <button class="btn block" id="doneSaleBtn" style="border:1px solid var(--gold); color:var(--gold);">Listo / Nueva Venta</button>
+    `);
+
+    $('#printReceiptBtn').onclick = () => {
+      const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+      root.innerHTML = receiptHtml;
+      setTimeout(()=>window.print(), 250);
+    };
+
+    const downloadPdf = () => {
+      toast('Generando PDF...');
+      const opt = { margin: 10, filename: `Factura_${s.id.slice(-6).toUpperCase()}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = receiptHtml;
+      wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '80mm'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+      document.body.appendChild(wrapper);
+      html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
+    };
+    $('#downloadPdfBtn').onclick = downloadPdf;
+
+    $('#downloadImgBtn').onclick = () => {
+      toast('Generando Imagen...');
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = receiptHtml;
+      wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+      document.body.appendChild(wrapper);
+      
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+      script.onload = () => {
+        window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
+          const a = document.createElement('a');
+          a.href = canvas.toDataURL('image/png');
+          a.download = `Recibo_${s.id.slice(-6).toUpperCase()}.png`;
+          a.click();
+          document.body.removeChild(wrapper);
+          toast('Imagen descargada');
+        });
+      };
+      document.head.appendChild(script);
+    };
+
+    $('#doneSaleBtn').onclick = () => {
+      closeModal();
+    };
+  };
+
+  window.printReceipt = function(id) {
+    window.showSaleCompleteModal(id);
   };
 
   window.viewDailyReport = function(id) {
@@ -1925,7 +2030,7 @@ function parseMoney(value) {
         const opt = { margin: 10, filename: 'Reporte_Ventas_'+state.reportsFrom+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
         const wrapper = document.createElement('div');
         wrapper.innerHTML = html;
-        wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '-9999px'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-1';
+        wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
         document.body.appendChild(wrapper);
         html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
     }
