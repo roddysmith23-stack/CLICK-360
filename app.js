@@ -1355,7 +1355,7 @@ function parseMoney(value) {
              const opt = { margin: 10, filename: 'Cierre_Caja.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
              const wrapper = document.createElement('div');
              wrapper.innerHTML = html;
-             wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+             wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
              document.body.appendChild(wrapper);
              html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
          };
@@ -1902,7 +1902,7 @@ function parseMoney(value) {
       const opt = { margin: 10, filename: `Factura_${s.id.slice(-6).toUpperCase()}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
       const wrapper = document.createElement('div');
       wrapper.innerHTML = receiptHtml;
-      wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '80mm'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+      wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '80mm'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
       document.body.appendChild(wrapper);
       html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
     };
@@ -1912,7 +1912,7 @@ function parseMoney(value) {
       toast('Generando Imagen...');
       const wrapper = document.createElement('div');
       wrapper.innerHTML = receiptHtml;
-      wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+      wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
       document.body.appendChild(wrapper);
       
       const script = document.createElement('script');
@@ -1962,7 +1962,7 @@ function parseMoney(value) {
          toast('Generando PDF...');
          const opt = { margin: 10, filename: 'Cierre_Caja_'+r.date+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
          const wrapper = document.createElement('div'); wrapper.innerHTML = r.html; 
-         wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+         wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
          document.body.appendChild(wrapper); 
          html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
      };
@@ -2030,7 +2030,7 @@ function parseMoney(value) {
         const opt = { margin: 10, filename: 'Reporte_Ventas_'+state.reportsFrom+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
         const wrapper = document.createElement('div');
         wrapper.innerHTML = html;
-        wrapper.style.position = 'absolute'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-9999'; wrapper.style.opacity = '0'; wrapper.style.pointerEvents = 'none';
+        wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
         document.body.appendChild(wrapper);
         html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
     }
