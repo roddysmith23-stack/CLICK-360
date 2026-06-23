@@ -307,7 +307,7 @@ function parseMoney(value) {
     return `<div class="app"><div class="desktopLayout">
       <aside class="sidebar flex-sidebar">
         <div>
-          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;"><div class="logoIcon" style="width:40px;height:40px;"></div><div class="logoText" style="font-size:26px;"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
+          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;"><div class="logoIcon" style="width:48px;height:48px;"></div><div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
           <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
           <nav class="sideNav">${navButtons(active, true)}</nav>
         </div>
@@ -318,11 +318,12 @@ function parseMoney(value) {
       </aside>
       <div>
         <header class="topbar">
-          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;"><div class="logoIcon" style="width:36px;height:36px;"></div><div class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
-          <div style="flex:1; text-align:center; color:#ccc; font-size:14px; font-weight:bold;">${nowLabel().split(' ')[0]}</div>
-          <select class="businessSelect" id="businessPickerTop" style="display:none;">${bizOptions}</select>
-          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:10px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${authUser().photoURL ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%;height:100%;object-fit:cover;">` : (authUser().name || 'U').charAt(0).toUpperCase()}</div>
-          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión">↗</button>
+          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;"><div class="logoIcon" style="width:44px;height:44px;"></div><div class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
+          <div style="flex:1; display:flex; justify-content:center; min-width:0; padding:0 8px;">
+            <select class="businessSelect" id="businessPickerTop" style="font-size:13px; padding:8px; min-height:36px; max-width:140px; margin:0 auto;">${bizOptions}</select>
+          </div>
+          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${authUser().photoURL ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%;height:100%;object-fit:cover;">` : (authUser().name || 'U').charAt(0).toUpperCase()}</div>
+          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" style="width:36px; height:36px; border-radius:10px;">↗</button>
         </header>
         <main class="main">${content}</main>
       </div>
@@ -565,7 +566,7 @@ function parseMoney(value) {
     return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
         <div style="display:flex; gap:8px;">
           <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
-          <button class="btn primary" onclick="window.printReports('pdf')">Descargar PDF</button>
+          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen (PNG)</button>
         </div>
       </div>
       <div class="card sectionCard" style="display:flex; gap:10px; margin-bottom:14px; align-items:center;">
@@ -684,6 +685,7 @@ function parseMoney(value) {
     const ruc = bizSettings.ruc || '';
     const phone = bizSettings.phone || '';
     const logoUrl = bizSettings.logoUrl || '';
+    const bizOptions = state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
 
     return `<div class="pageHead"><div><h1>Ajustes</h1><p>Configura tu empresa.</p></div></div>
       <section class="card sectionCard">
@@ -720,6 +722,15 @@ function parseMoney(value) {
         </div>
         <div class="field"><label>Nombre de Usuario</label><input id="userName" value="${escapeHtml(authUser().name)}"></div>
         <button type="button" class="btn primary block" id="saveUser">Guardar Perfil</button>
+      </section>
+
+      <section class="card sectionCard" style="margin-top:14px">
+        <h3>Cambiar de Negocio</h3>
+        <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">Selecciona el negocio que deseas ver y administrar actualmente.</p>
+        <div class="field">
+          <label>Negocio Activo</label>
+          <select id="businessPickerSettings">${bizOptions}</select>
+        </div>
       </section>
 
       <section class="card sectionCard" style="margin-top:14px">
@@ -1340,7 +1351,7 @@ function parseMoney(value) {
            </div>
            <div style="display:flex; gap:10px;">
                <button class="btn silver block" id="printCierreBtn">Imprimir</button>
-               <button class="btn primary block" id="pdfCierreBtn">Descargar PDF</button>
+               <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
            </div>
          `);
          
@@ -1350,15 +1361,27 @@ function parseMoney(value) {
              setTimeout(()=>window.print(), 250);
          };
          
-         $('#pdfCierreBtn').onclick = () => {
-             toast('Generando PDF...');
-             const opt = { margin: 10, filename: 'Cierre_Caja.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
-             const wrapper = document.createElement('div');
-             wrapper.innerHTML = html;
-             wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
-             document.body.appendChild(wrapper);
-             html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
-         };
+         $('#downloadImgCierreBtn').onclick = () => {
+              toast('Generando Imagen...');
+              const wrapper = document.createElement('div');
+              wrapper.innerHTML = html;
+              wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
+              document.body.appendChild(wrapper);
+              
+              const script = document.createElement('script');
+              script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+              script.onload = () => {
+                window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
+                  const a = document.createElement('a');
+                  a.href = canvas.toDataURL('image/png');
+                  a.download = `Cierre_Caja_${today()}.png`;
+                  a.click();
+                  document.body.removeChild(wrapper);
+                  toast('Imagen descargada');
+                });
+              };
+              document.head.appendChild(script);
+          };
          
          const repId = uid('rep');
          state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
@@ -1604,6 +1627,16 @@ function parseMoney(value) {
       if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); 
       save(); renderApp('settings'); toast('Negocio creado');
     };
+
+    const pickSettings = $('#businessPickerSettings');
+    if (pickSettings) {
+      pickSettings.onchange = () => {
+        state.activeBusinessId = pickSettings.value;
+        save();
+        renderApp('settings');
+        toast('Cambiaste de negocio');
+      };
+    }
 
     $('#resetInventoryBtn').onclick = async () => {
        if(!confirm('¿ESTÁS SEGURO? Se borrarán todas las prendas y stock del inventario actual. Esto no se puede deshacer.')) return;
@@ -1885,8 +1918,7 @@ function parseMoney(value) {
       
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
         <button class="btn primary" id="printReceiptBtn">🖨️ Imprimir Ticket</button>
-        <button class="btn silver" id="downloadPdfBtn">📥 Descargar PDF</button>
-        <button class="btn silver" id="downloadImgBtn" style="grid-column: 1/-1;">🖼️ Descargar Imagen (PNG)</button>
+        <button class="btn silver" id="downloadImgBtn">🖼️ Descargar Imagen (PNG)</button>
       </div>
       <button class="btn block" id="doneSaleBtn" style="border:1px solid var(--gold); color:var(--gold);">Listo / Nueva Venta</button>
     `);
@@ -1896,17 +1928,6 @@ function parseMoney(value) {
       root.innerHTML = receiptHtml;
       setTimeout(()=>window.print(), 250);
     };
-
-    const downloadPdf = () => {
-      toast('Generando PDF...');
-      const opt = { margin: 10, filename: `Factura_${s.id.slice(-6).toUpperCase()}.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
-      const wrapper = document.createElement('div');
-      wrapper.innerHTML = receiptHtml;
-      wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '80mm'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
-      document.body.appendChild(wrapper);
-      html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
-    };
-    $('#downloadPdfBtn').onclick = downloadPdf;
 
     $('#downloadImgBtn').onclick = () => {
       toast('Generando Imagen...');
@@ -1950,7 +1971,7 @@ function parseMoney(value) {
        </div>
        <div style="display:flex; gap:10px;">
            <button class="btn silver block" id="printCierreBtn">Imprimir</button>
-           <button class="btn primary block" id="pdfCierreBtn">Descargar PDF</button>
+           <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
        </div>
      `);
      $('#printCierreBtn').onclick = () => {
@@ -1958,14 +1979,26 @@ function parseMoney(value) {
          root.innerHTML = r.html;
          setTimeout(()=>window.print(), 250);
      };
-     $('#pdfCierreBtn').onclick = () => {
-         toast('Generando PDF...');
-         const opt = { margin: 10, filename: 'Cierre_Caja_'+r.date+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a5', orientation: 'portrait' } };
-         const wrapper = document.createElement('div'); wrapper.innerHTML = r.html; 
-         wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
-         document.body.appendChild(wrapper); 
-         html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
-     };
+     $('#downloadImgCierreBtn').onclick = () => {
+          toast('Generando Imagen...');
+          const wrapper = document.createElement('div'); wrapper.innerHTML = r.html; 
+          wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
+          document.body.appendChild(wrapper); 
+          
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+          script.onload = () => {
+            window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
+              const a = document.createElement('a');
+              a.href = canvas.toDataURL('image/png');
+              a.download = `Cierre_Caja_${r.date}.png`;
+              a.click();
+              document.body.removeChild(wrapper);
+              toast('Imagen descargada');
+            });
+          };
+          document.head.appendChild(script);
+      };
   };
 
   window.printReports = function(mode = 'print') {
@@ -2025,14 +2058,26 @@ function parseMoney(value) {
         const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
         root.innerHTML = html;
         setTimeout(()=>window.print(), 250);
-    } else if (mode === 'pdf') {
-        toast('Generando PDF...');
-        const opt = { margin: 10, filename: 'Reporte_Ventas_'+state.reportsFrom+'.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' } };
+    } else if (mode === 'image') {
+        toast('Generando Imagen...');
         const wrapper = document.createElement('div');
         wrapper.innerHTML = html;
         wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
         document.body.appendChild(wrapper);
-        html2pdf().set(opt).from(wrapper).save().then(() => document.body.removeChild(wrapper));
+        
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        script.onload = () => {
+          window.html2canvas(wrapper.firstElementChild, { scale: 2, useCORS: true }).then(canvas => {
+            const a = document.createElement('a');
+            a.href = canvas.toDataURL('image/png');
+            a.download = `Reporte_Ventas_${state.reportsFrom}.png`;
+            a.click();
+            document.body.removeChild(wrapper);
+            toast('Imagen descargada');
+          });
+        };
+        document.head.appendChild(script);
     }
   };
 

@@ -476,24 +476,37 @@
     return provider;
   }
 
-  async function signInGoogle() {
+  function signInGoogle() {
     const msg = document.getElementById("c360-auth-msg");
-    try {
-      if (msg) msg.textContent = "Abriendo Google...";
-      
-      try {
-        await auth.signInWithPopup(providerGoogle());
-      } catch (err) {
-        console.warn("Popup falló:", err.message);
-        if (err.code === 'auth/popup-blocked') {
-          if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> o intenta desde Chrome/Safari normal.";
-        } else if (err.code !== 'auth/popup-closed-by-user') {
-          if (msg) msg.innerHTML = "Error al iniciar sesión con Google. Intenta abrir la app directamente desde Safari o Chrome.<br><br>Error: " + err.message;
-        }
+    const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    
+    if (isIOS && isStandalone) {
+      if (msg) {
+        msg.innerHTML = `<div style="text-align:left; padding:12px; background:rgba(214,170,44,0.1); border:1px solid var(--gold); border-radius:16px; font-size:13px; line-height:1.4; color:var(--text);">
+          <b>Nota para iPhone (PWA):</b><br>
+          Debido a restricciones de seguridad de iOS en apps de pantalla de inicio, por favor:<br><br>
+          1. Abre el navegador <b>Safari</b> normal.<br>
+          2. Ve a <b>click-360.firebaseapp.com</b> e inicia sesión con tu cuenta.<br>
+          3. Una vez iniciada sesión en Safari, vuelve a abrir esta app desde tu pantalla de inicio.
+        </div>`;
       }
-    } catch (e) {
-      if (msg) msg.innerHTML = "Google no pudo abrirse. Abre la app en Safari o Chrome normal.<br><br>Error: " + e.message;
+      return;
     }
+    
+    if (msg) msg.textContent = "Abriendo Google...";
+    
+    auth.signInWithPopup(providerGoogle()).catch(err => {
+      console.warn("Popup falló:", err.message);
+      if (err.code === 'auth/popup-blocked') {
+        if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> o intenta desde Chrome/Safari normal.";
+      } else if (err.code === 'auth/operation-not-supported-in-this-environment') {
+        if (msg) msg.textContent = "Redireccionando a Google...";
+        auth.signInWithRedirect(providerGoogle());
+      } else if (err.code !== 'auth/popup-closed-by-user') {
+        if (msg) msg.innerHTML = "Error al iniciar sesión con Google. Intenta abrir la app directamente desde Safari o Chrome.<br><br>Error: " + err.message;
+      }
+    });
   }
 
   function createControls() {
