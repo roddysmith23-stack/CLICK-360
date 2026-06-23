@@ -264,7 +264,9 @@
     } catch(e) {
       console.error("Error al verificar aprobación", e);
       return false;
-    }  window.click360InviteWorker = async function(email) {
+    }
+  }
+  window.click360InviteWorker = async function(email) {
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
   };
 
