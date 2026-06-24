@@ -199,7 +199,21 @@ function parseMoney(value) {
     }
   };
 
-  function currentUser(){ return session ? state.users.find(u=>u.username===session.username) : null; }
+  function currentUser(){
+    if (!session) return null;
+    let localUser = state.users.find(u=>u.username===session.username);
+    if (!localUser && session.username) {
+      const role = session.role || (window.click360User ? window.click360User.role : 'owner');
+      const label = window.click360User ? (window.click360User.name || window.click360User.email) : session.username;
+      localUser = {
+        username: session.username,
+        role: role,
+        label: label,
+        businessIds: state.businesses.map(b => b.id)
+      };
+    }
+    return localUser;
+  }
   function authUser() {
     if (window.click360User) return window.click360User;
     const u = currentUser();
