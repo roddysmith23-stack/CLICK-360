@@ -181,10 +181,11 @@
   async function isApprovedUser(user) {
     if (!user) return false;
     try {
-      // Check if there is an invite in URL
+      // Check if there is an invite in URL or in cache
       const urlParams = new URLSearchParams(location.search);
-      const isInvite = urlParams.get("invite") === "true";
-      const inviteOwnerId = urlParams.get("ownerId");
+      const cachedOwnerId = localStorage.getItem("CLICK360_PENDING_INVITE_OWNER");
+      const isInvite = urlParams.get("invite") === "true" || !!cachedOwnerId;
+      const inviteOwnerId = urlParams.get("ownerId") || cachedOwnerId;
 
       let doc = await db.collection("approvedUsers").doc(user.uid).get();
       let d = null;
@@ -220,6 +221,7 @@
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
           };
           await db.collection("approvedUsers").doc(user.uid).set(d);
+          localStorage.removeItem("CLICK360_PENDING_INVITE_OWNER");
         } else {
           // Register as a new owner
           d = {
@@ -286,11 +288,11 @@
   window.click360ApproveWorker = async function(workerUid) {
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
     
-    // Enforce 1 active worker limit
+    // Enforce 2 active workers limit
     const workers = await window.click360GetWorkers();
     const activeCount = workers.filter(w => w.status === 'active').length;
-    if (activeCount >= 1) {
-      throw new Error("Límite de trabajadores alcanzado (Máximo 1 en plan gratuito).");
+    if (activeCount >= 2) {
+      throw new Error("Límite de trabajadores alcanzado (Máximo 2 en plan gratuito).");
     }
     
     await db.collection("approvedUsers").doc(workerUid).update({
@@ -480,6 +482,12 @@
     const msg = document.getElementById("c360-auth-msg");
     const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
     const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    
+    // Save invite parameters before Google login redirects/popups
+    const urlParams = new URLSearchParams(location.search);
+    if(urlParams.get("invite") === "true" && urlParams.get("ownerId")) {
+       localStorage.setItem("CLICK360_PENDING_INVITE_OWNER", urlParams.get("ownerId"));
+    }
     
     if (isIOS && isStandalone) {
       if (msg) {
