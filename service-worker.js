@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-final-v4-real-qr';
+const CACHE = 'click360-mvp-final-v4-real-qr-auth-fix';
 const ASSETS = [
   './',
   './index.html',

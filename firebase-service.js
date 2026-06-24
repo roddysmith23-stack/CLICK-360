@@ -6,6 +6,17 @@
 
   if (!firebase.apps.length) firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
 
+  // Programmatically clear old caches if needed
+  if ('caches' in window) {
+    caches.keys().then(keys => {
+      keys.forEach(key => {
+        if (key !== 'click360-mvp-final-v4-real-qr-auth-fix') {
+          caches.delete(key).catch(() => {});
+        }
+      });
+    });
+  }
+
   const auth = firebase.auth();
   const db = firebase.firestore();
 
@@ -186,38 +197,88 @@
 
   async function isApprovedUser(user) {
     if (!user) return false;
+
+    // Temporal owners fallback list (case insensitive)
+    const tempOwners = [
+      'roddysmith23@hotmail.com',
+      'sanyagullo1997@gmail.com',
+      'shary10mmv@gmail.com',
+      'shary10mmvv@gmail.com',
+      'debbyaf32@gmail.com',
+      'debbya632@gmail.com',
+      'cheyos@hotmail.es'
+    ];
+    const isTempOwner = user.email && tempOwners.includes(user.email.toLowerCase());
+
+    console.log("[CLICK360 AUTH LOG] UID Autenticado:", user.uid);
+    console.log("[CLICK360 AUTH LOG] Email Autenticado:", user.email);
+    console.log("[CLICK360 AUTH LOG] Ruta Firestore consultada: approvedUsers/" + user.uid);
+
     try {
       let doc = await db.collection("approvedUsers").doc(user.uid).get();
       let d = null;
       
       if (doc.exists) {
         d = doc.data();
-      } else if (user.email) {
-        try {
-          const emailDoc = await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).get();
-          if (emailDoc.exists && emailDoc.data().status !== "inactive") {
-            d = emailDoc.data();
-            await db.collection("approvedUsers").doc(user.uid).set({
-              ...d,
-              uid: user.uid,
-              status: "active",
-              createdAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
-            await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).delete();
-          }
-        } catch (emailErr) {
-          console.warn("No se pudo verificar pre-aprobación por email:", emailErr.message);
-        }
+        console.log("[CLICK360 AUTH LOG] Documento encontrado en Firestore:", JSON.stringify(d));
+      } else {
+        console.log("[CLICK360 AUTH LOG] Documento no encontrado en Firestore para el UID:", user.uid);
       }
 
-      // Check if there is an invite in URL or in cache
+      // 1. If status is blocked -> BLOQUEAR
+      if (d && d.status === "blocked") {
+        console.log("[CLICK360 AUTH LOG] Acceso BLOQUEADO. Razón: El documento tiene status === 'blocked'.");
+        window.click360User = {
+          uid: user.uid,
+          email: user.email || d.email,
+          role: d.role || "worker",
+          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
+          photoURL: d.photoURL || user.photoURL || '',
+          status: "blocked"
+        };
+        return false;
+      }
+
+      // 2. If status is active OR approved is true -> ENTRAR
+      if (d && (d.status === "active" || d.approved === true)) {
+        console.log("[CLICK360 AUTH LOG] Acceso PERMITIDO. Razón: El documento tiene status === 'active' o approved === true.");
+        window.click360User = {
+          uid: user.uid,
+          email: user.email || d.email,
+          role: d.role || "owner",
+          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
+          photoURL: d.photoURL || user.photoURL || '',
+          status: "active"
+        };
+        BUSINESS_ID = d.ownerId || user.uid;
+        STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
+        return true;
+      }
+
+      // 3. If email is in tempOwners list -> ENTRAR as owner (fallback)
+      if (isTempOwner) {
+        console.log("[CLICK360 AUTH LOG] Acceso PERMITIDO. Razón: El email está en la lista temporal de propietarios.");
+        window.click360User = {
+          uid: user.uid,
+          email: user.email,
+          role: "owner",
+          name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
+          photoURL: user.photoURL || '',
+          status: "active"
+        };
+        BUSINESS_ID = user.uid;
+        STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
+        return true;
+      }
+
+      // 4. Handle worker invite registration if document does not exist yet
       const urlParams = new URLSearchParams(location.search);
       const cachedOwnerId = localStorage.getItem("CLICK360_PENDING_INVITE_OWNER");
       const isInvite = urlParams.get("invite") === "true" || !!cachedOwnerId;
       const inviteOwnerId = urlParams.get("ownerId") || cachedOwnerId;
 
       if (!d && isInvite && inviteOwnerId) {
-        // Register as a pending worker
+        console.log("[CLICK360 AUTH LOG] Registrando trabajador pendiente por invitación...");
         d = {
           uid: user.uid,
           email: user.email,
@@ -232,47 +293,21 @@
         localStorage.removeItem("CLICK360_PENDING_INVITE_OWNER");
       }
 
-      if (d) {
-        if (d.status === "active") {
-          window.click360User = {
-            uid: user.uid,
-            email: user.email || d.email,
-            role: d.role || "owner",
-            name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
-            photoURL: d.photoURL || user.photoURL || '',
-            status: "active"
-          };
-          BUSINESS_ID = d.ownerId || user.uid;
-          STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
-          return true;
-        }
-
-        if (d.status === "pending") {
-          window.click360User = {
-            uid: user.uid,
-            email: user.email || d.email,
-            role: d.role || "worker",
-            name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
-            photoURL: d.photoURL || user.photoURL || '',
-            status: "pending"
-          };
-          return false;
-        }
-
-        if (d.status === "blocked") {
-          window.click360User = {
-            uid: user.uid,
-            email: user.email || d.email,
-            role: d.role || "worker",
-            name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
-            photoURL: d.photoURL || user.photoURL || '',
-            status: "blocked"
-          };
-          return false;
-        }
+      // 5. If status is pending or doesn't exist -> PENDIENTE
+      if (d && d.status === "pending") {
+        console.log("[CLICK360 AUTH LOG] Acceso BLOQUEADO/PENDIENTE. Razón: El documento tiene status === 'pending'.");
+        window.click360User = {
+          uid: user.uid,
+          email: user.email || d.email,
+          role: d.role || "worker",
+          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
+          photoURL: d.photoURL || user.photoURL || '',
+          status: "pending"
+        };
+        return false;
       }
 
-      // If they do not exist in Firestore and had no invite
+      console.log("[CLICK360 AUTH LOG] Acceso BLOQUEADO/PENDIENTE. Razón: El documento no existe en Firestore y el email no está en la lista temporal.");
       window.click360User = {
         uid: user.uid,
         email: user.email,
@@ -281,10 +316,73 @@
       };
       return false;
     } catch(e) {
-      console.error("Error al verificar aprobación", e);
+      console.error("[CLICK360 AUTH LOG] Error al verificar aprobación:", e);
+      // Even if firestore check fails, check temporal owner fallback!
+      if (isTempOwner) {
+        console.log("[CLICK360 AUTH LOG] Fallback: Acceso PERMITIDO por lista temporal tras error de Firestore.");
+        window.click360User = {
+          uid: user.uid,
+          email: user.email,
+          role: "owner",
+          name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
+          photoURL: user.photoURL || '',
+          status: "active"
+        };
+        BUSINESS_ID = user.uid;
+        STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
+        return true;
+      }
       return false;
     }
   }
+
+  // Diagnostic function click360DebugAuth
+  window.click360DebugAuth = async function() {
+    console.log("=== CLICK 360 DIAGNÓSTICO DE AUTENTICACIÓN ===");
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      console.log("[DEBUG AUTH] No hay usuario autenticado en Firebase Auth.");
+      return;
+    }
+    console.log("[DEBUG AUTH] currentUser.uid:", currentUser.uid);
+    console.log("[DEBUG AUTH] currentUser.email:", currentUser.email);
+    const path = "approvedUsers/" + currentUser.uid;
+    console.log("[DEBUG AUTH] ruta Firestore consultada:", path);
+    
+    try {
+      const docSnap = await db.collection("approvedUsers").doc(currentUser.uid).get();
+      const exists = docSnap.exists;
+      const data = exists ? docSnap.data() : null;
+      console.log("[DEBUG AUTH] data encontrada en Firestore:", data);
+      
+      const tempOwners = [
+        'roddysmith23@hotmail.com',
+        'sanyagullo1997@gmail.com',
+        'shary10mmv@gmail.com',
+        'shary10mmvv@gmail.com',
+        'debbyaf32@gmail.com',
+        'debbya632@gmail.com',
+        'cheyos@hotmail.es'
+      ];
+      const isTempOwner = currentUser.email && tempOwners.includes(currentUser.email.toLowerCase());
+      
+      let decision = "PENDIENTE/BLOQUEADO";
+      if (data && data.status === "blocked") {
+        decision = "BLOQUEADO (status es blocked)";
+      } else if (data && (data.status === "active" || data.approved === true)) {
+        decision = "PERMITIDO (por data de Firestore)";
+      } else if (isTempOwner) {
+        decision = "PERMITIDO (por lista temporal de email)";
+      } else if (data && data.status === "pending") {
+        decision = "PENDIENTE (status es pending)";
+      } else {
+        decision = "PENDIENTE (no existe documento y email no en lista temporal)";
+      }
+      console.log("[DEBUG AUTH] decisión final de acceso:", decision);
+    } catch (err) {
+      console.error("[DEBUG AUTH] Error al consultar Firestore:", err);
+    }
+  };
   window.click360InviteWorker = async function(email) {
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
   };
@@ -431,8 +529,8 @@
           <h1 style="margin:0 0 8px;font-size:36px;letter-spacing:.5px;">CLICK 360</h1>
           <p style="opacity:.72;margin:0 0 24px;font-size:17px;line-height:1.35;">Acceso privado con Google.</p>
 
-          <button id="c360-google-login" style="width:100%;padding:17px;border-radius:18px;border:1px solid #444;background:#fff;color:#000;font-weight:900;font-size:17px;margin-bottom:12px;cursor:pointer;">Entrar con Google</button>
-          <button id="c360-change-google" style="width:100%;padding:13px;border-radius:18px;border:1px solid #333;background:#000;color:#f4c431;font-weight:800;font-size:14px;cursor:pointer;">Cambiar cuenta / Cerrar sesión</button>
+          <button id="c360-google-login" style="width:100%;padding:17px;border-radius:18px;border:1px solid #444;background:#fff;color:#000;font-weight:900;font-size:17px;margin-bottom:12px;cursor:pointer;display:none;">Entrar con Google</button>
+          <button id="c360-change-google" style="width:100%;padding:13px;border-radius:18px;border:1px solid #333;background:#000;color:#f4c431;font-weight:800;font-size:14px;cursor:pointer;display:none;">Cambiar cuenta / Cerrar sesión</button>
 
           <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;word-break:break-word;line-height:1.45;"></p>
         </div>
@@ -451,6 +549,21 @@
 
     const msg = document.getElementById("c360-auth-msg");
     if (msg) msg.innerHTML = message;
+
+    // Show/hide buttons dynamically based on verification vs waiting state
+    const loginBtn = document.getElementById("c360-google-login");
+    const changeBtn = document.getElementById("c360-change-google");
+    
+    if (message.includes("Inicia sesión") || message.includes("pendiente") || message.includes("bloqueada") || message.includes("aprobaron")) {
+      if (loginBtn) loginBtn.style.display = "block";
+      if (changeBtn) changeBtn.style.display = "block";
+      if (message.includes("bloqueada")) {
+        if (loginBtn) loginBtn.style.display = "none";
+      }
+    } else {
+      if (loginBtn) loginBtn.style.display = "none";
+      if (changeBtn) changeBtn.style.display = "none";
+    }
   }
 
   function showPending(user) {
@@ -597,6 +710,8 @@
 
     auth.onAuthStateChanged(async user => {
       if (!user) {
+        localStorage.removeItem('click360_mvp_qa_final_session_v1');
+        if(window.click360SetSession) window.click360SetSession(null);
         showGate("Inicia sesión con Google para continuar.");
         return;
       }
@@ -605,6 +720,9 @@
       const approved = await isApprovedUser(user);
 
       if (!approved) {
+        localStorage.removeItem('click360_mvp_qa_final_session_v1');
+        if(window.click360SetSession) window.click360SetSession(null);
+
         if (window.click360User && window.click360User.status === "blocked") {
           showGate(`
             Tu cuenta (<b>${user.email || "sin email"}</b>) ha sido bloqueada.<br><br>
@@ -629,14 +747,12 @@
         return;
       }
 
-      const s = JSON.parse(localStorage.getItem('click360_mvp_qa_final_session_v1') || 'null');
-      if(!s) {
-          const newSession = {username: 'demo', role: 'owner'};
-          localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify(newSession));
-          if(window.click360SetSession) window.click360SetSession(newSession);
-      } else {
-          if(window.click360SetSession) window.click360SetSession(s);
-      }
+      // Map session role and username dynamically from click360User
+      const userRole = (window.click360User && window.click360User.role) || 'owner';
+      const userName = (window.click360User && (window.click360User.name || window.click360User.email)) || 'demo';
+      const newSession = { username: userName, role: userRole };
+      localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify(newSession));
+      if(window.click360SetSession) window.click360SetSession(newSession);
 
       await pullRemoteOnce({ force: true, reload: false });
       unlockApp();
