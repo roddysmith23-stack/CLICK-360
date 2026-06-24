@@ -7,14 +7,18 @@
   if (!firebase.apps.length) firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
 
   // Programmatically clear old caches if needed
-  if ('caches' in window) {
-    caches.keys().then(keys => {
-      keys.forEach(key => {
-        if (key !== 'click360-mvp-final-v4-real-qr-auth-fix') {
-          caches.delete(key).catch(() => {});
-        }
-      });
-    });
+  try {
+    if ('caches' in window) {
+      caches.keys().then(keys => {
+        keys.forEach(key => {
+          if (key !== 'click360-mvp-final-v4-real-qr-auth-fix') {
+            caches.delete(key).catch(() => {});
+          }
+        });
+      }).catch(err => console.warn("Error al obtener llaves de caché:", err));
+    }
+  } catch(cacheErr) {
+    console.warn("Cachés no accesibles en este entorno:", cacheErr);
   }
 
   const auth = firebase.auth();
