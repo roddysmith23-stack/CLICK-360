@@ -21,12 +21,23 @@
   <script src="vendor/jsQR.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   
+<script>
+  if ('serviceWorker' in navigator) {
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!refreshing) {
+        refreshing = true;
+        window.location.reload();
+      }
+    });
+  }
+</script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <script src="./firebase-config.js"></script>
-<script src="./firebase-service.js?v=auth-fix-final"></script>
+<script src="./firebase-service.js?v=auth-fix-final-v2"></script>
 <!-- Logic -->
-<script src="app.js?v=auth-fix-final"></script>
+<script src="app.js?v=auth-fix-final-v2"></script>
 </body>
 </html>

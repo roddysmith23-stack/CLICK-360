@@ -531,6 +531,7 @@
 
           <button id="c360-google-login" style="width:100%;padding:17px;border-radius:18px;border:1px solid #444;background:#fff;color:#000;font-weight:900;font-size:17px;margin-bottom:12px;cursor:pointer;display:none;">Entrar con Google</button>
           <button id="c360-change-google" style="width:100%;padding:13px;border-radius:18px;border:1px solid #333;background:#000;color:#f4c431;font-weight:800;font-size:14px;cursor:pointer;display:none;">Cambiar cuenta / Cerrar sesión</button>
+          <button id="c360-clear-cache" style="width:100%;padding:10px;border-radius:18px;border:1px dashed #555;background:#000;color:#aaa;font-weight:600;font-size:12px;cursor:pointer;margin-top:12px;display:none;">Limpiar Caché y Forzar Recarga</button>
 
           <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;word-break:break-word;line-height:1.45;"></p>
         </div>
@@ -545,6 +546,33 @@
            location.reload();
         }
       };
+
+      document.getElementById("c360-clear-cache").onclick = async () => {
+        const btn = document.getElementById("c360-clear-cache");
+        btn.textContent = "Limpiando...";
+        btn.disabled = true;
+        try {
+          if ('serviceWorker' in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            for (let reg of regs) {
+              await reg.unregister();
+            }
+          }
+          if ('caches' in window) {
+            const keys = await caches.keys();
+            for (let key of keys) {
+              await caches.delete(key);
+            }
+          }
+          localStorage.clear();
+          sessionStorage.clear();
+          window.location.reload(true);
+        } catch (e) {
+          alert("Error al limpiar caché: " + e.message);
+          btn.textContent = "Limpiar Caché y Forzar Recarga";
+          btn.disabled = false;
+        }
+      };
     }
 
     const msg = document.getElementById("c360-auth-msg");
@@ -553,16 +581,19 @@
     // Show/hide buttons dynamically based on verification vs waiting state
     const loginBtn = document.getElementById("c360-google-login");
     const changeBtn = document.getElementById("c360-change-google");
+    const clearBtn = document.getElementById("c360-clear-cache");
     
     if (message.includes("Inicia sesión") || message.includes("pendiente") || message.includes("bloqueada") || message.includes("aprobaron")) {
       if (loginBtn) loginBtn.style.display = "block";
       if (changeBtn) changeBtn.style.display = "block";
+      if (clearBtn) clearBtn.style.display = "block";
       if (message.includes("bloqueada")) {
         if (loginBtn) loginBtn.style.display = "none";
       }
     } else {
       if (loginBtn) loginBtn.style.display = "none";
       if (changeBtn) changeBtn.style.display = "none";
+      if (clearBtn) clearBtn.style.display = "none";
     }
   }
 
