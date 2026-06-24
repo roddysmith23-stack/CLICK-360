@@ -1585,145 +1585,153 @@ function parseMoney(value) {
        }
        return;
     }
-    $('#newMove').onclick=()=>{
-      showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><input id="mAmount" inputmode="decimal" value="0"></div><div class="field"><label>Nota</label><input id="mNote" required></div><button type="submit" class="btn primary block">Guardar</button></form>`);
-      
-      const mAmountInput = $('#mAmount');
-      if (mAmountInput) {
-        mAmountInput.oninput = () => { mAmountInput.value = mAmountInput.value.replace(/[^0-9.,]/g, ''); };
-      }
 
-      $('#moveForm').onsubmit = (e) => {
-        e.preventDefault();
-        const k=$('#mKind').value, a=parseMoney($('#mAmount').value), n=$('#mNote').value.trim();
-        if(!Number.isFinite(a)||a<=0) return toast('Monto inválido','err');
-        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:k,amount:a,note:n, createdBy: authUser().name});
-        save();
-        closeModal(); renderApp('cash'); toast('Guardado');
+    const btnNewMove = $('#newMove');
+    if (btnNewMove) {
+      btnNewMove.onclick=()=>{
+        showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><input id="mAmount" inputmode="decimal" value="0"></div><div class="field"><label>Nota</label><input id="mNote" required></div><button type="submit" class="btn primary block">Guardar</button></form>`);
+        
+        const mAmountInput = $('#mAmount');
+        if (mAmountInput) {
+          mAmountInput.oninput = () => { mAmountInput.value = mAmountInput.value.replace(/[^0-9.,]/g, ''); };
+        }
+
+        $('#moveForm').onsubmit = (e) => {
+          e.preventDefault();
+          const k=$('#mKind').value, a=parseMoney($('#mAmount').value), n=$('#mNote').value.trim();
+          if(!Number.isFinite(a)||a<=0) return toast('Monto inválido','err');
+          state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:k,amount:a,note:n, createdBy: authUser().name});
+          save();
+          closeModal(); renderApp('cash'); toast('Guardado');
+        };
       };
-    };
-    $('#closeDayBtn').onclick=()=>{
-      const apertureMov = movementsForBiz().find(m => m.date === today() && m.kind === 'apertura');
-      const lastCash = apertureMov ? apertureMov.amount : (currentBusiness().lastCashBalance || 0);
-      showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
-        <form id="closeDayForm" class="formGrid">
-          <div class="field full"><label>Caja Inicial (Auto-cuadre)</label><input id="cajaInicial" value="${lastCash}" inputmode="decimal"></div>
-          <div class="field full"><label>Efectivo Físico (Contado)</label><input id="efectivoFisico" value="0" inputmode="decimal"></div>
-          <div class="field full"><label>Observaciones</label><input id="cierreObs"></div>
-          <button class="btn silver" type="button" data-close>Cancelar</button>
-          <button class="btn primary block" type="submit">Generar Cierre</button>
-        </form>`);
-      
-      const cInicialInput = $('#cajaInicial'), eFisicoInput = $('#efectivoFisico');
-      if (cInicialInput) cInicialInput.oninput = () => { cInicialInput.value = cInicialInput.value.replace(/[^0-9.,]/g, ''); };
-      if (eFisicoInput) eFisicoInput.oninput = () => { eFisicoInput.value = eFisicoInput.value.replace(/[^0-9.,]/g, ''); };
+    }
 
-      $('#closeDayForm').onsubmit = (e) => {
-         e.preventDefault();
-         const cInicial = parseMoney($('#cajaInicial').value);
-         const eFisico = parseMoney($('#efectivoFisico').value);
-         if(!Number.isFinite(cInicial) || !Number.isFinite(eFisico)){ return toast('Montos inválidos', 'err'); }
-         
-         const mov=movementsForBiz().filter(m=>m.date===today());
-         const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
-         const out=mov.filter(m=>m.kind!=='ingreso' && m.kind!=='apertura').reduce((a,m)=>a+m.amount,0);
-         const balanceCalculado = cInicial + income - out;
-         const diferencia = eFisico - balanceCalculado;
+    const btnCloseDay = $('#closeDayBtn');
+    if (btnCloseDay) {
+      btnCloseDay.onclick=()=>{
+        const apertureMov = movementsForBiz().find(m => m.date === today() && m.kind === 'apertura');
+        const lastCash = apertureMov ? apertureMov.amount : (currentBusiness().lastCashBalance || 0);
+        showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
+          <form id="closeDayForm" class="formGrid">
+            <div class="field full"><label>Caja Inicial (Auto-cuadre)</label><input id="cajaInicial" value="${lastCash}" inputmode="decimal"></div>
+            <div class="field full"><label>Efectivo Físico (Contado)</label><input id="efectivoFisico" value="0" inputmode="decimal"></div>
+            <div class="field full"><label>Observaciones</label><input id="cierreObs"></div>
+            <button class="btn silver" type="button" data-close>Cancelar</button>
+            <button class="btn primary block" type="submit">Generar Cierre</button>
+          </form>`);
+        
+        const cInicialInput = $('#cajaInicial'), eFisicoInput = $('#efectivoFisico');
+        if (cInicialInput) cInicialInput.oninput = () => { cInicialInput.value = cInicialInput.value.replace(/[^0-9.,]/g, ''); };
+        if (eFisicoInput) eFisicoInput.oninput = () => { eFisicoInput.value = eFisicoInput.value.replace(/[^0-9.,]/g, ''); };
 
-         const sales = salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled');
-         const salesEfectivo = sales.filter(s=>s.method==='Efectivo').reduce((a,s)=>a+s.total,0);
-         const salesTarjeta = sales.filter(s=>s.method==='Tarjeta').reduce((a,s)=>a+s.total,0);
-         const salesTransf = sales.filter(s=>s.method==='Transferencia').reduce((a,s)=>a+s.total,0);
-         const abonosApartado = sales.filter(s=>s.method==='Apartado').reduce((a,s)=>a+s.received,0);
-         
-         const totalIva = sales.reduce((a,s)=>a+(s.iva||0),0);
-         let totalItems = 0;
-         sales.forEach(s => s.items?.forEach(i => totalItems += i.qty));
-         
-         const bizSettings = currentBusiness().settings || {};
-         const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
-         const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
-         const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+        $('#closeDayForm').onsubmit = (e) => {
+           e.preventDefault();
+           const cInicial = parseMoney($('#cajaInicial').value);
+           const eFisico = parseMoney($('#efectivoFisico').value);
+           if(!Number.isFinite(cInicial) || !Number.isFinite(eFisico)){ return toast('Montos inválidos', 'err'); }
+           
+           const mov=movementsForBiz().filter(m=>m.date===today());
+           const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
+           const out=mov.filter(m=>m.kind!=='ingreso' && m.kind!=='apertura').reduce((a,m)=>a+m.amount,0);
+           const balanceCalculado = cInicial + income - out;
+           const diferencia = eFisico - balanceCalculado;
 
-         const html = `
-          <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
-          ${logoUrl}
-          <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
-          ${ruc}${phone}
-          <div style="text-align:center; margin:10px 0;">CIERRE DE CAJA<br>${nowLabel()}</div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
-          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-          <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Productos Vendidos:</span><span>${totalItems}</span></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA Recaudado:</span><span>${fmt(totalIva)}</span></div>
-          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(salesTransf)}</span></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
-          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-          <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Ingresos:</span><span>+${fmt(income)}</span></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Salidas:</span><span>-${fmt(out)}</span></div>
-          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo Declarado:</span><span>${fmt(eFisico)}</span></div>
-          <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-          <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
-          <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
-          <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(authUser().name || 'Usuario')}</div>
-          </div>`;
-         
-         closeModal();
-         showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
-           <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
-             <div id="pdfContentPreview" style="transform: scale(0.85); transform-origin: top center;">
-               ${html}
+           const sales = salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled');
+           const salesEfectivo = sales.filter(s=>s.method==='Efectivo').reduce((a,s)=>a+s.total,0);
+           const salesTarjeta = sales.filter(s=>s.method==='Tarjeta').reduce((a,s)=>a+s.total,0);
+           const salesTransf = sales.filter(s=>s.method==='Transferencia').reduce((a,s)=>a+s.total,0);
+           const abonosApartado = sales.filter(s=>s.method==='Apartado').reduce((a,s)=>a+s.received,0);
+           
+           const totalIva = sales.reduce((a,s)=>a+(s.iva||0),0);
+           let totalItems = 0;
+           sales.forEach(s => s.items?.forEach(i => totalItems += i.qty));
+           
+           const bizSettings = currentBusiness().settings || {};
+           const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
+           const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
+           const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+
+           const html = `
+            <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
+            ${logoUrl}
+            <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
+            ${ruc}${phone}
+            <div style="text-align:center; margin:10px 0;">CIERRE DE CAJA<br>${nowLabel()}</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
+            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+            <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Productos Vendidos:</span><span>${totalItems}</span></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA Recaudado:</span><span>${fmt(totalIva)}</span></div>
+            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(salesTransf)}</span></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
+            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+            <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Ingresos:</span><span>+${fmt(income)}</span></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Salidas:</span><span>-${fmt(out)}</span></div>
+            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo Declarado:</span><span>${fmt(eFisico)}</span></div>
+            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
+            <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
+            <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(authUser().name || 'Usuario')}</div>
+            </div>`;
+           
+           closeModal();
+           showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
+             <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
+               <div id="pdfContentPreview" style="transform: scale(0.85); transform-origin: top center;">
+                 ${html}
+               </div>
              </div>
-           </div>
-           <div style="display:flex; gap:10px;">
-               <button class="btn silver block" id="printCierreBtn">Imprimir</button>
-               <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
-           </div>
-         `);
-         
-         $('#printCierreBtn').onclick = () => {
-             const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-             root.innerHTML = html;
-             setTimeout(()=>window.print(), 250);
-         };
-         
-         $('#downloadImgCierreBtn').onclick = () => {
-              toast('Generando Imagen...');
-              const wrapper = document.createElement('div');
-              wrapper.innerHTML = html;
-              wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
-              document.body.appendChild(wrapper);
-              
-              const script = document.createElement('script');
-              script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-              script.onload = () => {
-                window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
-                  const a = document.createElement('a');
-                  a.href = canvas.toDataURL('image/png');
-                  a.download = `Cierre_Caja_${today()}.png`;
-                  a.click();
-                  document.body.removeChild(wrapper);
-                  toast('Imagen descargada');
-                });
-              };
-              document.head.appendChild(script);
-          };
-         
-         const repId = uid('rep');
-         state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
-         currentBusiness().lastCashBalance = eFisico;
-         save();
-         renderApp('cash');
-         
-         toast('Cierre del día generado');
+             <div style="display:flex; gap:10px;">
+                 <button class="btn silver block" id="printCierreBtn">Imprimir</button>
+                 <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
+             </div>
+           `);
+           
+           $('#printCierreBtn').onclick = () => {
+               const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
+               root.innerHTML = html;
+               setTimeout(()=>window.print(), 250);
+           };
+           
+           $('#downloadImgCierreBtn').onclick = () => {
+                toast('Generando Imagen...');
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = html;
+                wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
+                document.body.appendChild(wrapper);
+                
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+                script.onload = () => {
+                  window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
+                    const a = document.createElement('a');
+                    a.href = canvas.toDataURL('image/png');
+                    a.download = `Cierre_Caja_${today()}.png`;
+                    a.click();
+                    document.body.removeChild(wrapper);
+                    toast('Imagen descargada');
+                  });
+                };
+                document.head.appendChild(script);
+            };
+           
+           const repId = uid('rep');
+           state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
+           currentBusiness().lastCashBalance = eFisico;
+           save();
+           renderApp('cash');
+           
+           toast('Cierre del día generado');
+        };
       };
-    };
+    }
   }
   function bindMore(){ 
      $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more)); 
