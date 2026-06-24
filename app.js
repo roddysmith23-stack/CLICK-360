@@ -2304,7 +2304,25 @@ function parseMoney(value) {
        sale.status = 'paid';
        toast('Cuenta saldada en su totalidad');
     } else {
-       toast(`Abono registrado. Nuevo saldo: ${fmt(sale  window.showSaleCompleteModal = function(id) {
+       toast(`Abono registrado. Nuevo saldo: ${fmt(sale.balance)}`);
+    }
+    
+    state.movements.push({
+      id: uid('mov'),
+      businessId: currentBusiness().id,
+      date: today(),
+      when: nowLabel(),
+      kind: 'ingreso',
+      amount: amount,
+      note: `Abono a ticket ${saleId}`,
+      user: session.username,
+      saleId: sale.id
+    });
+    save(); 
+    renderApp(route);
+  };
+
+  window.showSaleCompleteModal = function(id) {
     const s = state.sales.find(x=>x.id===id);
     if(!s) return;
     const bizSettings = currentBusiness().settings || {};
