@@ -199,16 +199,20 @@
       if (doc.exists && doc.data().status !== "inactive") {
         d = doc.data();
       } else if (user.email) {
-        const emailDoc = await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).get();
-        if (emailDoc.exists && emailDoc.data().status !== "inactive") {
-          d = emailDoc.data();
-          await db.collection("approvedUsers").doc(user.uid).set({
-            ...d,
-            uid: user.uid,
-            status: "active",
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-          });
-          await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).delete();
+        try {
+          const emailDoc = await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).get();
+          if (emailDoc.exists && emailDoc.data().status !== "inactive") {
+            d = emailDoc.data();
+            await db.collection("approvedUsers").doc(user.uid).set({
+              ...d,
+              uid: user.uid,
+              status: "active",
+              createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).delete();
+          }
+        } catch (emailErr) {
+          console.warn("No se pudo verificar pre-aprobación por email:", emailErr.message);
         }
       }
 
