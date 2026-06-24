@@ -462,13 +462,23 @@
     setAppBlocked(false);
 
     const gate = document.getElementById("click360-auth-gate");
-    if (gate) gate.remove();
-
     createControls();
     
-    if(window.click360Route) {
-       const currentRoute = window.location.hash.replace('#','') || 'home';
-       window.click360Route(currentRoute);
+    try {
+      if(window.click360Route) {
+         const currentRoute = window.location.hash.replace('#','') || 'home';
+         window.click360Route(currentRoute);
+      }
+      if (gate) gate.remove();
+    } catch(e) {
+      console.error("Error durante unlockApp:", e);
+      const msg = document.getElementById("c360-auth-msg");
+      const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      if (msg) {
+        msg.innerHTML = `<span style="color:#ff4444; font-weight:bold;">Error de Inicio: ${esc(e.message)}</span><br><br><pre style="text-align:left; background:#111; padding:8px; border-radius:8px; font-size:11px; overflow-x:auto; max-height:200px; color:#ff8888; font-family:monospace; margin:0;">${esc(e.stack || '')}</pre>`;
+      } else {
+        alert("Error de Inicio: " + e.message);
+      }
     }
   }
 

@@ -140,7 +140,9 @@ function parseMoney(value) {
   function normalizeState(s) {
     const d = seed();
     const out = Object.assign(d, s || {});
-    out.users ||= d.users; out.businesses ||= d.businesses; out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
+    if (!out.users || out.users.length === 0) out.users = d.users;
+    if (!out.businesses || out.businesses.length === 0) out.businesses = d.businesses;
+    out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     
     // Migración para limpiar "sale_..." de movimientos antiguos
     out.movements.forEach(m => {
@@ -184,7 +186,11 @@ function parseMoney(value) {
     }
     return { name: 'Sistema', role: 'owner', email: '' };
   }
-  function currentBusiness(){ return state.businesses.find(b=>b.id===state.activeBusinessId) || state.businesses[0]; }
+  function currentBusiness(){ 
+    return state.businesses.find(b=>b.id===state.activeBusinessId) 
+      || state.businesses[0] 
+      || { id:'biz_main', code:'EMPRESA-001', name:'Mi Negocio', type:'ropa', status:'activo', due:'2026-07-08', settings:{} }; 
+  }
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
@@ -375,13 +381,24 @@ function parseMoney(value) {
     $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
   }
   function renderApp(r='home') {
-    if(!checkAuth('business')) return;
-    if(!can(r)) r='home';
-    stopScanner(); route=r;
-    history.replaceState(null, '', '#' + r);
-    const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView};
-    app.innerHTML=shell((views[r]||homeView)(), r);
-    bindShell(); bindView(r);
+    try {
+      if(!checkAuth('business')) return;
+      if(!can(r)) r='home';
+      stopScanner(); route=r;
+      history.replaceState(null, '', '#' + r);
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView};
+      app.innerHTML=shell((views[r]||homeView)(), r);
+      bindShell(); bindView(r);
+    } catch(e) {
+      console.error("Error al renderizar la app:", e);
+      app.innerHTML = `<div style="padding:24px; color:#ff4444; background:#110000; border:1px solid #ff4444; border-radius:16px; margin:20px; font-family:sans-serif;">
+        <h2 style="margin-top:0;">⚠️ Error de Renderizado</h2>
+        <p>Ocurrió un error al cargar la vista principal:</p>
+        <pre style="background:#000; padding:12px; border-radius:8px; overflow-x:auto; color:#ff8888; font-size:13px;">${escapeHtml(e.stack || e.message)}</pre>
+        <button class="btn primary" onclick="location.reload()" style="margin-top:12px;">Reintentar / Recargar</button>
+      </div>`;
+      throw e;
+    }
   }
 
   function homeView() {
