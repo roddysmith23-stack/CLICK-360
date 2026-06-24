@@ -21,7 +21,13 @@
 
   const rawSetItem = localStorage.setItem.bind(localStorage);
 
-  if (new URLSearchParams(location.search).get("resetC360") === "1") {
+  // Early capture of invite parameters
+  const initUrlParams = new URLSearchParams(location.search);
+  if (initUrlParams.get("invite") === "true" && initUrlParams.get("ownerId")) {
+    rawSetItem("CLICK360_PENDING_INVITE_OWNER", initUrlParams.get("ownerId"));
+  }
+
+  if (initUrlParams.get("resetC360") === "1") {
     Object.keys(localStorage).forEach(k => {
       if (k.startsWith("CLICK360_")) localStorage.removeItem(k);
     });
@@ -206,35 +212,19 @@
         }
       }
 
-      // Auto-register pre-approved workers under the owner
-      const preApprovedWorkers = ['shary10mmvv@gmail.com', 'debbya632@gmail.com', 'cheyos@hotmail.es'];
-      if (!d && user.email && preApprovedWorkers.includes(user.email.toLowerCase())) {
-        let ownerId = null;
-        try {
-          const snap = await db.collection("approvedUsers").where("role", "==", "owner").get();
-          if (!snap.empty) {
-            snap.forEach(doc => {
-              const email = (doc.data().email || '').toLowerCase();
-              if (email === 'sanyagullo1997@gmail.com' || email === 'roddysmith23@hotmail.com') {
-                ownerId = doc.id;
-              }
-            });
-            if (!ownerId) ownerId = snap.docs[0].id;
-          }
-        } catch(e) {
-          console.error("Error finding owner for pre-approved worker:", e);
-        }
-        
-        if (ownerId) {
+      // Auto-register pre-approved owners
+      const preApprovedOwners = ['shary10mmvv@gmail.com', 'debbya632@gmail.com', 'cheyos@hotmail.es', 'sanyagullo1997@gmail.com'];
+      if (user.email && preApprovedOwners.includes(user.email.toLowerCase())) {
+        if (!d || d.role !== "owner" || d.ownerId !== user.uid || d.status !== "active") {
           d = {
             uid: user.uid,
-            email: user.email,
-            role: "worker",
-            ownerId: ownerId,
-            name: user.displayName || user.email.split('@')[0],
+            email: user.email.toLowerCase(),
+            role: "owner",
+            ownerId: user.uid,
+            name: d?.name || user.displayName || user.email.split('@')[0],
             status: "active",
-            photoURL: user.photoURL || '',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            photoURL: d?.photoURL || user.photoURL || '',
+            createdAt: d?.createdAt || firebase.firestore.FieldValue.serverTimestamp()
           };
           await db.collection("approvedUsers").doc(user.uid).set(d);
         }
@@ -356,7 +346,7 @@
         updatedByEmail: user.email || null,
         reason,
         localStorage: snapshot
-      }, { merge: true });
+      });
 
       const hash = snapshotString(snapshot);
       rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", hash);
@@ -431,13 +421,16 @@
         
         if (window.click360ReloadState) window.click360ReloadState();
 
-        if(window.click360Route) {
-          const currentRoute = window.location.hash.replace('#','') || 'home';
-          window.click360Route(currentRoute);
-          const toastEl = document.getElementById("toast");
-          if(toastEl) { toastEl.textContent = "Actualizado desde la nube"; toastEl.className = "toast show ok"; setTimeout(()=>toastEl.className="toast", 2800); }
-        } else {
-           location.reload();
+        const hasOpenModal = !!document.getElementById('modalRoot');
+        const hasActiveInput = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+        
+        if (!hasOpenModal && !hasActiveInput) {
+          if (window.click360Route) {
+            const currentRoute = window.location.hash.replace('#','') || 'home';
+            window.click360Route(currentRoute);
+          } else {
+             location.reload();
+          }
         }
       }
     });

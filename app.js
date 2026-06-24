@@ -143,6 +143,8 @@ function parseMoney(value) {
     if (!out.users || out.users.length === 0) out.users = d.users;
     if (!out.businesses || out.businesses.length === 0) out.businesses = d.businesses;
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
+    out.settings ||= {};
+    out.settings.labelTemplates ||= [];
     
     // Migración para limpiar "sale_..." de movimientos antiguos
     out.movements.forEach(m => {
@@ -254,13 +256,13 @@ function parseMoney(value) {
       for(let i=0;i<size;i++){mat[0][i]=mat[size-1][i]=mat[i][0]=mat[i][size-1]=true;}
       return mat;
     }
-    function draw(canvas,text,size=280,margin=5){
+    function draw(canvas,text,size=280,margin=5,fgColor='#000000',bgColor='#ffffff'){
       const mat=make(text), n=mat.length;
       canvas.width=size; canvas.height=size;
       const ctx=canvas.getContext('2d');
-      ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);
+      ctx.fillStyle=bgColor; ctx.fillRect(0,0,size,size);
       const cell=size/(n+margin*2);
-      ctx.fillStyle='#000';
+      ctx.fillStyle=fgColor;
       for(let r=0;r<n;r++) for(let c=0;c<n;c++) if(mat[r][c]) ctx.fillRect(Math.round((c+margin)*cell),Math.round((r+margin)*cell),Math.ceil(cell),Math.ceil(cell));
     }
     return { draw, make };
@@ -421,6 +423,42 @@ function parseMoney(value) {
 
   function inventoryView() {
     const b=currentBusiness(), v=businessVocabulary(b.type), products=productsForBiz();
+    const templates = state.settings?.labelTemplates || [];
+    
+    let templatesHtml = '';
+    if (templates.length > 0) {
+      templatesHtml = `
+        <div class="card sectionCard" style="margin-top:20px;">
+          <h3>Plantillas de Etiquetas QR</h3>
+          <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; margin-top:10px;">
+            ${templates.map(t => `
+              <div class="card" style="background:#171717; border:1px solid #333; padding:12px; border-radius:12px; display:flex; flex-direction:column; gap:8px;">
+                <div style="font-weight:bold; display:flex; justify-content:space-between; align-items:center;">
+                  <span style="color:var(--text);">${escapeHtml(t.name)}</span>
+                  <button class="iconBtn danger small-del-btn" data-del-tpl="${t.id}" title="Eliminar plantilla" style="font-size:12px; padding:4px 8px; border:none; cursor:pointer;">✕</button>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${t.bgColor}; border:1px solid #555;" title="Fondo de Etiqueta"></span>
+                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${t.qrBgColor || t.bgColor}; border:1px solid #555;" title="Fondo de QR"></span>
+                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${t.fgColor}; border:1px solid #555;" title="Texto/QR"></span>
+                  <span style="font-size:11px; color:#aaa; margin-left:4px;">Colores</span>
+                </div>
+                ${t.social ? `<div style="font-size:12px; color:#ccc;">📱 ${escapeHtml(t.social)}</div>` : ''}
+                ${t.address ? `<div style="font-size:12px; color:#ccc; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">📍 ${escapeHtml(t.address)}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    } else {
+      templatesHtml = `
+        <div class="card sectionCard" style="margin-top:20px;">
+          <h3>Plantillas de Etiquetas QR</h3>
+          <p class="empty" style="margin:0; padding:10px 0;">No has creado plantillas de etiquetas aún. Diseña una etiqueta en cualquier producto y guárdala como plantilla para verla aquí.</p>
+        </div>
+      `;
+    }
+
     return `<div class="pageHead"><div><h1>Inventario</h1><p>Registra, controla y genera etiquetas.</p></div><div class="toolbar"><button class="btn primary" id="newProduct">＋ Nuevo</button></div></div>
       <div class="searchBox" style="display:flex; gap:10px;">
          <input id="productSearch" placeholder="Buscar por nombre o código..." style="flex:1;" />
@@ -429,7 +467,8 @@ function parseMoney(value) {
          </button>
       </div>
       <div id="cameraPanel" class="cameraPanel" style="margin-bottom:14px;"><video id="scanVideo" playsinline muted></video><div id="cameraStatus" class="cameraStatus">Listo para cámara.</div></div>
-      <section id="productList" class="productList" style="margin-top:14px">${productList(products,v)}</section>`;
+      <section id="productList" class="productList" style="margin-top:14px">${productList(products,v)}</section>
+      ${templatesHtml}`;
   }
   function productList(products,v) {
     if(!products.length) return `<div class="card empty">Aún no hay ${escapeHtml(v.plural)}. Crea el primero con Nuevo.</div>`;
@@ -905,6 +944,21 @@ function parseMoney(value) {
           toast('Buscando: ' + code);
        });
     }
+    
+    // Bind template deletion
+    $$('[data-del-tpl]').forEach(btn => {
+       btn.onclick = () => {
+          if (confirm('¿Estás seguro de eliminar esta plantilla de etiquetas?')) {
+             const tplId = btn.dataset.delTpl;
+             state.settings ||= {};
+             state.settings.labelTemplates = (state.settings.labelTemplates || []).filter(t => t.id !== tplId);
+             save();
+             renderApp('inventory');
+             toast('Plantilla eliminada');
+          }
+       };
+    });
+
     bindInventoryActions();
   }
   function bindInventoryActions(){
@@ -973,7 +1027,7 @@ function parseMoney(value) {
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
       if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name});
       else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date().toISOString(), createdBy: authUser().name});
-      save(); closeModal(); renderApp('inventory'); toast(product?'Actualizado':'Producto creado');
+      save(); closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
     };
   }
   function deleteProduct(id){ if(confirm('¿Borrar este registro?')){ const p=state.products.find(x=>x.id===id); if(p) { state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name}); } state.products=state.products.filter(x=>x.id!==id); save(); renderApp('inventory'); toast('Eliminado'); } }
@@ -1745,7 +1799,8 @@ function parseMoney(value) {
         });
 
       } catch(e) {
-        list.innerHTML = '<p class="empty">Error al cargar trabajadores o no es la versión conectada a la nube.</p>';
+        console.error("Error loading workers:", e);
+        list.innerHTML = `<p class="empty">Error al cargar trabajadores: ${escapeHtml(e.message)}</p>`;
       }
     };
 
@@ -1982,7 +2037,7 @@ function parseMoney(value) {
     
     // QR Code (centered)
     const qrCanvas = document.createElement('canvas');
-    QR.draw(qrCanvas, productPayload(product), 170 * scale);
+    QR.draw(qrCanvas, productPayload(product), 170 * scale, 5, fg, options.qrBgColor || options.bgColor || '#ffffff');
     ctx.drawImage(qrCanvas, (w - 170 * scale) / 2, yOffset);
     
     // QR Footer text ("Sistema contable Click 360")
@@ -2025,8 +2080,10 @@ function parseMoney(value) {
   async function openLabelModal(product){
     const bizSettings = currentBusiness().settings || {};
     const address = bizSettings.address || '';
-    const phone = bizSettings.phone || '';
     
+    const templates = state.settings?.labelTemplates || [];
+    const templateOptions = templates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+
     showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div>
       <style>
         @media(min-width:600px){
@@ -2040,13 +2097,24 @@ function parseMoney(value) {
            <canvas id="labelPreviewCanvas" style="max-width:100%; height:auto; box-shadow:0 8px 24px rgba(0,0,0,0.5); border-radius:10px;"></canvas>
         </div>
         <div class="labelControls" style="display:flex; flex-direction:column; gap:12px;">
-           <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+           <div class="field">
+              <label>Aplicar Plantilla</label>
+              <select id="applyTemplateSelect" style="width:100%; padding:8px; border-radius:8px; background:#222; color:#fff; border:1px solid #444;">
+                 <option value="">-- Seleccionar plantilla --</option>
+                 ${templateOptions}
+              </select>
+           </div>
+           <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
               <div class="field">
-                 <label>Fondo de Etiqueta</label>
+                 <label style="font-size:11px;">Fondo Etiqueta</label>
                  <input type="color" id="labelBgColor" value="#ffffff" style="width:100%; height:36px; padding:2px; cursor:pointer;">
               </div>
               <div class="field">
-                 <label>Color de Texto / QR</label>
+                 <label style="font-size:11px;">Fondo QR</label>
+                 <input type="color" id="qrBgColor" value="#ffffff" style="width:100%; height:36px; padding:2px; cursor:pointer;">
+              </div>
+              <div class="field">
+                 <label style="font-size:11px;">Texto / QR</label>
                  <input type="color" id="labelFgColor" value="#000000" style="width:100%; height:36px; padding:2px; cursor:pointer;">
               </div>
            </div>
@@ -2064,6 +2132,7 @@ function parseMoney(value) {
            </div>
            <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
               <button class="btn primary block" id="printOne">🖨️ Imprimir Etiquetas</button>
+              <button class="btn silver block" id="saveTemplateBtn" style="border:1px solid var(--green); color:var(--green);">💾 Guardar Plantilla</button>
               <button class="btn silver block" id="downloadLabelPng">🖼️ Descargar Imagen (PNG)</button>
               <button class="btn block" id="printStock" style="border:1px solid var(--gold); color:var(--gold);">🖨️ Imprimir según Stock (${product.qty})</button>
               <button class="btn block" id="printAll" style="border:1px solid var(--muted); color:var(--muted);">🖨️ Imprimir Catálogo Completo</button>
@@ -2078,6 +2147,7 @@ function parseMoney(value) {
        const options = {
           scale: 2,
           bgColor: $('#labelBgColor').value,
+          qrBgColor: $('#qrBgColor').value,
           fgColor: $('#labelFgColor').value,
           social: $('#labelSocial').value.trim(),
           address: $('#labelAddress').value.trim()
@@ -2085,10 +2155,63 @@ function parseMoney(value) {
        drawLabelOnCanvas(canvas, product, options);
     };
 
-    $('#labelBgColor').onchange = updatePreview;
-    $('#labelFgColor').onchange = updatePreview;
+    // Auto sync qrBgColor to labelBgColor if they were matching
+    let lastBgColor = $('#labelBgColor').value;
+    $('#labelBgColor').oninput = () => {
+       const currentBg = $('#labelBgColor').value;
+       const currentQrBg = $('#qrBgColor').value;
+       if (currentQrBg === lastBgColor) {
+          $('#qrBgColor').value = currentBg;
+       }
+       lastBgColor = currentBg;
+       updatePreview();
+    };
+
+    $('#qrBgColor').oninput = updatePreview;
+    $('#labelFgColor').oninput = updatePreview;
     $('#labelSocial').oninput = updatePreview;
     $('#labelAddress').oninput = updatePreview;
+    
+    // Apply template logic
+    $('#applyTemplateSelect').onchange = (e) => {
+       const tplId = e.target.value;
+       if (!tplId) return;
+       const tpl = (state.settings.labelTemplates || []).find(t => t.id === tplId);
+       if (tpl) {
+          $('#labelBgColor').value = tpl.bgColor;
+          $('#qrBgColor').value = tpl.qrBgColor || tpl.bgColor;
+          $('#labelFgColor').value = tpl.fgColor;
+          $('#labelSocial').value = tpl.social || '';
+          $('#labelAddress').value = tpl.address || '';
+          lastBgColor = tpl.bgColor;
+          updatePreview();
+       }
+    };
+
+    // Save template logic
+    $('#saveTemplateBtn').onclick = () => {
+       const name = prompt("Nombre de la plantilla:", "Mi Plantilla QR");
+       if (!name) return;
+       const tpl = {
+          id: uid('tpl'),
+          name: name.trim(),
+          bgColor: $('#labelBgColor').value,
+          qrBgColor: $('#qrBgColor').value,
+          fgColor: $('#labelFgColor').value,
+          social: $('#labelSocial').value.trim(),
+          address: $('#labelAddress').value.trim()
+       };
+       state.settings ||= {};
+       state.settings.labelTemplates ||= [];
+       state.settings.labelTemplates.push(tpl);
+       save();
+       toast('Plantilla guardada con éxito', 'ok');
+       
+       // Reload select dropdown options
+       const updatedTemplates = state.settings.labelTemplates;
+       $('#applyTemplateSelect').innerHTML = `<option value="">-- Seleccionar plantilla --</option>` +
+          updatedTemplates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
+    };
     
     updatePreview();
 
@@ -2096,6 +2219,7 @@ function parseMoney(value) {
        const copies = parseInt($('#labelCopies').value || '1', 10) || 1;
        const options = {
           bgColor: $('#labelBgColor').value,
+          qrBgColor: $('#qrBgColor').value,
           fgColor: $('#labelFgColor').value,
           social: $('#labelSocial').value.trim(),
           address: $('#labelAddress').value.trim()
@@ -2107,6 +2231,7 @@ function parseMoney(value) {
        const copies = Math.max(1, product.qty);
        const options = {
           bgColor: $('#labelBgColor').value,
+          qrBgColor: $('#qrBgColor').value,
           fgColor: $('#labelFgColor').value,
           social: $('#labelSocial').value.trim(),
           address: $('#labelAddress').value.trim()
@@ -2117,6 +2242,7 @@ function parseMoney(value) {
     $('#printAll').onclick = () => {
        const options = {
           bgColor: $('#labelBgColor').value,
+          qrBgColor: $('#qrBgColor').value,
           fgColor: $('#labelFgColor').value,
           social: $('#labelSocial').value.trim(),
           address: $('#labelAddress').value.trim()
@@ -2129,6 +2255,7 @@ function parseMoney(value) {
        const options = {
           scale: 4,
           bgColor: $('#labelBgColor').value,
+          qrBgColor: $('#qrBgColor').value,
           fgColor: $('#labelFgColor').value,
           social: $('#labelSocial').value.trim(),
           address: $('#labelAddress').value.trim()
@@ -2149,20 +2276,19 @@ function parseMoney(value) {
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
   async function printLabels(groups, options = {}){
     const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-    root.innerHTML='<div class="printLabels" style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center; padding:10px; background:#fff;"></div>';
+    root.innerHTML='<div class="printLabels"></div>';
     const wrap=$('.printLabels',root);
     for(const g of groups) for(let i=0;i<Math.max(1,g.copies);i++){
        const item=document.createElement('div');
        item.className='printLabel';
-       item.style='background:#fff; padding:5px; border-radius:8px;';
        const canvas=document.createElement('canvas');
-       canvas.style='width:60mm; height:auto; display:block;';
        item.appendChild(canvas);
        wrap.appendChild(item);
        
        const opt = {
           scale: 3,
           bgColor: options.bgColor || '#ffffff',
+          qrBgColor: options.qrBgColor || options.bgColor || '#ffffff',
           fgColor: options.fgColor || '#000000',
           social: options.social || '',
           address: options.address || ''
