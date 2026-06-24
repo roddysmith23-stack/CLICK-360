@@ -198,36 +198,6 @@
       
       if (doc.exists && doc.data().status !== "inactive") {
         d = doc.data();
-        if (d.role === "worker" && d.status === "pending" && d.ownerId) {
-          try {
-            const wDoc = await db.collection("businesses").doc(d.ownerId).collection("workers").doc(user.uid).get();
-            if (wDoc.exists) {
-              const wData = wDoc.data();
-              if (wData.status === "active") {
-                d.status = "active";
-                await db.collection("approvedUsers").doc(user.uid).update({
-                  status: "active",
-                  approvedAt: firebase.firestore.FieldValue.serverTimestamp()
-                });
-              }
-            } else {
-              // If it doesn't exist under the business, re-create the request so the owner can see it!
-              await db.collection("businesses").doc(d.ownerId).collection("workers").doc(user.uid).set({
-                id: user.uid,
-                uid: user.uid,
-                email: user.email || d.email || '',
-                role: "worker",
-                ownerId: d.ownerId,
-                name: d.name,
-                status: "pending",
-                photoURL: d.photoURL || '',
-                createdAt: firebase.firestore.FieldValue.serverTimestamp()
-              });
-            }
-          } catch (err) {
-            console.warn("No se pudo verificar/actualizar aprobación en el negocio:", err.message);
-          }
-        }
       } else if (user.email) {
         const emailDoc = await db.collection("approvedUsersByEmail").doc(user.email.toLowerCase()).get();
         if (emailDoc.exists && emailDoc.data().status !== "inactive") {
@@ -275,24 +245,6 @@
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
           };
           await db.collection("approvedUsers").doc(user.uid).set(d);
-
-          // ALSO write request to the business workers collection
-          try {
-            await db.collection("businesses").doc(inviteOwnerId).collection("workers").doc(user.uid).set({
-              id: user.uid,
-              uid: user.uid,
-              email: user.email || '',
-              role: "worker",
-              ownerId: inviteOwnerId,
-              name: d.name,
-              status: "pending",
-              photoURL: d.photoURL || '',
-              createdAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
-          } catch(err) {
-            console.error("Error writing worker request to business:", err.message);
-          }
-
           localStorage.removeItem("CLICK360_PENDING_INVITE_OWNER");
         } else {
           // Register as a new owner
@@ -344,38 +296,27 @@
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
   };
 
-  window.click360GetWorkers = async function() {
-    if(!window.click360User || window.click360User.role !== 'owner') return [];
-    const uid = window.click360User.uid;
-    const snap = await db.collection("businesses").doc(uid).collection("workers").get();
-    const workers = [];
-    snap.forEach(d => {
-      workers.push({ id: d.id, ...d.data() });
-    });
-    return workers;
-  };
-
-  window.click360ApproveWorker = async function(workerUid) {
+  window.click360InviteWorkerEmail = async function(email, name) {
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
     const uid = window.click360User.uid;
-    
-    // Enforce 2 active workers limit
-    const workers = await window.click360GetWorkers();
-    const activeCount = workers.filter(w => w.status === 'active').length;
-    if (activeCount >= 2) {
-      throw new Error("Límite de trabajadores alcanzado (Máximo 2 en plan gratuito).");
-    }
-    
-    await db.collection("businesses").doc(uid).collection("workers").doc(workerUid).update({
+    await db.collection("approvedUsersByEmail").doc(email.toLowerCase()).set({
+      email: email.toLowerCase(),
+      role: "worker",
+      ownerId: uid,
       status: "active",
-      approvedAt: firebase.firestore.FieldValue.serverTimestamp()
+      name: name,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
   };
 
-  window.click360RejectWorker = async function(workerUid) {
+  window.click360CancelInviteEmail = async function(email) {
     if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
-    const uid = window.click360User.uid;
-    await db.collection("businesses").doc(uid).collection("workers").doc(workerUid).delete();
+    await db.collection("approvedUsersByEmail").doc(email.toLowerCase()).delete().catch(()=>{});
+  };
+
+  window.click360RemoveWorkerUid = async function(workerUid) {
+    if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
+    await db.collection("approvedUsers").doc(workerUid).delete().catch(()=>{});
   };
 
   async function pushLocalToFirestore(reason = "auto") {

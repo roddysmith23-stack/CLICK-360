@@ -145,6 +145,7 @@ function parseMoney(value) {
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     out.settings ||= {};
     out.settings.labelTemplates ||= [];
+    out.settings.workers ||= [];
     
     // Migración para limpiar "sale_..." de movimientos antiguos
     out.movements.forEach(m => {
@@ -171,9 +172,32 @@ function parseMoney(value) {
       sales:[],
       movements:[],
       dailyReports:[],
-      settings:{}
+      settings:{ workers: [] }
     };
   }
+
+  window.click360ReloadState = () => { 
+    state = loadState(); 
+    
+    // Auto de-activate worker if not in settings list
+    if (window.click360User && window.click360User.role === 'worker') {
+      const workers = state.settings?.workers || [];
+      const isStillApproved = workers.some(w => w.email.toLowerCase() === window.click360User.email.toLowerCase());
+      if (!isStillApproved) {
+        if (window.click360RemoveWorkerUid) {
+          window.click360RemoveWorkerUid(window.click360User.uid).catch(()=>{});
+        }
+        window.click360AppLogout();
+        return;
+      }
+      
+      const match = workers.find(w => w.email.toLowerCase() === window.click360User.email.toLowerCase());
+      if (match && !match.uid) {
+        match.uid = window.click360User.uid;
+        save();
+      }
+    }
+  };
 
   function currentUser(){ return session ? state.users.find(u=>u.username===session.username) : null; }
   function authUser() {
@@ -828,18 +852,22 @@ function parseMoney(value) {
   function workersView(){
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
       <section class="card sectionCard">
-         <h3>Invitar Trabajador</h3>
-         <p style="font-size:13px; color:#ccc; margin-bottom:12px; line-height:1.4;">Genera un enlace de invitación para que tu trabajador se registre con su cuenta de Google. Las solicitudes aparecerán abajo para tu aprobación.</p>
-         <button class="btn primary block" id="inviteWorkerBtn" type="button">🔗 Generar Enlace de Invitación</button>
+         <h3>Registrar Trabajador</h3>
+         <form id="addWorkerForm" style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
+            <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
+            <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
+            <button class="btn primary block" type="submit">➕ Registrar y Pre-Aprobar</button>
+         </form>
+
          <div id="inviteLinkBox" style="display:none; margin-top:14px; background:rgba(55,213,126,0.1); border:1px solid rgba(55,213,126,0.3); padding:12px; border-radius:12px;">
-            <small style="color:var(--green); display:block; margin-bottom:6px; font-weight:bold;">Enlace de Invitación Listo:</small>
+            <small style="color:var(--green); display:block; margin-bottom:6px; font-weight:bold;">Enlace de Invitación:</small>
             <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:8px; border-radius:8px;">
             <button class="btn silver block" id="copyInviteLinkBtn" type="button">Copiar Enlace</button>
          </div>
       </section>
       <section class="card sectionCard" style="margin-top:14px">
-         <h3>Solicitudes de Acceso y Trabajadores</h3>
-         <div id="workersList"><p class="empty">Cargando...</p></div>
+         <h3>Trabajadores Registrados</h3>
+         <div id="workersList"></div>
       </section>`;
   }
   function settingsView(){
@@ -1696,18 +1724,12 @@ function parseMoney(value) {
      
      // Check for pending workers in background to toggle badge
      if (window.click360User && window.click360User.role === 'owner') {
-        window.click360GetWorkers().then(workers => {
-           const pendingCount = workers.filter(w => w.status === 'pending').length;
-           const badge = $('#pendingWorkersBadge');
-           if (badge) {
-              if (pendingCount > 0) {
-                 badge.textContent = pendingCount;
-                 badge.style.display = 'inline-block';
-              } else {
-                 badge.style.display = 'none';
-              }
-           }
-        }).catch(err => console.warn("Error background checking pending workers:", err));
+        const workers = state.settings?.workers || [];
+        const pendingCount = 0; // Simplified for this iteration
+        const badge = $('#pendingWorkersBadge');
+        if (badge) {
+            badge.style.display = 'none';
+        }
      }
   }
 
@@ -1715,108 +1737,118 @@ function parseMoney(value) {
     const list = $('#workersList');
     if (!window.click360User || window.click360User.role !== 'owner') {
       list.innerHTML = '<p class="empty">Solo el dueño puede administrar trabajadores.</p>';
-      const invBtn = $('#inviteWorkerBtn');
-      if(invBtn) invBtn.disabled = true;
+      const form = $('#addWorkerForm');
+      if (form) form.style.display = 'none';
       return;
     }
 
-    const loadWorkers = async () => {
-      try {
-        const workers = await window.click360GetWorkers();
-        if (workers.length === 0) {
-            list.innerHTML = '<p class="empty">No hay trabajadores ni solicitudes pendientes.</p>';
-            return;
-        }
-        
-        list.innerHTML = workers.map(w => {
-          const isPending = w.status === 'pending';
-          const avatarHtml = w.photoURL ? `<img src="${escapeHtml(w.photoURL)}" style="width:32px; height:32px; border-radius:50%; object-fit:cover;">` : `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${(w.name || 'W').charAt(0).toUpperCase()}</div>`;
-          
-          return `
-            <div class="movement" style="align-items:center; gap:10px; padding:12px 0;">
-               ${avatarHtml}
-               <div style="flex:1;">
-                 <b>${escapeHtml(w.name || w.email)}</b>
-                 <span class="badge ${isPending ? 'gold' : 'green'}" style="margin-left:6px; font-size:10px; padding:2px 6px;">${isPending ? 'Pendiente' : 'Activo'}</span>
-                 <br><small style="color:#aaa;">${escapeHtml(w.email)}</small>
-               </div>
-               <div style="display:flex; gap:6px;">
-                  ${isPending ? `
-                    <button class="btn primary" style="padding:4px 8px; font-size:12px; min-height:28px; background:var(--green); border-color:#2aa05e; color:#111;" data-approve="${w.id}">Aprobar</button>
-                    <button class="btn danger" style="padding:4px 8px; font-size:12px; min-height:28px;" data-reject="${w.id}">Rechazar</button>
-                  ` : `
-                    <button class="btn danger" style="padding:4px 8px; font-size:12px; min-height:28px;" data-reject="${w.id}">Eliminar</button>
-                  `}
-               </div>
-            </div>
-          `;
-        }).join('');
-        
-        // Show support upsell banner (free version allows max 1 worker)
-        const activeCount = workers.filter(w => w.status === 'active').length;
-        if (activeCount >= 2) {
-           const banner = document.createElement('div');
-           banner.style = "margin-top:16px; background:linear-gradient(135deg, #2a2a2a, #111); border:1px solid var(--gold); padding:16px; border-radius:12px; text-align:center;";
-           banner.innerHTML = `
-             <div style="color:var(--gold); font-size:18px; font-weight:bold; margin-bottom:6px;">🚀 Sube al Siguiente Nivel</div>
-             <p style="font-size:13px; color:#ccc; margin-bottom:12px;">Tu plan gratuito permite 2 trabajadores activos. Adquiere el plan PRO para añadir trabajadores ilimitados, sucursales y reportes avanzados.</p>
-             <button class="btn primary" type="button" onclick="window.open('https://wa.me/593969399562?text=Deseo%20el%20plan%20PRO%20para%20trabajadores%20ilimitados', '_blank')">Contactar Asesor</button>
-           `;
-           list.appendChild(banner);
-        }
-
-        // Bind approval handlers
-        $$('[data-approve]').forEach(btn => {
-           btn.onclick = async () => {
-              btn.textContent = '...';
-              btn.disabled = true;
-              try {
-                await window.click360ApproveWorker(btn.dataset.approve);
-                toast('Trabajador aprobado exitosamente');
-                loadWorkers();
-              } catch(e) {
-                toast(e.message || 'Error al aprobar', 'err');
-                loadWorkers();
-              }
-           };
-        });
-
-        // Bind rejection/revocation handlers
-        $$('[data-reject]').forEach(btn => {
-           btn.onclick = async () => {
-              if(!confirm('¿Estás seguro de rechazar/eliminar este trabajador?')) return;
-              btn.textContent = '...';
-              btn.disabled = true;
-              try {
-                await window.click360RejectWorker(btn.dataset.reject);
-                toast('Acceso removido');
-                loadWorkers();
-              } catch(e) {
-                toast('Error al remover acceso', 'err');
-                loadWorkers();
-              }
-           };
-        });
-
-      } catch(e) {
-        console.error("Error loading workers:", e);
-        list.innerHTML = `<p class="empty">Error al cargar trabajadores: ${escapeHtml(e.message)}</p>`;
+    const loadWorkers = () => {
+      const workers = state.settings?.workers || [];
+      if (workers.length === 0) {
+        list.innerHTML = '<p class="empty">No hay trabajadores registrados.</p>';
+        return;
       }
+      
+      list.innerHTML = workers.map(w => {
+        const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${(w.name || 'W').charAt(0).toUpperCase()}</div>`;
+        return `
+          <div class="movement" style="align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--line);">
+             ${avatarHtml}
+             <div style="flex:1;">
+               <b>${escapeHtml(w.name)}</b>
+               <span class="badge green" style="margin-left:6px; font-size:10px; padding:2px 6px;">Activo</span>
+               <br><small style="color:#aaa;">${escapeHtml(w.email)}</small>
+             </div>
+             <div>
+                <button class="btn danger" style="padding:4px 8px; font-size:12px; min-height:28px;" data-del-worker="${escapeHtml(w.email)}">Eliminar</button>
+             </div>
+          </div>
+        `;
+      }).join('');
+
+      // Bind delete handlers
+      $$('[data-del-worker]').forEach(btn => {
+        btn.onclick = async () => {
+          const email = btn.dataset.delWorker.toLowerCase();
+          if (!confirm(`¿Estás seguro de eliminar el acceso para ${email}?`)) return;
+          
+          btn.textContent = '...';
+          btn.disabled = true;
+          
+          // Find UID if worker has logged in
+          const workersList = state.settings?.workers || [];
+          const match = workersList.find(w => w.email.toLowerCase() === email);
+          
+          // Remove from local list
+          state.settings.workers = (state.settings.workers || []).filter(w => w.email.toLowerCase() !== email);
+          save();
+          
+          // Cancel invite in Firestore if worker hasn't registered yet
+          if (window.click360CancelInviteEmail) {
+             await window.click360CancelInviteEmail(email);
+          }
+          
+          // Try to remove worker doc in approvedUsers if worker already registered
+          if (match && match.uid && window.click360RemoveWorkerUid) {
+             await window.click360RemoveWorkerUid(match.uid);
+          }
+          
+          toast('Acceso removido');
+          renderApp('workers');
+        };
+      });
     };
 
     loadWorkers();
 
-    $('#inviteWorkerBtn').onclick = async () => {
-       const workers = await window.click360GetWorkers().catch(()=>[]);
-       const activeCount = workers.filter(w => w.status === 'active').length;
-       if (activeCount >= 2) {
-           return toast('Límite de 2 trabajadores activos alcanzado. Adquiere el plan PRO.', 'err');
-       }
-       
-       $('#inviteLinkBox').style.display = 'block';
-       const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + window.click360User.uid;
-       $('#inviteLinkVal').value = inviteLink;
-       toast('Enlace de invitación generado');
+    $('#addWorkerForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const name = $('#workerName').value.trim();
+      const email = $('#workerEmail').value.trim().toLowerCase();
+      
+      const workers = state.settings?.workers || [];
+      const activeCount = workers.length;
+      if (activeCount >= 2) {
+         return toast('Límite de 2 trabajadores activos alcanzado en plan gratuito.', 'err');
+      }
+      
+      if (workers.some(w => w.email.toLowerCase() === email)) {
+         return toast('Este correo ya está registrado', 'err');
+      }
+
+      const submitBtn = $('#addWorkerForm button[type="submit"]');
+      submitBtn.textContent = 'Procesando...';
+      submitBtn.disabled = true;
+
+      try {
+         // 1. Write invite to Firestore approvedUsersByEmail
+         if (window.click360InviteWorkerEmail) {
+            await window.click360InviteWorkerEmail(email, name);
+         }
+         
+         // 2. Add to local storage settings list
+         state.settings ||= {};
+         state.settings.workers ||= [];
+         state.settings.workers.push({ email, name, status: 'active' });
+         save();
+         
+         // 3. Display invite link PWA-compatible
+         $('#inviteLinkBox').style.display = 'block';
+         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + window.click360User.uid;
+         $('#inviteLinkVal').value = inviteLink;
+         
+         toast('Trabajador registrado y pre-aprobado', 'ok');
+         loadWorkers();
+         
+         // Reset fields
+         $('#workerName').value = '';
+         $('#workerEmail').value = '';
+      } catch(err) {
+         toast('Error al registrar: ' + err.message, 'err');
+      } finally {
+         submitBtn.textContent = '➕ Registrar y Pre-Aprobar';
+         submitBtn.disabled = false;
+      }
     };
 
     $('#copyInviteLinkBtn').onclick = () => {
