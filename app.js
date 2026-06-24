@@ -979,6 +979,7 @@ function parseMoney(value) {
   function deleteProduct(id){ if(confirm('¿Borrar este registro?')){ const p=state.products.find(x=>x.id===id); if(p) { state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name}); } state.products=state.products.filter(x=>x.id!==id); save(); renderApp('inventory'); toast('Eliminado'); } }
 
   function bindSell(){
+    if(!$('#payMethod')) return;
     let cart=[];
     let currentIva = (currentBusiness().settings || {}).iva || 0;
     
