@@ -31,6 +31,16 @@
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
   function today() { return new Date().toISOString().slice(0,10); }
   function nowLabel() { return new Date().toLocaleString('es-EC', { dateStyle:'short', timeStyle:'medium' }); }
+  function formattedTodaySpanish() {
+    const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+    const d = new Date();
+    const dayName = days[d.getDay()];
+    const dayNum = d.getDate();
+    const monthName = months[d.getMonth()];
+    const year = d.getFullYear();
+    return `${dayName}, ${dayNum} de ${monthName} de ${year}`;
+  }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
   
   function imageThumb(product){
@@ -607,7 +617,8 @@ function parseMoney(value) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border: 1px solid var(--gold);">
          <h3 style="margin-bottom:8px; color:var(--gold);">🔒 Caja Cerrada</h3>
-         <p style="font-size:13px; color:var(--muted); margin-bottom:0;">La jornada de hoy ha sido cerrada. No se permiten más transacciones.</p>
+         <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">La jornada de hoy ha sido cerrada. No se permiten más transacciones.</p>
+         <button class="btn primary" id="reopenCashBtn" style="margin: 0 auto; display: inline-flex; align-items: center; gap: 6px;">🔓 Abrir nueva caja diaria</button>
        </div>
       `;
     } else {
@@ -630,7 +641,15 @@ function parseMoney(value) {
 
     const showMovementsList = isDayStarted();
 
-    return `<div class="pageHead"><div><h1>Caja diaria</h1><p>Ingresos, egresos y cierre del día.</p></div></div>
+    return `<div class="pageHead">
+        <div>
+          <div style="display:inline-flex; align-items:center; gap:6px; background:rgba(212,175,55,0.1); border:1px solid rgba(212,175,55,0.25); color:var(--gold); padding:4px 10px; border-radius:30px; font-size:12px; font-weight:600; margin-bottom:8px; text-transform:capitalize;">
+            <span>📅</span> ${formattedTodaySpanish()}
+          </div>
+          <h1>Caja diaria</h1>
+          <p>Ingresos, egresos y cierre del día.</p>
+        </div>
+      </div>
       ${topCard}
       ${showMovementsList ? `
       <section class="card sectionCard" style="margin-top:14px">
@@ -645,7 +664,7 @@ function parseMoney(value) {
               ` : '';
               return `<div class="movement" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0; border-bottom:1px solid var(--line);">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span><b>${escapeHtml(labelKind(m.kind))}</b><br><small>${escapeHtml(m.note||'')}</small><br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||m.user||'Sistema')}</span></span>
+                  <span><b>${escapeHtml(labelKind(m.kind))}</b><br><small>${escapeHtml(m.note||'')}</small><br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||m.user||'Sistema')} • 🕒 ${escapeHtml(m.when || m.date || '')}</span></span>
                   <b class="${m.kind==='ingreso'||m.kind==='apertura'?'pos':'neg'}">${m.kind==='ingreso'||m.kind==='apertura'?'+':'−'}${fmt(m.amount)}</b>
                 </div>
                 ${editDeleteButtons}
@@ -1072,7 +1091,7 @@ function parseMoney(value) {
       save(); closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
     };
   }
-  function deleteProduct(id){ if(confirm('¿Borrar este registro?')){ const p=state.products.find(x=>x.id===id); if(p) { state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name}); } state.products=state.products.filter(x=>x.id!==id); save(); renderApp('inventory'); toast('Eliminado'); } }
+  function deleteProduct(id){ if(confirm('¿Borrar este registro?')){ const p=state.products.find(x=>x.id===id); if(p) { state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name}); } state.products=state.products.filter(x=>x.id!==id); save(); renderApp('inventory'); toast('Eliminado'); } }
 
   function bindSell(){
     if(!$('#payMethod')) return;
@@ -1558,6 +1577,22 @@ function parseMoney(value) {
   function stopScanner(hide=true){ if(scanTimer) clearInterval(scanTimer); scanTimer=null; if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } const p=$('#cameraPanel'); if(p&&hide)p.classList.remove('show'); }
 
   function bindCash(){
+    const btnReopenCash = $('#reopenCashBtn');
+    if (btnReopenCash) {
+      btnReopenCash.onclick = () => {
+        if (confirm('¿Estás seguro de que deseas abrir una nueva caja diaria para hoy?\nEsto anulará el cierre actual y te permitirá iniciar una nueva jornada.')) {
+          const bid = currentBusiness()?.id;
+          if (bid) {
+            state.dailyReports = (state.dailyReports || []).filter(r => !(r.businessId === bid && r.date === today()));
+            state.movements = (state.movements || []).filter(m => !(m.businessId === bid && m.date === today() && m.kind === 'apertura'));
+            save();
+            renderApp('cash');
+            toast('Caja diaria reabierta exitosamente');
+          }
+        }
+      };
+    }
+
     if (!isDayStarted()) {
        const startBtn = $('#startDayBtnCash');
        const inputEl = $('#apertureAmountInput');
@@ -1600,7 +1635,7 @@ function parseMoney(value) {
           e.preventDefault();
           const k=$('#mKind').value, a=parseMoney($('#mAmount').value), n=$('#mNote').value.trim();
           if(!Number.isFinite(a)||a<=0) return toast('Monto inválido','err');
-          state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),kind:k,amount:a,note:n, createdBy: authUser().name});
+          state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:k,amount:a,note:n, createdBy: authUser().name});
           save();
           closeModal(); renderApp('cash'); toast('Guardado');
         };
