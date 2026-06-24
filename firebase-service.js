@@ -206,6 +206,40 @@
         }
       }
 
+      // Auto-register pre-approved workers under the owner
+      const preApprovedWorkers = ['shary10mmvv@gmail.com', 'debbya632@gmail.com', 'cheyos@hotmail.es'];
+      if (!d && user.email && preApprovedWorkers.includes(user.email.toLowerCase())) {
+        let ownerId = null;
+        try {
+          const snap = await db.collection("approvedUsers").where("role", "==", "owner").get();
+          if (!snap.empty) {
+            snap.forEach(doc => {
+              const email = (doc.data().email || '').toLowerCase();
+              if (email === 'sanyagullo1997@gmail.com' || email === 'roddysmith23@hotmail.com') {
+                ownerId = doc.id;
+              }
+            });
+            if (!ownerId) ownerId = snap.docs[0].id;
+          }
+        } catch(e) {
+          console.error("Error finding owner for pre-approved worker:", e);
+        }
+        
+        if (ownerId) {
+          d = {
+            uid: user.uid,
+            email: user.email,
+            role: "worker",
+            ownerId: ownerId,
+            name: user.displayName || user.email.split('@')[0],
+            status: "active",
+            photoURL: user.photoURL || '',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          };
+          await db.collection("approvedUsers").doc(user.uid).set(d);
+        }
+      }
+
       // Auto-register new users
       if (!d) {
         if (isInvite && inviteOwnerId) {
@@ -324,6 +358,9 @@
         localStorage: snapshot
       }, { merge: true });
 
+      const hash = snapshotString(snapshot);
+      rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", hash);
+
       console.log("CLICK360 sincronizado:", reason);
     } catch (e) {
       console.warn("CLICK360 no pudo sincronizar:", e.message);
@@ -384,9 +421,10 @@
 
       const remoteStorage = snap.data().localStorage || {};
       const remoteHash = snapshotString(remoteStorage);
+      const localHash = snapshotString(getLocalSnapshot());
       const lastApplied = localStorage.getItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
 
-      if (remoteHash && remoteHash !== "{}" && remoteHash !== lastApplied && !IS_RESTORING_REMOTE) {
+      if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== lastApplied && !IS_RESTORING_REMOTE) {
         applyRemoteStorage(remoteStorage);
         localStorage.setItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
         console.log("CLICK360 recibió cambios remotos.");
