@@ -187,16 +187,10 @@
   async function isApprovedUser(user) {
     if (!user) return false;
     try {
-      // Check if there is an invite in URL or in cache
-      const urlParams = new URLSearchParams(location.search);
-      const cachedOwnerId = localStorage.getItem("CLICK360_PENDING_INVITE_OWNER");
-      const isInvite = urlParams.get("invite") === "true" || !!cachedOwnerId;
-      const inviteOwnerId = urlParams.get("ownerId") || cachedOwnerId;
-
       let doc = await db.collection("approvedUsers").doc(user.uid).get();
       let d = null;
       
-      if (doc.exists && doc.data().status !== "inactive") {
+      if (doc.exists) {
         d = doc.data();
       } else if (user.email) {
         try {
@@ -216,62 +210,48 @@
         }
       }
 
-      // Auto-register pre-approved owners
-      const preApprovedOwners = ['shary10mmvv@gmail.com', 'debbya632@gmail.com', 'cheyos@hotmail.es', 'sanyagullo1997@gmail.com'];
-      if (user.email && preApprovedOwners.includes(user.email.toLowerCase())) {
-        if (!d || d.role !== "owner" || d.ownerId !== user.uid || d.status !== "active") {
-          d = {
-            uid: user.uid,
-            email: user.email.toLowerCase(),
-            role: "owner",
-            ownerId: user.uid,
-            name: d?.name || user.displayName || user.email.split('@')[0],
-            status: "active",
-            photoURL: d?.photoURL || user.photoURL || '',
-            createdAt: d?.createdAt || firebase.firestore.FieldValue.serverTimestamp()
-          };
-          await db.collection("approvedUsers").doc(user.uid).set(d);
-        }
-      }
+      // Check if there is an invite in URL or in cache
+      const urlParams = new URLSearchParams(location.search);
+      const cachedOwnerId = localStorage.getItem("CLICK360_PENDING_INVITE_OWNER");
+      const isInvite = urlParams.get("invite") === "true" || !!cachedOwnerId;
+      const inviteOwnerId = urlParams.get("ownerId") || cachedOwnerId;
 
-      // Auto-register new users
-      if (!d) {
-        if (isInvite && inviteOwnerId) {
-          // Register as a pending worker
-          d = {
-            uid: user.uid,
-            email: user.email,
-            role: "worker",
-            ownerId: inviteOwnerId,
-            name: user.displayName || (user.email ? user.email.split('@')[0] : "Trabajador"),
-            status: "pending",
-            photoURL: user.photoURL || '',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-          };
-          await db.collection("approvedUsers").doc(user.uid).set(d);
-          localStorage.removeItem("CLICK360_PENDING_INVITE_OWNER");
-        } else {
-          // Register as a new owner
-          d = {
-            uid: user.uid,
-            email: user.email,
-            role: "owner",
-            ownerId: user.uid,
-            name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
-            status: "active",
-            photoURL: user.photoURL || '',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-          };
-          await db.collection("approvedUsers").doc(user.uid).set(d);
-        }
+      if (!d && isInvite && inviteOwnerId) {
+        // Register as a pending worker
+        d = {
+          uid: user.uid,
+          email: user.email,
+          role: "worker",
+          ownerId: inviteOwnerId,
+          name: user.displayName || (user.email ? user.email.split('@')[0] : "Trabajador"),
+          status: "pending",
+          photoURL: user.photoURL || '',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+        await db.collection("approvedUsers").doc(user.uid).set(d);
+        localStorage.removeItem("CLICK360_PENDING_INVITE_OWNER");
       }
 
       if (d) {
+        if (d.status === "active") {
+          window.click360User = {
+            uid: user.uid,
+            email: user.email || d.email,
+            role: d.role || "owner",
+            name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
+            photoURL: d.photoURL || user.photoURL || '',
+            status: "active"
+          };
+          BUSINESS_ID = d.ownerId || user.uid;
+          STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
+          return true;
+        }
+
         if (d.status === "pending") {
           window.click360User = {
             uid: user.uid,
             email: user.email || d.email,
-            role: "worker",
+            role: d.role || "worker",
             name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
             photoURL: d.photoURL || user.photoURL || '',
             status: "pending"
@@ -279,17 +259,26 @@
           return false;
         }
 
-        window.click360User = {
-          uid: user.uid,
-          email: user.email || d.email,
-          role: d.role || "worker",
-          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
-          photoURL: d.photoURL || user.photoURL || ''
-        };
-        BUSINESS_ID = d.ownerId || user.uid;
-        STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
-        return true;
+        if (d.status === "blocked") {
+          window.click360User = {
+            uid: user.uid,
+            email: user.email || d.email,
+            role: d.role || "worker",
+            name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
+            photoURL: d.photoURL || user.photoURL || '',
+            status: "blocked"
+          };
+          return false;
+        }
       }
+
+      // If they do not exist in Firestore and had no invite
+      window.click360User = {
+        uid: user.uid,
+        email: user.email,
+        role: "owner",
+        status: "pending"
+      };
       return false;
     } catch(e) {
       console.error("Error al verificar aprobación", e);
@@ -466,8 +455,9 @@
 
   function showPending(user) {
     showGate(`
-      Tu cuenta (<b>${user.email || "sin email"}</b>) está pendiente de aprobación por el dueño del negocio.<br><br>
-      Por favor, dile a tu administrador que envíe la invitación a este correo desde el sistema.
+      Tu cuenta (<b>${user.email || "sin email"}</b>) está pendiente de aprobación.<br><br>
+      UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${user.uid}</code><br><br>
+      Por favor, dile a tu administrador que apruebe tu acceso usando este UID en Firestore.
     `);
     
     const loginBtn = document.getElementById("c360-google-login");
@@ -615,10 +605,18 @@
       const approved = await isApprovedUser(user);
 
       if (!approved) {
-        if (window.click360User && window.click360User.status === "pending") {
+        if (window.click360User && window.click360User.status === "blocked") {
+          showGate(`
+            Tu cuenta (<b>${user.email || "sin email"}</b>) ha sido bloqueada.<br><br>
+            Por favor, ponte en contacto con el administrador o soporte.
+          `);
+          const loginBtn = document.getElementById("c360-google-login");
+          if (loginBtn) loginBtn.style.display = "none";
+        } else if (window.click360User && window.click360User.role === "worker") {
           showGate(`
             Tu solicitud de acceso como trabajador (<b>${user.email || "sin email"}</b>) está <b>pendiente de aprobación</b> por el dueño del negocio.<br><br>
-            Por favor, pídele al administrador que apruebe tu acceso desde la sección "Trabajadores" en su sistema.
+            UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${user.uid}</code><br><br>
+            Por favor, pídele al administrador que apruebe tu acceso desde la sección "Trabajadores" en su sistema usando tu UID.
           `);
           const loginBtn = document.getElementById("c360-google-login");
           if (loginBtn) {
