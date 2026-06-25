@@ -7,11 +7,12 @@
   if (!firebase.apps.length) firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
 
   // Programmatically clear old caches if needed
+  const CURRENT_CACHE_KEY = 'click360-mvp-final-v5-persistence';
   try {
     if ('caches' in window) {
       caches.keys().then(keys => {
         keys.forEach(key => {
-          if (key !== 'click360-mvp-final-v4-real-qr-auth-fix') {
+          if (key !== CURRENT_CACHE_KEY) {
             caches.delete(key).catch(() => {});
           }
         });
@@ -459,22 +460,48 @@
       const alreadyApplied = localStorage.getItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
 
       if (force || (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== alreadyApplied)) {
-        applyRemoteStorage(remoteStorage);
-        localStorage.setItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
-        PULL_COMPLETE = true;
+        // PROTECT: Don't overwrite local data if it has MORE records than remote
+        const STATE_KEY = 'click360_mvp_qa_final_state_v1';
+        const localStateRaw = localStorage.getItem(STATE_KEY);
+        const remoteStateRaw = remoteStorage[STATE_KEY];
+        let shouldApply = true;
 
-        if (window.click360ReloadState) window.click360ReloadState();
-
-        if (reload) {
-          if(window.click360Route) {
-            const currentRoute = window.location.hash.replace('#','') || 'home';
-            window.click360Route(currentRoute);
-            const toastEl = document.getElementById("toast");
-            if(toastEl) { toastEl.textContent = "Actualizado desde la nube"; toastEl.className = "toast show ok"; setTimeout(()=>toastEl.className="toast", 2800); }
-          } else {
-             location.reload();
+        if (localStateRaw && remoteStateRaw) {
+          try {
+            const localState = JSON.parse(localStateRaw);
+            const remoteState = JSON.parse(remoteStateRaw);
+            const localCount = (localState.movements || []).length + (localState.sales || []).length + (localState.products || []).length;
+            const remoteCount = (remoteState.movements || []).length + (remoteState.sales || []).length + (remoteState.products || []).length;
+            if (localCount > remoteCount && !force) {
+              console.log("[CLICK360 SYNC] Local tiene más datos (", localCount, ") que remoto (", remoteCount, "). Subiendo local en vez de sobrescribir.");
+              shouldApply = false;
+              PULL_COMPLETE = true;
+              await pushLocalToFirestore("local_richer");
+              return false;
+            }
+          } catch(parseErr) {
+            console.warn("[CLICK360 SYNC] Error comparando estados:", parseErr);
           }
-          return true;
+        }
+
+        if (shouldApply) {
+          applyRemoteStorage(remoteStorage);
+          rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
+          PULL_COMPLETE = true;
+
+          if (window.click360ReloadState) window.click360ReloadState();
+
+          if (reload) {
+            if(window.click360Route) {
+              const currentRoute = window.location.hash.replace('#','') || 'home';
+              window.click360Route(currentRoute);
+              const toastEl = document.getElementById("toast");
+              if(toastEl) { toastEl.textContent = "Actualizado desde la nube"; toastEl.className = "toast show ok"; setTimeout(()=>toastEl.className="toast", 2800); }
+            } else {
+               location.reload();
+            }
+            return true;
+          }
         }
       }
 
@@ -667,7 +694,7 @@
           <b>Nota para iPhone (PWA):</b><br>
           Debido a restricciones de seguridad de iOS en apps de pantalla de inicio, por favor:<br><br>
           1. Abre el navegador <b>Safari</b> normal.<br>
-          2. Ve a <b>click-360.firebaseapp.com</b> e inicia sesión con tu cuenta.<br>
+          2. Ve a <b>roddysmith23-stack.github.io/CLICK-360</b> e inicia sesión con tu cuenta.<br>
           3. Una vez iniciada sesión en Safari, vuelve a abrir esta app desde tu pantalla de inicio.
         </div>`;
       }
@@ -702,17 +729,32 @@
   }
 
   const debouncedSync = debounce(() => pushLocalToFirestore("local_change"), 1200);
+  const STATE_LS_KEY = 'click360_mvp_qa_final_state_v1';
 
   localStorage.setItem = function(key, value) {
     rawSetItem(key, value);
     if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE) {
       normalizeAllLocalProductCodes();
-      debouncedSync();
+      // Immediate sync for state data to prevent loss on app close
+      if (key === STATE_LS_KEY) {
+        pushLocalToFirestore("immediate_save").catch(() => {});
+      } else {
+        debouncedSync();
+      }
     }
   };
 
   window.addEventListener("beforeunload", () => {
     if (AUTH_APPROVED && PULL_COMPLETE) pushLocalToFirestore("beforeunload");
+  });
+
+  // Sync when user returns to the app (tab/app switch)
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && AUTH_APPROVED && PULL_COMPLETE && STATE_DOC) {
+      pullRemoteOnce({ force: false, reload: true }).catch(() => {});
+    } else if (document.visibilityState === "hidden" && AUTH_APPROVED && PULL_COMPLETE) {
+      pushLocalToFirestore("visibility_hidden").catch(() => {});
+    }
   });
 
   window.click360SyncNow = () => pushLocalToFirestore("manual");

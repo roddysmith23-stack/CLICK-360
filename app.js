@@ -2880,6 +2880,20 @@ function parseMoney(value) {
   window.click360Route=renderApp;
   window.click360SetSession = setSession;
   window.click360ReloadState = () => { state = loadState(); };
+
+  // Auto-save safety net: force save every 30s to ensure cloud sync
+  let _lastAutoSaveHash = '';
+  setInterval(() => {
+    if (!session) return;
+    try {
+      const currentHash = JSON.stringify(state);
+      if (currentHash !== _lastAutoSaveHash) {
+        _lastAutoSaveHash = currentHash;
+        save();
+        console.log('[CLICK360] Auto-save ejecutado');
+      }
+    } catch(e) {}
+  }, 30000);
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, runQa};
 
   window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors'].includes(h)) renderApp(h); });
