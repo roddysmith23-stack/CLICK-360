@@ -374,6 +374,18 @@ function parseMoney(value) {
   }
 
   function shell(content, active='home') {
+    const isWorkingDateActive = !!workingDate;
+    const badgeBorder = isWorkingDateActive ? 'border:2px solid var(--gold); background:rgba(244,196,49,0.25);' : 'border:1px solid rgba(244,196,49,0.25); background:rgba(244,196,49,0.12);';
+    const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
+
+    const dateBadgeHtml = `<div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:14px;">
+        <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
+          📅 ${formattedTodaySpanish()}
+          <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
+        </label>
+        ${clearDateBtn}
+      </div>`;
+
     const b=currentBusiness();
     const bizOptions=state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
     const logoIconSide = b?.settings?.logoUrl 
@@ -409,7 +421,10 @@ function parseMoney(value) {
           <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
           <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" style="width:36px; height:36px; border-radius:10px;">↗</button>
         </header>
-        <main class="main">${content}</main>
+        <main class="main">
+          ${dateBadgeHtml}
+          ${content}
+        </main>
       </div>
     </div>${bottomNav(active)}<div id="modalRoot"></div><div id="printRoot" class="printSheet"></div></div>`;
   }
@@ -435,6 +450,20 @@ function parseMoney(value) {
     ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;save();renderApp(route);}; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
     $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
+
+    const dateInput = $('#workingDateInput');
+    if (dateInput) {
+       dateInput.onchange = () => {
+          setWorkingDate(dateInput.value);
+       };
+    }
+    const clearDateBtn = $('#clearWorkingDateBtn');
+    if (clearDateBtn) {
+       clearDateBtn.onclick = (e) => {
+          e.preventDefault();
+          setWorkingDate(null);
+       };
+    }
   }
   function renderApp(r='home') {
     try {
@@ -478,18 +507,8 @@ function parseMoney(value) {
       '"Los grandes negocios empiezan con peque\u00f1os pasos."'
     ];
     const todayPhrase = motivationalPhrases[new Date().getDate() % motivationalPhrases.length];
-    const isWorkingDateActive = !!workingDate;
-    const badgeBorder = isWorkingDateActive ? 'border:2px solid var(--gold); background:rgba(244,196,49,0.25);' : 'border:1px solid rgba(244,196,49,0.25); background:rgba(244,196,49,0.12);';
-    const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
 
-    return `<div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:8px;">
-        <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
-          📅 ${formattedTodaySpanish()}
-          <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
-        </label>
-        ${clearDateBtn}
-      </div>
-      <div class="pageHead"><div><h1>Hola, ${escapeHtml(authUser().name || 'Usuario')} \uD83D\uDC4B</h1><p>${escapeHtml(b.name)}</p></div></div>
+    return `<div class="pageHead"><div><h1>Hola, ${escapeHtml(authUser().name || 'Usuario')} \uD83D\uDC4B</h1><p>${escapeHtml(b.name)}</p></div></div>
       <section class="grid kpis">
         <div class="card kpi gold"><div class="icon">\u2197</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
         <div class="card kpi"><div class="icon">\u25A3</div><small>Caja</small><strong>${fmt(saldo)}</strong></div>
@@ -498,9 +517,9 @@ function parseMoney(value) {
       </section>
       <section class="card sectionCard" style="margin-top:14px;background:linear-gradient(135deg,#1a1500 0%,#0d0d0d 100%);border:1px solid rgba(244,196,49,0.18);overflow:hidden;position:relative;">
         <div style="position:absolute;top:0;right:0;width:120px;height:120px;background:radial-gradient(circle,rgba(244,196,49,0.08) 0%,transparent 70%);pointer-events:none;"></div>
-        <h3 style="color:var(--gold);margin-bottom:6px;">\uD83D\uDCE2 Noticias CLICK 360</h3>
-        <p style="font-style:italic;color:var(--muted);font-size:14px;line-height:1.5;margin-bottom:12px;">${todayPhrase}</p>
+        <h3 style="color:var(--gold);margin-bottom:12px;">📢 TU NEGOCIO CLICK 260</h3>
         <img src="assets/banner-motivacional.png" alt="Banner motivacional CLICK 360" style="width:100%;border-radius:12px;margin-bottom:12px;max-height:160px;object-fit:cover;" onerror="this.style.display='none'">
+        <p style="font-style:italic;color:var(--muted);font-size:14px;line-height:1.5;margin-bottom:12px;text-align:center;">${todayPhrase}</p>
         <a href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
       </section>
       <section class="split" style="margin-top:14px">
@@ -680,19 +699,9 @@ function parseMoney(value) {
     }
 
     const showMovementsList = isDayStarted();
-    const isWorkingDateActive = !!workingDate;
-    const badgeBorder = isWorkingDateActive ? 'border:2px solid var(--gold); background:rgba(244,196,49,0.25);' : 'border:1px solid rgba(244,196,49,0.25); background:rgba(244,196,49,0.12);';
-    const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
 
     return `<div class="pageHead">
         <div>
-          <div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:8px;">
-            <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
-              📅 ${formattedTodaySpanish()}
-              <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
-            </label>
-            ${clearDateBtn}
-          </div>
           <h1>Caja diaria</h1>
           <p>Ingresos, egresos y cierre del día.</p>
         </div>
@@ -1044,19 +1053,6 @@ function parseMoney(value) {
   function typeOptions(selected){ return [['ropa','Ropa'],['restaurante','Restaurante'],['barberia','Barbería'],['ganaderia','Ganadería'],['ferreteria','Ferretería'],['otro','Otro']].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
 
   function bindView(r){
-    const dateInput = $('#workingDateInput');
-    if (dateInput) {
-       dateInput.onchange = () => {
-          setWorkingDate(dateInput.value);
-       };
-    }
-    const clearDateBtn = $('#clearWorkingDateBtn');
-    if (clearDateBtn) {
-       clearDateBtn.onclick = (e) => {
-          e.preventDefault();
-          setWorkingDate(null);
-       };
-    }
     if(r==='inventory') bindInventory();
     if(r==='sell') bindSell();
     if(r==='cash') bindCash();
@@ -1857,11 +1853,11 @@ function parseMoney(value) {
          <div style="max-height:60vh;overflow-y:auto;padding:4px;">
            <div style="margin-bottom:16px;">
              <h3 style="color:var(--gold);margin-bottom:8px;">\uD83C\uDFE0 Inicio</h3>
-             <p>Ve un resumen de tus ventas, caja, inventario y stock bajo del d\u00eda. Incluye frases motivacionales diarias.</p>
+             <p>Ve un resumen de tus ventas, caja, inventario y stock bajo del d\u00eda.</p>
            </div>
            <div style="margin-bottom:16px;">
              <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDCE6 Inventario</h3>
-             <p>Registra productos con nombre, c\u00f3digo, precio, stock e imagen. Genera etiquetas QR personalizables para imprimir. Busca por nombre o escanea c\u00f3digos QR con la c\u00e1mara.</p>
+             <p>Registra productos con nombre, c\u00f3digo, precio, stock e imagen. Genera etiquetas QR personalizables para imprimir. Busca por nombre o escanea c\u00e1digos QR con la c\u00e1mara.</p>
            </div>
            <div style="margin-bottom:16px;">
              <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDED2 Vender</h3>
@@ -1876,19 +1872,19 @@ function parseMoney(value) {
              <p>Ve el historial de ventas por d\u00eda con detalles de cada transacci\u00f3n. Identifica productos m\u00e1s vendidos y ventas anuladas.</p>
            </div>
            <div style="margin-bottom:16px;">
-             <h3 style="color:var(--gold);margin-bottom:8px;">\\u2601 Nube y Respaldo</h3>
-             <p>Tus datos se sincronizan autom\u00e1ticamente con Firebase. Descarga reportes contables en CSV con filtro por fecha. Env\u00eda reportes a tu contadora por WhatsApp. Guarda y restaura respaldos manuales.</p>
+             <h3 style="color:var(--gold);margin-bottom:8px;">☁️ Nube y Respaldo</h3>
+             <p>Descarga reportes contables en CSV con filtro por fecha. Envía reportes a tu contadora por WhatsApp. Guarda y restaura respaldos manuales.</p>
            </div>
            <div style="margin-bottom:16px;">
              <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDC65 Trabajadores</h3>
-             <p>Registra trabajadores por correo. Env\u00eda enlaces de invitaci\u00f3n. Controla el acceso de cada persona a tu negocio.</p>
+             <p>Registra trabajadores por correo. Envía enlaces de invitación. Controla el acceso de cada persona a tu negocio.</p>
            </div>
            <div style="margin-bottom:16px;">
-             <h3 style="color:var(--gold);margin-bottom:8px;">\\u2699 Ajustes</h3>
-             <p>Configura nombre, RUC, tel\u00e9fono, direcci\u00f3n, logo e IVA de tu negocio. Estos datos se reflejan en los comprobantes de venta y cierre de caja.</p>
+             <h3 style="color:var(--gold);margin-bottom:8px;">⚙️ Ajustes</h3>
+             <p>Configura nombre, RUC, teléfono, dirección, logo e IVA de tu negocio. Estos datos se reflejan en los comprobantes de venta y cierre de caja.</p>
            </div>
            <div style="background:rgba(244,196,49,0.08);padding:12px;border-radius:12px;border:1px solid rgba(244,196,49,0.2);">
-             <p style="margin:0;font-size:13px;"><b style="color:var(--gold);">\uD83D\uDD12 Seguridad:</b> Solo el due\u00f1o puede anular ventas, editar y anular movimientos de caja. Los datos se protegen en la nube de Firebase.</p>
+             <p style="margin:0;font-size:13px;"><b style="color:var(--gold);">🔒 Seguridad:</b> Los datos se protegen en la nube.</p>
            </div>
          </div>`);
      });
