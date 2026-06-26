@@ -461,27 +461,14 @@
 
       if (force || (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== alreadyApplied)) {
         // PROTECT: Don't overwrite local data if it has MORE records than remote
-        const STATE_KEY = 'click360_mvp_qa_final_state_v1';
-        const localStateRaw = localStorage.getItem(STATE_KEY);
-        const remoteStateRaw = remoteStorage[STATE_KEY];
         let shouldApply = true;
 
-        if (localStateRaw && remoteStateRaw) {
-          try {
-            const localState = JSON.parse(localStateRaw);
-            const remoteState = JSON.parse(remoteStateRaw);
-            const localCount = (localState.movements || []).length + (localState.sales || []).length + (localState.products || []).length;
-            const remoteCount = (remoteState.movements || []).length + (remoteState.sales || []).length + (remoteState.products || []).length;
-            if (localCount > remoteCount && !force) {
-              console.log("[CLICK360 SYNC] Local tiene más datos (", localCount, ") que remoto (", remoteCount, "). Subiendo local en vez de sobrescribir.");
-              shouldApply = false;
-              PULL_COMPLETE = true;
-              await pushLocalToFirestore("local_richer");
-              return false;
-            }
-          } catch(parseErr) {
-            console.warn("[CLICK360 SYNC] Error comparando estados:", parseErr);
-          }
+        if (isLocalRicher(remoteStorage)) {
+          console.log("[CLICK360 SYNC] Local tiene más datos que remoto. Subiendo local en vez de sobrescribir.");
+          shouldApply = false;
+          PULL_COMPLETE = true;
+          await pushLocalToFirestore("local_richer");
+          return false;
         }
 
         if (shouldApply) {
@@ -514,6 +501,20 @@
     }
   }
 
+  function isLocalRicher(remoteStorage) {
+    const STATE_KEY = 'click360_mvp_qa_final_state_v1';
+    const localStateRaw = localStorage.getItem(STATE_KEY);
+    const remoteStateRaw = remoteStorage[STATE_KEY];
+    if (!localStateRaw || !remoteStateRaw) return false;
+    try {
+      const localState = JSON.parse(localStateRaw);
+      const remoteState = JSON.parse(remoteStateRaw);
+      const localCount = (localState.movements || []).length + (localState.sales || []).length + (localState.products || []).length;
+      const remoteCount = (remoteState.movements || []).length + (remoteState.sales || []).length + (remoteState.products || []).length;
+      return localCount > remoteCount;
+    } catch(e) { return false; }
+  }
+
   function listenRemoteChanges() {
     if (REMOTE_UNSUBSCRIBE) return;
 
@@ -526,8 +527,14 @@
       const lastApplied = localStorage.getItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
 
       if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== lastApplied && !IS_RESTORING_REMOTE) {
+        // PROTECT: Don't overwrite richer local data
+        if (isLocalRicher(remoteStorage)) {
+          console.log("[CLICK360 SYNC] Listener: local tiene más datos, subiendo local.");
+          pushLocalToFirestore("listener_local_richer").catch(() => {});
+          return;
+        }
         applyRemoteStorage(remoteStorage);
-        localStorage.setItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
+        rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
         console.log("CLICK360 recibió cambios remotos.");
         
         if (window.click360ReloadState) window.click360ReloadState();
@@ -831,7 +838,7 @@
       localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify(newSession));
       if(window.click360SetSession) window.click360SetSession(newSession);
 
-      await pullRemoteOnce({ force: true, reload: false });
+      await pullRemoteOnce({ force: false, reload: false });
       unlockApp();
       listenRemoteChanges();
     });

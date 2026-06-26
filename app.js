@@ -29,12 +29,18 @@
 
   function uid(prefix='id') { return `${prefix}_${Math.random().toString(36).slice(2,8)}${Date.now().toString(36).slice(-4)}`; }
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
-  function today() { return new Date().toISOString().slice(0,10); }
+  let workingDate = null;
+  function today() { return workingDate || new Date().toISOString().slice(0,10); }
+  function setWorkingDate(d) {
+    workingDate = d || null;
+    renderApp(route);
+  }
   function nowLabel() { return new Date().toLocaleString('es-EC', { dateStyle:'short', timeStyle:'medium' }); }
   function formattedTodaySpanish() {
     const days = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
     const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-    const d = new Date();
+    const parts = today().split('-');
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
     const dayName = days[d.getDay()];
     const dayNum = d.getDate();
     const monthName = months[d.getMonth()];
@@ -452,20 +458,54 @@ function parseMoney(value) {
   }
 
   function homeView() {
-    const b=currentBusiness(), products=productsForBiz(), sales=salesForBiz().filter(s=>s.date===today()), mov=movementsForBiz().filter(m=>m.date===today());
+    const b=currentBusiness(), products=productsForBiz(), sales=salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled'), mov=movementsForBiz().filter(m=>m.date===today() && m.status!=='cancelled');
+    const apertura=mov.find(m=>m.kind==='apertura')?.amount||0;
     const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
-    const out=mov.filter(m=>m.kind!=='ingreso').reduce((a,m)=>a+m.amount,0);
+    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
+    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
+    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+m.amount,0);
+    const out=expenses+compras+retiros;
+    const saldo=apertura+income-out;
     const low=products.filter(p=>p.qty<=3).length;
-    return `<div class="pageHead"><div><h1>Hola, ${escapeHtml(authUser().name || 'Usuario')} 👋</h1><p>${escapeHtml(b.name)}</p></div></div>
+    const motivationalPhrases = [
+      '"El éxito no es casualidad, es constancia."',
+      '"Cada venta es un paso más hacia tu sueño."',
+      '"Tu negocio crece contigo. \u00a1Sigue adelante!"',
+      '"La disciplina vence al talento."',
+      '"Hoy es un gran día para vender."',
+      '"El mejor momento para crecer es ahora."',
+      '"Controla tu negocio, controla tu futuro."',
+      '"Los grandes negocios empiezan con peque\u00f1os pasos."'
+    ];
+    const todayPhrase = motivationalPhrases[new Date().getDate() % motivationalPhrases.length];
+    const isWorkingDateActive = !!workingDate;
+    const badgeBorder = isWorkingDateActive ? 'border:2px solid var(--gold); background:rgba(244,196,49,0.25);' : 'border:1px solid rgba(244,196,49,0.25); background:rgba(244,196,49,0.12);';
+    const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
+
+    return `<div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:8px;">
+        <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
+          📅 ${formattedTodaySpanish()}
+          <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
+        </label>
+        ${clearDateBtn}
+      </div>
+      <div class="pageHead"><div><h1>Hola, ${escapeHtml(authUser().name || 'Usuario')} \uD83D\uDC4B</h1><p>${escapeHtml(b.name)}</p></div></div>
       <section class="grid kpis">
-        <div class="card kpi gold"><div class="icon">↗</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
-        <div class="card kpi"><div class="icon">▣</div><small>Caja</small><strong>${fmt(income-out)}</strong></div>
-        <div class="card kpi"><div class="icon">▧</div><small>Inventario</small><strong>${products.length}</strong></div>
-        <div class="card kpi"><div class="icon">⚠</div><small>Stock bajo</small><strong>${low}</strong></div>
+        <div class="card kpi gold"><div class="icon">\u2197</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
+        <div class="card kpi"><div class="icon">\u25A3</div><small>Caja</small><strong>${fmt(saldo)}</strong></div>
+        <div class="card kpi"><div class="icon">\u25A7</div><small>Inventario</small><strong>${products.length}</strong></div>
+        <div class="card kpi"><div class="icon">\u26A0</div><small>Stock bajo</small><strong>${low}</strong></div>
+      </section>
+      <section class="card sectionCard" style="margin-top:14px;background:linear-gradient(135deg,#1a1500 0%,#0d0d0d 100%);border:1px solid rgba(244,196,49,0.18);overflow:hidden;position:relative;">
+        <div style="position:absolute;top:0;right:0;width:120px;height:120px;background:radial-gradient(circle,rgba(244,196,49,0.08) 0%,transparent 70%);pointer-events:none;"></div>
+        <h3 style="color:var(--gold);margin-bottom:6px;">\uD83D\uDCE2 Noticias CLICK 360</h3>
+        <p style="font-style:italic;color:var(--muted);font-size:14px;line-height:1.5;margin-bottom:12px;">${todayPhrase}</p>
+        <img src="assets/banner-motivacional.png" alt="Banner motivacional CLICK 360" style="width:100%;border-radius:12px;margin-bottom:12px;max-height:160px;object-fit:cover;" onerror="this.style.display='none'">
+        <a href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
       </section>
       <section class="split" style="margin-top:14px">
-        <div class="card sectionCard"><h3>Últimas ventas</h3>${sales.slice(-3).reverse().map(s=>`<div class="movement"><span>${s.items.map(i=>escapeHtml(i.name)).join(', ')}</span><b class="pos">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">Aún no hay ventas hoy.</p>'}</div>
-        <div class="card sectionCard"><h3>Acciones rápidas</h3><div class="split"><button class="btn primary" onclick="window.click360Route('sell')">Vender</button><button class="btn silver" onclick="window.click360Route('inventory')">Inventario</button></div></div>
+        <div class="card sectionCard"><h3>\u00DAltimas ventas</h3>${sales.slice(-3).reverse().map(s=>`<div class="movement"><span>${s.items.map(i=>escapeHtml(i.name)).join(', ')}</span><b class="pos">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">A\u00fan no hay ventas hoy.</p>'}</div>
+        <div class="card sectionCard"><h3>Acciones r\u00e1pidas</h3><div class="split"><button class="btn primary" onclick="window.click360Route('sell')">Vender</button><button class="btn silver" onclick="window.click360Route('inventory')">Inventario</button></div></div>
       </section>`;
   }
 
@@ -640,11 +680,18 @@ function parseMoney(value) {
     }
 
     const showMovementsList = isDayStarted();
+    const isWorkingDateActive = !!workingDate;
+    const badgeBorder = isWorkingDateActive ? 'border:2px solid var(--gold); background:rgba(244,196,49,0.25);' : 'border:1px solid rgba(244,196,49,0.25); background:rgba(244,196,49,0.12);';
+    const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
 
     return `<div class="pageHead">
         <div>
-          <div style="display:inline-flex; align-items:center; gap:6px; background:rgba(212,175,55,0.1); border:1px solid rgba(212,175,55,0.25); color:var(--gold); padding:4px 10px; border-radius:30px; font-size:12px; font-weight:600; margin-bottom:8px; text-transform:capitalize;">
-            <span>📅</span> ${formattedTodaySpanish()}
+          <div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:8px;">
+            <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
+              📅 ${formattedTodaySpanish()}
+              <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
+            </label>
+            ${clearDateBtn}
           </div>
           <h1>Caja diaria</h1>
           <p>Ingresos, egresos y cierre del día.</p>
@@ -656,16 +703,23 @@ function parseMoney(value) {
          <h3>Movimientos de hoy</h3>
          <div class="movementList">
            ${mov.slice().reverse().map(m=>{
-              const editDeleteButtons = (authUser().role === 'owner') ? `
+              const isCancelled = m.status === 'cancelled';
+              const editDeleteButtons = (authUser().role === 'owner' && !isCancelled) ? `
                 <div style="display:flex; gap:6px; margin-top:6px; justify-content:flex-end;">
                   <button class="btn silver" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.editMovement('${m.id}')">✎ Editar</button>
                   <button class="btn danger" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.deleteMovement('${m.id}')">🗑 Anular</button>
                 </div>
               ` : '';
-              return `<div class="movement" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0; border-bottom:1px solid var(--line);">
+              const cancelledLabel = isCancelled ? `<br><span style="font-size:11px;color:#ff4d4d;font-weight:bold;">🚫 ANULADO por ${escapeHtml(m.cancelledBy || 'owner')} a las ${escapeHtml(m.cancelledAt || '')}</span>` : '';
+              const textStyle = isCancelled ? 'text-decoration: line-through; opacity: 0.5;' : '';
+              const amtDisplay = isCancelled ? `<span style="text-decoration:line-through;color:var(--muted);font-weight:normal;font-size:12px;margin-right:6px;">${fmt(m.originalAmount || 0)}</span><span style="color:#ff4d4d;">$0.00</span>` : `<span class="${m.kind==='ingreso'||m.kind==='apertura'?'pos':'neg'}">${m.kind==='ingreso'||m.kind==='apertura'?'+':'−'}${fmt(m.amount)}</span>`;
+
+              return `<div class="movement" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0; border-bottom:1px solid var(--line); ${textStyle}">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                  <span><b>${escapeHtml(labelKind(m.kind))}</b><br><small>${escapeHtml(m.note||'')}</small><br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||m.user||'Sistema')} • 🕒 ${escapeHtml(m.when || m.date || '')}</span></span>
-                  <b class="${m.kind==='ingreso'||m.kind==='apertura'?'pos':'neg'}">${m.kind==='ingreso'||m.kind==='apertura'?'+':'−'}${fmt(m.amount)}</b>
+                  <span><b>${escapeHtml(labelKind(m.kind))}</b><br><small>${escapeHtml(m.note||'')}</small>${cancelledLabel}<br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||m.user||'Sistema')} • 🕒 ${escapeHtml(m.when || m.date || '')}</span></span>
+                  <div style="text-align:right; font-weight:bold;">
+                    ${amtDisplay}
+                  </div>
                 </div>
                 ${editDeleteButtons}
               </div>`;
@@ -851,35 +905,41 @@ function parseMoney(value) {
   }
 
   function moreView(){
-    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
-      <button class="card bigRow" data-more="reports"><span>▥ Reportes</span><b>›</b></button>
-      <button class="card bigRow" data-more="backup"><span>☁ Respaldo y nube</span><b>›</b></button>
+    return `<div class="pageHead"><div><h1>M\u00e1s</h1></div></div><section class="moreList">
+      <button class="card bigRow" data-more="reports"><span>\u25A5 Reportes</span><b>\u203A</b></button>
+      <button class="card bigRow" data-more="backup"><span>\u2601 Respaldo y nube</span><b>\u203A</b></button>
       <button class="card bigRow" data-more="workers">
-        <span>👥 Trabajadores</span>
+        <span>\uD83D\uDC65 Trabajadores</span>
         <span style="display:flex; align-items:center; gap:6px;">
           <span id="pendingWorkersBadge" class="badge danger" style="display:none; padding:2px 6px; font-size:11px; border-radius:10px; background:#ff5c62; color:#fff;">0</span>
-          <b>›</b>
+          <b>\u203A</b>
         </span>
       </button>
-      <button class="card bigRow" data-more="settings"><span>⚙ Ajustes</span><b>›</b></button>
-      <button class="btn block" id="logoutMore">Cerrar sesión</button>
+      <button class="card bigRow" data-more="settings"><span>\u2699 Ajustes</span><b>\u203A</b></button>
+      <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
+      <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
     </section>`;
   }
   function backupView(){
-    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronización y reportes contables.</p></div></div>
+    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronizaci\u00f3n y reportes contables.</p></div></div>
       <section class="card sectionCard">
         <h3>Nube CLICK 360</h3>
-        <p class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">★ Sincronización en la nube Activa.</p>
-        <p class="cloudStatus">Tus datos se guardan y protegen en tiempo real. Abre tu cuenta en cualquier dispositivo con tu correo y tendrás la misma información.</p>
+        <p class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">\u2605 Sincronizaci\u00f3n en la nube Activa.</p>
+        <p class="cloudStatus">Tus datos se guardan y protegen en tiempo real. Abre tu cuenta en cualquier dispositivo con tu correo y tendr\u00e1s la misma informaci\u00f3n.</p>
       </section>
       <section class="card sectionCard" style="margin-top:14px">
         <h3>Reporte Contable General</h3>
-        <p class="cloudStatus">Descarga todo el historial de ventas y movimientos de caja en Excel (CSV).</p>
-        <button type="button" class="btn primary block" id="exportCsvBtn">Descargar Historial (CSV)</button>
+        <p class="cloudStatus">Descarga el historial de ventas y movimientos de caja en Excel (CSV). Selecciona el rango de fechas.</p>
+        <div class="formGrid" style="margin-bottom:12px;">
+          <div class="field"><label>Desde</label><input type="date" id="csvDateFrom" value="${today()}"></div>
+          <div class="field"><label>Hasta</label><input type="date" id="csvDateTo" value="${today()}"></div>
+        </div>
+        <button type="button" class="btn primary block" id="exportCsvBtn">\uD83D\uDCCA Descargar Historial (CSV)</button>
+        <button type="button" class="btn block" id="sendReportBtn" style="margin-top:10px;border:1px solid #25D366;color:#25D366;background:transparent;">\uD83D\uDCE4 Enviar Reporte a Contadora (WhatsApp)</button>
       </section>
       <section class="card sectionCard" style="margin-top:14px">
-        <h3>Respaldo Manual (Copia de Seguridad)</h3><p class="cloudStatus">Guarda una copia de toda tu información en tu dispositivo o restáurala si cambiaste de equipo.</p>
-        <div class="split" style="gap:10px;"><button type="button" class="btn silver" id="backupBtn">Guardar Respaldo</button><label class="btn silver" style="flex:1; text-align:center; display:flex; align-items:center; justify-content:center;"><input type="file" id="restoreFile" accept="application/json" hidden/>Restaurar Respaldo</label></div>
+        <h3>Respaldo Manual (Copia de Seguridad)</h3><p class="cloudStatus">Guarda una copia de toda tu informaci\u00f3n en tu dispositivo o rest\u00e1urala si cambiaste de equipo.</p>
+        <div class="split" style="gap:10px;"><button type="button" class="btn silver" id="backupBtn">\uD83D\uDCBE Guardar Respaldo</button><label class="btn silver" style="flex:1; text-align:center; display:flex; align-items:center; justify-content:center;"><input type="file" id="restoreFile" accept="application/json" hidden/>\uD83D\uDD04 Restaurar Respaldo</label></div>
       </section>`;
   }
   function workersView(){
@@ -984,6 +1044,19 @@ function parseMoney(value) {
   function typeOptions(selected){ return [['ropa','Ropa'],['restaurante','Restaurante'],['barberia','Barbería'],['ganaderia','Ganadería'],['ferreteria','Ferretería'],['otro','Otro']].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
 
   function bindView(r){
+    const dateInput = $('#workingDateInput');
+    if (dateInput) {
+       dateInput.onchange = () => {
+          setWorkingDate(dateInput.value);
+       };
+    }
+    const clearDateBtn = $('#clearWorkingDateBtn');
+    if (clearDateBtn) {
+       clearDateBtn.onclick = (e) => {
+          e.preventDefault();
+          setWorkingDate(null);
+       };
+    }
     if(r==='inventory') bindInventory();
     if(r==='sell') bindSell();
     if(r==='cash') bindCash();
@@ -1779,6 +1852,47 @@ function parseMoney(value) {
          else toast('Nube no disponible en este entorno', 'err');
      });
      
+     $('#helpBtn')?.addEventListener('click', () => {
+       showModal(`<div class="modalHeader"><h2>\u00bfC\u00f3mo funciona CLICK 360?</h2><button class="closeBtn" data-close>\u00d7</button></div>
+         <div style="max-height:60vh;overflow-y:auto;padding:4px;">
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\uD83C\uDFE0 Inicio</h3>
+             <p>Ve un resumen de tus ventas, caja, inventario y stock bajo del d\u00eda. Incluye frases motivacionales diarias.</p>
+           </div>
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDCE6 Inventario</h3>
+             <p>Registra productos con nombre, c\u00f3digo, precio, stock e imagen. Genera etiquetas QR personalizables para imprimir. Busca por nombre o escanea c\u00f3digos QR con la c\u00e1mara.</p>
+           </div>
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDED2 Vender</h3>
+             <p>Escanea QR o busca productos para vender. Selecciona m\u00e9todo de pago (efectivo, tarjeta, transferencia, apartado). Genera comprobantes de venta imprimibles en formato t\u00e9rmico 80mm.</p>
+           </div>
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDCB0 Caja Diaria</h3>
+             <p>Inicia el d\u00eda con un monto de apertura. Registra ingresos, egresos, gastos y compras. Al final del d\u00eda, cierra caja con un reporte completo.</p>
+           </div>
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDCCA Reportes</h3>
+             <p>Ve el historial de ventas por d\u00eda con detalles de cada transacci\u00f3n. Identifica productos m\u00e1s vendidos y ventas anuladas.</p>
+           </div>
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\\u2601 Nube y Respaldo</h3>
+             <p>Tus datos se sincronizan autom\u00e1ticamente con Firebase. Descarga reportes contables en CSV con filtro por fecha. Env\u00eda reportes a tu contadora por WhatsApp. Guarda y restaura respaldos manuales.</p>
+           </div>
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDC65 Trabajadores</h3>
+             <p>Registra trabajadores por correo. Env\u00eda enlaces de invitaci\u00f3n. Controla el acceso de cada persona a tu negocio.</p>
+           </div>
+           <div style="margin-bottom:16px;">
+             <h3 style="color:var(--gold);margin-bottom:8px;">\\u2699 Ajustes</h3>
+             <p>Configura nombre, RUC, tel\u00e9fono, direcci\u00f3n, logo e IVA de tu negocio. Estos datos se reflejan en los comprobantes de venta y cierre de caja.</p>
+           </div>
+           <div style="background:rgba(244,196,49,0.08);padding:12px;border-radius:12px;border:1px solid rgba(244,196,49,0.2);">
+             <p style="margin:0;font-size:13px;"><b style="color:var(--gold);">\uD83D\uDD12 Seguridad:</b> Solo el due\u00f1o puede anular ventas, editar y anular movimientos de caja. Los datos se protegen en la nube de Firebase.</p>
+           </div>
+         </div>`);
+     });
+     
      // Check for pending workers in background to toggle badge
      if (window.click360User && window.click360User.role === 'owner') {
         const workers = state.settings?.workers || [];
@@ -2415,14 +2529,17 @@ function parseMoney(value) {
     };
     const exp = $('#exportCsvBtn');
     if(exp) exp.onclick = () => {
+      const dateFrom = $('#csvDateFrom')?.value || '';
+      const dateTo = $('#csvDateTo')?.value || today();
       const BOM = "\ufeff";
-      let csv = BOM + "FECHA_HORA,CATEGORIA,DETALLE,MONTO,CLIENTE,ATENDIDO_POR\n";
+      let csv = BOM + "FECHA_HORA,CATEGORIA,DETALLE,MONTO,CLIENTE,ATENDIDO_POR,ESTADO\n";
       
       const escapeCsv = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
       const rows = [];
+      const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
       
-      // 1. Process Sales (only active business, exclude cancelled)
-      state.sales.filter(s => s.businessId === currentBusiness().id && s.status !== 'cancelled').forEach(s => {
+      // 1. Process Sales (only active business)
+      state.sales.filter(s => s.businessId === currentBusiness().id && inRange(s.date)).forEach(s => {
          s.items.forEach(item => {
             rows.push({
                date: s.when || s.date,
@@ -2430,14 +2547,15 @@ function parseMoney(value) {
                detail: `${item.qty}x ${item.name} [${item.code}]`,
                amount: item.price * item.qty,
                customer: s.customer || '',
-               user: s.createdBy || s.user || 'Sistema'
+               user: s.createdBy || s.user || 'Sistema',
+               status: s.status === 'cancelled' ? 'ANULADA' : 'OK'
             });
          });
       });
       
       // 2. Process Movements (only active business)
-      state.movements.filter(m => m.businessId === currentBusiness().id).forEach(m => {
-         const isOutflow = m.kind !== 'ingreso';
+      state.movements.filter(m => m.businessId === currentBusiness().id && inRange(m.date)).forEach(m => {
+         const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura';
          const signedAmount = isOutflow ? -m.amount : m.amount;
          const linkedSale = m.saleId ? state.sales.find(x => x.id === m.saleId) : null;
          
@@ -2447,7 +2565,8 @@ function parseMoney(value) {
             detail: m.note || (m.saleId ? `Pago de venta ${m.saleId}` : 'Movimiento de caja'),
             amount: signedAmount,
             customer: linkedSale ? (linkedSale.customer || '') : '',
-            user: m.createdBy || m.user || 'Sistema'
+            user: m.createdBy || m.user || 'Sistema',
+            status: m.status === 'cancelled' ? `ANULADO por ${m.cancelledBy || '?'} ${m.cancelledAt || ''}` : 'OK'
          });
       });
       
@@ -2456,15 +2575,32 @@ function parseMoney(value) {
       
       // Build CSV string
       rows.forEach(r => {
-         csv += `${escapeCsv(r.date)},${escapeCsv(r.category)},${escapeCsv(r.detail)},${r.amount},${escapeCsv(r.customer)},${escapeCsv(r.user)}\n`;
+         csv += `${escapeCsv(r.date)},${escapeCsv(r.category)},${escapeCsv(r.detail)},${r.amount},${escapeCsv(r.customer)},${escapeCsv(r.user)},${escapeCsv(r.status)}\n`;
       });
 
       const a = document.createElement('a');
+      const filename = dateFrom ? `contabilidad_click360_${dateFrom}_a_${dateTo}.csv` : `contabilidad_click360_${dateTo}.csv`;
       a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-      a.download = `contabilidad_click360_${today()}.csv`;
+      a.download = filename;
       a.click();
-      toast('Reporte Contable Generado');
+      toast(`Reporte generado: ${rows.length} registros`);
     };
+
+    const sendBtn = $('#sendReportBtn');
+    if (sendBtn) sendBtn.onclick = () => {
+      const dateFrom = $('#csvDateFrom')?.value || today();
+      const dateTo = $('#csvDateTo')?.value || today();
+      const bizName = currentBusiness().name;
+      const salesCount = state.sales.filter(s => s.businessId === currentBusiness().id && s.date >= dateFrom && s.date <= dateTo && s.status !== 'cancelled').length;
+      const movCount = state.movements.filter(m => m.businessId === currentBusiness().id && m.date >= dateFrom && m.date <= dateTo && m.status !== 'cancelled').length;
+      const totalVentas = state.sales.filter(s => s.businessId === currentBusiness().id && s.date >= dateFrom && s.date <= dateTo && s.status !== 'cancelled').reduce((a,s) => a + s.total, 0);
+      
+      const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: $${totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${salesCount}\n📋 Movimientos de caja: ${movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo CSV adjunto para los detalles completos._`;
+      
+      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+      toast('Abre WhatsApp y selecciona el contacto de tu contadora');
+    };
+
     const cloudBtn = $('#cloudSoon');
     if (cloudBtn) {
        cloudBtn.onclick = () => {
@@ -2478,7 +2614,10 @@ function parseMoney(value) {
   }
 
   window.cancelSale = function(saleId) {
-    if(!confirm('¿Seguro que deseas anular esta venta? Esto no se puede deshacer y devolverá el stock.')) return;
+    if (authUser().role !== 'owner') {
+      return toast('Solo el propietario puede anular ventas', 'err');
+    }
+    if(!confirm('\u00bfSeguro que deseas anular esta venta? Esto no se puede deshacer y devolver\u00e1 el stock.')) return;
     const sale = state.sales.find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     
@@ -2494,9 +2633,30 @@ function parseMoney(value) {
     
     // Anular movimiento si existe
     const mov = state.movements.find(m => m.saleId === sale.id);
-    if(mov) mov.amount = 0; // Opcional: o borrarlo, pero es mejor ponerlo en 0 para registro
+    if(mov) {
+       mov.status = 'cancelled';
+       mov.cancelledBy = authUser().name || 'Usuario';
+       mov.cancelledAt = nowLabel();
+       mov.originalAmount = mov.amount;
+       mov.amount = 0;
+    }
     
-    state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'retiro',amount:0,note:`Venta anulada`,user:session.username, createdBy: authUser().name});
+    state.movements.push({
+       id:uid('mov'),
+       businessId:currentBusiness().id,
+       date:today(),
+       when:nowLabel(),
+       kind:'retiro',
+       amount:0,
+       originalAmount:sale.total,
+       note:`Venta anulada`,
+       user:session.username,
+       saleId:sale.id,
+       createdBy:authUser().name,
+       status:'cancelled',
+       cancelledBy:authUser().name || 'Usuario',
+       cancelledAt:nowLabel()
+    });
     
     save();
     renderApp('reports');
@@ -2701,12 +2861,21 @@ function parseMoney(value) {
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede anular transacciones', 'err');
     }
-    if (!confirm('¿Seguro que deseas anular/borrar este movimiento?')) return;
+    if (!confirm('\u00bfSeguro que deseas anular este movimiento? Se conservar\u00e1 el registro.')) return;
     
-    state.movements = state.movements.filter(x => x.id !== id);
+    const mov = state.movements.find(x => x.id === id);
+    if (!mov) return toast('Movimiento no encontrado', 'err');
+    
+    // Soft delete: mark as cancelled with audit trail
+    mov.status = 'cancelled';
+    mov.cancelledBy = authUser().name || 'Propietario';
+    mov.cancelledAt = nowLabel();
+    mov.originalAmount = mov.amount;
+    mov.amount = 0;
+    
     save();
     renderApp('cash');
-    toast('Movimiento eliminado');
+    toast(`Movimiento anulado por ${mov.cancelledBy} a las ${mov.cancelledAt}`);
   };
 
   window.printReceipt = function(id) {
