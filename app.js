@@ -159,6 +159,7 @@ function parseMoney(value) {
     if (!out.users || out.users.length === 0) out.users = d.users;
     if (!out.businesses || out.businesses.length === 0) out.businesses = d.businesses;
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
+    out.invoices ||= [];
     out.settings ||= {};
     out.settings.labelTemplates ||= [];
     out.settings.workers ||= [];
@@ -187,6 +188,7 @@ function parseMoney(value) {
       products:[],
       sales:[],
       movements:[],
+      invoices:[],
       dailyReports:[],
       settings:{ workers: [] }
     };
@@ -471,7 +473,7 @@ function parseMoney(value) {
       if(!can(r)) r='home';
       stopScanner(); route=r;
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
     } catch(e) {
@@ -924,12 +926,17 @@ function parseMoney(value) {
           <b>\u203A</b>
         </span>
       </button>
+      <button class="card bigRow" data-more="invoices"><span>📄 Facturas de Proveedores</span><b>\u203A</b></button>
       <button class="card bigRow" data-more="settings"><span>\u2699 Ajustes</span><b>\u203A</b></button>
       <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
       <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
     </section>`;
   }
   function backupView(){
+    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = yest.toISOString().slice(0, 10);
+    const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+    const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().slice(0, 10);
+    
     return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronizaci\u00f3n y reportes contables.</p></div></div>
       <section class="card sectionCard">
         <h3>Nube CLICK 360</h3>
@@ -938,13 +945,18 @@ function parseMoney(value) {
       </section>
       <section class="card sectionCard" style="margin-top:14px">
         <h3>Reporte Contable General</h3>
-        <p class="cloudStatus">Descarga el historial de ventas y movimientos de caja en Excel (CSV). Selecciona el rango de fechas.</p>
-        <div class="formGrid" style="margin-bottom:12px;">
+        <p class="cloudStatus">Descarga el reporte completo en formato Excel real (XLSX). Selecciona el rango de fechas o usa los accesos r\u00e1pidos.</p>
+        <div class="formGrid" style="margin-bottom:8px;">
           <div class="field"><label>Desde</label><input type="date" id="csvDateFrom" value="${today()}"></div>
           <div class="field"><label>Hasta</label><input type="date" id="csvDateTo" value="${today()}"></div>
         </div>
-        <button type="button" class="btn primary block" id="exportCsvBtn">\uD83D\uDCCA Descargar Historial (CSV)</button>
-        <button type="button" class="btn block" id="sendReportBtn" style="margin-top:10px;border:1px solid #25D366;color:#25D366;background:transparent;">\uD83D\uDCE4 Enviar Reporte a Contadora (WhatsApp)</button>
+        <div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+          <button type="button" class="btn silver mini" onclick="$('#csvDateFrom').value=$('#csvDateTo').value='${today()}';" style="padding:4px 10px; font-size:12px;">Hoy</button>
+          <button type="button" class="btn silver mini" onclick="$('#csvDateFrom').value=$('#csvDateTo').value='${yesterdayStr}';" style="padding:4px 10px; font-size:12px;">Ayer</button>
+          <button type="button" class="btn silver mini" onclick="$('#csvDateFrom').value='${firstDay}'; $('#csvDateTo').value='${lastDay}';" style="padding:4px 10px; font-size:12px;">Este Mes</button>
+        </div>
+        <button type="button" class="btn primary block" id="exportCsvBtn">\uD83D\uDCCA Descargar Reporte Excel (XLSX)</button>
+        <button type="button" class="btn block" id="sendReportBtn" style="margin-top:10px;border:1px solid #25D366;color:#25D366;background:transparent;">\uD83D\uDCE4 Enviar Excel a Contadora (WhatsApp)</button>
       </section>
       <section class="card sectionCard" style="margin-top:14px">
         <h3>Respaldo Manual (Copia de Seguridad)</h3><p class="cloudStatus">Guarda una copia de toda tu informaci\u00f3n en tu dispositivo o rest\u00e1urala si cambiaste de equipo.</p>
@@ -1061,6 +1073,7 @@ function parseMoney(value) {
     if(r==='settings') bindSettings();
     if(r==='workers') bindWorkers();
     if(r==='reports') bindReports();
+    if(r==='invoices') bindInvoices();
   }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
@@ -2213,6 +2226,9 @@ function parseMoney(value) {
     canvas.height = h;
     const ctx = canvas.getContext('2d');
     
+    // Save state
+    ctx.save();
+    
     // Background color
     ctx.fillStyle = options.bgColor || '#ffffff';
     roundRect(ctx, 0, 0, w, h, 18 * scale, true, false);
@@ -2222,15 +2238,20 @@ function parseMoney(value) {
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
     
+    // Apply Y offset adjustments
+    const yAdj = (options.yOffsetAdj || 0) * scale;
+    const nameScale = options.nameScale || 1.0;
+    const priceScale = options.priceScale || 1.0;
+
     // Business name
     ctx.font = `900 ${16 * scale}px Arial`;
-    ctx.fillText(currentBusiness().name.toUpperCase(), w / 2, 35 * scale);
+    ctx.fillText(currentBusiness().name.toUpperCase(), w / 2, 35 * scale + yAdj, w - 20 * scale);
     
     // Local address (under name, small)
-    let yOffset = 52 * scale;
+    let yOffset = 52 * scale + yAdj;
     if (options.address) {
        ctx.font = `${9 * scale}px Arial`;
-       ctx.fillText(options.address, w / 2, yOffset);
+       ctx.fillText(options.address, w / 2, yOffset, w - 20 * scale);
        yOffset += 14 * scale;
     }
     
@@ -2242,41 +2263,69 @@ function parseMoney(value) {
     // QR Footer text ("Sistema contable Click 360")
     yOffset += 185 * scale;
     ctx.font = `${8 * scale}px Arial`;
-    ctx.fillText("Sistema contable Click 360", w / 2, yOffset);
+    ctx.fillText("Sistema contable Click 360", w / 2, yOffset, w - 20 * scale);
     
     // Barcode Code text
     yOffset += 18 * scale;
     ctx.font = `${10 * scale}px monospace`;
-    ctx.fillText(product.code, w / 2, yOffset);
+    ctx.fillText(product.code, w / 2, yOffset, w - 20 * scale);
     
-    // Product Name
+    // Product Name (wrapped if too long)
     yOffset += 24 * scale;
-    ctx.font = `900 ${16 * scale}px Arial`;
-    ctx.fillText(product.name, w / 2, yOffset);
+    ctx.font = `900 ${Math.round(16 * scale * nameScale)}px Arial`;
+    
+    const pName = product.name || '';
+    const maxTextWidth = w - 24 * scale;
+    
+    // Simple wrapping logic
+    const words = pName.split(' ');
+    let line = '';
+    const lines = [];
+    for (let n = 0; n < words.length; n++) {
+      let testLine = line + words[n] + ' ';
+      let metrics = ctx.measureText(testLine);
+      let testWidth = metrics.width;
+      if (testWidth > maxTextWidth && n > 0) {
+        lines.push(line.trim());
+        line = words[n] + ' ';
+      } else {
+        line = testLine;
+      }
+    }
+    lines.push(line.trim());
+    
+    // Draw product name lines (maximum 2 lines to prevent layout break)
+    const maxLines = Math.min(2, lines.length);
+    for (let i = 0; i < maxLines; i++) {
+      ctx.fillText(lines[i], w / 2, yOffset, maxTextWidth);
+      if (i < maxLines - 1) {
+        yOffset += 16 * scale * nameScale;
+      }
+    }
     
     // Prices with legend (incluye IVA)
     yOffset += 28 * scale;
-    ctx.font = `900 ${18 * scale}px Arial`;
+    ctx.font = `900 ${Math.round(18 * scale * priceScale)}px Arial`;
     
     const priceText = product.cardPrice && product.cardPrice !== product.price ? 
       `Efectivo: ${fmt(product.price)} / Tarjeta: ${fmt(product.cardPrice)}` : 
       fmt(product.price);
     
-    ctx.fillText(priceText, w / 2, yOffset);
+    // Measure price text and auto-scale if too large
+    let priceFontSize = Math.round(18 * scale * priceScale);
+    ctx.font = `900 ${priceFontSize}px Arial`;
+    let priceWidth = ctx.measureText(priceText).width;
+    while (priceWidth > maxTextWidth && priceFontSize > 8 * scale) {
+      priceFontSize -= 1 * scale;
+      ctx.font = `900 ${priceFontSize}px Arial`;
+      priceWidth = ctx.measureText(priceText).width;
+    }
+    
+    ctx.fillText(priceText, w / 2, yOffset, maxTextWidth);
     
     yOffset += 14 * scale;
     ctx.font = `900 ${9 * scale}px Arial`;
-    ctx.fillText("(incluye IVA)", w / 2, yOffset);
-    
-    // Social / Instagram or Phone (very bottom, centered)
-    if (options.social) {
-       yOffset += 18 * scale;
-       ctx.font = `900 ${9 * scale}px Arial`;
-       ctx.fillText(options.social, w / 2, yOffset);
-    }
-  }
-
-  async function openLabelModal(product){
+    ctx.fillText("(incluye IVA)", w / 2, y  async function openLabelModal(product){
     const bizSettings = currentBusiness().settings || {};
     const address = bizSettings.address || '';
     
@@ -2317,6 +2366,23 @@ function parseMoney(value) {
                  <input type="color" id="labelFgColor" value="#000000" style="width:100%; height:36px; padding:2px; cursor:pointer;">
               </div>
            </div>
+           
+           <!-- Layout Adjustments -->
+           <div class="field">
+              <label style="font-size:12px; display:flex; justify-content:space-between;">Mover Textos (Vertical) <span id="yOffsetVal" style="color:var(--gold);">0px</span></label>
+              <input type="range" id="labelYOffset" min="-50" max="50" value="0" style="width:100%; accent-color:var(--gold);">
+           </div>
+           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+              <div class="field">
+                 <label style="font-size:11px; display:flex; justify-content:space-between;">Tamaño Nombre <span id="nameScaleVal" style="color:var(--gold);">1.0x</span></label>
+                 <input type="range" id="labelNameScale" min="0.6" max="1.4" step="0.1" value="1.0" style="width:100%; accent-color:var(--gold);">
+              </div>
+              <div class="field">
+                 <label style="font-size:11px; display:flex; justify-content:space-between;">Tamaño Precio <span id="priceScaleVal" style="color:var(--gold);">1.0x</span></label>
+                 <input type="range" id="labelPriceScale" min="0.6" max="1.4" step="0.1" value="1.0" style="width:100%; accent-color:var(--gold);">
+              </div>
+           </div>
+
            <div class="field">
               <label>Red Social / Contacto (opcional)</label>
               <input id="labelSocial" placeholder="Ej. @click360" value="">
@@ -2342,16 +2408,22 @@ function parseMoney(value) {
 
     const canvas = $('#labelPreviewCanvas');
     
-    const updatePreview = () => {
-       const options = {
-          scale: 2,
+    const getOptions = (extraScale = null) => {
+       return {
+          scale: extraScale || 2,
           bgColor: $('#labelBgColor').value,
           qrBgColor: $('#qrBgColor').value,
           fgColor: $('#labelFgColor').value,
           social: $('#labelSocial').value.trim(),
-          address: $('#labelAddress').value.trim()
+          address: $('#labelAddress').value.trim(),
+          yOffsetAdj: parseFloat($('#labelYOffset').value || '0'),
+          nameScale: parseFloat($('#labelNameScale').value || '1.0'),
+          priceScale: parseFloat($('#labelPriceScale').value || '1.0')
        };
-       drawLabelOnCanvas(canvas, product, options);
+    };
+
+    const updatePreview = () => {
+       drawLabelOnCanvas(canvas, product, getOptions(2));
     };
 
     // Auto sync qrBgColor to labelBgColor if they were matching
@@ -2371,6 +2443,11 @@ function parseMoney(value) {
     $('#labelSocial').oninput = updatePreview;
     $('#labelAddress').oninput = updatePreview;
     
+    // Wire range inputs
+    $('#labelYOffset').oninput = (e) => { $('#yOffsetVal').textContent = e.target.value + 'px'; updatePreview(); };
+    $('#labelNameScale').oninput = (e) => { $('#nameScaleVal').textContent = e.target.value + 'x'; updatePreview(); };
+    $('#labelPriceScale').oninput = (e) => { $('#priceScaleVal').textContent = e.target.value + 'x'; updatePreview(); };
+
     // Apply template logic
     $('#applyTemplateSelect').onchange = (e) => {
        const tplId = e.target.value;
@@ -2382,6 +2459,12 @@ function parseMoney(value) {
           $('#labelFgColor').value = tpl.fgColor;
           $('#labelSocial').value = tpl.social || '';
           $('#labelAddress').value = tpl.address || '';
+          $('#labelYOffset').value = tpl.yOffsetAdj || 0;
+          $('#labelNameScale').value = tpl.nameScale || 1.0;
+          $('#labelPriceScale').value = tpl.priceScale || 1.0;
+          $('#yOffsetVal').textContent = ($('#labelYOffset').value) + 'px';
+          $('#nameScaleVal').textContent = ($('#labelNameScale').value) + 'x';
+          $('#priceScaleVal').textContent = ($('#labelPriceScale').value) + 'x';
           lastBgColor = tpl.bgColor;
           updatePreview();
        }
@@ -2391,14 +2474,18 @@ function parseMoney(value) {
     $('#saveTemplateBtn').onclick = () => {
        const name = prompt("Nombre de la plantilla:", "Mi Plantilla QR");
        if (!name) return;
+       const currentOpts = getOptions();
        const tpl = {
           id: uid('tpl'),
           name: name.trim(),
-          bgColor: $('#labelBgColor').value,
-          qrBgColor: $('#qrBgColor').value,
-          fgColor: $('#labelFgColor').value,
-          social: $('#labelSocial').value.trim(),
-          address: $('#labelAddress').value.trim()
+          bgColor: currentOpts.bgColor,
+          qrBgColor: currentOpts.qrBgColor,
+          fgColor: currentOpts.fgColor,
+          social: currentOpts.social,
+          address: currentOpts.address,
+          yOffsetAdj: currentOpts.yOffsetAdj,
+          nameScale: currentOpts.nameScale,
+          priceScale: currentOpts.priceScale
        };
        state.settings ||= {};
        state.settings.labelTemplates ||= [];
@@ -2411,54 +2498,26 @@ function parseMoney(value) {
        $('#applyTemplateSelect').innerHTML = `<option value="">-- Seleccionar plantilla --</option>` +
           updatedTemplates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
     };
-    
+     
     updatePreview();
 
     $('#printOne').onclick = () => {
        const copies = parseInt($('#labelCopies').value || '1', 10) || 1;
-       const options = {
-          bgColor: $('#labelBgColor').value,
-          qrBgColor: $('#qrBgColor').value,
-          fgColor: $('#labelFgColor').value,
-          social: $('#labelSocial').value.trim(),
-          address: $('#labelAddress').value.trim()
-       };
-       printLabels([{ product, copies }], options);
+       printLabels([{ product, copies }], getOptions());
     };
 
     $('#printStock').onclick = () => {
        const copies = Math.max(1, product.qty);
-       const options = {
-          bgColor: $('#labelBgColor').value,
-          qrBgColor: $('#qrBgColor').value,
-          fgColor: $('#labelFgColor').value,
-          social: $('#labelSocial').value.trim(),
-          address: $('#labelAddress').value.trim()
-       };
-       printLabels([{ product, copies }], options);
+       printLabels([{ product, copies }], getOptions());
     };
 
     $('#printAll').onclick = () => {
-       const options = {
-          bgColor: $('#labelBgColor').value,
-          qrBgColor: $('#qrBgColor').value,
-          fgColor: $('#labelFgColor').value,
-          social: $('#labelSocial').value.trim(),
-          address: $('#labelAddress').value.trim()
-       };
-       printLabels(productsForBiz().map(p => ({ product: p, copies: 1 })), options);
+       printLabels(productsForBiz().map(p => ({ product: p, copies: 1 })), getOptions());
     };
 
     $('#downloadLabelPng').onclick = async () => {
        const exportCanvas = document.createElement('canvas');
-       const options = {
-          scale: 4,
-          bgColor: $('#labelBgColor').value,
-          qrBgColor: $('#qrBgColor').value,
-          fgColor: $('#labelFgColor').value,
-          social: $('#labelSocial').value.trim(),
-          address: $('#labelAddress').value.trim()
-       };
+       const options = getOptions(4);
        await drawLabelOnCanvas(exportCanvas, product, options);
        const a = document.createElement('a');
        a.download = `etiqueta-${slug(product.name)}-${product.code}.png`;
@@ -2490,7 +2549,10 @@ function parseMoney(value) {
           qrBgColor: options.qrBgColor || options.bgColor || '#ffffff',
           fgColor: options.fgColor || '#000000',
           social: options.social || '',
-          address: options.address || ''
+          address: options.address || '',
+          yOffsetAdj: options.yOffsetAdj || 0,
+          nameScale: options.nameScale || 1.0,
+          priceScale: options.priceScale || 1.0
        };
        await drawLabelOnCanvas(canvas, g.product, opt);
     }
@@ -2523,78 +2585,136 @@ function parseMoney(value) {
         };
         r.readAsText(file);
     };
+
+    function generateExcelReport(dateFrom, dateTo) {
+       const biz = currentBusiness();
+       const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
+       
+       // 1. Compile Sales
+       const salesRows = [
+         ["FECHA y HORA", "ID VENTA", "CATEGORIA", "PRODUCTO/DETALLE", "CANTIDAD", "PRECIO UNIT.", "TOTAL", "CLIENTE", "ATENDIDO POR", "ESTADO"]
+       ];
+       let totalVentas = 0;
+       let salesCount = 0;
+       state.sales.filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
+          if (s.status !== 'cancelled') salesCount++;
+          s.items.forEach(item => {
+             const rowTotal = item.price * item.qty;
+             if (s.status !== 'cancelled') totalVentas += rowTotal;
+             salesRows.push([
+                s.when || s.date,
+                s.id,
+                item.category || 'General',
+                `${item.name} [${item.code}]`,
+                item.qty,
+                item.price,
+                rowTotal,
+                s.customer || '',
+                s.createdBy || s.user || 'Sistema',
+                s.status === 'cancelled' ? 'ANULADA' : 'OK'
+             ]);
+          });
+       });
+
+       // 2. Compile Movements
+       const movRows = [
+         ["FECHA y HORA", "ID MOVIMIENTO", "TIPO MOVIMIENTO", "DETALLE/NOTA", "MONTO", "ATENDIDO POR", "ESTADO"]
+       ];
+       let totalIngresos = 0;
+       let totalEgresos = 0;
+       let movCount = 0;
+       state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
+          if (m.status !== 'cancelled') movCount++;
+          const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura';
+          const signedAmount = isOutflow ? -m.amount : m.amount;
+          if (m.status !== 'cancelled') {
+             if (isOutflow) totalEgresos += m.amount;
+             else if (m.kind === 'ingreso') totalIngresos += m.amount;
+          }
+          movRows.push([
+             m.when || m.date,
+             m.id,
+             m.kind.toUpperCase(),
+             m.note || (m.saleId ? `Pago de venta ${m.saleId}` : 'Movimiento de caja'),
+             signedAmount,
+             m.createdBy || m.user || 'Sistema',
+             m.status === 'cancelled' ? `ANULADO por ${m.cancelledBy || '?'} ${m.cancelledAt || ''}` : 'OK'
+          ]);
+       });
+
+       // 3. Compile Summary Sheet
+       const summaryRows = [
+          ["REPORTE CONTABLE CLICK 360"],
+          ["Negocio:", biz.name],
+          ["Periodo:", `${dateFrom} al ${dateTo}`],
+          ["Fecha Reporte:", nowLabel()],
+          [],
+          ["INDICADOR/METRICA", "VALOR"],
+          ["Total Ventas ($)", totalVentas],
+          ["Transacciones de Venta", salesCount],
+          ["Total Ingresos Caja ($)", totalIngresos],
+          ["Total Egresos/Compras/Retiros ($)", totalEgresos],
+          ["Movimientos de Caja Registrados", movCount]
+       ];
+
+       // Create workbook
+       const wb = XLSX.utils.book_new();
+       
+       const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+       const wsSales = XLSX.utils.aoa_to_sheet(salesRows);
+       const wsMovs = XLSX.utils.aoa_to_sheet(movRows);
+
+       XLSX.utils.book_append_sheet(wb, wsSummary, "Resumen");
+       XLSX.utils.book_append_sheet(wb, wsSales, "Ventas");
+       XLSX.utils.book_append_sheet(wb, wsMovs, "Movimientos");
+
+       const filename = dateFrom === dateTo ? 
+          `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}.xlsx` :
+          `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}_a_${dateTo}.xlsx`;
+       
+       XLSX.writeFile(wb, filename);
+       return { totalVentas, salesCount, movCount };
+    }
+
     const exp = $('#exportCsvBtn');
     if(exp) exp.onclick = () => {
       const dateFrom = $('#csvDateFrom')?.value || '';
       const dateTo = $('#csvDateTo')?.value || today();
-      const BOM = "\ufeff";
-      let csv = BOM + "FECHA_HORA,CATEGORIA,DETALLE,MONTO,CLIENTE,ATENDIDO_POR,ESTADO\n";
-      
-      const escapeCsv = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
-      const rows = [];
-      const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
-      
-      // 1. Process Sales (only active business)
-      state.sales.filter(s => s.businessId === currentBusiness().id && inRange(s.date)).forEach(s => {
-         s.items.forEach(item => {
-            rows.push({
-               date: s.when || s.date,
-               category: `Venta - ${item.category || 'General'}`,
-               detail: `${item.qty}x ${item.name} [${item.code}]`,
-               amount: item.price * item.qty,
-               customer: s.customer || '',
-               user: s.createdBy || s.user || 'Sistema',
-               status: s.status === 'cancelled' ? 'ANULADA' : 'OK'
-            });
-         });
-      });
-      
-      // 2. Process Movements (only active business)
-      state.movements.filter(m => m.businessId === currentBusiness().id && inRange(m.date)).forEach(m => {
-         const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura';
-         const signedAmount = isOutflow ? -m.amount : m.amount;
-         const linkedSale = m.saleId ? state.sales.find(x => x.id === m.saleId) : null;
-         
-         rows.push({
-            date: m.when || m.date,
-            category: m.saleId ? `Pago Venta - ${m.kind.toUpperCase()}` : `Caja - ${m.kind.toUpperCase()}`,
-            detail: m.note || (m.saleId ? `Pago de venta ${m.saleId}` : 'Movimiento de caja'),
-            amount: signedAmount,
-            customer: linkedSale ? (linkedSale.customer || '') : '',
-            user: m.createdBy || m.user || 'Sistema',
-            status: m.status === 'cancelled' ? `ANULADO por ${m.cancelledBy || '?'} ${m.cancelledAt || ''}` : 'OK'
-         });
-      });
-      
-      // Sort all by date/time
-      rows.sort((a, b) => a.date.localeCompare(b.date));
-      
-      // Build CSV string
-      rows.forEach(r => {
-         csv += `${escapeCsv(r.date)},${escapeCsv(r.category)},${escapeCsv(r.detail)},${r.amount},${escapeCsv(r.customer)},${escapeCsv(r.user)},${escapeCsv(r.status)}\n`;
-      });
-
-      const a = document.createElement('a');
-      const filename = dateFrom ? `contabilidad_click360_${dateFrom}_a_${dateTo}.csv` : `contabilidad_click360_${dateTo}.csv`;
-      a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
-      a.download = filename;
-      a.click();
-      toast(`Reporte generado: ${rows.length} registros`);
+      if (!window.XLSX) {
+         toast('Cargando librería Excel, por favor intenta en un segundo...', 'err');
+         return;
+      }
+      try {
+         const info = generateExcelReport(dateFrom, dateTo);
+         toast(`Reporte Excel generado con éxito`, 'ok');
+      } catch (err) {
+         console.error(err);
+         toast('Error al generar archivo Excel', 'err');
+      }
     };
 
     const sendBtn = $('#sendReportBtn');
     if (sendBtn) sendBtn.onclick = () => {
       const dateFrom = $('#csvDateFrom')?.value || today();
       const dateTo = $('#csvDateTo')?.value || today();
-      const bizName = currentBusiness().name;
-      const salesCount = state.sales.filter(s => s.businessId === currentBusiness().id && s.date >= dateFrom && s.date <= dateTo && s.status !== 'cancelled').length;
-      const movCount = state.movements.filter(m => m.businessId === currentBusiness().id && m.date >= dateFrom && m.date <= dateTo && m.status !== 'cancelled').length;
-      const totalVentas = state.sales.filter(s => s.businessId === currentBusiness().id && s.date >= dateFrom && s.date <= dateTo && s.status !== 'cancelled').reduce((a,s) => a + s.total, 0);
-      
-      const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: $${totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${salesCount}\n📋 Movimientos de caja: ${movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo CSV adjunto para los detalles completos._`;
-      
-      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
-      toast('Abre WhatsApp y selecciona el contacto de tu contadora');
+      if (!window.XLSX) {
+         toast('Cargando librería Excel...', 'err');
+         return;
+      }
+      try {
+         const info = generateExcelReport(dateFrom, dateTo);
+         const bizName = currentBusiness().name;
+         
+         const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: $${info.totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${info.salesCount}\n📋 Movimientos de caja: ${info.movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo EXCEL adjunto para ver los detalles._`;
+         
+         toast('Excel descargado. Abriendo WhatsApp... Adjunta el archivo Excel al chat.', 'ok', 6000);
+         setTimeout(() => {
+            window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+         }, 1000);
+      } catch (err) {
+         console.error(err);
+         toast('Error al generar Excel para WhatsApp', 'err');
+      }
     };
 
     const cloudBtn = $('#cloudSoon');
@@ -3059,14 +3179,196 @@ function parseMoney(value) {
       }
     } catch(e) {}
   }, 30000);
+  // --- INVOICES MODULE ---
+  function invoicesView() {
+    const biz = currentBusiness();
+    const invs = (state.invoices || []).filter(i => i.businessId === biz.id);
+    
+    // Default dates: start of this month to today
+    const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+    const lastDay = today();
+    
+    return `<div class="pageHead">
+        <div>
+          <h1>Facturas de Proveedores</h1>
+          <p>Control y archivo digital de tus facturas de compras.</p>
+        </div>
+        <button class="btn primary" id="newInvoiceBtn">➕ Registrar Factura</button>
+      </div>
+      
+      <section class="card sectionCard">
+         <h3>Buscar y Filtrar</h3>
+         <div class="formGrid" style="margin-bottom:12px;">
+            <div class="field"><label>Proveedor / N° Factura</label><input type="text" id="invoiceSearch" placeholder="Buscar..."></div>
+            <div class="field"><label>Desde</label><input type="date" id="invoiceDateFrom" value="${firstDay}"></div>
+            <div class="field"><label>Hasta</label><input type="date" id="invoiceDateTo" value="${lastDay}"></div>
+         </div>
+         <button type="button" class="btn block" id="filterInvoicesBtn">🔍 Aplicar Filtros</button>
+      </section>
+
+      <section class="card sectionCard" style="margin-top:14px">
+         <h3>Historial de Facturas</h3>
+         <div id="invoiceList" class="movementList">
+            <!-- Invoices list goes here -->
+         </div>
+      </section>`;
+  }
+
+  function invoiceListHtml(filteredInvoices) {
+    if (filteredInvoices.length === 0) {
+      return '<p class="empty">No se encontraron facturas en este periodo.</p>';
+    }
+    return filteredInvoices.slice().reverse().map(i => {
+      const imgBtn = i.imageData ? 
+         `<button class="btn silver mini" onclick="window.viewInvoiceImage('${i.id}')" style="padding:4px 8px; font-size:12px; margin-right:8px;">👁️ Ver Foto</button>` : 
+         `<span style="font-size:11px; color:var(--muted); margin-right:8px;">Sin foto</span>`;
+         
+      return `<div class="movementItem" style="padding:12px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center;">
+         <div style="flex:1; min-width:0;">
+            <div style="font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(i.provider)}</div>
+            <small style="color:var(--muted); display:block; margin:2px 0;">Factura: ${escapeHtml(i.number)} | Fecha: ${escapeHtml(i.date)}</small>
+            ${i.notes ? `<small style="color:#aaa; font-style:italic; display:block;">Nota: ${escapeHtml(i.notes)}</small>` : ''}
+            <small style="color:var(--muted); display:block; font-size:10px;">Atendido por: ${escapeHtml(i.createdBy || 'Sistema')}</small>
+         </div>
+         <div style="text-align:right; margin-left:12px;">
+            <div style="font-weight:bold; color:var(--gold); font-size:16px; margin-bottom:6px;">${fmt(i.amount)}</div>
+            <div style="display:flex; align-items:center; justify-content:flex-end;">
+               ${imgBtn}
+               <button class="btn danger mini" onclick="window.deleteInvoice('${i.id}')" style="padding:4px 8px; font-size:12px;">🗑️</button>
+            </div>
+         </div>
+      </div>`;
+    }).join('');
+  }
+
+  function bindInvoices() {
+    const list = $('#invoiceList');
+    const biz = currentBusiness();
+    
+    const filterAndRender = () => {
+       const q = $('#invoiceSearch')?.value.toLowerCase() || '';
+       const dateFrom = $('#invoiceDateFrom')?.value || '';
+       const dateTo = $('#invoiceDateTo')?.value || today();
+       
+       const allInvs = state.invoices || [];
+       const filtered = allInvs.filter(i => {
+          const matchBiz = i.businessId === biz.id;
+          const matchQuery = i.provider.toLowerCase().includes(q) || i.number.toLowerCase().includes(q) || (i.notes || '').toLowerCase().includes(q);
+          const matchDate = (!dateFrom || i.date >= dateFrom) && i.date <= dateTo;
+          return matchBiz && matchQuery && matchDate;
+       });
+       
+       list.innerHTML = invoiceListHtml(filtered);
+    };
+
+    $('#newInvoiceBtn').onclick = () => openInvoiceModal(null, filterAndRender);
+    $('#filterInvoicesBtn').onclick = filterAndRender;
+    if ($('#invoiceSearch')) $('#invoiceSearch').oninput = filterAndRender;
+    
+    // Expose helpers globally so they work in inline onclick
+    window.viewInvoiceImage = (id) => {
+       const inv = (state.invoices || []).find(x => x.id === id);
+       if (inv && inv.imageData) {
+          showModal(`<div class="modalHeader"><h2>Factura de ${escapeHtml(inv.provider)}</h2><button class="closeBtn" data-close>×</button></div>
+             <div style="text-align:center; padding:10px; background:#000;">
+                <img src="${inv.imageData}" style="max-width:100%; max-height:75vh; border-radius:8px; border:1px solid #333;" alt="Foto de factura">
+             </div>
+             <button class="btn block primary" style="margin-top:10px;" data-close>Cerrar Vista</button>`);
+       }
+    };
+    
+    window.deleteInvoice = (id) => {
+       if (confirm('¿Estás seguro de que quieres eliminar esta factura?')) {
+          state.invoices = (state.invoices || []).filter(x => x.id !== id);
+          save();
+          if (window.click360SyncNow) window.click360SyncNow().catch(()=>{});
+          filterAndRender();
+          toast('Factura eliminada');
+       }
+    };
+    
+    // Initial render
+    filterAndRender();
+  }
+
+  function openInvoiceModal(invoice = null, onSaved = null) {
+    showModal(`<div class="modalHeader"><h2>Registrar Factura</h2><button class="closeBtn" data-close>×</button></div>
+      <form id="invoiceForm" class="formGrid">
+         <div class="field full productImageField">
+           <label>Foto de la Factura (opcional)</label>
+           <div class="imagePicker">
+             <div id="invoiceImagePreview"><span>Sin foto</span></div>
+             <div style="display:flex; gap:8px;">
+                <label class="btn silver"><input type="file" id="iImageCam" accept="image/*" capture="environment" hidden>Tomar foto</label>
+                <label class="btn silver"><input type="file" id="iImageGal" accept="image/*" hidden>Galería</label>
+             </div>
+           </div>
+         </div>
+         <div class="field full"><label>Proveedor</label><input id="iProvider" required placeholder="Nombre del proveedor"></div>
+         <div class="field"><label>N° Factura</label><input id="iNumber" required placeholder="Ej. 001-001-0000123"></div>
+         <div class="field"><label>Fecha</label><input type="date" id="iDate" value="${today()}"></div>
+         <div class="field"><label>Monto Total ($)</label><input id="iAmount" inputmode="decimal" required placeholder="0.00"></div>
+         <div class="field full"><label>Notas / Descripción</label><textarea id="iNotes" placeholder="Detalle adicional..."></textarea></div>
+         <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar Factura</button>
+      </form>`);
+
+    let imageData = '';
+    const imgHandler = e => readImageInput(e.target, data => {
+      imageData = data;
+      $('#invoiceImagePreview').innerHTML = data ? `<img src="${data}" style="max-height:160px; object-fit:contain; border-radius:8px;" alt="Foto de factura">` : '<span>Sin foto</span>';
+    });
+    $('#iImageCam').onchange = imgHandler;
+    $('#iImageGal').onchange = imgHandler;
+
+    const amountIn = $('#iAmount');
+    if (amountIn) amountIn.oninput = () => { amountIn.value = amountIn.value.replace(/[^0-9.,]/g, ''); };
+
+    $('#invoiceForm').onsubmit = e => {
+       e.preventDefault();
+       const provider = $('#iProvider').value.trim();
+       const number = $('#iNumber').value.trim();
+       const date = $('#iDate').value;
+       const amount = parseMoney($('#iAmount').value);
+       const notes = $('#iNotes').value.trim();
+       
+       if (!provider || !number || !amount) {
+          toast('Por favor completa todos los campos requeridos', 'err');
+          return;
+       }
+       
+       const newInv = {
+          id: uid('inv'),
+          businessId: currentBusiness().id,
+          provider,
+          number,
+          date,
+          amount,
+          notes,
+          imageData,
+          createdBy: authUser().name || 'Usuario',
+          createdAt: nowLabel()
+       };
+       
+       state.invoices ||= [];
+       state.invoices.push(newInv);
+       save();
+       
+       if (window.click360SyncNow) window.click360SyncNow().catch(()=>{});
+       
+       closeModal();
+       toast('Factura guardada con éxito', 'ok');
+       if (onSaved) onSaved();
+    };
+  }
+
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, runQa};
 
-  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors'].includes(h)) renderApp(h); });
+  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator && !location.search.includes('nosw')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
   if(location.search.includes('qa')) { renderLogin(); setTimeout(runQa,300); }
   else if(!session) renderLogin(); else if(session.role==='admin') renderAdmin(); else if(!handleInitialScan()) {
     const h = location.hash.replace('#','');
-    if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors'].includes(h)) renderApp(h);
+    if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h);
     else renderApp('home');
   }
 })();
