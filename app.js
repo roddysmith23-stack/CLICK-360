@@ -2325,7 +2325,11 @@ function parseMoney(value) {
     
     yOffset += 14 * scale;
     ctx.font = `900 ${9 * scale}px Arial`;
-    ctx.fillText("(incluye IVA)", w / 2, y  async function openLabelModal(product){
+    ctx.fillText("(incluye IVA)", w / 2, yOffset);
+    ctx.restore();
+  }
+
+  async function openLabelModal(product){
     const bizSettings = currentBusiness().settings || {};
     const address = bizSettings.address || '';
     
