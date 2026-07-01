@@ -423,8 +423,10 @@ function parseMoney(value) {
           <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
           <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" style="width:36px; height:36px; border-radius:10px;">↗</button>
         </header>
-        <main class="main">
+        <div style="flex-shrink:0; padding:16px 16px 0; background:transparent;">
           ${dateBadgeHtml}
+        </div>
+        <main class="main" style="padding-top:10px;">
           ${content}
         </main>
       </div>
@@ -848,7 +850,7 @@ function parseMoney(value) {
     return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
         <div style="display:flex; gap:8px;">
           <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
-          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen (PNG)</button>
+          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
         </div>
       </div>
       <div class="card sectionCard" style="display:flex; gap:10px; margin-bottom:14px; align-items:center;">

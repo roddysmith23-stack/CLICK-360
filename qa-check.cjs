@@ -39,4 +39,4 @@ assert('jsQR real local incluido', jsqrSize > 200000);
 assert('qrcode-generator real local incluido', qrgSize > 50000);
 assert('HTML carga qrcode-generator antes de app', html.includes('vendor/qrcode-generator.js') && html.indexOf('vendor/qrcode-generator.js') < html.indexOf('app.js'));
 assert('HTML carga jsQR antes de app', html.includes('vendor/jsQR.js') && html.indexOf('vendor/jsQR.js') < html.indexOf('app.js'));
-assert('cache v5 persistence', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-mvp-final-v5-persistence'));
+assert('cache v6 persistence', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-mvp-final-v6-persistence'));

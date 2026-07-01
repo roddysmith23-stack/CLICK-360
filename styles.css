@@ -34,7 +34,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--gold);box-shadow:0 0 
 textarea{min-height:96px;resize:vertical}
 a{color:inherit;text-decoration:none}
 .logoMark{display:flex;gap:12px;align-items:center;min-width:0}
-.logoIcon { display: block; width: 42px; height: 42px; background: url('assets/favicon.png?v=2') center/contain no-repeat; border-radius: 8px; }
+.logoIcon { display: block; width: 42px; height: 42px; background: url('assets/favicon.png?v=3') center/contain no-repeat; border-radius: 8px; }
 .logoText{font-size:20px;letter-spacing:1px;font-weight:900;line-height:1;display:flex;flex-direction:column;gap:2px;}
 .logoText b{color:#fff}
 .logoText span{display:block;letter-spacing:6px;color:var(--gold);font-size:10px;font-weight:950;margin-top:1px}
@@ -47,7 +47,7 @@ a{color:inherit;text-decoration:none}
 }
 .loginShell{width:min(430px,100%);display:grid;gap:24px}
 .loginBrand {
-  background: url('assets/favicon.png?v=2') center/contain no-repeat; width: 140px; height: 140px; margin: 0 auto 30px;
+  background: url('assets/favicon.png?v=3') center/contain no-repeat; width: 140px; height: 140px; margin: 0 auto 30px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   border-radius: 24px;
 }

@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-final-v5-persistence';
+const CACHE = 'click360-mvp-final-v6-persistence';
 const ASSETS = [
   './',
   './index.html',
