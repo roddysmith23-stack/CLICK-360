@@ -34,9 +34,23 @@ service cloud.firestore {
         );
     }
 
+    function tempOwnerEmail() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email in [
+          "roddysmith23@hotmail.com",
+          "sanyagullo1997@gmail.com",
+          "shary10mmv@gmail.com",
+          "shary10mmvv@gmail.com",
+          "debbyaf32@gmail.com",
+          "debbya632@gmail.com",
+          "cheyos@hotmail.es"
+        ];
+    }
+
     match /approvedUsers/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
-      allow create: if signedIn() && request.auth.uid == uid && emailPreapproved();
+      allow create: if signedIn() && request.auth.uid == uid && (emailPreapproved() || tempOwnerEmail());
       allow update: if signedIn() && request.auth.uid == uid
         && request.resource.data.diff(resource.data).changedKeys().hasOnly(["name", "photoURL", "updatedAt"]);
       allow delete: if false;

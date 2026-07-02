@@ -4,8 +4,9 @@
 
   const LS = 'click360_mvp_qa_final_state_v1';
   const SESSION = 'click360_mvp_qa_final_session_v1';
-  const APP_ASSET_VERSION = 'mvp-final-codex';
+  const APP_ASSET_VERSION = 'mvp-final-offline-safe-v8';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
+  const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const $ = (sel, root=document) => root.querySelector(sel);
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
@@ -28,6 +29,12 @@
   let scanStream = null;
   let scanTimer = null;
   let lastScanAt = 0;
+  let deferredInstallPrompt = null;
+
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+  });
 
   function uid(prefix='id') { return `${prefix}_${Math.random().toString(36).slice(2,8)}${Date.now().toString(36).slice(-4)}`; }
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
@@ -55,7 +62,7 @@
     if(product?.imageData) return `<img class="productImg" src="${product.imageData}" alt="${escapeHtml(product.name || 'Producto')}" loading="lazy">`;
     return `<div class="productImg emptyImg">▧</div>`;
   }
-  function readImageInput(input, cb){
+  function readImageInput(input, cb, options={}){
     const file = input?.files?.[0];
     if(!file) return cb('');
     if(!file.type.startsWith('image/')) return toast('Selecciona una imagen válida','err');
@@ -63,14 +70,15 @@
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const max = 400; // REDUCED TO PREVENT 1MB LIMIT
+        const max = options.max || 320;
+        const quality = options.quality || 0.52;
         const ratio = Math.min(1, max / Math.max(img.width, img.height));
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(img.width * ratio));
         canvas.height = Math.max(1, Math.round(img.height * ratio));
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img,0,0,canvas.width,canvas.height);
-        cb(canvas.toDataURL('image/jpeg', 0.6)); // LOWER QUALITY
+        cb(canvas.toDataURL('image/jpeg', quality));
       };
       img.onerror = () => toast('No se pudo leer la imagen','err');
       img.src = reader.result;
@@ -125,14 +133,57 @@ function parseMoney(value) {
     try { if (navigator.vibrate) navigator.vibrate(kind === 'err' ? [50,30,50] : 35); } catch {}
   }
 
+  function stateSizeBytes(obj=state) {
+    try { return new Blob([JSON.stringify(obj)]).size; } catch { return 0; }
+  }
+  function optimizeStateForStorage(reason='quota') {
+    let changed = false;
+    (state.products || []).forEach(p => {
+      if (p.imageData && p.imageData.length > 42000) {
+        p.imageData = '';
+        p.imageRemovedForStorage = true;
+        changed = true;
+      }
+    });
+    (state.invoices || []).forEach(inv => {
+      if (inv.imageData && inv.imageData.length > 52000) {
+        inv.imageData = '';
+        inv.imageRemovedForStorage = true;
+        changed = true;
+      }
+    });
+    (state.businesses || []).forEach(b => {
+      if (b.settings?.logoUrl && b.settings.logoUrl.length > 38000) {
+        b.settings.logoUrl = '';
+        b.settings.logoRemovedForStorage = true;
+        changed = true;
+      }
+    });
+    if (changed) addAudit('storage_images_optimized', { reason, sizeBytes: stateSizeBytes(state) });
+    return changed;
+  }
   function save() { 
     try {
+      state.updatedAtMs = Date.now();
+      state.updatedAt = new Date().toISOString();
       localStorage.setItem(LS, JSON.stringify(state)); 
       return true;
     } catch(e) {
       console.error(e);
       if(e.name === 'QuotaExceededError' || e.message.includes('quota')) {
-        toast('Almacenamiento lleno. Elimina imágenes o productos viejos para liberar espacio.', 'err');
+        try {
+          const changed = optimizeStateForStorage('quota_recovery');
+          if (changed) {
+            state.updatedAtMs = Date.now();
+            state.updatedAt = new Date().toISOString();
+            localStorage.setItem(LS, JSON.stringify(state));
+            toast('CLICK 360 liberó espacio optimizando fotos. Tus datos quedaron guardados.', 'ok');
+            return true;
+          }
+        } catch(retryError) {
+          console.error(retryError);
+        }
+        toast('Almacenamiento lleno. Respalda datos y reduce fotos para liberar espacio.', 'err');
       } else {
         toast('Error al guardar datos.', 'err');
       }
@@ -152,6 +203,28 @@ function parseMoney(value) {
     if(s) localStorage.setItem(SESSION, JSON.stringify(s)); 
     else localStorage.removeItem(SESSION);
   }
+  function profileCacheKey(uid) { return uid ? `${PROFILE_CACHE_PREFIX}${uid}` : ''; }
+  function cacheUserProfile(profile) {
+    const uid = profile?.uid || window.click360User?.uid || '';
+    if (!uid) return;
+    const safeProfile = {
+      uid,
+      name: profile.name || '',
+      photoURL: profile.photoURL || '',
+      email: profile.email || window.click360User?.email || '',
+      updatedAt: new Date().toISOString()
+    };
+    state.settings ||= {};
+    state.settings.userProfiles ||= {};
+    state.settings.userProfiles[uid] = safeProfile;
+    try { localStorage.setItem(profileCacheKey(uid), JSON.stringify(safeProfile)); } catch {}
+  }
+  function cachedUserProfile(uid) {
+    if (!uid) return null;
+    try {
+      return state.settings?.userProfiles?.[uid] || JSON.parse(localStorage.getItem(profileCacheKey(uid)) || 'null');
+    } catch { return null; }
+  }
   window.click360AppLogout = async function() {
     setSession(null);
     if(window.click360Logout) await window.click360Logout();
@@ -168,6 +241,7 @@ function parseMoney(value) {
     out.settings ||= {};
     out.settings.labelTemplates ||= [];
     out.settings.workers ||= [];
+    out.settings.userProfiles ||= {};
     
     // Migración para limpiar "sale_..." de movimientos antiguos
     out.movements.forEach(m => {
@@ -182,6 +256,8 @@ function parseMoney(value) {
     const b1 = { id:'biz_main', code:'EMPRESA-001', name:'Mi Negocio', type:'ropa', status:'activo', due:'2026-07-08' };
     return {
       version:'MVP_QA_FINAL',
+      updatedAtMs: Date.now(),
+      updatedAt: new Date().toISOString(),
       activeBusinessId:b1.id,
       users:[
         { username:'owner', role:'owner', label:'Dueño', businessIds:[b1.id] },
@@ -195,7 +271,7 @@ function parseMoney(value) {
       invoices:[],
       dailyReports:[],
       auditLogs:[],
-      settings:{ workers: [] }
+      settings:{ workers: [], userProfiles: {} }
     };
   }
 
@@ -955,6 +1031,7 @@ function parseMoney(value) {
       </button>
       <button class="card bigRow" data-more="invoices"><span>📄 Facturas de Proveedores</span><b>\u203A</b></button>
       <button class="card bigRow" data-more="settings"><span>\u2699 Ajustes</span><b>\u203A</b></button>
+      <button class="card bigRow" id="installAppBtn"><span>⬇ Instalar CLICK 360 como app</span><b>\u203A</b></button>
       <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
       <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
     </section>`;
@@ -1869,16 +1946,17 @@ function parseMoney(value) {
                     a.click();
                     document.body.removeChild(wrapper);
                     toast('Imagen descargada');
-                  });
-                };
-                document.head.appendChild(script);
-            };
+	                  });
+	                };
+	                script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
+	                document.head.appendChild(script);
+	            };
            
-           const repId = uid('rep');
-           state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
-           currentBusiness().lastCashBalance = eFisico;
-           save();
-           renderApp('cash');
+	           const repId = uid('rep');
+	           state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
+	           currentBusiness().lastCashBalance = eFisico;
+	           if(!save()) return;
+	           renderApp('cash');
            
            toast('Cierre del día generado');
         };
@@ -1891,12 +1969,35 @@ function parseMoney(value) {
          if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
          else window.click360AppLogout();
      }); 
-     $('#forceSyncCloud')?.addEventListener('click', ()=>{
-         if(window.click360RefreshNow) window.click360RefreshNow();
-         else toast('Nube no disponible en este entorno', 'err');
-     });
-     
-     $('#helpBtn')?.addEventListener('click', () => {
+	     $('#forceSyncCloud')?.addEventListener('click', ()=>{
+	         if(window.click360RefreshNow) window.click360RefreshNow();
+	         else toast('Nube no disponible en este entorno', 'err');
+	     });
+	     $('#installAppBtn')?.addEventListener('click', async () => {
+	       const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+	       const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+	       if (isStandalone) return toast('CLICK 360 ya está instalado como app.');
+	       if (deferredInstallPrompt) {
+	         deferredInstallPrompt.prompt();
+	         await deferredInstallPrompt.userChoice.catch(()=>null);
+	         deferredInstallPrompt = null;
+	         return toast('Instalación iniciada');
+	       }
+	       if (isIOS) {
+	         showModal(`<div class="modalHeader"><h2>Instalar en iPhone</h2><button class="closeBtn" data-close>×</button></div>
+	           <div style="line-height:1.55;color:var(--muted);font-size:14px;">
+	             <p>Abre CLICK 360 en Safari, toca el botón de compartir y elige <b>Agregar a pantalla de inicio</b>.</p>
+	             <p>Después podrás abrirlo como app y seguir trabajando con los datos guardados en este dispositivo.</p>
+	           </div>
+	           <button class="btn primary block" data-close>Entendido</button>`);
+	         return;
+	       }
+	       showModal(`<div class="modalHeader"><h2>Instalar CLICK 360</h2><button class="closeBtn" data-close>×</button></div>
+	         <p style="line-height:1.55;color:var(--muted);font-size:14px;">Si el navegador no muestra el instalador automático, abre el menú y elige <b>Instalar app</b> o <b>Agregar a pantalla principal</b>.</p>
+	         <button class="btn primary block" data-close>Entendido</button>`);
+	     });
+	     
+	     $('#helpBtn')?.addEventListener('click', () => {
        showModal(`<div class="modalHeader"><h2>\u00bfC\u00f3mo funciona CLICK 360?</h2><button class="closeBtn" data-close>\u00d7</button></div>
          <div style="max-height:60vh;overflow-y:auto;padding:4px;">
            <div style="margin-bottom:16px;">
@@ -2084,14 +2185,11 @@ function parseMoney(value) {
     const logoUpload = $('#bizLogoUpload');
     if (logoUpload) {
       logoUpload.addEventListener('change', (e) => {
-         const file = e.target.files[0];
-         if(!file) return;
-         const reader = new FileReader();
-         reader.onload = (ev) => {
-            pendingLogoUrl = ev.target.result;
+         readImageInput(e.target, (data) => {
+            if (!data) return;
+            pendingLogoUrl = data;
             e.target.parentElement.previousElementSibling.innerHTML = `<img src="${pendingLogoUrl}" style="width:100%; height:100%; object-fit:cover;">`;
-         };
-         reader.readAsDataURL(file);
+         }, { max: 260, quality: 0.48 });
       });
     }
 
@@ -2104,40 +2202,75 @@ function parseMoney(value) {
               pendingUserPhotoUrl = data;
               e.target.parentElement.previousElementSibling.innerHTML = `<img src="${data}" style="width:100%; height:100%; object-fit:cover;">`;
             }
-         });
+         }, { max: 220, quality: 0.5 });
       });
     }
 
     $('#saveUser').onclick = async () => {
        const newName = $('#userName').value.trim();
        if(!newName) return toast('Falta el nombre de usuario', 'err');
-       
-       if (window.click360User) {
-         window.click360User.name = newName;
-         window.click360User.photoURL = pendingUserPhotoUrl;
-         
-         // Update in Firestore approvedUsers if DB available
-         if (window.click360Db && window.click360User.uid) {
-           try {
-             $('#saveUser').textContent = 'Guardando...';
-             $('#saveUser').disabled = true;
-             await window.click360Db.collection("approvedUsers").doc(window.click360User.uid).update({
-               name: newName,
-               photoURL: pendingUserPhotoUrl
-             });
-             toast('Perfil actualizado en la nube');
-           } catch(e) {
-             console.error("Error actualizando perfil en nube:", e);
-             toast('Error al actualizar en la nube', 'err');
-           } finally {
-             $('#saveUser').textContent = 'Guardar Perfil';
-             $('#saveUser').disabled = false;
-           }
-         } else {
-           toast('Perfil guardado localmente');
+
+       const btn = $('#saveUser');
+       btn.textContent = 'Guardando...';
+       btn.disabled = true;
+       try {
+         const uid = window.click360User?.uid || window.click360Auth?.currentUser?.uid || '';
+         const role = window.click360User?.role || session?.role || 'owner';
+         const email = window.click360User?.email || window.click360Auth?.currentUser?.email || '';
+         const profile = { uid, name: newName, photoURL: pendingUserPhotoUrl || '', email };
+
+         if (window.click360User) {
+           window.click360User.name = newName;
+           window.click360User.photoURL = pendingUserPhotoUrl || '';
          }
-       } else {
-         toast('Perfil guardado localmente');
+
+         cacheUserProfile(profile);
+         setSession({ username: newName, role });
+         const localUser = currentUser();
+         if (localUser) localUser.label = newName;
+         if(!save()) throw new Error('No se pudo guardar localmente');
+
+         if (window.click360Auth?.currentUser?.updateProfile) {
+           await window.click360Auth.currentUser.updateProfile({
+             displayName: newName,
+             photoURL: pendingUserPhotoUrl || null
+           }).catch(err => console.warn('No se pudo actualizar Firebase Auth:', err.message));
+         }
+
+         if (window.click360Db && uid) {
+           const payload = {
+             uid,
+             email,
+             name: newName,
+             photoURL: pendingUserPhotoUrl || '',
+             role,
+             status: window.click360User?.status || 'active',
+             approved: window.click360User?.approved !== false,
+             ownerId: window.click360User?.ownerId || uid,
+             businessLimit: Number(window.click360User?.businessLimit || 2),
+             updatedAt: new Date().toISOString()
+           };
+           try {
+             await window.click360Db.collection("approvedUsers").doc(uid).set(payload, { merge: true });
+           } catch(profileWriteError) {
+             console.warn('Perfil: escritura completa rechazada, reintentando campos seguros:', profileWriteError.message);
+             await window.click360Db.collection("approvedUsers").doc(uid).update({
+               name: newName,
+               photoURL: pendingUserPhotoUrl || '',
+               updatedAt: new Date().toISOString()
+             }).catch(secondError => console.warn('Perfil guardado localmente; nube pendiente:', secondError.message));
+           }
+           if (window.click360SyncNow) await window.click360SyncNow();
+           toast('Perfil actualizado y protegido');
+         } else {
+           toast('Perfil guardado en este dispositivo');
+         }
+       } catch(e) {
+         console.error("Error actualizando perfil:", e);
+         toast('No se pudo guardar el perfil. Intenta otra vez.', 'err');
+       } finally {
+         btn.textContent = 'Guardar Perfil';
+         btn.disabled = false;
        }
        renderApp('settings');
     };
@@ -2149,10 +2282,11 @@ function parseMoney(value) {
        currentBusiness().settings = currentBusiness().settings || {};
        currentBusiness().settings.iva = parseFloat($('#bizIva').value) || 0;
        currentBusiness().settings.ruc = $('#bizRuc') ? $('#bizRuc').value.trim() : '';
-       currentBusiness().settings.phone = $('#bizPhone') ? $('#bizPhone').value.trim() : '';
-       currentBusiness().settings.address = $('#bizAddress') ? $('#bizAddress').value.trim() : '';
-       if (pendingLogoUrl) currentBusiness().settings.logoUrl = pendingLogoUrl;
-       save(); renderApp('settings'); toast('Guardado');
+	       currentBusiness().settings.phone = $('#bizPhone') ? $('#bizPhone').value.trim() : '';
+	       currentBusiness().settings.address = $('#bizAddress') ? $('#bizAddress').value.trim() : '';
+	       if (pendingLogoUrl) currentBusiness().settings.logoUrl = pendingLogoUrl;
+	       if(!save()) return;
+	       renderApp('settings'); toast('Guardado');
     };
     $('#createBiz').onclick=()=>{
       const name=$('#newBizName').value.trim(); 
@@ -2205,27 +2339,30 @@ function parseMoney(value) {
        if (authUser().role !== 'owner') {
          return toast('Solo el dueño de la cuenta puede borrar el sistema.', 'err');
        }
-       const ok = confirm('ALERTA CRÍTICA DE SEGURIDAD\nSe eliminarán de forma permanente TODOS los datos del negocio: productos, ventas, movimientos y reportes diarios. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
+	       const ok = confirm('ALERTA CRÍTICA DE SEGURIDAD\nSe eliminarán de forma permanente los datos del negocio activo: productos, ventas, movimientos, facturas y reportes diarios. Los otros negocios de la cuenta no se borrarán. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
        if (!ok) return toast('Acción cancelada', 'err');
        downloadBackup('antes-de-borrar-todo');
        const confirmWord = prompt('Para confirmar el borrado total e irreversible de todo el sistema, escribe exactamente: BORRAR TODO');
        if (confirmWord !== 'BORRAR TODO') {
           return toast('Acción cancelada', 'err');
        }
-       state.products = [];
-       state.sales = [];
-       state.dailyReports = [];
-       state.movements = [{
-         id: uid('mov'),
-         businessId: currentBusiness().id,
+	       const bid = currentBusiness().id;
+	       state.products = state.products.filter(x => x.businessId !== bid);
+	       state.sales = state.sales.filter(x => x.businessId !== bid);
+	       state.dailyReports = state.dailyReports.filter(x => x.businessId !== bid);
+	       state.invoices = (state.invoices || []).filter(x => x.businessId !== bid);
+	       state.movements = state.movements.filter(x => x.businessId !== bid);
+	       state.movements.push({
+	         id: uid('mov'),
+	         businessId: bid,
          date: today(),
          when: nowLabel(),
          kind: 'retiro',
-         amount: 0,
-         note: `Sistema reiniciado por: ${authUser().name}`,
-         createdBy: authUser().name
-       }];
-       addAudit('system_deleted', { businessId: currentBusiness().id });
+	         amount: 0,
+	         note: `Sistema reiniciado por: ${authUser().name}`,
+	         createdBy: authUser().name
+	       });
+	       addAudit('system_deleted', { businessId: bid, scope: 'active_business_only' });
        if(!save()) return;
        if (window.click360SyncNow) {
          toast('Sincronizando...');
@@ -2690,7 +2827,7 @@ function parseMoney(value) {
              totalCobrado += s.received || (s.status === 'paid' ? s.total || 0 : 0);
              totalPendiente += s.balance || 0;
           }
-          s.items.forEach(item => {
+	          (s.items || []).forEach(item => {
              const rowTotal = item.price * item.qty;
              salesRows.push([
                 s.when || s.date,
@@ -2800,18 +2937,65 @@ function parseMoney(value) {
           `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}.xlsx` :
           `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}_a_${dateTo}.xlsx`;
        
-       XLSX.writeFile(wb, filename);
-       return { totalVentas, salesCount, movCount };
-    }
+	       XLSX.writeFile(wb, filename);
+	       return { totalVentas, salesCount, movCount };
+	    }
+
+	    function csvCell(value) {
+	      const text = String(value ?? '').replace(/\r?\n/g, ' ');
+	      return /[",;\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+	    }
+	    function downloadCsvFallback(dateFrom, dateTo) {
+	      const biz = currentBusiness();
+	      const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
+	      const rows = [
+	        ["SECCION", "FECHA", "ID", "TIPO", "DETALLE", "CANTIDAD", "MONTO", "CLIENTE", "USUARIO", "ESTADO"]
+	      ];
+	      let totalVentas = 0;
+	      let salesCount = 0;
+	      let movCount = 0;
+	      state.sales.filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
+	        if (s.status !== 'cancelled') { totalVentas += s.total || 0; salesCount++; }
+	        (s.items || []).forEach(item => rows.push([
+	          "VENTA",
+	          s.when || s.date,
+	          s.id,
+	          s.method || '',
+	          `${item.name || ''} ${item.code ? '[' + item.code + ']' : ''}`.trim(),
+	          item.qty || 0,
+	          item.price || 0,
+	          s.customer || '',
+	          s.createdBy || s.user || 'Sistema',
+	          labelStatus(s.status)
+	        ]));
+	      });
+	      state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
+	        movCount++;
+	        rows.push(["MOVIMIENTO", m.when || m.date, m.id, m.kind || '', m.note || '', '', m.amount || 0, '', m.createdBy || m.user || 'Sistema', m.status || 'OK']);
+	      });
+	      (state.invoices || []).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
+	        rows.push(["FACTURA", i.date, i.id, i.provider || '', i.number || '', '', i.amount || 0, '', i.createdBy || 'Sistema', 'OK']);
+	      });
+	      rows.push([]);
+	      rows.push(["RESUMEN", "NEGOCIO", biz.name, "PERIODO", `${dateFrom} al ${dateTo}`, "", "", "", "", ""]);
+	      rows.push(["RESUMEN", "TOTAL VENTAS", "", "", "", "", totalVentas, "", "", ""]);
+	      const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
+	      const a = document.createElement('a');
+	      a.href = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8' }));
+	      a.download = `Reporte_Contable_${slug(biz.name)}_${dateFrom}_a_${dateTo}.csv`;
+	      a.click();
+	      return { totalVentas, salesCount, movCount, csv: true };
+	    }
 
     const exp = $('#exportCsvBtn');
     if(exp) exp.onclick = () => {
-      const dateFrom = $('#csvDateFrom')?.value || '';
-      const dateTo = $('#csvDateTo')?.value || today();
-      if (!window.XLSX) {
-         toast('Cargando librería Excel, por favor intenta en un segundo...', 'err');
-         return;
-      }
+	      const dateFrom = $('#csvDateFrom')?.value || '';
+	      const dateTo = $('#csvDateTo')?.value || today();
+	      if (!window.XLSX) {
+	         downloadCsvFallback(dateFrom, dateTo);
+	         toast('Sin internet para Excel. Se descargó reporte CSV.', 'ok');
+	         return;
+	      }
       try {
          const info = generateExcelReport(dateFrom, dateTo);
          toast(`Reporte Excel generado con éxito`, 'ok');
@@ -2823,19 +3007,15 @@ function parseMoney(value) {
 
     const sendBtn = $('#sendReportBtn');
     if (sendBtn) sendBtn.onclick = () => {
-      const dateFrom = $('#csvDateFrom')?.value || today();
-      const dateTo = $('#csvDateTo')?.value || today();
-      if (!window.XLSX) {
-         toast('Cargando librería Excel...', 'err');
-         return;
-      }
-      try {
-         const info = generateExcelReport(dateFrom, dateTo);
-         const bizName = currentBusiness().name;
+	      const dateFrom = $('#csvDateFrom')?.value || today();
+	      const dateTo = $('#csvDateTo')?.value || today();
+	      try {
+	         const info = window.XLSX ? generateExcelReport(dateFrom, dateTo) : downloadCsvFallback(dateFrom, dateTo);
+	         const bizName = currentBusiness().name;
          
          const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: $${info.totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${info.salesCount}\n📋 Movimientos de caja: ${info.movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo EXCEL adjunto para ver los detalles._`;
          
-         toast('Excel descargado. Abriendo WhatsApp... Adjunta el archivo Excel al chat.', 'ok', 6000);
+	         toast(`${info.csv ? 'CSV' : 'Excel'} descargado. Abriendo WhatsApp... Adjunta el archivo al chat.`, 'ok', 6000);
          setTimeout(() => {
             window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
          }, 1000);
@@ -3051,6 +3231,7 @@ function parseMoney(value) {
           toast('Imagen descargada');
         });
       };
+      script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
       document.head.appendChild(script);
     };
 
@@ -3184,6 +3365,7 @@ function parseMoney(value) {
               toast('Imagen descargada');
             });
           };
+          script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
           document.head.appendChild(script);
       };
   };
@@ -3264,6 +3446,7 @@ function parseMoney(value) {
             toast('Imagen descargada');
           });
         };
+        script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
         document.head.appendChild(script);
     }
   };

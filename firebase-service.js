@@ -7,7 +7,7 @@
   if (!firebase.apps.length) firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
 
   // Programmatically clear old caches if needed
-  const CURRENT_CACHE_KEY = 'click360-mvp-final-codex';
+  const CURRENT_CACHE_KEY = 'click360-mvp-final-offline-safe-v8';
   try {
     if ('caches' in window) {
       caches.keys().then(keys => {
@@ -35,8 +35,10 @@
   let IS_RESTORING_REMOTE = false;
   let REMOTE_UNSUBSCRIBE = null;
   let USER_STATUS_UNSUBSCRIBE = null;
+  let LOCAL_WRITE_PENDING_UNTIL = 0;
 
   const rawSetItem = localStorage.setItem.bind(localStorage);
+  const PROFILE_CACHE_PREFIX = "CLICK360_USER_PROFILE_";
 
   // Early capture of invite parameters
   const initUrlParams = new URLSearchParams(location.search);
@@ -132,6 +134,18 @@
     try { return JSON.parse(value); } catch (e) { return null; }
   }
 
+  function getCachedProfile(uid) {
+    if (!uid) return null;
+    return safeJsonParse(localStorage.getItem(PROFILE_CACHE_PREFIX + uid));
+  }
+
+  function protectCurrentProfile(user) {
+    const cached = getCachedProfile(user?.uid);
+    if (!cached || !window.click360User) return;
+    if (cached.name) window.click360User.name = cached.name;
+    if (cached.photoURL) window.click360User.photoURL = cached.photoURL;
+  }
+
   function deepNormalizeProductCodes(obj) {
     let changed = false;
     if (Array.isArray(obj)) {
@@ -171,6 +185,25 @@
     try { return JSON.stringify(obj || {}); } catch (e) { return "{}"; }
   }
 
+  const STATE_LS_KEY = 'click360_mvp_qa_final_state_v1';
+
+  function snapshotStateUpdatedAtMs(storage) {
+    try {
+      const parsed = safeJsonParse(storage?.[STATE_LS_KEY]);
+      return Number(parsed?.updatedAtMs || 0);
+    } catch { return 0; }
+  }
+
+  function localStateUpdatedAtMs() {
+    return snapshotStateUpdatedAtMs({ [STATE_LS_KEY]: localStorage.getItem(STATE_LS_KEY) });
+  }
+
+  function isLocalNewerThanRemote(remoteStorage) {
+    const localMs = localStateUpdatedAtMs();
+    const remoteMs = snapshotStateUpdatedAtMs(remoteStorage);
+    return localMs && (!remoteMs || localMs > remoteMs + 1500);
+  }
+
   function getLocalSnapshot() {
     normalizeAllLocalProductCodes();
 
@@ -191,9 +224,10 @@
       if(!k.startsWith("firebase:") && !k.startsWith("CLICK360_")) localKeys.push(k);
     }
 
+    const localBackup = {};
+    localKeys.forEach(k => { localBackup[k] = localStorage.getItem(k); });
+
     try {
-      const localBackup = {};
-      localKeys.forEach(k => { localBackup[k] = localStorage.getItem(k); });
       rawSetItem("CLICK360_BACKUP_BEFORE_REMOTE_APPLY", JSON.stringify({
         createdAt: new Date().toISOString(),
         businessId: BUSINESS_ID,
@@ -202,15 +236,21 @@
     } catch (e) {
       console.warn("No se pudo crear respaldo antes de aplicar nube:", e.message);
     }
-    
-    localKeys.forEach(k => localStorage.removeItem(k));
-
-    Object.entries(remoteStorage || {}).forEach(([key, value]) => {
-      rawSetItem(key, value);
-    });
-
-    normalizeAllLocalProductCodes();
-    IS_RESTORING_REMOTE = false;
+    try {
+      localKeys.forEach(k => localStorage.removeItem(k));
+      Object.entries(remoteStorage || {}).forEach(([key, value]) => {
+        rawSetItem(key, value);
+      });
+      normalizeAllLocalProductCodes();
+    } catch (e) {
+      console.warn("No se pudo aplicar nube. Restaurando datos locales:", e.message);
+      Object.entries(localBackup).forEach(([key, value]) => {
+        if (value !== null && value !== undefined) rawSetItem(key, value);
+      });
+      throw e;
+    } finally {
+      IS_RESTORING_REMOTE = false;
+    }
   }
 
   async function isApprovedUser(user) {
@@ -301,6 +341,7 @@
           ownerId: d.ownerId || user.uid,
           isOwner: d.isOwner === true || (d.role || "owner") === "owner"
         };
+        protectCurrentProfile(user);
         BUSINESS_ID = d.ownerId || user.uid;
         STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
         return true;
@@ -322,6 +363,21 @@
           isOwner: true,
           temporaryOwner: true
         };
+        protectCurrentProfile(user);
+        db.collection("approvedUsers").doc(user.uid).set({
+          uid: user.uid,
+          email: user.email,
+          role: "owner",
+          name: window.click360User.name,
+          photoURL: window.click360User.photoURL || '',
+          status: "active",
+          approved: true,
+          businessLimit: 2,
+          ownerId: user.uid,
+          isOwner: true,
+          temporaryOwner: true,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true }).catch(err => console.warn("No se pudo materializar propietario temporal:", err.message));
         BUSINESS_ID = user.uid;
         STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
         return true;
@@ -395,6 +451,7 @@
           isOwner: true,
           temporaryOwner: true
         };
+        protectCurrentProfile(user);
         BUSINESS_ID = user.uid;
         STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
         return true;
@@ -497,6 +554,7 @@
 
       const hash = snapshotString(snapshot);
       rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", hash);
+      LOCAL_WRITE_PENDING_UNTIL = 0;
 
       console.log("CLICK360 sincronizado:", reason);
     } catch (e) {
@@ -524,6 +582,13 @@
       if (force || (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== alreadyApplied)) {
         // PROTECT: Don't overwrite local data if it has MORE records than remote
         let shouldApply = true;
+
+        if (Date.now() < LOCAL_WRITE_PENDING_UNTIL || isLocalNewerThanRemote(remoteStorage)) {
+          console.log("[CLICK360 SYNC] Local más reciente que remoto. Subiendo local.");
+          PULL_COMPLETE = true;
+          await pushLocalToFirestore("local_newer");
+          return false;
+        }
 
         if (isLocalRicher(remoteStorage)) {
           console.log("[CLICK360 SYNC] Local tiene más datos que remoto. Subiendo local en vez de sobrescribir.");
@@ -597,7 +662,13 @@
       const lastApplied = localStorage.getItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
 
       if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== lastApplied && !IS_RESTORING_REMOTE) {
-        // PROTECT: Don't overwrite richer local data
+        // PROTECT: Don't overwrite fresher/richer local data
+        if (Date.now() < LOCAL_WRITE_PENDING_UNTIL || isLocalNewerThanRemote(remoteStorage)) {
+          console.log("[CLICK360 SYNC] Listener: local más reciente, subiendo local.");
+          pushLocalToFirestore("listener_local_newer").catch(() => {});
+          return;
+        }
+
         if (isLocalRicher(remoteStorage)) {
           console.log("[CLICK360 SYNC] Listener: local tiene más datos, subiendo local.");
           pushLocalToFirestore("listener_local_richer").catch(() => {});
@@ -806,7 +877,6 @@
   }
 
   const debouncedSync = debounce(() => pushLocalToFirestore("local_change"), 1200);
-  const STATE_LS_KEY = 'click360_mvp_qa_final_state_v1';
 
   localStorage.setItem = function(key, value) {
     rawSetItem(key, value);
@@ -814,6 +884,7 @@
       normalizeAllLocalProductCodes();
       // Immediate sync for state data to prevent loss on app close
       if (key === STATE_LS_KEY) {
+        LOCAL_WRITE_PENDING_UNTIL = Date.now() + 6000;
         pushLocalToFirestore("immediate_save").catch(() => {});
       } else {
         debouncedSync();
