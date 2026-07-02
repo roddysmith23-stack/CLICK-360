@@ -7,7 +7,7 @@
   if (!firebase.apps.length) firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
 
   // Programmatically clear old caches if needed
-  const CURRENT_CACHE_KEY = 'click360-mvp-final-v5-persistence';
+  const CURRENT_CACHE_KEY = 'click360-mvp-final-codex';
   try {
     if ('caches' in window) {
       caches.keys().then(keys => {
@@ -34,6 +34,7 @@
   let PULL_COMPLETE = false;
   let IS_RESTORING_REMOTE = false;
   let REMOTE_UNSUBSCRIBE = null;
+  let USER_STATUS_UNSUBSCRIBE = null;
 
   const rawSetItem = localStorage.setItem.bind(localStorage);
 
@@ -189,6 +190,18 @@
       const k = localStorage.key(i);
       if(!k.startsWith("firebase:") && !k.startsWith("CLICK360_")) localKeys.push(k);
     }
+
+    try {
+      const localBackup = {};
+      localKeys.forEach(k => { localBackup[k] = localStorage.getItem(k); });
+      rawSetItem("CLICK360_BACKUP_BEFORE_REMOTE_APPLY", JSON.stringify({
+        createdAt: new Date().toISOString(),
+        businessId: BUSINESS_ID,
+        localStorage: localBackup
+      }));
+    } catch (e) {
+      console.warn("No se pudo crear respaldo antes de aplicar nube:", e.message);
+    }
     
     localKeys.forEach(k => localStorage.removeItem(k));
 
@@ -239,9 +252,38 @@
           role: d.role || "worker",
           name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
           photoURL: d.photoURL || user.photoURL || '',
-          status: "blocked"
+          status: "blocked",
+          businessLimit: Number(d.businessLimit || 2),
+          ownerId: d.ownerId || user.uid,
+          isOwner: d.isOwner === true || d.role === "owner"
         };
         return false;
+      }
+
+      if (!d && user.email) {
+        const emailKey = user.email.toLowerCase();
+        const emailDoc = await db.collection("approvedUsersByEmail").doc(emailKey).get().catch(() => null);
+        if (emailDoc && emailDoc.exists) {
+          const emailData = emailDoc.data() || {};
+          if (emailData.status === "active" || emailData.approved === true) {
+            console.log("[CLICK360 AUTH LOG] Preaprobación por email encontrada. Creando approvedUsers/" + user.uid);
+            d = {
+              uid: user.uid,
+              email: user.email,
+              role: emailData.role || "worker",
+              ownerId: emailData.ownerId || user.uid,
+              name: emailData.name || user.displayName || (user.email ? user.email.split('@')[0] : "Trabajador"),
+              status: "active",
+              approved: true,
+              businessLimit: Number(emailData.businessLimit || 2),
+              photoURL: user.photoURL || '',
+              createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+              approvedFromEmail: true
+            };
+            await db.collection("approvedUsers").doc(user.uid).set(d, { merge: true });
+            localStorage.removeItem("CLICK360_PENDING_INVITE_OWNER");
+          }
+        }
       }
 
       // 2. If status is active OR approved is true -> ENTRAR
@@ -253,7 +295,11 @@
           role: d.role || "owner",
           name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
           photoURL: d.photoURL || user.photoURL || '',
-          status: "active"
+          status: "active",
+          approved: d.approved === true,
+          businessLimit: Number(d.businessLimit || 2),
+          ownerId: d.ownerId || user.uid,
+          isOwner: d.isOwner === true || (d.role || "owner") === "owner"
         };
         BUSINESS_ID = d.ownerId || user.uid;
         STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
@@ -269,7 +315,12 @@
           role: "owner",
           name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
           photoURL: user.photoURL || '',
-          status: "active"
+          status: "active",
+          approved: true,
+          businessLimit: 2,
+          ownerId: user.uid,
+          isOwner: true,
+          temporaryOwner: true
         };
         BUSINESS_ID = user.uid;
         STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
@@ -307,7 +358,10 @@
           role: d.role || "worker",
           name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
           photoURL: d.photoURL || user.photoURL || '',
-          status: "pending"
+          status: "pending",
+          businessLimit: Number(d.businessLimit || 2),
+          ownerId: d.ownerId || user.uid,
+          isOwner: d.isOwner === true || d.role === "owner"
         };
         return false;
       }
@@ -317,7 +371,10 @@
         uid: user.uid,
         email: user.email,
         role: "owner",
-        status: "pending"
+        status: "pending",
+        businessLimit: 2,
+        ownerId: user.uid,
+        isOwner: false
       };
       return false;
     } catch(e) {
@@ -331,7 +388,12 @@
           role: "owner",
           name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
           photoURL: user.photoURL || '',
-          status: "active"
+          status: "active",
+          approved: true,
+          businessLimit: 2,
+          ownerId: user.uid,
+          isOwner: true,
+          temporaryOwner: true
         };
         BUSINESS_ID = user.uid;
         STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
@@ -509,8 +571,16 @@
     try {
       const localState = JSON.parse(localStateRaw);
       const remoteState = JSON.parse(remoteStateRaw);
-      const localCount = (localState.movements || []).length + (localState.sales || []).length + (localState.products || []).length;
-      const remoteCount = (remoteState.movements || []).length + (remoteState.sales || []).length + (remoteState.products || []).length;
+      const countState = (s) =>
+        (s.movements || []).length +
+        (s.sales || []).length +
+        (s.products || []).length +
+        (s.dailyReports || []).length +
+        (s.invoices || []).length +
+        (s.businesses || []).length +
+        ((s.settings && s.settings.workers) || []).length;
+      const localCount = countState(localState);
+      const remoteCount = countState(remoteState);
       return localCount > remoteCount;
     } catch(e) { return false; }
   }
@@ -647,7 +717,7 @@
       loginBtn.textContent = "Ya me aprobaron (Actualizar)";
       loginBtn.onclick = async () => {
          const ok = await isApprovedUser(user);
-         if(ok) location.reload();
+         if(ok) await enterApprovedApp(user);
          else showPending(user);
       };
     }
@@ -769,13 +839,46 @@
   window.click360Logout = async () => {
     try {
       await auth.signOut();
-      localStorage.removeItem("click360_mvp_qa_final_state_v1");
       localStorage.removeItem("click360_mvp_qa_final_session_v1");
       localStorage.removeItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
       sessionStorage.clear();
       location.reload();
     } catch(e) {}
   };
+
+  function listenUserApproval(user) {
+    if (USER_STATUS_UNSUBSCRIBE || window.click360User?.temporaryOwner) return;
+    USER_STATUS_UNSUBSCRIBE = db.collection("approvedUsers").doc(user.uid).onSnapshot((snap) => {
+      if (!AUTH_APPROVED) return;
+      const data = snap.exists ? snap.data() : null;
+      const stillApproved = data && data.status !== "blocked" && (data.status === "active" || data.approved === true);
+      if (!stillApproved) {
+        AUTH_APPROVED = false;
+        PULL_COMPLETE = false;
+        if (REMOTE_UNSUBSCRIBE) {
+          REMOTE_UNSUBSCRIBE();
+          REMOTE_UNSUBSCRIBE = null;
+        }
+        showGate(`
+          Tu acceso a CLICK 360 fue revocado o bloqueado.<br><br>
+          UID de usuario: <code style="background:#222;padding:4px 8px;border-radius:4px;color:#ff9f43;font-family:monospace;font-size:13px;display:inline-block;margin:4px 0;user-select:all;">${user.uid}</code>
+        `);
+      }
+    }, (err) => console.warn("No se pudo escuchar estado de usuario:", err.message));
+  }
+
+  async function enterApprovedApp(user) {
+    const userRole = (window.click360User && window.click360User.role) || 'owner';
+    const userName = (window.click360User && (window.click360User.name || window.click360User.email)) || 'demo';
+    const newSession = { username: userName, role: userRole };
+    localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify(newSession));
+    if(window.click360SetSession) window.click360SetSession(newSession);
+
+    await pullRemoteOnce({ force: false, reload: false });
+    unlockApp();
+    listenRemoteChanges();
+    listenUserApproval(user);
+  }
 
   let HAS_BOOTED = false;
 
@@ -823,7 +926,12 @@
           const loginBtn = document.getElementById("c360-google-login");
           if (loginBtn) {
             loginBtn.textContent = "Ya me aprobaron (Actualizar)";
-            loginBtn.onclick = () => location.reload();
+            loginBtn.onclick = async () => {
+              showGate("Verificando aprobación en CLICK 360...");
+              const ok = await isApprovedUser(user);
+              if (ok) await enterApprovedApp(user);
+              else showPending(user);
+            };
           }
         } else {
           showPending(user);
@@ -831,16 +939,7 @@
         return;
       }
 
-      // Map session role and username dynamically from click360User
-      const userRole = (window.click360User && window.click360User.role) || 'owner';
-      const userName = (window.click360User && (window.click360User.name || window.click360User.email)) || 'demo';
-      const newSession = { username: userName, role: userRole };
-      localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify(newSession));
-      if(window.click360SetSession) window.click360SetSession(newSession);
-
-      await pullRemoteOnce({ force: false, reload: false });
-      unlockApp();
-      listenRemoteChanges();
+      await enterApprovedApp(user);
     });
   }
 

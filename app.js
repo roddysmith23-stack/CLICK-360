@@ -4,6 +4,8 @@
 
   const LS = 'click360_mvp_qa_final_state_v1';
   const SESSION = 'click360_mvp_qa_final_session_v1';
+  const APP_ASSET_VERSION = 'mvp-final-codex';
+  const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const $ = (sel, root=document) => root.querySelector(sel);
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
@@ -126,6 +128,7 @@ function parseMoney(value) {
   function save() { 
     try {
       localStorage.setItem(LS, JSON.stringify(state)); 
+      return true;
     } catch(e) {
       console.error(e);
       if(e.name === 'QuotaExceededError' || e.message.includes('quota')) {
@@ -133,6 +136,7 @@ function parseMoney(value) {
       } else {
         toast('Error al guardar datos.', 'err');
       }
+      return false;
     }
   }
   function loadState() {
@@ -160,6 +164,7 @@ function parseMoney(value) {
     if (!out.businesses || out.businesses.length === 0) out.businesses = d.businesses;
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     out.invoices ||= [];
+    out.auditLogs ||= [];
     out.settings ||= {};
     out.settings.labelTemplates ||= [];
     out.settings.workers ||= [];
@@ -179,10 +184,9 @@ function parseMoney(value) {
       version:'MVP_QA_FINAL',
       activeBusinessId:b1.id,
       users:[
-        { username:'demo', password:'demo123', role:'owner', label:'Dueño', businessIds:[b1.id] },
-        { username:'cajero', password:'cajero123', role:'cashier', label:'Cajero', businessIds:[b1.id] },
-        { username:'inventario', password:'inventario123', role:'inventory', label:'Inventario', businessIds:[b1.id] },
-        { username:'click360admin', password:'click360admin', role:'admin', label:'Admin CLICK 360', businessIds:[] }
+        { username:'owner', role:'owner', label:'Dueño', businessIds:[b1.id] },
+        { username:'cajero', role:'cashier', label:'Cajero', businessIds:[b1.id] },
+        { username:'inventario', role:'inventory', label:'Inventario', businessIds:[b1.id] }
       ],
       businesses:[b1],
       products:[],
@@ -190,8 +194,24 @@ function parseMoney(value) {
       movements:[],
       invoices:[],
       dailyReports:[],
+      auditLogs:[],
       settings:{ workers: [] }
     };
+  }
+
+  function addAudit(action, details={}) {
+    state.auditLogs ||= [];
+    state.auditLogs.push({
+      id: uid('audit'),
+      action,
+      businessId: currentBusiness()?.id || state.activeBusinessId || 'biz_main',
+      userId: window.click360User?.uid || '',
+      userEmail: window.click360User?.email || '',
+      createdBy: authUser().name || 'Sistema',
+      createdAt: new Date().toISOString(),
+      when: nowLabel(),
+      details
+    });
   }
 
   window.click360ReloadState = () => { 
@@ -252,6 +272,10 @@ function parseMoney(value) {
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
+  function isCashIncomeMovement(m) {
+    if (!m || m.kind !== 'ingreso' || m.status === 'cancelled') return false;
+    return !['Tarjeta', 'Transferencia'].includes(m.paymentMethod || '');
+  }
   function isDayStarted() {
     const bid = currentBusiness()?.id;
     if (!bid) return true;
@@ -284,7 +308,7 @@ function parseMoney(value) {
 
   function businessVocabulary(type) {
     return {
-      ropa: { singular:'prenda', plural:'prendas', category:'Categoría', examples:'Talla, color, colección' },
+      ropa: { singular:'producto', plural:'productos', category:'Categoría', examples:'Talla, color, colección' },
       restaurante: { singular:'producto/plato', plural:'productos/platos', category:'Categoría', examples:'Comida, bebida, combo' },
       barberia: { singular:'servicio', plural:'servicios', category:'Tipo de servicio', examples:'Corte, barba, combo' },
       ganaderia: { singular:'animal/activo', plural:'animales/activos', category:'Estado o lote', examples:'Peso, edad, vacuna' },
@@ -493,7 +517,7 @@ function parseMoney(value) {
   function homeView() {
     const b=currentBusiness(), products=productsForBiz(), sales=salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled'), mov=movementsForBiz().filter(m=>m.date===today() && m.status!=='cancelled');
     const apertura=mov.find(m=>m.kind==='apertura')?.amount||0;
-    const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
+    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
     const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
     const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
     const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+m.amount,0);
@@ -519,11 +543,12 @@ function parseMoney(value) {
         <div class="card kpi"><div class="icon">\u25A7</div><small>Inventario</small><strong>${products.length}</strong></div>
         <div class="card kpi"><div class="icon">\u26A0</div><small>Stock bajo</small><strong>${low}</strong></div>
       </section>
-      <section class="card sectionCard" style="margin-top:14px;background:linear-gradient(135deg,#1a1500 0%,#0d0d0d 100%);border:1px solid rgba(244,196,49,0.18);overflow:hidden;position:relative;">
-        <div style="position:absolute;top:0;right:0;width:120px;height:120px;background:radial-gradient(circle,rgba(244,196,49,0.08) 0%,transparent 70%);pointer-events:none;"></div>
-        <h3 style="color:var(--gold);margin-bottom:12px;">📢 TU NEGOCIO CLICK 260</h3>
-        <img src="assets/banner-motivacional.png" alt="Banner motivacional CLICK 360" style="width:100%;border-radius:12px;margin-bottom:12px;max-height:160px;object-fit:cover;" onerror="this.style.display='none'">
-        <p style="font-style:italic;color:var(--muted);font-size:14px;line-height:1.5;margin-bottom:12px;text-align:center;">${todayPhrase}</p>
+      <section class="card sectionCard homeBannerCard">
+        <h3>TU NEGOCIO CLICK 360</h3>
+        <div class="homeBannerFrame">
+          <img src="${HOME_BANNER_SRC}" alt="Banner CLICK 360 para negocios" onerror="this.closest('.homeBannerFrame').style.display='none'">
+        </div>
+        <p class="homeBannerPhrase">${todayPhrase}</p>
         <a href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
       </section>
       <section class="split" style="margin-top:14px">
@@ -656,7 +681,7 @@ function parseMoney(value) {
   function cashView() {
     const mov=movementsForBiz().filter(m=>m.date===today());
     const aperture=mov.find(m=>m.kind==='apertura')?.amount || 0;
-    const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
+    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
     const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
     const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
     const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+m.amount,0);
@@ -1114,7 +1139,7 @@ function parseMoney(value) {
   function openProductModal(product=null){
     const b=currentBusiness(), v=businessVocabulary(b.type);
     const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,notes:'',imageData:''};
-    showModal(`<div class="modalHeader"><h2>${product?'Editar':(v.singular==='prenda'?'Nueva':'Nuevo')} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
+    showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
       <form id="productForm" class="formGrid">
         <div class="field full productImageField">
           <label>Imagen del producto (opcional)</label>
@@ -1326,7 +1351,11 @@ function parseMoney(value) {
       if (currentIva > 0) ivaAmount = base * (currentIva / 100);
       const total = base + ivaAmount;
 
-      for(const i of cart){ const p=state.products.find(p=>p.id===i.id); if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); } }
+      for(const i of cart){
+        if(i.isCustom) continue;
+        const p=state.products.find(p=>p.id===i.id);
+        if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); }
+      }
       
       const rec = parseMoney($('#cashReceived').value);
       let received = 0; let change = 0; let balance = 0;
@@ -1345,9 +1374,10 @@ function parseMoney(value) {
          received = rec; change = rec - total;
       } else if (method === 'Apartado') {
          if(!Number.isFinite(rec) || rec < 0) { beep('err'); return toast('Monto de abono inválido','err'); }
+         if(rec > total) { beep('err'); return toast('El abono no puede superar el total','err'); }
          received = rec; balance = total - rec; status = 'layaway';
       } else if (method === 'Pendiente') {
-         status = 'pending_payment';
+         received = 0; balance = total; status = 'pending_payment';
       } else {
          received = total;
       }
@@ -1382,14 +1412,16 @@ function parseMoney(value) {
         createdBy: authUser().name
       };
       state.sales.push(sale);
-      cart.forEach(i=>{ const p=state.products.find(p=>p.id===i.id); if(p) p.qty-=i.qty; });
+      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id); if(p) p.qty-=i.qty; });
       
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
-        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:session.username, saleId: sale.id, createdBy: authUser().name});
+        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:session.username, saleId: sale.id, paymentMethod: sale.method, createdBy: authUser().name});
       }
       
-      save(); cart=[]; renderCart(); $('#cashReceived').value='';
+      addAudit('sale_created', { saleId: sale.id, total: sale.total, method: sale.method, status: sale.status });
+      if(!save()) return;
+      cart=[]; renderCart(); $('#cashReceived').value='';
       $('#customer').value = '';
       $('#customerCedula').value = '';
       $('#customerPhone').value = '';
@@ -1719,8 +1751,9 @@ function parseMoney(value) {
           e.preventDefault();
           const k=$('#mKind').value, a=parseMoney($('#mAmount').value), n=$('#mNote').value.trim();
           if(!Number.isFinite(a)||a<=0) return toast('Monto inválido','err');
-          state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:k,amount:a,note:n, createdBy: authUser().name});
-          save();
+          state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:k,amount:a,note:n, paymentMethod:k==='ingreso'?'Efectivo':null, createdBy: authUser().name});
+          addAudit('cash_movement_created', { kind:k, amount:a, note:n });
+          if(!save()) return;
           closeModal(); renderApp('cash'); toast('Guardado');
         };
       };
@@ -1751,7 +1784,7 @@ function parseMoney(value) {
            if(!Number.isFinite(cInicial) || !Number.isFinite(eFisico)){ return toast('Montos inválidos', 'err'); }
            
            const mov=movementsForBiz().filter(m=>m.date===today());
-           const income=mov.filter(m=>m.kind==='ingreso').reduce((a,m)=>a+m.amount,0);
+           const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
            const out=mov.filter(m=>m.kind!=='ingreso' && m.kind!=='apertura').reduce((a,m)=>a+m.amount,0);
            const balanceCalculado = cInicial + income - out;
            const diferencia = eFisico - balanceCalculado;
@@ -1789,7 +1822,7 @@ function parseMoney(value) {
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
             <div style="border-top:1px dashed #000; margin:8px 0;"></div>
             <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Ingresos:</span><span>+${fmt(income)}</span></div>
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingresos en efectivo:</span><span>+${fmt(income)}</span></div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Salidas:</span><span>-${fmt(out)}</span></div>
             <div style="border-top:1px dashed #000; margin:8px 0;"></div>
             <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
@@ -2124,6 +2157,8 @@ function parseMoney(value) {
     $('#createBiz').onclick=()=>{
       const name=$('#newBizName').value.trim(); 
       if(!name)return toast('Falta el nombre','err'); 
+      const businessLimit = Number(window.click360User?.businessLimit || 2);
+      if(state.businesses.length >= businessLimit) return toast(`Tu plan permite hasta ${businessLimit} negocios.`, 'err');
       const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08', settings:{}}; 
       b.settings.ruc = $('#newBizRuc').value.trim();
       b.settings.phone = $('#newBizPhone').value.trim();
@@ -2132,7 +2167,9 @@ function parseMoney(value) {
       state.activeBusinessId=b.id; 
       const user=currentUser(); 
       if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); 
-      save(); renderApp('settings'); toast('Negocio creado');
+      addAudit('business_created', { businessId: b.id, name: b.name });
+      if(!save()) return;
+      renderApp('settings'); toast('Negocio creado');
     };
 
     const pickSettings = $('#businessPickerSettings');
@@ -2146,16 +2183,16 @@ function parseMoney(value) {
     }
 
     $('#resetInventoryBtn').onclick = async () => {
-       const backupFirst = confirm('⚠️ ADVERTENCIA DE SEGURIDAD ⚠️\nSe borrará todo el inventario de esta empresa. Esta acción no se puede deshacer.\n\n¿Deseas descargar un respaldo en tu computadora antes de borrar? (Se recomienda presionar Aceptar para descargar el respaldo de seguridad, o Cancelar si quieres borrar directamente).');
-       if (backupFirst) {
-          downloadBackup();
-       }
-       const confirmWord = prompt('Para confirmar que deseas borrar TODO el inventario del negocio actual, escribe la palabra "BORRAR":');
-       if (confirmWord !== 'BORRAR') {
+       const ok = confirm('ADVERTENCIA DE SEGURIDAD\nSe borrará todo el inventario de esta empresa. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
+       if (!ok) return toast('Acción cancelada', 'err');
+       downloadBackup('antes-de-reiniciar-inventario');
+       const confirmWord = prompt('Para confirmar que deseas reiniciar el inventario del negocio actual, escribe exactamente: REINICIAR');
+       if (confirmWord !== 'REINICIAR') {
           return toast('Acción cancelada', 'err');
        }
        state.products = state.products.filter(p => p.businessId !== currentBusiness().id);
-       save();
+       addAudit('inventory_reset', { businessId: currentBusiness().id });
+       if(!save()) return;
        if (window.click360SyncNow) {
          toast('Sincronizando...');
          await window.click360SyncNow();
@@ -2168,12 +2205,11 @@ function parseMoney(value) {
        if (authUser().role !== 'owner') {
          return toast('Solo el dueño de la cuenta puede borrar el sistema.', 'err');
        }
-       const backupFirst = confirm('🚨 ALERTA CRÍTICA DE SEGURIDAD 🚨\nSe eliminarán de forma permanente e irreversible TODOS los datos del negocio (prendas, ventas, movimientos y reportes diarios).\n\n¿Deseas descargar un respaldo de seguridad en tu computadora antes de borrar? (Se recomienda presionar Aceptar para descargar el respaldo, o Cancelar si deseas borrar directamente).');
-       if (backupFirst) {
-          downloadBackup();
-       }
-       const confirmWord = prompt('Para confirmar el borrado total e irreversible de todo el sistema, escribe la palabra "REINICIAR TODO":');
-       if (confirmWord !== 'REINICIAR TODO') {
+       const ok = confirm('ALERTA CRÍTICA DE SEGURIDAD\nSe eliminarán de forma permanente TODOS los datos del negocio: productos, ventas, movimientos y reportes diarios. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
+       if (!ok) return toast('Acción cancelada', 'err');
+       downloadBackup('antes-de-borrar-todo');
+       const confirmWord = prompt('Para confirmar el borrado total e irreversible de todo el sistema, escribe exactamente: BORRAR TODO');
+       if (confirmWord !== 'BORRAR TODO') {
           return toast('Acción cancelada', 'err');
        }
        state.products = [];
@@ -2189,7 +2225,8 @@ function parseMoney(value) {
          note: `Sistema reiniciado por: ${authUser().name}`,
          createdBy: authUser().name
        }];
-       save();
+       addAudit('system_deleted', { businessId: currentBusiness().id });
+       if(!save()) return;
        if (window.click360SyncNow) {
          toast('Sincronizando...');
          await window.click360SyncNow();
@@ -2565,9 +2602,38 @@ function parseMoney(value) {
     setTimeout(()=>window.print(),250);
   }
 
-  function downloadBackup(){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{type:'application/json'})); a.download=`click360-respaldo-${today()}.json`; a.click(); toast('Respaldo guardado'); }
+  function createBackupSnapshot(reason='manual') {
+    const backup = {
+      reason,
+      createdAt: new Date().toISOString(),
+      createdBy: authUser().name || 'Sistema',
+      businessId: currentBusiness()?.id || '',
+      state
+    };
+    try {
+      localStorage.setItem(`CLICK360_BACKUP_${reason}_${Date.now()}`, JSON.stringify(backup));
+    } catch {}
+    return backup;
+  }
+  function downloadBackup(reason='manual'){
+    const backup = createBackupSnapshot(reason);
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(backup.state,null,2)],{type:'application/json'}));
+    a.download=`click360-respaldo-${reason}-${today()}.json`;
+    a.click();
+    addAudit('backup_exported', { reason });
+    toast('Respaldo guardado');
+    return true;
+  }
+  function validateBackupData(data) {
+    return data && typeof data === 'object'
+      && Array.isArray(data.businesses)
+      && Array.isArray(data.products)
+      && Array.isArray(data.sales)
+      && Array.isArray(data.movements);
+  }
   function restoreBackup(e){ 
-    const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{state=normalizeState(JSON.parse(reader.result));save();renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file); 
+    const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{const data=JSON.parse(reader.result); if(!validateBackupData(data)) return toast('Respaldo inválido o incompleto','err'); const summary=`Productos: ${(data.products||[]).length}\nVentas: ${(data.sales||[]).length}\nMovimientos: ${(data.movements||[]).length}\nNegocios: ${(data.businesses||[]).length}`; if(!confirm(`Este respaldo reemplazará los datos actuales.\n\n${summary}\n\nSe creará un respaldo automático antes de restaurar. ¿Continuar?`)) return; const word=prompt('Escribe RESTAURAR para confirmar:'); if(word!=='RESTAURAR') return toast('Restauración cancelada','err'); downloadBackup('antes-de-restaurar'); state=normalizeState(data); addAudit('backup_restored', { summary }); if(!save()) return;renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file); 
   }
   function bindBackup(){ 
     $('#backupBtn').onclick=downloadBackup; 
@@ -2577,8 +2643,21 @@ function parseMoney(value) {
         r.onload = async (ev) => {
           try {
              const data = JSON.parse(ev.target.result);
+             if(!validateBackupData(data)) {
+                toast('Respaldo inválido o incompleto', 'err');
+                return;
+             }
+             const summary = `Productos: ${(data.products||[]).length}\nVentas: ${(data.sales||[]).length}\nMovimientos: ${(data.movements||[]).length}\nNegocios: ${(data.businesses||[]).length}`;
+             if(!confirm(`Este respaldo reemplazará los datos actuales y luego se sincronizará con la nube.\n\n${summary}\n\nSe creará un respaldo automático antes de restaurar. ¿Continuar?`)) return;
+             const word = prompt('Escribe RESTAURAR para confirmar la restauración:');
+             if(word !== 'RESTAURAR') {
+                toast('Restauración cancelada', 'err');
+                return;
+             }
+             downloadBackup('antes-de-restaurar');
              state = normalizeState(data);
-             save();
+             addAudit('backup_restored', { summary });
+             if(!save()) return;
              if (window.click360SyncNow) {
                 await window.click360SyncNow();
              }
@@ -2598,36 +2677,51 @@ function parseMoney(value) {
        
        // 1. Compile Sales
        const salesRows = [
-         ["FECHA y HORA", "ID VENTA", "CATEGORIA", "PRODUCTO/DETALLE", "CANTIDAD", "PRECIO UNIT.", "TOTAL", "CLIENTE", "ATENDIDO POR", "ESTADO"]
+         ["FECHA y HORA", "ID VENTA", "METODO", "CATEGORIA", "PRODUCTO/DETALLE", "CANTIDAD", "PRECIO UNIT.", "SUBTOTAL VENTA", "DESCUENTO", "IVA", "TOTAL VENTA", "RECIBIDO", "SALDO", "CLIENTE", "CEDULA/RUC", "TELEFONO", "ATENDIDO POR", "ESTADO"]
        ];
        let totalVentas = 0;
+       let totalCobrado = 0;
+       let totalPendiente = 0;
        let salesCount = 0;
        state.sales.filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
           if (s.status !== 'cancelled') salesCount++;
+          if (s.status !== 'cancelled') {
+             totalVentas += s.total || 0;
+             totalCobrado += s.received || (s.status === 'paid' ? s.total || 0 : 0);
+             totalPendiente += s.balance || 0;
+          }
           s.items.forEach(item => {
              const rowTotal = item.price * item.qty;
-             if (s.status !== 'cancelled') totalVentas += rowTotal;
              salesRows.push([
                 s.when || s.date,
                 s.id,
+                s.method || '',
                 item.category || 'General',
                 `${item.name} [${item.code}]`,
                 item.qty,
                 item.price,
-                rowTotal,
+                s.subtotal || rowTotal,
+                s.discount || 0,
+                s.iva || 0,
+                s.total || rowTotal,
+                s.received || 0,
+                s.balance || 0,
                 s.customer || '',
+                s.customerCedula || '',
+                s.customerPhone || '',
                 s.createdBy || s.user || 'Sistema',
-                s.status === 'cancelled' ? 'ANULADA' : 'OK'
+                labelStatus(s.status)
              ]);
           });
        });
 
        // 2. Compile Movements
        const movRows = [
-         ["FECHA y HORA", "ID MOVIMIENTO", "TIPO MOVIMIENTO", "DETALLE/NOTA", "MONTO", "ATENDIDO POR", "ESTADO"]
+         ["FECHA y HORA", "ID MOVIMIENTO", "TIPO MOVIMIENTO", "METODO PAGO", "DETALLE/NOTA", "MONTO", "ID VENTA", "ID FACTURA", "ATENDIDO POR", "ESTADO"]
        ];
        let totalIngresos = 0;
        let totalEgresos = 0;
+       let totalIngresosEfectivo = 0;
        let movCount = 0;
        state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
           if (m.status !== 'cancelled') movCount++;
@@ -2635,16 +2729,39 @@ function parseMoney(value) {
           const signedAmount = isOutflow ? -m.amount : m.amount;
           if (m.status !== 'cancelled') {
              if (isOutflow) totalEgresos += m.amount;
-             else if (m.kind === 'ingreso') totalIngresos += m.amount;
+             else if (m.kind === 'ingreso') {
+                totalIngresos += m.amount;
+                if (isCashIncomeMovement(m)) totalIngresosEfectivo += m.amount;
+             }
           }
           movRows.push([
              m.when || m.date,
              m.id,
              m.kind.toUpperCase(),
+             m.paymentMethod || '',
              m.note || (m.saleId ? `Pago de venta ${m.saleId}` : 'Movimiento de caja'),
              signedAmount,
+             m.saleId || '',
+             m.invoiceId || '',
              m.createdBy || m.user || 'Sistema',
              m.status === 'cancelled' ? `ANULADO por ${m.cancelledBy || '?'} ${m.cancelledAt || ''}` : 'OK'
+          ]);
+       });
+
+       const invoiceRows = [
+          ["FECHA", "ID FACTURA", "PROVEEDOR", "NUMERO", "MONTO", "IVA", "NOTAS", "ATENDIDO POR", "CREADA"]
+       ];
+       state.invoices.filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
+          invoiceRows.push([
+             i.date,
+             i.id,
+             i.provider,
+             i.number,
+             i.amount,
+             i.iva || '',
+             i.notes || '',
+             i.createdBy || 'Sistema',
+             i.createdAt || ''
           ]);
        });
 
@@ -2657,8 +2774,11 @@ function parseMoney(value) {
           [],
           ["INDICADOR/METRICA", "VALOR"],
           ["Total Ventas ($)", totalVentas],
+          ["Total Cobrado ($)", totalCobrado],
+          ["Saldo Pendiente ($)", totalPendiente],
           ["Transacciones de Venta", salesCount],
           ["Total Ingresos Caja ($)", totalIngresos],
+          ["Ingresos Efectivo Caja ($)", totalIngresosEfectivo],
           ["Total Egresos/Compras/Retiros ($)", totalEgresos],
           ["Movimientos de Caja Registrados", movCount]
        ];
@@ -2669,10 +2789,12 @@ function parseMoney(value) {
        const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
        const wsSales = XLSX.utils.aoa_to_sheet(salesRows);
        const wsMovs = XLSX.utils.aoa_to_sheet(movRows);
+       const wsInvoices = XLSX.utils.aoa_to_sheet(invoiceRows);
 
        XLSX.utils.book_append_sheet(wb, wsSummary, "Resumen");
        XLSX.utils.book_append_sheet(wb, wsSales, "Ventas");
        XLSX.utils.book_append_sheet(wb, wsMovs, "Movimientos");
+       XLSX.utils.book_append_sheet(wb, wsInvoices, "Facturas");
 
        const filename = dateFrom === dateTo ? 
           `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}.xlsx` :
@@ -2742,6 +2864,8 @@ function parseMoney(value) {
     if(!confirm('\u00bfSeguro que deseas anular esta venta? Esto no se puede deshacer y devolver\u00e1 el stock.')) return;
     const sale = state.sales.find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
+    const reason = prompt('Motivo de anulación:');
+    if(!reason || !reason.trim()) return toast('Debes indicar el motivo de anulación', 'err');
     
     // Devolver stock
     sale.items.forEach(i => {
@@ -2752,16 +2876,18 @@ function parseMoney(value) {
     sale.status = 'cancelled';
     sale.cancelledBy = authUser().name || 'Usuario';
     sale.cancelledAt = nowLabel();
+    sale.cancelReason = reason.trim();
     
-    // Anular movimiento si existe
-    const mov = state.movements.find(m => m.saleId === sale.id);
-    if(mov) {
+    // Anular todos los movimientos ligados a la venta, incluyendo abonos.
+    const linkedMovements = state.movements.filter(m => m.saleId === sale.id && m.status !== 'cancelled');
+    linkedMovements.forEach(mov => {
        mov.status = 'cancelled';
        mov.cancelledBy = authUser().name || 'Usuario';
        mov.cancelledAt = nowLabel();
+       mov.cancelReason = reason.trim();
        mov.originalAmount = mov.amount;
        mov.amount = 0;
-    }
+    });
     
     state.movements.push({
        id:uid('mov'),
@@ -2771,7 +2897,7 @@ function parseMoney(value) {
        kind:'retiro',
        amount:0,
        originalAmount:sale.total,
-       note:`Venta anulada`,
+       note:`Venta anulada: ${reason.trim()}`,
        user:session.username,
        saleId:sale.id,
        createdBy:authUser().name,
@@ -2780,14 +2906,18 @@ function parseMoney(value) {
        cancelledAt:nowLabel()
     });
     
-    save();
+    addAudit('sale_cancelled', { saleId: sale.id, total: sale.total, reason: reason.trim(), linkedMovements: linkedMovements.length });
+    if(!save()) return;
     renderApp('reports');
     toast('Venta anulada y stock devuelto');
   };
 
   window.payLayaway = function(saleId) {
+    if (!isDayStarted()) return toast('Debes iniciar caja diaria antes de registrar abonos', 'err');
+    if (isDayClosed()) return toast('La caja de hoy ya está cerrada', 'err');
     const sale = state.sales.find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
+    if(!['layaway','pending_payment'].includes(sale.status)) return toast('Esta cuenta no tiene saldo pendiente', 'err');
     
     const amountStr = prompt(`Saldo pendiente: ${fmt(sale.balance)}\nIngrese el monto a abonar:`);
     if(!amountStr) return;
@@ -2814,9 +2944,12 @@ function parseMoney(value) {
       amount: amount,
       note: `Abono a ticket ${saleId}`,
       user: session.username,
-      saleId: sale.id
+      saleId: sale.id,
+      paymentMethod: 'Efectivo',
+      createdBy: authUser().name
     });
-    save(); 
+    addAudit('sale_payment_received', { saleId: sale.id, amount, balance: sale.balance });
+    if(!save()) return;
     renderApp(route);
   };
 
@@ -2887,7 +3020,7 @@ function parseMoney(value) {
        waBtn.onclick = () => {
          const phone = s.customerPhone || '';
          const bizName = currentBusiness().name;
-         const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un apartado de prendas por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. ¡Muchas gracias!`;
+         const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
          const url = `https://wa.me/${phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(text)}`;
          window.open(url, '_blank');
        };
@@ -3009,7 +3142,7 @@ function parseMoney(value) {
     if (!s) return;
     const phone = s.customerPhone || '';
     const bizName = currentBusiness().name;
-    const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un apartado de prendas por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. ¡Muchas gracias!`;
+    const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
     const url = `https://wa.me/${phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
   };
@@ -3170,7 +3303,6 @@ function parseMoney(value) {
   }
   window.click360Route=renderApp;
   window.click360SetSession = setSession;
-  window.click360ReloadState = () => { state = loadState(); };
 
   // Auto-save safety net: force save every 30s to ensure cloud sync
   let _lastAutoSaveHash = '';
@@ -3357,7 +3489,19 @@ function parseMoney(value) {
        
        state.invoices ||= [];
        state.invoices.push(newInv);
-       save();
+       state.movements.push({
+          id: uid('mov'),
+          businessId: currentBusiness().id,
+          date,
+          when: nowLabel(),
+          kind: 'compra',
+          amount,
+          note: `Factura proveedor ${provider} #${number}`,
+          invoiceId: newInv.id,
+          createdBy: authUser().name || 'Usuario'
+       });
+       addAudit('supplier_invoice_created', { invoiceId: newInv.id, provider, number, amount });
+       if(!save()) return;
        
        if (window.click360SyncNow) window.click360SyncNow().catch(()=>{});
        

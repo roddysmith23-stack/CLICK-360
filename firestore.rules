@@ -1,0 +1,54 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function approvedUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && (
+          get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.status == "active"
+          || get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.approved == true
+        )
+        && get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.status != "blocked";
+    }
+
+    function ownerUser() {
+      return approvedUser()
+        && (
+          get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.role == "owner"
+          || get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.isOwner == true
+        );
+    }
+
+    function emailPreapproved() {
+      return signedIn()
+        && request.auth.token.email != null
+        && exists(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email))
+        && (
+          get(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email)).data.status == "active"
+          || get(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email)).data.approved == true
+        );
+    }
+
+    match /approvedUsers/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid && emailPreapproved();
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["name", "photoURL", "updatedAt"]);
+      allow delete: if false;
+    }
+
+    match /approvedUsersByEmail/{email} {
+      allow read: if signedIn() && request.auth.token.email == email;
+      allow write: if ownerUser();
+    }
+
+    match /businesses/{businessId}/{document=**} {
+      allow read, write: if approvedUser();
+    }
+  }
+}

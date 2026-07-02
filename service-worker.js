@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-final-v6-persistence';
+const CACHE = 'click360-mvp-final-codex';
 const ASSETS = [
   './',
   './index.html',
@@ -7,6 +7,8 @@ const ASSETS = [
   './manifest.webmanifest',
   './assets/favicon.ico',
   './assets/favicon.png',
+  './assets/logo.png',
+  './assets/banner-click360-home.png',
   './assets/icon-192.png',
   './assets/icon-512.png',
   './assets/apple-touch-icon.png'

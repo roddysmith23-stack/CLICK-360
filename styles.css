@@ -34,7 +34,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--gold);box-shadow:0 0 
 textarea{min-height:96px;resize:vertical}
 a{color:inherit;text-decoration:none}
 .logoMark{display:flex;gap:12px;align-items:center;min-width:0}
-.logoIcon { display: block; width: 42px; height: 42px; background: url('assets/favicon.png?v=3') center/contain no-repeat; border-radius: 8px; }
+.logoIcon { display: block; width: 42px; height: 42px; background: url('assets/logo.png?v=mvp-final-codex') center/contain no-repeat; border-radius: 8px; }
 .logoText{font-size:20px;letter-spacing:1px;font-weight:900;line-height:1;display:flex;flex-direction:column;gap:2px;}
 .logoText b{color:#fff}
 .logoText span{display:block;letter-spacing:6px;color:var(--gold);font-size:10px;font-weight:950;margin-top:1px}
@@ -47,7 +47,7 @@ a{color:inherit;text-decoration:none}
 }
 .loginShell{width:min(430px,100%);display:grid;gap:24px}
 .loginBrand {
-  background: url('assets/favicon.png?v=3') center/contain no-repeat; width: 140px; height: 140px; margin: 0 auto 30px;
+  background: url('assets/logo.png?v=mvp-final-codex') center/contain no-repeat; width: 140px; height: 140px; margin: 0 auto 30px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   border-radius: 24px;
 }
@@ -142,6 +142,55 @@ a{color:inherit;text-decoration:none}
 .split{display:grid;grid-template-columns:1fr;gap:14px}
 .sectionCard{padding:20px}
 .sectionCard h3{margin:0 0 14px}
+.homeBannerCard{
+  margin-top:14px;
+  background:linear-gradient(135deg,#1a1500 0%,#0d0d0d 100%);
+  border:1px solid rgba(244,196,49,0.18);
+  overflow:hidden;
+  position:relative;
+}
+.homeBannerCard::after{
+  content:"";
+  position:absolute;
+  inset:0;
+  pointer-events:none;
+  background:linear-gradient(180deg,rgba(0,0,0,0) 55%,rgba(0,0,0,.18));
+}
+.homeBannerCard h3{
+  color:var(--gold);
+  margin-bottom:12px;
+  position:relative;
+  z-index:1;
+}
+.homeBannerFrame{
+  width:100%;
+  aspect-ratio:16 / 7;
+  min-height:180px;
+  max-height:360px;
+  border-radius:18px;
+  overflow:hidden;
+  background:#070707;
+  border:1px solid rgba(244,196,49,.14);
+  position:relative;
+  z-index:1;
+}
+.homeBannerFrame img{
+  width:100%;
+  height:100%;
+  display:block;
+  object-fit:cover;
+  object-position:center center;
+}
+.homeBannerPhrase{
+  position:relative;
+  z-index:1;
+  font-style:italic;
+  color:var(--muted);
+  font-size:14px;
+  line-height:1.5;
+  margin:12px 0;
+  text-align:center;
+}
 .empty{padding:28px;text-align:center;color:var(--muted)}
 .bottomNav{flex-shrink:0;position:static;z-index:50;background:rgba(8,8,8,.96);backdrop-filter:blur(18px);border-top:1px solid var(--line);padding:9px 8px calc(9px + var(--safe-bottom));display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
 .navBtn{display:grid;justify-items:center;gap:5px;color:var(--muted);font-size:12px;padding:6px 2px;border-radius:18px}
@@ -256,7 +305,14 @@ a{color:inherit;text-decoration:none}
   .modal{padding:16px;border-radius:20px}
   .sticker{width:230px;min-height:330px}
   .sticker canvas{width:170px!important;height:170px!important}
-  .btn{width:100%}
+  .btn.block{width:100%}
+  .homeBannerFrame{
+    aspect-ratio:4 / 3;
+    min-height:210px;
+  }
+  .homeBannerFrame img{
+    object-position:center center;
+  }
 }
 @media print{
   body *{visibility:hidden!important}
