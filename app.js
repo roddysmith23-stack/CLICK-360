@@ -2,9 +2,9 @@
 (() => {
   'use strict';
 
-  const LS = 'click360_mvp_qa_final_state_v1';
-  const SESSION = 'click360_mvp_qa_final_session_v1';
-  const APP_ASSET_VERSION = 'mvp-final-platform-safe-v9';
+  const STATE_PREFIX = 'CLICK360_STATE:';
+  const SESSION_PREFIX = 'CLICK360_SESSION:';
+  const APP_ASSET_VERSION = 'p0-account-isolation-v10';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const $ = (sel, root=document) => root.querySelector(sel);
@@ -23,8 +23,10 @@
     }
   };
 
-  let state = loadState();
-  let session = loadSession();
+  // No business state is loaded until Firebase resolves an authenticated tenant.
+  let activeTenantContext = null;
+  let state = seed();
+  let session = null;
   let route = 'home';
   let scanStream = null;
   let scanTimer = null;
@@ -163,10 +165,15 @@ function parseMoney(value) {
     return changed;
   }
   function save() {
+    if (!activeTenantContext || !stateStorageKey()) {
+      console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
+      return false;
+    }
     try {
       state.updatedAtMs = Date.now();
       state.updatedAt = new Date().toISOString();
-      localStorage.setItem(LS, JSON.stringify(state));
+      state.identity = tenantIdentity();
+      localStorage.setItem(stateStorageKey(), JSON.stringify(state));
       return true;
     } catch(e) {
       console.error(e);
@@ -176,7 +183,7 @@ function parseMoney(value) {
           if (changed) {
             state.updatedAtMs = Date.now();
             state.updatedAt = new Date().toISOString();
-            localStorage.setItem(LS, JSON.stringify(state));
+            localStorage.setItem(stateStorageKey(), JSON.stringify(state));
             toast('CLICK 360 liberó espacio optimizando fotos. Tus datos quedaron guardados.', 'ok');
             return true;
           }
@@ -190,18 +197,55 @@ function parseMoney(value) {
       return false;
     }
   }
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(LS);
-      if (raw) return normalizeState(JSON.parse(raw));
-    } catch {}
-    return seed();
+  function stateStorageKey() {
+    return activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.tenantKey}` : '';
   }
-  function loadSession() { try { return JSON.parse(localStorage.getItem(SESSION) || 'null'); } catch { return null; } }
+  function sessionStorageKey() {
+    return activeTenantContext?.authUid ? `${SESSION_PREFIX}${activeTenantContext.authUid}` : '';
+  }
+  function tenantIdentity() {
+    if (!activeTenantContext) return null;
+    return {
+      ownerUid: activeTenantContext.ownerUid || activeTenantContext.authUid,
+      ownerId: activeTenantContext.ownerId,
+      businessId: activeTenantContext.businessId,
+      tenantKey: activeTenantContext.tenantKey,
+      schemaVersion: 10
+    };
+  }
+  function sameTenantIdentity(identity, context=activeTenantContext) {
+    return !!identity && !!context
+      && identity.ownerId === context.ownerId
+      && identity.businessId === context.businessId
+      && (!identity.ownerUid || identity.ownerUid === (context.ownerUid || context.authUid));
+  }
+  function loadState() {
+    const key = stateStorageKey();
+    if (!key) return seed();
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.identity && !sameTenantIdentity(parsed.identity)) return seed();
+        const loaded = normalizeState(parsed);
+        loaded.identity = tenantIdentity();
+        return loaded;
+      }
+    } catch {}
+    const fresh = seed();
+    fresh.identity = tenantIdentity();
+    return fresh;
+  }
+  function loadSession() {
+    const key = sessionStorageKey();
+    try { return key ? JSON.parse(localStorage.getItem(key) || 'null') : null; } catch { return null; }
+  }
   function setSession(s) {
     session=s;
-    if(s) localStorage.setItem(SESSION, JSON.stringify(s));
-    else localStorage.removeItem(SESSION);
+    const key = sessionStorageKey();
+    if (!key) return;
+    if(s) localStorage.setItem(key, JSON.stringify(s));
+    else localStorage.removeItem(key);
   }
   function profileCacheKey(uid) { return uid ? `${PROFILE_CACHE_PREFIX}${uid}` : ''; }
   function cacheUserProfile(profile) {
@@ -229,6 +273,39 @@ function parseMoney(value) {
     setSession(null);
     if(window.click360Logout) await window.click360Logout();
     else renderLogin();
+  };
+  window.click360SetTenantContext = function(context) {
+    if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
+      throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
+    }
+    activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
+    window.click360TenantContext = activeTenantContext;
+    state = loadState();
+    session = loadSession();
+    return { ...activeTenantContext };
+  };
+  window.click360ClearTenantContext = function() {
+    stopScanner();
+    activeTenantContext = null;
+    window.click360TenantContext = null;
+    state = seed();
+    session = null;
+    route = 'home';
+    workingDate = null;
+    if (app) app.innerHTML = '';
+  };
+  window.click360GetTenantState = function() {
+    if (!activeTenantContext) return null;
+    return JSON.parse(JSON.stringify(state));
+  };
+  window.click360ApplyTenantState = function(nextState, context) {
+    if (!activeTenantContext || !context || !sameTenantIdentity(nextState?.identity || context, activeTenantContext)
+      || context.tenantKey !== activeTenantContext.tenantKey) {
+      throw new Error('Snapshot de otro tenant bloqueado.');
+    }
+    state = normalizeState(nextState || {});
+    state.identity = tenantIdentity();
+    localStorage.setItem(stateStorageKey(), JSON.stringify(state));
   };
   function normalizeState(s) {
     const d = seed();
@@ -345,7 +422,7 @@ function parseMoney(value) {
         username: session.username,
         role: role,
         label: label,
-        businessIds: state.businesses.map(b => b.id)
+        businessIds: Array.isArray(window.click360User?.businessIds) ? window.click360User.businessIds.slice() : []
       };
     }
     return localUser;
@@ -3873,9 +3950,5 @@ function parseMoney(value) {
   window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator && !location.search.includes('nosw')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
   if(location.search.includes('qa')) { renderLogin(); setTimeout(runQa,300); }
-  else if(!session) renderLogin(); else if(session.role==='admin') renderAdmin(); else if(!handleInitialScan()) {
-    const h = location.hash.replace('#','');
-    if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h);
-    else renderApp('home');
-  }
+  else renderLogin();
 })();

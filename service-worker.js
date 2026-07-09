@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-final-platform-safe-v9';
+const CACHE = 'click360-p0-account-isolation-v10';
 const ASSETS = [
   './',
   './index.html',
