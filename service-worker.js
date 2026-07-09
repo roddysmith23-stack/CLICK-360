@@ -1,10 +1,11 @@
-const CACHE = 'click360-p0-account-isolation-v10';
+const CACHE = 'click360-p0-legacy-migration-v11';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './firebase-config.js',
+  './p0-tenant-guard.js',
   './firebase-service.js',
   './manifest.webmanifest',
   './vendor/qrcode-generator.js',

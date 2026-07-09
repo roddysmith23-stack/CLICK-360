@@ -22,7 +22,9 @@ La version anterior usaba una sola llave local, `click360_mvp_qa_final_state_v1`
 
 La llave antigua nunca se carga como estado de la cuenta actual. Si existe, se conserva y se copia a `CLICK360_QUARANTINE:{deviceId}:...:legacy_local_state` junto con candidatos de negocio y la identidad detectada. No se asigna automaticamente a la primera cuenta que inicie sesion.
 
-Los documentos remotos sin `schemaVersion: 10` se dejan sin modificar. La app los marca como legacy y no los aplica ni los sobrescribe. Su migracion requiere un mapeo administrativo de UID, ownerId y businessId.
+Los documentos remotos sin `schemaVersion: 10` activan el estado bloqueante `LEGACY_MIGRATION_REQUIRED`. La app no se desbloquea, no habilita editar/vender/borrar, y `STATE_DOC.set()` no puede ejecutarse para ese tenant. El documento remoto original se mantiene intacto.
+
+La única migración disponible es explícita y exige la confirmación administrativa `MIGRATE_LEGACY_V9_TO_V10`. Antes de escribir v10, valida de forma inequívoca el UID autenticado, ownerId, businessId/ruta, autor histórico y contenido del estado. La migración crea un snapshot remoto en `businesses/{businessId}/legacyBackups`, re-lee el documento dentro de una transacción para impedir carreras, compara los conteos de negocios, productos, ventas, movimientos, facturas, reportes, trabajadores y plantillas, y solo entonces habilita sync v10.
 
 ## Auditoria de contaminacion remota
 
@@ -36,6 +38,7 @@ Pendiente con una cuenta autorizada: revisar cada `businesses/{businessId}/state
 - Verificacion de sintaxis JavaScript y de cache PWA.
 - Prueba visual de gate de autenticacion antes de desbloquear datos, en desktop y movil.
 - Prueba A/B local repetida 10 veces en el mismo navegador: A mantuvo `A-001`, B mantuvo `B-001`; cada uno uso una llave `CLICK360_STATE` diferente y no hubo lectura cruzada.
+- Harness ejecutable `node qa-p0-isolation-harness.cjs`: cubre A -> logout -> B -> logout -> A durante 10 ciclos y confirma que la barrera usada por el push real nunca invoca `STATE_DOC.set()` mientras el tenant está en legacy no migrado.
 
 ## Riesgo pendiente
 

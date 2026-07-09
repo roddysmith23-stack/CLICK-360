@@ -4,7 +4,7 @@
 
   const STATE_PREFIX = 'CLICK360_STATE:';
   const SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'p0-account-isolation-v10';
+  const APP_ASSET_VERSION = 'p0-legacy-migration-v11';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const $ = (sel, root=document) => root.querySelector(sel);
@@ -457,6 +457,7 @@ function parseMoney(value) {
       pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando conexión o confirmación de nube.'],
       offline: ['Sin internet', 'La app sigue funcionando localmente y subirá cambios al reconectar.'],
       error: ['Revisar nube', s.message || 'No se pudo confirmar la sincronización. Tus datos locales se mantienen.'],
+      migration_required: ['Migración requerida', s.message || 'Los datos anteriores están protegidos hasta completar una migración segura.'],
       checking: ['Verificando nube', 'Comprobando sesión y datos remotos.'],
       local: ['Modo local', 'Inicia sesión con Google para activar nube.']
     };

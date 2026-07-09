@@ -39,7 +39,8 @@ assert('jsQR real local incluido', jsqrSize > 200000);
 assert('qrcode-generator real local incluido', qrgSize > 50000);
 assert('HTML carga qrcode-generator antes de app', html.includes('vendor/qrcode-generator.js') && html.indexOf('vendor/qrcode-generator.js') < html.indexOf('app.js'));
 assert('HTML carga jsQR antes de app', html.includes('vendor/jsQR.js') && html.indexOf('vendor/jsQR.js') < html.indexOf('app.js'));
-assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-p0-account-isolation-v10'));
+assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-p0-legacy-migration-v11'));
+assert('service worker cachea guard P0', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./p0-tenant-guard.js'));
 assert('service worker cachea vendor QR', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/qrcode-generator.js') && fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/jsQR.js'));
 assert('perfil persistente local', app.includes('CLICK360_USER_PROFILE_') && app.includes('cacheUserProfile'));
 assert('recuperación por almacenamiento lleno', app.includes('optimizeStateForStorage') && app.includes('storage_images_optimized'));
@@ -55,3 +56,7 @@ assert('guard de identidad en pull', firebaseService.includes('remoteMatchesActi
 assert('logout descarga tenant', firebaseService.includes('function deactivateActiveAccount()') && firebaseService.includes('click360ClearTenantContext'));
 assert('legacy entra en cuarentena', firebaseService.includes('quarantineLegacyLocalState') && firebaseService.includes('CLICK360_QUARANTINE:'));
 assert('no resetea almacenamiento de negocio', !firebaseService.includes('localStorage.clear()'));
+assert('aprobación offline aislada por UID', firebaseService.includes('CLICK360_APPROVED_IDENTITY:') && !firebaseService.includes('CLICK360_LAST_APPROVED_USER'));
+assert('legacy bloquea push y desbloqueo', firebaseService.includes('legacyMigrationRequired()') && firebaseService.includes('tenantGuard.canWrite(ACTIVE_CONTEXT)') && firebaseService.includes('showLegacyMigrationGate()'));
+assert('migración exige backup y conteos', firebaseService.includes('legacyBackups') && firebaseService.includes('beforeCounts') && firebaseService.includes('afterCounts') && firebaseService.includes('equalCounts'));
+assert('harness P0 ejecutable', fs.existsSync(path.join(__dirname, 'qa-p0-isolation-harness.cjs')) && fs.existsSync(path.join(__dirname, 'p0-tenant-guard.js')));
