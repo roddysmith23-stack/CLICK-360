@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-final-offline-safe-v8';
+const CACHE = 'click360-mvp-final-platform-safe-v9';
 const ASSETS = [
   './',
   './index.html',
@@ -9,6 +9,12 @@ const ASSETS = [
   './manifest.webmanifest',
   './vendor/qrcode-generator.js',
   './vendor/jsQR.js',
+  './vendor/html2pdf.bundle.min.js',
+  './vendor/html2canvas.min.js',
+  './vendor/xlsx.full.min.js',
+  './vendor/firebase-app-compat.js',
+  './vendor/firebase-auth-compat.js',
+  './vendor/firebase-firestore-compat.js',
   './assets/favicon.ico',
   './assets/favicon.png',
   './assets/logo.png',
@@ -51,6 +57,21 @@ self.addEventListener('fetch', event => {
   }
 
   if (url.origin === location.origin) {
+    const freshAsset = ['script', 'style', 'worker', 'manifest'].includes(request.destination)
+      || /\.(?:js|css|webmanifest)$/i.test(url.pathname);
+    if (freshAsset) {
+      event.respondWith(
+        fetch(request).then(response => {
+          if (response && response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE).then(cache => cache.put(request, copy)).catch(() => {});
+          }
+          return response;
+        }).catch(() => caches.match(request, { ignoreSearch: true }))
+      );
+      return;
+    }
+
     event.respondWith(
       caches.match(request, { ignoreSearch: true }).then(match => {
         if (match) return match;

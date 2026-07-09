@@ -4,14 +4,14 @@
 
   const LS = 'click360_mvp_qa_final_state_v1';
   const SESSION = 'click360_mvp_qa_final_session_v1';
-  const APP_ASSET_VERSION = 'mvp-final-offline-safe-v8';
+  const APP_ASSET_VERSION = 'mvp-final-platform-safe-v9';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const $ = (sel, root=document) => root.querySelector(sel);
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
   const toastEl = $('#toast');
-  
+
   window.onerror = function(msg, url, line) {
     const m = String(msg);
     if(m.includes('ResizeObserver')) return;
@@ -57,7 +57,7 @@
     return `${dayName}, ${dayNum} de ${monthName} de ${year}`;
   }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-  
+
   function imageThumb(product){
     if(product?.imageData) return `<img class="productImg" src="${product.imageData}" alt="${escapeHtml(product.name || 'Producto')}" loading="lazy">`;
     return `<div class="productImg emptyImg">▧</div>`;
@@ -162,11 +162,11 @@ function parseMoney(value) {
     if (changed) addAudit('storage_images_optimized', { reason, sizeBytes: stateSizeBytes(state) });
     return changed;
   }
-  function save() { 
+  function save() {
     try {
       state.updatedAtMs = Date.now();
       state.updatedAt = new Date().toISOString();
-      localStorage.setItem(LS, JSON.stringify(state)); 
+      localStorage.setItem(LS, JSON.stringify(state));
       return true;
     } catch(e) {
       console.error(e);
@@ -198,9 +198,9 @@ function parseMoney(value) {
     return seed();
   }
   function loadSession() { try { return JSON.parse(localStorage.getItem(SESSION) || 'null'); } catch { return null; } }
-  function setSession(s) { 
-    session=s; 
-    if(s) localStorage.setItem(SESSION, JSON.stringify(s)); 
+  function setSession(s) {
+    session=s;
+    if(s) localStorage.setItem(SESSION, JSON.stringify(s));
     else localStorage.removeItem(SESSION);
   }
   function profileCacheKey(uid) { return uid ? `${PROFILE_CACHE_PREFIX}${uid}` : ''; }
@@ -238,18 +238,39 @@ function parseMoney(value) {
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     out.invoices ||= [];
     out.auditLogs ||= [];
+    out.deletedProducts ||= [];
     out.settings ||= {};
     out.settings.labelTemplates ||= [];
     out.settings.workers ||= [];
     out.settings.userProfiles ||= {};
-    
+
+    out.products.forEach(p => {
+      p.code = String(p.code || '').trim().toUpperCase();
+      p.updatedAtMs = Number(p.updatedAtMs || p.createdAtMs || out.updatedAtMs || Date.now());
+    });
+    out.deletedProducts.forEach(t => {
+      t.code = String(t.code || '').trim().toUpperCase();
+      t.deletedAtMs = Number(t.deletedAtMs || t.updatedAtMs || Date.now());
+    });
+    const deletedById = new Map();
+    const deletedByCode = new Map();
+    out.deletedProducts.forEach(t => {
+      if (t.id) deletedById.set(t.id, Math.max(deletedById.get(t.id) || 0, t.deletedAtMs || 0));
+      if (t.code) deletedByCode.set(t.code, Math.max(deletedByCode.get(t.code) || 0, t.deletedAtMs || 0));
+    });
+    out.products = out.products.filter(p => {
+      const pMs = Number(p.updatedAtMs || p.createdAtMs || 0);
+      const tombstoneMs = Math.max(deletedById.get(p.id) || 0, deletedByCode.get(p.code) || 0);
+      return !tombstoneMs || pMs > tombstoneMs;
+    });
+
     // Migración para limpiar "sale_..." de movimientos antiguos
     out.movements.forEach(m => {
        if (m.note && m.note.includes('Venta anulada sale_')) {
           m.note = 'Venta anulada (Registro histórico)';
        }
     });
-    
+
     return out;
   }
   function seed() {
@@ -271,6 +292,7 @@ function parseMoney(value) {
       invoices:[],
       dailyReports:[],
       auditLogs:[],
+      deletedProducts:[],
       settings:{ workers: [], userProfiles: {} }
     };
   }
@@ -290,9 +312,9 @@ function parseMoney(value) {
     });
   }
 
-  window.click360ReloadState = () => { 
-    state = loadState(); 
-    
+  window.click360ReloadState = () => {
+    state = loadState();
+
     // Auto de-activate worker if not in settings list
     if (window.click360User && window.click360User.role === 'worker') {
       const workers = state.settings?.workers || [];
@@ -304,7 +326,7 @@ function parseMoney(value) {
         window.click360AppLogout();
         return;
       }
-      
+
       const match = workers.find(w => w.email.toLowerCase() === window.click360User.email.toLowerCase());
       if (match && !match.uid) {
         match.uid = window.click360User.uid;
@@ -340,10 +362,42 @@ function parseMoney(value) {
     }
     return { name: 'Sistema', role: 'owner', email: '' };
   }
-  function currentBusiness(){ 
-    return state.businesses.find(b=>b.id===state.activeBusinessId) 
-      || state.businesses[0] 
-      || { id:'biz_main', code:'EMPRESA-001', name:'Mi Negocio', type:'ropa', status:'activo', due:'2026-07-08', settings:{} }; 
+  function isOwnerUser() {
+    const u = authUser();
+    return u?.role === 'owner' || u?.isOwner === true;
+  }
+  function saleItems(s) {
+    return Array.isArray(s?.items) ? s.items : [];
+  }
+  function syncStatusInfo() {
+    const fallback = navigator.onLine
+      ? { status: 'local', title: 'Modo local', detail: 'La nube se activará al iniciar sesión con Google.' }
+      : { status: 'offline', title: 'Sin internet', detail: 'Puedes trabajar localmente; se sincroniza cuando vuelva la conexión.' };
+    const s = typeof window.click360GetSyncStatus === 'function' ? window.click360GetSyncStatus() : fallback;
+    const map = {
+      synced: ['Nube sincronizada', 'Tus datos están guardados en este dispositivo y en Firestore.'],
+      syncing: ['Sincronizando', 'Guardando cambios en Firestore.'],
+      pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando conexión o confirmación de nube.'],
+      offline: ['Sin internet', 'La app sigue funcionando localmente y subirá cambios al reconectar.'],
+      error: ['Revisar nube', s.message || 'No se pudo confirmar la sincronización. Tus datos locales se mantienen.'],
+      checking: ['Verificando nube', 'Comprobando sesión y datos remotos.'],
+      local: ['Modo local', 'Inicia sesión con Google para activar nube.']
+    };
+    const [title, detail] = map[s.status] || map.local;
+    return { ...s, title, detail };
+  }
+  function syncPillHtml(compact=false) {
+    const info = syncStatusInfo();
+    const color = info.status === 'synced' ? '#37d57e' : info.status === 'error' ? '#ff5c62' : info.status === 'offline' ? '#d6aa2c' : 'var(--gold)';
+    const label = compact ? info.title.replace('Nube ', '') : info.title;
+    return `<div id="${compact ? 'syncStatusPillTop' : 'syncStatusPill'}" title="${escapeHtml(info.detail)}" style="display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:6px 10px;color:${color};font-size:12px;font-weight:700;background:rgba(255,255,255,.04);white-space:nowrap;">
+      <span style="width:7px;height:7px;border-radius:999px;background:${color};box-shadow:0 0 10px ${color};"></span>${escapeHtml(label)}
+    </div>`;
+  }
+  function currentBusiness(){
+    return state.businesses.find(b=>b.id===state.activeBusinessId)
+      || state.businesses[0]
+      || { id:'biz_main', code:'EMPRESA-001', name:'Mi Negocio', type:'ropa', status:'activo', due:'2026-07-08', settings:{} };
   }
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
@@ -357,15 +411,17 @@ function parseMoney(value) {
     if (!bid) return true;
     return state.movements.some(m => m.businessId === bid && m.date === today() && m.kind === 'apertura');
   }
-  function isDayClosed() {
-    const bid = currentBusiness()?.id;
-    if (!bid) return false;
-    return (state.dailyReports || []).some(r => r.businessId === bid && r.date === today());
-  }
+	  function isDayClosed() {
+	    const bid = currentBusiness()?.id;
+	    if (!bid) return false;
+	    return (state.dailyReports || []).some(r => r.businessId === bid && r.date === today() && r.status !== 'reopened');
+	  }
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-    if (role === 'worker') return true; // Para esta iteración, los trabajadores pueden hacer todo, pero dejan rastro.
+    if (role === 'worker') return ['home','inventory','sell','cash','more','settings'].includes(section);
+    if (role === 'cashier') return ['home','sell','cash','more'].includes(section);
+    if (role === 'inventory') return ['home','inventory','more'].includes(section);
     return false;
   }
   function checkAuth(required='business') {
@@ -424,14 +480,29 @@ function parseMoney(value) {
     return { draw, make };
   })();
 
-  function generateCode(name='P') {
-    const base = slug(name).split('-').map(x=>x[0]).join('').slice(0,4).toUpperCase() || 'P';
-    let c;
-    do { c = `${base}${Math.random().toString(36).slice(2,7).toUpperCase()}`; } while(codeExists(c));
-    return c;
-  }
-  function codeExists(code, productId=null) { return state.products.some(p => p.code.toUpperCase() === String(code).toUpperCase() && p.id !== productId); }
-  function productPayload(product) {
+	  function generateCode(name='P') {
+	    const base = slug(name).split('-').map(x=>x[0]).join('').slice(0,4).toUpperCase() || 'P';
+	    let c;
+	    do { c = `${base}${Math.random().toString(36).slice(2,7).toUpperCase()}`; } while(codeExists(c));
+	    return c;
+	  }
+	  function codeExists(code, productId=null) { return state.products.some(p => p.code.toUpperCase() === String(code).toUpperCase() && p.id !== productId); }
+	  function tombstoneProduct(product, reason='deleted') {
+	    if (!product) return;
+	    state.deletedProducts ||= [];
+	    const nowMs = Date.now();
+	    state.deletedProducts.push({
+	      id: product.id,
+	      businessId: product.businessId,
+	      code: String(product.code || '').trim().toUpperCase(),
+	      name: product.name || '',
+	      reason,
+	      deletedAt: new Date(nowMs).toISOString(),
+	      deletedAtMs: nowMs,
+	      deletedBy: authUser().name || 'Sistema'
+	    });
+	  }
+	  function productPayload(product) {
     // QR ultra-simple for faster camera/photo decoding. The business is validated by the active inventory.
     return String(product.code || '').trim().toUpperCase();
   }
@@ -490,38 +561,42 @@ function parseMoney(value) {
 
     const b=currentBusiness();
     const bizOptions=state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
-    const logoIconSide = b?.settings?.logoUrl 
+    const logoIconSide = b?.settings?.logoUrl
       ? `<img src="${escapeHtml(b.settings.logoUrl)}" style="width:48px;height:48px;object-fit:cover;border-radius:10px;">`
       : `<div class="logoIcon" style="width:48px;height:48px;"></div>`;
-    const logoIconTop = b?.settings?.logoUrl 
+    const logoIconTop = b?.settings?.logoUrl
       ? `<img src="${escapeHtml(b.settings.logoUrl)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;">`
       : `<div class="logoIcon" style="width:44px;height:44px;"></div>`;
-    const avatarHtml = authUser().photoURL 
+    const avatarHtml = authUser().photoURL
       ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%;height:100%;object-fit:cover;">`
-      : (b?.settings?.logoUrl 
+      : (b?.settings?.logoUrl
         ? `<img src="${escapeHtml(b.settings.logoUrl)}" style="width:100%;height:100%;object-fit:cover;">`
         : (authUser().name || 'U').charAt(0).toUpperCase());
 
-    return `<div class="app"><div class="desktopLayout">
-      <aside class="sidebar flex-sidebar">
-        <div>
-          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
-          <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
-          <nav class="sideNav">${navButtons(active, true)}</nav>
-        </div>
-        <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px;">
-          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
-          <button class="logoutBtn" id="logoutSide" title="Cerrar sesión" style="flex:1;">Cerrar sesión ↗</button>
-        </div>
-      </aside>
+	    return `<div class="app"><div class="desktopLayout">
+	      <aside class="sidebar flex-sidebar">
+	        <div>
+	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
+	          <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
+	          <nav class="sideNav">${navButtons(active, true)}</nav>
+	        </div>
+	        <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:grid; gap:10px;">
+	          ${syncPillHtml(false)}
+	          <div style="display:flex; align-items:center; gap:10px;">
+	            <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
+	            <button class="logoutBtn" id="logoutSide" title="Cerrar sesión" style="flex:1;">Cerrar sesión ↗</button>
+	          </div>
+	        </div>
+	      </aside>
       <div>
         <header class="topbar">
           <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconTop}<div class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
-          <div style="flex:1; display:flex; justify-content:center; min-width:0; padding:0 8px;">
-            <select class="businessSelect" id="businessPickerTop" style="font-size:13px; padding:8px; min-height:36px; max-width:140px; margin:0 auto;">${bizOptions}</select>
-          </div>
-          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
-          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" style="width:36px; height:36px; border-radius:10px;">↗</button>
+	          <div style="flex:1; display:flex; justify-content:center; min-width:0; padding:0 8px;">
+	            <select class="businessSelect" id="businessPickerTop" style="font-size:13px; padding:8px; min-height:36px; max-width:140px; margin:0 auto;">${bizOptions}</select>
+	          </div>
+	          <div style="display:none;" class="syncTopWrap">${syncPillHtml(true)}</div>
+	          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
+	          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" style="width:36px; height:36px; border-radius:10px;">↗</button>
         </header>
         <div style="flex-shrink:0; padding:16px 16px 0; background:transparent;">
           ${dateBadgeHtml}
@@ -532,12 +607,13 @@ function parseMoney(value) {
       </div>
     </div>${bottomNav(active)}<div id="modalRoot"></div><div id="printRoot" class="printSheet"></div></div>`;
   }
-  function allowedRoutes(){
-    const r=currentUser()?.role;
-    if(r==='cashier') return ['home','sell','cash','more'];
-    if(r==='inventory') return ['home','inventory','more'];
-    return ['home','inventory','sell','cash','more'];
-  }
+	  function allowedRoutes(){
+	    const r=currentUser()?.role;
+	    if(r==='cashier') return ['home','sell','cash','more'];
+	    if(r==='inventory') return ['home','inventory','more'];
+	    if(r==='worker') return ['home','inventory','sell','cash','more'];
+	    return ['home','inventory','sell','cash','more'];
+	  }
   function navButtons(active, side=false) {
     const items = [
       ['home', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>', 'Inicio'],
@@ -628,7 +704,7 @@ function parseMoney(value) {
         <a href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
       </section>
       <section class="split" style="margin-top:14px">
-        <div class="card sectionCard"><h3>\u00DAltimas ventas</h3>${sales.slice(-3).reverse().map(s=>`<div class="movement"><span>${s.items.map(i=>escapeHtml(i.name)).join(', ')}</span><b class="pos">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">A\u00fan no hay ventas hoy.</p>'}</div>
+	        <div class="card sectionCard"><h3>\u00DAltimas ventas</h3>${sales.slice(-3).reverse().map(s=>`<div class="movement"><span>${saleItems(s).map(i=>escapeHtml(i.name)).join(', ') || 'Venta sin detalle'}</span><b class="pos">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">A\u00fan no hay ventas hoy.</p>'}</div>
         <div class="card sectionCard"><h3>Acciones r\u00e1pidas</h3><div class="split"><button class="btn primary" onclick="window.click360Route('sell')">Vender</button><button class="btn silver" onclick="window.click360Route('inventory')">Inventario</button></div></div>
       </section>`;
   }
@@ -636,7 +712,7 @@ function parseMoney(value) {
   function inventoryView() {
     const b=currentBusiness(), v=businessVocabulary(b.type), products=productsForBiz();
     const templates = state.settings?.labelTemplates || [];
-    
+
     let templatesHtml = '';
     if (templates.length > 0) {
       templatesHtml = `
@@ -842,7 +918,7 @@ function parseMoney(value) {
       </section>
       ` : ''}
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial de Cierres</h3><div class="movementList">
-         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)}<br><small>Caja F.: ${fmt(r.closeCash)}</small></span><button class="btn silver" onclick="window.viewDailyReport('${r.id}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
+	         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)} ${r.status === 'reopened' ? '<span class="badge gold">Reabierto</span>' : ''}<br><small>Caja F.: ${fmt(r.closeCash)}${r.reopenReason ? ' · Motivo: ' + escapeHtml(r.reopenReason) : ''}</small></span><button class="btn silver" onclick="window.viewDailyReport('${r.id}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
       </div></section>`;
   }
   function labelKind(k){ return ({apertura:'Apertura',ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
@@ -858,26 +934,26 @@ function parseMoney(value) {
      last7Days.forEach(d => salesByDay[d] = 0);
      sales.filter(s=>s.status!=='cancelled').forEach(s => {
        if (salesByDay[s.date] !== undefined) {
-         salesByDay[s.date] += (s.status==='layaway' ? (s.received||0) : s.total);
+	       salesByDay[s.date] += Number((s.received ?? (s.status === 'paid' ? s.total : 0)) || 0);
        }
      });
-     
+
      const vals = last7Days.map(d => salesByDay[d]);
      const max = Math.max(...vals, 1);
-     
+
      const width = 300;
      const height = 120;
      const padX = 20;
      const padY = 25;
      const chartW = width - padX * 2;
      const chartH = height - padY * 1.5;
-     
+
      const points = vals.map((val, i) => {
          const x = padX + (i / 6) * chartW;
          const y = padY + chartH - ((val / max) * chartH);
          return {x, y, val, d: last7Days[i]};
      });
-     
+
      let pathD = `M ${points[0].x} ${points[0].y}`;
      for(let i=0; i<points.length - 1; i++) {
          const p0 = points[i];
@@ -886,7 +962,7 @@ function parseMoney(value) {
          const cp2x = cp1x;
          pathD += ` C ${cp1x} ${p0.y}, ${cp2x} ${p1.y}, ${p1.x} ${p1.y}`;
      }
-     
+
      const fillPathD = pathD + ` L ${points[points.length-1].x} ${height} L ${points[0].x} ${height} Z`;
 
      const circlesHtml = points.map(p => `
@@ -900,7 +976,7 @@ function parseMoney(value) {
          </g>
        </g>
      `).join('');
-     
+
      const daysHtml = points.map(p => `
        <text x="${p.x}" y="${height - 4}" fill="var(--muted)" font-size="9" text-anchor="middle">${p.d.slice(-2)}</text>
      `).join('');
@@ -938,16 +1014,18 @@ function parseMoney(value) {
     return s;
   }
 
-  function reportsView() {
-    state.reportsFrom = state.reportsFrom || today();
-    state.reportsTo = state.reportsTo || today();
-    const allSales = salesForBiz();
-    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
-    const tickets=sales.length;
-    // Calculate total taking into account statuses
-    const total=sales.filter(s=>s.status==='paid'||s.status==='layaway').reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
-    const counts={}; sales.filter(s=>s.status!=='cancelled').forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
-    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+	  function reportsView() {
+	    state.reportsFrom = state.reportsFrom || today();
+	    state.reportsTo = state.reportsTo || today();
+	    const allSales = salesForBiz();
+	    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
+	    const validSales = sales.filter(s => s.status !== 'cancelled');
+	    const tickets=validSales.length;
+	    const soldTotal=validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
+	    const collectedTotal=validSales.reduce((a,s)=>a+Number((s.received ?? (s.status === 'paid' ? s.total : 0)) || 0),0);
+	    const pendingTotal=validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
+	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
+	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
     return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
         <div style="display:flex; gap:8px;">
           <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
@@ -958,7 +1036,7 @@ function parseMoney(value) {
         <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${state.reportsFrom}"></div>
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${state.reportsTo}"></div>
       </div>
-      <section class="grid cashGrid"><div class="card kpi"><small>Ingreso Ventas</small><strong class="goldText">${fmt(total)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio</small><strong>${fmt(tickets?total/tickets:0)}</strong></div></section>
+	      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText">${fmt(soldTotal)}</strong></div><div class="card kpi"><small>Cobrado</small><strong class="goldText">${fmt(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${fmt(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div></section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Crecimiento</h3>${buildChartHtml(sales)}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
@@ -966,7 +1044,7 @@ function parseMoney(value) {
         <div class="movement" style="flex-direction:column; gap:8px;">
           <div style="display:flex; justify-content:space-between; width:100%;">
              <span>${escapeHtml(s.when)}<br>
-               <small>${s.items.length} items · ${escapeHtml(s.method)} ${s.customer?'· '+escapeHtml(s.customer):''}</small><br>
+	               <small>${saleItems(s).length} items · ${escapeHtml(s.method)} ${s.customer?'· '+escapeHtml(s.customer):''}</small><br>
                <span class="badge ${s.status==='cancelled'?'danger':'gold'}">${s.status==='cancelled'?'Anulada':s.status==='pending_payment'?'Pendiente':s.status==='layaway'?'Apartado':'Pagada'}</span>
                <br><small style="font-size:10px;color:var(--gold);">🧑‍💻 ${escapeHtml(s.createdBy||'Sistema')}</small>
              </span>
@@ -1018,35 +1096,40 @@ function parseMoney(value) {
       </section>`;
   }
 
-  function moreView(){
-    return `<div class="pageHead"><div><h1>M\u00e1s</h1></div></div><section class="moreList">
-      <button class="card bigRow" data-more="reports"><span>\u25A5 Reportes</span><b>\u203A</b></button>
-      <button class="card bigRow" data-more="backup"><span>\u2601 Respaldo y nube</span><b>\u203A</b></button>
-      <button class="card bigRow" data-more="workers">
-        <span>\uD83D\uDC65 Trabajadores</span>
-        <span style="display:flex; align-items:center; gap:6px;">
-          <span id="pendingWorkersBadge" class="badge danger" style="display:none; padding:2px 6px; font-size:11px; border-radius:10px; background:#ff5c62; color:#fff;">0</span>
-          <b>\u203A</b>
-        </span>
-      </button>
-      <button class="card bigRow" data-more="invoices"><span>📄 Facturas de Proveedores</span><b>\u203A</b></button>
-      <button class="card bigRow" data-more="settings"><span>\u2699 Ajustes</span><b>\u203A</b></button>
-      <button class="card bigRow" id="installAppBtn"><span>⬇ Instalar CLICK 360 como app</span><b>\u203A</b></button>
-      <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
-      <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
-    </section>`;
-  }
-  function backupView(){
-    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = yest.toISOString().slice(0, 10);
-    const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-    const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().slice(0, 10);
-    
-    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronizaci\u00f3n y reportes contables.</p></div></div>
-      <section class="card sectionCard">
-        <h3>Nube CLICK 360</h3>
-        <p class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">\u2605 Sincronizaci\u00f3n en la nube Activa.</p>
-        <p class="cloudStatus">Tus datos se guardan y protegen en tiempo real. Abre tu cuenta en cualquier dispositivo con tu correo y tendr\u00e1s la misma informaci\u00f3n.</p>
-      </section>
+	  function moreView(){
+	    const ownerTools = isOwnerUser() ? `
+	      <button class="card bigRow" data-more="reports"><span>\u25A5 Reportes</span><b>\u203A</b></button>
+	      <button class="card bigRow" data-more="backup"><span>\u2601 Respaldo y nube</span><b>\u203A</b></button>
+	      <button class="card bigRow" data-more="workers">
+	        <span>\uD83D\uDC65 Trabajadores</span>
+	        <span style="display:flex; align-items:center; gap:6px;">
+	          <span id="pendingWorkersBadge" class="badge danger" style="display:none; padding:2px 6px; font-size:11px; border-radius:10px; background:#ff5c62; color:#fff;">0</span>
+	          <b>\u203A</b>
+	        </span>
+	      </button>
+	      <button class="card bigRow" data-more="invoices"><span>📄 Facturas de Proveedores</span><b>\u203A</b></button>
+	      <button class="card bigRow" data-more="settings"><span>\u2699 Ajustes</span><b>\u203A</b></button>
+	    ` : `<button class="card bigRow" data-more="settings"><span>\u2699 Mi perfil</span><b>\u203A</b></button>`;
+	    return `<div class="pageHead"><div><h1>M\u00e1s</h1></div></div><section class="moreList">
+	      ${ownerTools}
+	      <button class="card bigRow" id="installAppBtn"><span>⬇ Instalar CLICK 360 como app</span><b>\u203A</b></button>
+	      <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
+	      <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
+	    </section>`;
+	  }
+	  function backupView(){
+	    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = yest.toISOString().slice(0, 10);
+	    const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+	    const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().slice(0, 10);
+	    const cloud = syncStatusInfo();
+
+	    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronizaci\u00f3n y reportes contables.</p></div></div>
+	      <section class="card sectionCard">
+	        <h3>Nube CLICK 360</h3>
+	        <p id="cloudStatusDynamic" class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">\u2605 ${escapeHtml(cloud.title)}</p>
+	        <p id="cloudStatusDetail" class="cloudStatus">${escapeHtml(cloud.detail)}</p>
+	        <div class="split" style="gap:10px;margin-top:12px;"><button type="button" class="btn silver" id="refreshCloudBtn">Actualizar desde nube</button><button type="button" class="btn primary" id="forceSyncCloud">Guardar ahora en nube</button></div>
+	      </section>
       <section class="card sectionCard" style="margin-top:14px">
         <h3>Reporte Contable General</h3>
         <p class="cloudStatus">Descarga el reporte completo en formato Excel real (XLSX). Selecciona el rango de fechas o usa los accesos r\u00e1pidos.</p>
@@ -1088,19 +1171,20 @@ function parseMoney(value) {
          <div id="workersList"></div>
       </section>`;
   }
-  function settingsView(){
-    const b=currentBusiness();
-    const bizSettings = currentBusiness().settings || {};
+	  function settingsView(){
+	    const b=currentBusiness();
+	    const bizSettings = currentBusiness().settings || {};
     const iva = bizSettings.iva || 0;
     const ruc = bizSettings.ruc || '';
     const phone = bizSettings.phone || '';
     const address = bizSettings.address || '';
-    const logoUrl = bizSettings.logoUrl || '';
-    const bizOptions = state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
+	    const logoUrl = bizSettings.logoUrl || '';
+	    const bizOptions = state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
+	    const ownerOnlyStyle = isOwnerUser() ? '' : 'display:none;';
 
-    return `<div class="pageHead"><div><h1>Ajustes</h1><p>Configura tu empresa.</p></div></div>
-      <section class="card sectionCard">
-        <h3>Datos del Negocio</h3>
+	    return `<div class="pageHead"><div><h1>Ajustes</h1><p>Configura tu empresa.</p></div></div>
+	      <section class="card sectionCard" style="${ownerOnlyStyle}">
+	        <h3>Datos del Negocio</h3>
         <div class="field" style="display:flex; flex-direction:column; align-items:center;">
           <div style="width:80px; height:80px; border-radius:50%; background:#222; border:1px solid #444; overflow:hidden; margin-bottom:10px; display:flex; justify-content:center; align-items:center;">
              ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" style="display:block; margin:0;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`}
@@ -1136,8 +1220,8 @@ function parseMoney(value) {
         <button type="button" class="btn primary block" id="saveUser">Guardar Perfil</button>
       </section>
 
-      <section class="card sectionCard" style="margin-top:14px">
-        <h3>Cambiar de Negocio</h3>
+	      <section class="card sectionCard" style="margin-top:14px;${ownerOnlyStyle}">
+	        <h3>Cambiar de Negocio</h3>
         <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">Selecciona el negocio que deseas ver y administrar actualmente.</p>
         <div class="field">
           <label>Negocio Activo</label>
@@ -1145,8 +1229,8 @@ function parseMoney(value) {
         </div>
       </section>
 
-      <section class="card sectionCard" style="margin-top:14px">
-        <h3>Agregar otro negocio</h3>
+	      <section class="card sectionCard" style="margin-top:14px;${ownerOnlyStyle}">
+	        <h3>Agregar otro negocio</h3>
         <div class="field"><label>Nombre</label><input id="newBizName"></div>
         <div class="field"><label>Tipo</label><select id="newBizType">${typeOptions('otro')}</select></div>
         <div class="field"><label>RUC (Opcional)</label><input id="newBizRuc"></div>
@@ -1154,7 +1238,7 @@ function parseMoney(value) {
         <button type="button" class="btn silver block" id="createBiz">Crear negocio</button>
       </section>
 
-      <section class="card sectionCard" style="margin-top:14px; border:1px solid #4a1c1c;">
+	      <section class="card sectionCard" style="margin-top:14px; border:1px solid #4a1c1c;${ownerOnlyStyle}">
         <h3 style="color:#d9534f;">Zona de Peligro</h3>
         <button type="button" class="btn danger block" id="resetInventoryBtn" style="margin-bottom:10px;">Reiniciar Inventario</button>
         <button type="button" class="btn danger block" id="resetSystemBtn">Borrar Todo el Sistema (Empezar de cero)</button>
@@ -1191,7 +1275,7 @@ function parseMoney(value) {
           toast('Buscando: ' + code);
        });
     }
-    
+
     // Bind template deletion
     $$('[data-del-tpl]').forEach(btn => {
        btn.onclick = () => {
@@ -1272,18 +1356,29 @@ function parseMoney(value) {
       if(!Number.isFinite(price)||price<0) return toast('Precio inválido','err');
       if(!Number.isFinite(cardPrice)||cardPrice<0) return toast('Precio con tarjeta inválido','err');
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
-      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name});
-      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date().toISOString(), createdBy: authUser().name});
-      save(); closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
-    };
-  }
-  function deleteProduct(id){ if(confirm('¿Borrar este registro?')){ const p=state.products.find(x=>x.id===id); if(p) { state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name}); } state.products=state.products.filter(x=>x.id!==id); save(); renderApp('inventory'); toast('Eliminado'); } }
+	      const updatedAtMs = Date.now();
+	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
+	      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name});
+	      save(); closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
+	    };
+	  }
+	  function deleteProduct(id){
+	    if(confirm('¿Borrar este producto? Se guardará una huella para que no reaparezca desde otro dispositivo.')){
+	      const p=state.products.find(x=>x.id===id);
+	      if(p) {
+	        tombstoneProduct(p, 'manual_delete');
+	        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name});
+	      }
+	      state.products=state.products.filter(x=>x.id!==id);
+	      save(); renderApp('inventory'); toast('Producto eliminado');
+	    }
+	  }
 
   function bindSell(){
     if(!$('#payMethod')) return;
     let cart=[];
     let currentIva = (currentBusiness().settings || {}).iva || 0;
-    
+
     const renderCart=()=>{
       const method = $('#payMethod').value;
       const isCard = method === 'Tarjeta';
@@ -1294,9 +1389,9 @@ function parseMoney(value) {
          ivaAmount = base * (currentIva / 100);
       }
       const total = base + ivaAmount;
-      
+
       $('#cartTotal').textContent=fmt(total);
-      
+
       const subView = $('#cartSubtotalView'), ivaView = $('#cartIvaView');
       if (currentIva > 0) {
          subView.style.display = 'flex'; ivaView.style.display = 'flex';
@@ -1310,9 +1405,9 @@ function parseMoney(value) {
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
       $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
-      
+
       const recF = $('#receivedField'), chgF = $('#changeField'), lblCustomer = $('#lblCustomer');
-      
+
       if (method === 'Apartado' || method === 'Pendiente') {
         lblCustomer.innerHTML = 'Cliente (Nombre) <b>*Obligatorio</b>';
       } else {
@@ -1358,9 +1453,9 @@ function parseMoney(value) {
         $('#changeField label').textContent = 'Vuelto';
       }
     };
-    
+
     $('#payMethod').onchange = renderCart;
-    
+
     const discIn = $('#discount'), cashRecIn = $('#cashReceived');
     if (discIn) { discIn.oninput = () => { discIn.value = discIn.value.replace(/[^0-9.,]/g, ''); renderCart(); }; }
     if (cashRecIn) { cashRecIn.oninput = () => { cashRecIn.value = cashRecIn.value.replace(/[^0-9.,]/g, ''); renderCart(); }; }
@@ -1396,7 +1491,7 @@ function parseMoney(value) {
        };
     }
 
-    $('#addCode').onclick=()=>{ 
+    $('#addCode').onclick=()=>{
         const v = $('#manualCode').value.trim();
         if(v) { addProduct(v); $('#manualCode').value=''; }
         else {
@@ -1417,12 +1512,12 @@ function parseMoney(value) {
       if(!cart.length){ beep('err'); return toast('El carrito está vacío','err'); }
       const disc=parseMoney($('#discount').value);
       if(!Number.isFinite(disc)||disc<0){ beep('err'); return toast('Descuento inválido','err'); }
-      
+
       const method = $('#payMethod').value;
       const isCard = method === 'Tarjeta';
       const subtotal=cart.reduce((a,i)=>a+(isCard ? i.cardPrice : i.price)*i.qty,0);
       if(disc>subtotal){ beep('err'); return toast('El descuento supera el subtotal','err'); }
-      
+
       let base = Math.max(0, subtotal - disc);
       let ivaAmount = 0;
       if (currentIva > 0) ivaAmount = base * (currentIva / 100);
@@ -1433,7 +1528,7 @@ function parseMoney(value) {
         const p=state.products.find(p=>p.id===i.id);
         if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); }
       }
-      
+
       const rec = parseMoney($('#cashReceived').value);
       let received = 0; let change = 0; let balance = 0;
       let status = "paid";
@@ -1441,7 +1536,7 @@ function parseMoney(value) {
       const customerName = $('#customer').value.trim();
       const customerCedulaVal = $('#customerCedula').value.trim();
       const customerPhoneVal = $('#customerPhone').value.trim();
-      
+
       if ((method === 'Apartado' || method === 'Pendiente') && (!customerName || !customerPhoneVal || !customerCedulaVal)) {
          beep('err'); return toast('Debe ingresar el Nombre, Cédula y Teléfono del Cliente para cuentas por cobrar','err');
       }
@@ -1459,11 +1554,12 @@ function parseMoney(value) {
          received = total;
       }
 
-      const sale={
-        id:uid('sale'),
-        businessId:currentBusiness().id,
-        date:today(),
-        when:nowLabel(),
+	      const saleCreatedAtMs = Date.now();
+	      const sale={
+	        id:uid('sale'),
+	        businessId:currentBusiness().id,
+	        date:today(),
+	        when:nowLabel(),
         items:cart.map(i=>({
           id: i.id,
           name: i.name,
@@ -1482,20 +1578,25 @@ function parseMoney(value) {
         customerPhone:customerPhoneVal,
         dueDate: method === 'Apartado' ? $('#layawayDueDate').value : null,
         user:session.username,
-        status,
-        received,
-        change,
-        balance,
-        createdBy: authUser().name
-      };
+	        status,
+	        received,
+	        change,
+	        balance,
+	        payments: received > 0 ? [{ id: uid('pay'), date: today(), when: nowLabel(), amount: received, method, createdBy: authUser().name }] : [],
+	        createdAt: new Date(saleCreatedAtMs).toISOString(),
+	        createdAtMs: saleCreatedAtMs,
+	        updatedAt: new Date(saleCreatedAtMs).toISOString(),
+	        updatedAtMs: saleCreatedAtMs,
+	        createdBy: authUser().name
+	      };
       state.sales.push(sale);
-      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id); if(p) p.qty-=i.qty; });
-      
+	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id); if(p) { p.qty-=i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
+
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
         state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:session.username, saleId: sale.id, paymentMethod: sale.method, createdBy: authUser().name});
       }
-      
+
       addAudit('sale_created', { saleId: sale.id, total: sale.total, method: sale.method, status: sale.status });
       if(!save()) return;
       cart=[]; renderCart(); $('#cashReceived').value='';
@@ -1503,7 +1604,7 @@ function parseMoney(value) {
       $('#customerCedula').value = '';
       $('#customerPhone').value = '';
       beep('sale'); toast(`Venta registrada · ${fmt(total)}`);
-      
+
       setTimeout(() => {
         if(window.printReceipt) window.printReceipt(sale.id);
       }, 500);
@@ -1650,16 +1751,16 @@ function parseMoney(value) {
       const input=document.createElement('input');
       input.type='file'; input.accept='image/*'; input.id='scanUpload'; input.style.display='none';
       panel.appendChild(input);
-      
+
       const btnRow = document.createElement('div');
       btnRow.style.display = 'flex'; btnRow.style.gap = '10px'; btnRow.style.margin = '10px';
-      
+
       const uploadBtn=document.createElement('button');
       uploadBtn.className='btn silver block';
       uploadBtn.id='scanUploadBtn';
       uploadBtn.textContent='📸 Foto';
       uploadBtn.onclick=()=>input.click();
-      
+
       const toggleBtn=document.createElement('button');
       toggleBtn.className='btn silver block';
       toggleBtn.id='scanToggleBtn';
@@ -1675,12 +1776,12 @@ function parseMoney(value) {
          panel.classList.remove('show');
          toast('Cámara apagada');
       };
-      
+
       btnRow.appendChild(uploadBtn);
       btnRow.appendChild(toggleBtn);
       btnRow.appendChild(stopBtn);
       panel.appendChild(btnRow);
-      
+
       input.onchange=e=>scanImageFile(e.target.files?.[0], onCode);
     }
     status.textContent='Solicitando permiso de cámara...';
@@ -1771,20 +1872,39 @@ function parseMoney(value) {
 
   function bindCash(){
     const btnReopenCash = $('#reopenCashBtn');
-    if (btnReopenCash) {
-      btnReopenCash.onclick = () => {
-        if (confirm('¿Estás seguro de que deseas abrir una nueva caja diaria para hoy?\nEsto anulará el cierre actual y te permitirá iniciar una nueva jornada.')) {
-          const bid = currentBusiness()?.id;
-          if (bid) {
-            state.dailyReports = (state.dailyReports || []).filter(r => !(r.businessId === bid && r.date === today()));
-            state.movements = (state.movements || []).filter(m => !(m.businessId === bid && m.date === today() && m.kind === 'apertura'));
-            save();
-            renderApp('cash');
-            toast('Caja diaria reabierta exitosamente');
-          }
-        }
-      };
-    }
+	    if (btnReopenCash) {
+	      btnReopenCash.onclick = () => {
+	        if (!isOwnerUser()) return toast('Solo el dueño puede reabrir una caja cerrada.', 'err');
+	        if (!confirm('¿Deseas reabrir la caja de hoy?\nEl cierre anterior NO se borrará; quedará guardado como historial y se registrará la reapertura.')) return;
+	        const reason = prompt('Escribe el motivo de reapertura de caja:');
+	        if (!reason || reason.trim().length < 4) return toast('Motivo requerido para reabrir caja', 'err');
+	        const bid = currentBusiness()?.id;
+	        if (bid) {
+	          const closedReports = (state.dailyReports || []).filter(r => r.businessId === bid && r.date === today() && r.status !== 'reopened');
+	          closedReports.forEach(r => {
+	            r.status = 'reopened';
+	            r.reopenedAt = new Date().toISOString();
+	            r.reopenedBy = authUser().name;
+	            r.reopenReason = reason.trim();
+	          });
+	          state.movements.push({
+	            id: uid('mov'),
+	            businessId: bid,
+	            date: today(),
+	            when: nowLabel(),
+	            kind: 'apertura',
+	            amount: currentBusiness().lastCashBalance || 0,
+	            note: `Reapertura de caja: ${reason.trim()}`,
+	            createdBy: authUser().name,
+	            reopened: true
+	          });
+	          addAudit('cash_reopened', { businessId: bid, date: today(), reason: reason.trim(), reports: closedReports.map(r => r.id) });
+	          save();
+	          renderApp('cash');
+	          toast('Caja reabierta con auditoría');
+	        }
+	      };
+	    }
 
     if (!isDayStarted()) {
        const startBtn = $('#startDayBtnCash');
@@ -1818,7 +1938,7 @@ function parseMoney(value) {
     if (btnNewMove) {
       btnNewMove.onclick=()=>{
         showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><input id="mAmount" inputmode="decimal" value="0"></div><div class="field"><label>Nota</label><input id="mNote" required></div><button type="submit" class="btn primary block">Guardar</button></form>`);
-        
+
         const mAmountInput = $('#mAmount');
         if (mAmountInput) {
           mAmountInput.oninput = () => { mAmountInput.value = mAmountInput.value.replace(/[^0-9.,]/g, ''); };
@@ -1849,7 +1969,7 @@ function parseMoney(value) {
             <button class="btn silver" type="button" data-close>Cancelar</button>
             <button class="btn primary block" type="submit">Generar Cierre</button>
           </form>`);
-        
+
         const cInicialInput = $('#cajaInicial'), eFisicoInput = $('#efectivoFisico');
         if (cInicialInput) cInicialInput.oninput = () => { cInicialInput.value = cInicialInput.value.replace(/[^0-9.,]/g, ''); };
         if (eFisicoInput) eFisicoInput.oninput = () => { eFisicoInput.value = eFisicoInput.value.replace(/[^0-9.,]/g, ''); };
@@ -1859,7 +1979,7 @@ function parseMoney(value) {
            const cInicial = parseMoney($('#cajaInicial').value);
            const eFisico = parseMoney($('#efectivoFisico').value);
            if(!Number.isFinite(cInicial) || !Number.isFinite(eFisico)){ return toast('Montos inválidos', 'err'); }
-           
+
            const mov=movementsForBiz().filter(m=>m.date===today());
            const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
            const out=mov.filter(m=>m.kind!=='ingreso' && m.kind!=='apertura').reduce((a,m)=>a+m.amount,0);
@@ -1871,11 +1991,11 @@ function parseMoney(value) {
            const salesTarjeta = sales.filter(s=>s.method==='Tarjeta').reduce((a,s)=>a+s.total,0);
            const salesTransf = sales.filter(s=>s.method==='Transferencia').reduce((a,s)=>a+s.total,0);
            const abonosApartado = sales.filter(s=>s.method==='Apartado').reduce((a,s)=>a+s.received,0);
-           
+
            const totalIva = sales.reduce((a,s)=>a+(s.iva||0),0);
            let totalItems = 0;
-           sales.forEach(s => s.items?.forEach(i => totalItems += i.qty));
-           
+	           sales.forEach(s => saleItems(s).forEach(i => totalItems += i.qty));
+
            const bizSettings = currentBusiness().settings || {};
            const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
            const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
@@ -1909,7 +2029,7 @@ function parseMoney(value) {
             <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
             <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(authUser().name || 'Usuario')}</div>
             </div>`;
-           
+
            closeModal();
            showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
              <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
@@ -1922,22 +2042,22 @@ function parseMoney(value) {
                  <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
              </div>
            `);
-           
+
            $('#printCierreBtn').onclick = () => {
                const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
                root.innerHTML = html;
                setTimeout(()=>window.print(), 250);
            };
-           
+
            $('#downloadImgCierreBtn').onclick = () => {
                 toast('Generando Imagen...');
                 const wrapper = document.createElement('div');
                 wrapper.innerHTML = html;
                 wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
                 document.body.appendChild(wrapper);
-                
+
                 const script = document.createElement('script');
-                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+                script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
                 script.onload = () => {
                   window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
                     const a = document.createElement('a');
@@ -1951,24 +2071,24 @@ function parseMoney(value) {
 	                script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
 	                document.head.appendChild(script);
 	            };
-           
+
 	           const repId = uid('rep');
 	           state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
 	           currentBusiness().lastCashBalance = eFisico;
 	           if(!save()) return;
 	           renderApp('cash');
-           
+
            toast('Cierre del día generado');
         };
       };
     }
   }
-  function bindMore(){ 
-     $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more)); 
+  function bindMore(){
+     $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more));
      $('#logoutMore')?.addEventListener('click',()=>{
          if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
          else window.click360AppLogout();
-     }); 
+     });
 	     $('#forceSyncCloud')?.addEventListener('click', ()=>{
 	         if(window.click360RefreshNow) window.click360RefreshNow();
 	         else toast('Nube no disponible en este entorno', 'err');
@@ -1996,7 +2116,7 @@ function parseMoney(value) {
 	         <p style="line-height:1.55;color:var(--muted);font-size:14px;">Si el navegador no muestra el instalador automático, abre el menú y elige <b>Instalar app</b> o <b>Agregar a pantalla principal</b>.</p>
 	         <button class="btn primary block" data-close>Entendido</button>`);
 	     });
-	     
+
 	     $('#helpBtn')?.addEventListener('click', () => {
        showModal(`<div class="modalHeader"><h2>\u00bfC\u00f3mo funciona CLICK 360?</h2><button class="closeBtn" data-close>\u00d7</button></div>
          <div style="max-height:60vh;overflow-y:auto;padding:4px;">
@@ -2037,7 +2157,7 @@ function parseMoney(value) {
            </div>
          </div>`);
      });
-     
+
      // Check for pending workers in background to toggle badge
      if (window.click360User && window.click360User.role === 'owner') {
         const workers = state.settings?.workers || [];
@@ -2064,7 +2184,7 @@ function parseMoney(value) {
         list.innerHTML = '<p class="empty">No hay trabajadores registrados.</p>';
         return;
       }
-      
+
       list.innerHTML = workers.map(w => {
         const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${(w.name || 'W').charAt(0).toUpperCase()}</div>`;
         return `
@@ -2087,28 +2207,29 @@ function parseMoney(value) {
         btn.onclick = async () => {
           const email = btn.dataset.delWorker.toLowerCase();
           if (!confirm(`¿Estás seguro de eliminar el acceso para ${email}?`)) return;
-          
+
           btn.textContent = '...';
           btn.disabled = true;
-          
+
           // Find UID if worker has logged in
           const workersList = state.settings?.workers || [];
           const match = workersList.find(w => w.email.toLowerCase() === email);
-          
-          // Remove from local list
-          state.settings.workers = (state.settings.workers || []).filter(w => w.email.toLowerCase() !== email);
-          save();
-          
+
+	          addAudit('worker_revoked', { email, uid: match?.uid || '' });
+	          // Remove from local list after recording the revocation locally.
+	          state.settings.workers = (state.settings.workers || []).filter(w => w.email.toLowerCase() !== email);
+	          save();
+
           // Cancel invite in Firestore if worker hasn't registered yet
           if (window.click360CancelInviteEmail) {
              await window.click360CancelInviteEmail(email);
           }
-          
+
           // Try to remove worker doc in approvedUsers if worker already registered
           if (match && match.uid && window.click360RemoveWorkerUid) {
              await window.click360RemoveWorkerUid(match.uid);
           }
-          
+
           toast('Acceso removido');
           renderApp('workers');
         };
@@ -2121,13 +2242,13 @@ function parseMoney(value) {
       e.preventDefault();
       const name = $('#workerName').value.trim();
       const email = $('#workerEmail').value.trim().toLowerCase();
-      
+
       const workers = state.settings?.workers || [];
       const activeCount = workers.length;
       if (activeCount >= 2) {
          return toast('Límite de 2 trabajadores activos alcanzado en plan gratuito.', 'err');
       }
-      
+
       if (workers.some(w => w.email.toLowerCase() === email)) {
          return toast('Este correo ya está registrado', 'err');
       }
@@ -2138,24 +2259,25 @@ function parseMoney(value) {
 
       try {
          // 1. Write invite to Firestore approvedUsersByEmail
-         if (window.click360InviteWorkerEmail) {
-            await window.click360InviteWorkerEmail(email, name);
-         }
-         
+	         let inviteMeta = null;
+	         if (window.click360InviteWorkerEmail) {
+	            inviteMeta = await window.click360InviteWorkerEmail(email, name);
+	         }
+
          // 2. Add to local storage settings list
          state.settings ||= {};
          state.settings.workers ||= [];
-         state.settings.workers.push({ email, name, status: 'active' });
-         save();
-         
+	         state.settings.workers.push({ email, name, status: 'active', inviteToken: inviteMeta?.inviteToken || '', ownerId: window.click360User.uid });
+	         save();
+
          // 3. Display invite link PWA-compatible
          $('#inviteLinkBox').style.display = 'block';
-         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + window.click360User.uid;
+	         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + encodeURIComponent(window.click360User.uid) + (inviteMeta?.inviteToken ? "&token=" + encodeURIComponent(inviteMeta.inviteToken) : "");
          $('#inviteLinkVal').value = inviteLink;
-         
+
          toast('Trabajador registrado y pre-aprobado', 'ok');
          loadWorkers();
-         
+
          // Reset fields
          $('#workerName').value = '';
          $('#workerEmail').value = '';
@@ -2275,10 +2397,11 @@ function parseMoney(value) {
        renderApp('settings');
     };
 
-    $('#saveBiz').onclick=()=>{
-       const b=currentBusiness(); 
-       b.name=$('#bizName').value.trim()||b.name; 
-       b.type=$('#bizType').value; 
+	    $('#saveBiz').onclick=()=>{
+	       if (!isOwnerUser()) return toast('Solo el dueño puede cambiar datos del negocio.', 'err');
+	       const b=currentBusiness();
+       b.name=$('#bizName').value.trim()||b.name;
+       b.type=$('#bizType').value;
        currentBusiness().settings = currentBusiness().settings || {};
        currentBusiness().settings.iva = parseFloat($('#bizIva').value) || 0;
        currentBusiness().settings.ruc = $('#bizRuc') ? $('#bizRuc').value.trim() : '';
@@ -2288,19 +2411,20 @@ function parseMoney(value) {
 	       if(!save()) return;
 	       renderApp('settings'); toast('Guardado');
     };
-    $('#createBiz').onclick=()=>{
-      const name=$('#newBizName').value.trim(); 
-      if(!name)return toast('Falta el nombre','err'); 
+	    $('#createBiz').onclick=()=>{
+	      if (!isOwnerUser()) return toast('Solo el dueño puede crear negocios.', 'err');
+	      const name=$('#newBizName').value.trim();
+      if(!name)return toast('Falta el nombre','err');
       const businessLimit = Number(window.click360User?.businessLimit || 2);
       if(state.businesses.length >= businessLimit) return toast(`Tu plan permite hasta ${businessLimit} negocios.`, 'err');
-      const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08', settings:{}}; 
+      const b={id:uid('biz'),code:'EMPRESA-'+String(state.businesses.length+1).padStart(3,'0'),name,type:$('#newBizType').value,status:'activo',due:'2026-07-08', settings:{}};
       b.settings.ruc = $('#newBizRuc').value.trim();
       b.settings.phone = $('#newBizPhone').value.trim();
       b.settings.address = '';
-      state.businesses.push(b); 
-      state.activeBusinessId=b.id; 
-      const user=currentUser(); 
-      if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id); 
+      state.businesses.push(b);
+      state.activeBusinessId=b.id;
+      const user=currentUser();
+      if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id);
       addAudit('business_created', { businessId: b.id, name: b.name });
       if(!save()) return;
       renderApp('settings'); toast('Negocio creado');
@@ -2316,16 +2440,20 @@ function parseMoney(value) {
       };
     }
 
-    $('#resetInventoryBtn').onclick = async () => {
-       const ok = confirm('ADVERTENCIA DE SEGURIDAD\nSe borrará todo el inventario de esta empresa. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
+	    $('#resetInventoryBtn').onclick = async () => {
+	       if (!isOwnerUser()) {
+	         return toast('Solo el dueño de la cuenta puede reiniciar inventario.', 'err');
+	       }
+	       const ok = confirm('ADVERTENCIA DE SEGURIDAD\nSe borrará todo el inventario de esta empresa. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
        if (!ok) return toast('Acción cancelada', 'err');
        downloadBackup('antes-de-reiniciar-inventario');
        const confirmWord = prompt('Para confirmar que deseas reiniciar el inventario del negocio actual, escribe exactamente: REINICIAR');
        if (confirmWord !== 'REINICIAR') {
           return toast('Acción cancelada', 'err');
        }
-       state.products = state.products.filter(p => p.businessId !== currentBusiness().id);
-       addAudit('inventory_reset', { businessId: currentBusiness().id });
+	       state.products.filter(p => p.businessId === currentBusiness().id).forEach(p => tombstoneProduct(p, 'inventory_reset'));
+	       state.products = state.products.filter(p => p.businessId !== currentBusiness().id);
+	       addAudit('inventory_reset', { businessId: currentBusiness().id });
        if(!save()) return;
        if (window.click360SyncNow) {
          toast('Sincronizando...');
@@ -2346,8 +2474,9 @@ function parseMoney(value) {
        if (confirmWord !== 'BORRAR TODO') {
           return toast('Acción cancelada', 'err');
        }
-	       const bid = currentBusiness().id;
-	       state.products = state.products.filter(x => x.businessId !== bid);
+		       const bid = currentBusiness().id;
+		       state.products.filter(x => x.businessId === bid).forEach(p => tombstoneProduct(p, 'system_reset'));
+		       state.products = state.products.filter(x => x.businessId !== bid);
 	       state.sales = state.sales.filter(x => x.businessId !== bid);
 	       state.dailyReports = state.dailyReports.filter(x => x.businessId !== bid);
 	       state.invoices = (state.invoices || []).filter(x => x.businessId !== bid);
@@ -2401,19 +2530,19 @@ function parseMoney(value) {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
-    
+
     // Save state
     ctx.save();
-    
+
     // Background color
     ctx.fillStyle = options.bgColor || '#ffffff';
     roundRect(ctx, 0, 0, w, h, 18 * scale, true, false);
-    
+
     // Text and QR color
     const fg = options.fgColor || '#000000';
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
-    
+
     // Apply Y offset adjustments
     const yAdj = (options.yOffsetAdj || 0) * scale;
     const nameScale = options.nameScale || 1.0;
@@ -2422,7 +2551,7 @@ function parseMoney(value) {
     // Business name
     ctx.font = `900 ${16 * scale}px Arial`;
     ctx.fillText(currentBusiness().name.toUpperCase(), w / 2, 35 * scale + yAdj, w - 20 * scale);
-    
+
     // Local address (under name, small)
     let yOffset = 52 * scale + yAdj;
     if (options.address) {
@@ -2430,29 +2559,29 @@ function parseMoney(value) {
        ctx.fillText(options.address, w / 2, yOffset, w - 20 * scale);
        yOffset += 14 * scale;
     }
-    
+
     // QR Code (centered)
     const qrCanvas = document.createElement('canvas');
     QR.draw(qrCanvas, productPayload(product), 170 * scale, 5, fg, options.qrBgColor || options.bgColor || '#ffffff');
     ctx.drawImage(qrCanvas, (w - 170 * scale) / 2, yOffset);
-    
+
     // QR Footer text ("Sistema contable Click 360")
     yOffset += 185 * scale;
     ctx.font = `${8 * scale}px Arial`;
     ctx.fillText("Sistema contable Click 360", w / 2, yOffset, w - 20 * scale);
-    
+
     // Barcode Code text
     yOffset += 18 * scale;
     ctx.font = `${10 * scale}px monospace`;
     ctx.fillText(product.code, w / 2, yOffset, w - 20 * scale);
-    
+
     // Product Name (wrapped if too long)
     yOffset += 24 * scale;
     ctx.font = `900 ${Math.round(16 * scale * nameScale)}px Arial`;
-    
+
     const pName = product.name || '';
     const maxTextWidth = w - 24 * scale;
-    
+
     // Simple wrapping logic
     const words = pName.split(' ');
     let line = '';
@@ -2469,7 +2598,7 @@ function parseMoney(value) {
       }
     }
     lines.push(line.trim());
-    
+
     // Draw product name lines (maximum 2 lines to prevent layout break)
     const maxLines = Math.min(2, lines.length);
     for (let i = 0; i < maxLines; i++) {
@@ -2478,15 +2607,15 @@ function parseMoney(value) {
         yOffset += 16 * scale * nameScale;
       }
     }
-    
+
     // Prices with legend (incluye IVA)
     yOffset += 28 * scale;
     ctx.font = `900 ${Math.round(18 * scale * priceScale)}px Arial`;
-    
-    const priceText = product.cardPrice && product.cardPrice !== product.price ? 
-      `Efectivo: ${fmt(product.price)} / Tarjeta: ${fmt(product.cardPrice)}` : 
+
+    const priceText = product.cardPrice && product.cardPrice !== product.price ?
+      `Efectivo: ${fmt(product.price)} / Tarjeta: ${fmt(product.cardPrice)}` :
       fmt(product.price);
-    
+
     // Measure price text and auto-scale if too large
     let priceFontSize = Math.round(18 * scale * priceScale);
     ctx.font = `900 ${priceFontSize}px Arial`;
@@ -2496,9 +2625,9 @@ function parseMoney(value) {
       ctx.font = `900 ${priceFontSize}px Arial`;
       priceWidth = ctx.measureText(priceText).width;
     }
-    
+
     ctx.fillText(priceText, w / 2, yOffset, maxTextWidth);
-    
+
     yOffset += 14 * scale;
     ctx.font = `900 ${9 * scale}px Arial`;
     ctx.fillText("(incluye IVA)", w / 2, yOffset);
@@ -2508,7 +2637,7 @@ function parseMoney(value) {
   async function openLabelModal(product){
     const bizSettings = currentBusiness().settings || {};
     const address = bizSettings.address || '';
-    
+
     const templates = state.settings?.labelTemplates || [];
     const templateOptions = templates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
 
@@ -2546,7 +2675,7 @@ function parseMoney(value) {
                  <input type="color" id="labelFgColor" value="#000000" style="width:100%; height:36px; padding:2px; cursor:pointer;">
               </div>
            </div>
-           
+
            <!-- Layout Adjustments -->
            <div class="field">
               <label style="font-size:12px; display:flex; justify-content:space-between;">Mover Textos (Vertical) <span id="yOffsetVal" style="color:var(--gold);">0px</span></label>
@@ -2587,7 +2716,7 @@ function parseMoney(value) {
       </div>`);
 
     const canvas = $('#labelPreviewCanvas');
-    
+
     const getOptions = (extraScale = null) => {
        return {
           scale: extraScale || 2,
@@ -2622,7 +2751,7 @@ function parseMoney(value) {
     $('#labelFgColor').oninput = updatePreview;
     $('#labelSocial').oninput = updatePreview;
     $('#labelAddress').oninput = updatePreview;
-    
+
     // Wire range inputs
     $('#labelYOffset').oninput = (e) => { $('#yOffsetVal').textContent = e.target.value + 'px'; updatePreview(); };
     $('#labelNameScale').oninput = (e) => { $('#nameScaleVal').textContent = e.target.value + 'x'; updatePreview(); };
@@ -2672,13 +2801,13 @@ function parseMoney(value) {
        state.settings.labelTemplates.push(tpl);
        save();
        toast('Plantilla guardada con éxito', 'ok');
-       
+
        // Reload select dropdown options
        const updatedTemplates = state.settings.labelTemplates;
        $('#applyTemplateSelect').innerHTML = `<option value="">-- Seleccionar plantilla --</option>` +
           updatedTemplates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
     };
-     
+
     updatePreview();
 
     $('#printOne').onclick = () => {
@@ -2722,7 +2851,7 @@ function parseMoney(value) {
        const canvas=document.createElement('canvas');
        item.appendChild(canvas);
        wrap.appendChild(item);
-       
+
        const opt = {
           scale: 3,
           bgColor: options.bgColor || '#ffffff',
@@ -2769,13 +2898,30 @@ function parseMoney(value) {
       && Array.isArray(data.sales)
       && Array.isArray(data.movements);
   }
-  function restoreBackup(e){ 
-    const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{const data=JSON.parse(reader.result); if(!validateBackupData(data)) return toast('Respaldo inválido o incompleto','err'); const summary=`Productos: ${(data.products||[]).length}\nVentas: ${(data.sales||[]).length}\nMovimientos: ${(data.movements||[]).length}\nNegocios: ${(data.businesses||[]).length}`; if(!confirm(`Este respaldo reemplazará los datos actuales.\n\n${summary}\n\nSe creará un respaldo automático antes de restaurar. ¿Continuar?`)) return; const word=prompt('Escribe RESTAURAR para confirmar:'); if(word!=='RESTAURAR') return toast('Restauración cancelada','err'); downloadBackup('antes-de-restaurar'); state=normalizeState(data); addAudit('backup_restored', { summary }); if(!save()) return;renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file); 
-  }
-  function bindBackup(){ 
-    $('#backupBtn').onclick=downloadBackup; 
-    $('#restoreFile').onchange = (e) => {
-        const file = e.target.files[0]; if(!file) return;
+	  function restoreBackup(e){
+	    if(!isOwnerUser()) return toast('Solo el dueño puede restaurar respaldos.', 'err');
+	    const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{const data=JSON.parse(reader.result); if(!validateBackupData(data)) return toast('Respaldo inválido o incompleto','err'); const summary=`Productos: ${(data.products||[]).length}\nVentas: ${(data.sales||[]).length}\nMovimientos: ${(data.movements||[]).length}\nNegocios: ${(data.businesses||[]).length}`; if(!confirm(`Este respaldo reemplazará los datos actuales.\n\n${summary}\n\nSe creará un respaldo automático antes de restaurar. ¿Continuar?`)) return; const word=prompt('Escribe RESTAURAR para confirmar:'); if(word!=='RESTAURAR') return toast('Restauración cancelada','err'); downloadBackup('antes-de-restaurar'); state=normalizeState(data); addAudit('backup_restored', { summary }); if(!save()) return;renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file);
+	  }
+	  function bindBackup(){
+	    $('#backupBtn').onclick=downloadBackup;
+	    $('#forceSyncCloud')?.addEventListener('click', async ()=>{
+	      if(window.click360SyncNow) {
+	        toast('Guardando en nube...');
+	        await window.click360SyncNow().then(()=>toast('Nube actualizada')).catch(()=>toast('No se pudo sincronizar', 'err'));
+	      } else toast('Nube no disponible en este entorno', 'err');
+	    });
+	    $('#refreshCloudBtn')?.addEventListener('click', async ()=>{
+	      if(window.click360RefreshNow) {
+	        toast('Actualizando desde nube...');
+	        await window.click360RefreshNow().catch(()=>toast('No se pudo actualizar desde nube', 'err'));
+	      } else toast('Nube no disponible en este entorno', 'err');
+	    });
+	    $('#restoreFile').onchange = (e) => {
+	        if(!isOwnerUser()) {
+	          e.target.value = '';
+	          return toast('Solo el dueño puede restaurar respaldos.', 'err');
+	        }
+	        const file = e.target.files[0]; if(!file) return;
         const r = new FileReader();
         r.onload = async (ev) => {
           try {
@@ -2811,7 +2957,7 @@ function parseMoney(value) {
     function generateExcelReport(dateFrom, dateTo) {
        const biz = currentBusiness();
        const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
-       
+
        // 1. Compile Sales
        const salesRows = [
          ["FECHA y HORA", "ID VENTA", "METODO", "CATEGORIA", "PRODUCTO/DETALLE", "CANTIDAD", "PRECIO UNIT.", "SUBTOTAL VENTA", "DESCUENTO", "IVA", "TOTAL VENTA", "RECIBIDO", "SALDO", "CLIENTE", "CEDULA/RUC", "TELEFONO", "ATENDIDO POR", "ESTADO"]
@@ -2922,7 +3068,7 @@ function parseMoney(value) {
 
        // Create workbook
        const wb = XLSX.utils.book_new();
-       
+
        const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
        const wsSales = XLSX.utils.aoa_to_sheet(salesRows);
        const wsMovs = XLSX.utils.aoa_to_sheet(movRows);
@@ -2933,10 +3079,10 @@ function parseMoney(value) {
        XLSX.utils.book_append_sheet(wb, wsMovs, "Movimientos");
        XLSX.utils.book_append_sheet(wb, wsInvoices, "Facturas");
 
-       const filename = dateFrom === dateTo ? 
+       const filename = dateFrom === dateTo ?
           `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}.xlsx` :
           `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}_a_${dateTo}.xlsx`;
-       
+
 	       XLSX.writeFile(wb, filename);
 	       return { totalVentas, salesCount, movCount };
 	    }
@@ -3012,9 +3158,9 @@ function parseMoney(value) {
 	      try {
 	         const info = window.XLSX ? generateExcelReport(dateFrom, dateTo) : downloadCsvFallback(dateFrom, dateTo);
 	         const bizName = currentBusiness().name;
-         
+
          const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: $${info.totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${info.salesCount}\n📋 Movimientos de caja: ${info.movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo EXCEL adjunto para ver los detalles._`;
-         
+
 	         toast(`${info.csv ? 'CSV' : 'Excel'} descargado. Abriendo WhatsApp... Adjunta el archivo al chat.`, 'ok', 6000);
          setTimeout(() => {
             window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
@@ -3046,18 +3192,20 @@ function parseMoney(value) {
     if(!sale) return toast('Venta no encontrada', 'err');
     const reason = prompt('Motivo de anulación:');
     if(!reason || !reason.trim()) return toast('Debes indicar el motivo de anulación', 'err');
-    
+
     // Devolver stock
-    sale.items.forEach(i => {
-       const p = state.products.find(prod=>prod.id === i.id);
-       if(p) p.qty += i.qty;
-    });
-    
-    sale.status = 'cancelled';
-    sale.cancelledBy = authUser().name || 'Usuario';
-    sale.cancelledAt = nowLabel();
-    sale.cancelReason = reason.trim();
-    
+	    saleItems(sale).forEach(i => {
+	       const p = state.products.find(prod=>prod.id === i.id);
+	       if(p) { p.qty += i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; }
+	    });
+
+	    sale.status = 'cancelled';
+	    sale.cancelledBy = authUser().name || 'Usuario';
+	    sale.cancelledAt = nowLabel();
+	    sale.cancelReason = reason.trim();
+	    sale.updatedAt = new Date().toISOString();
+	    sale.updatedAtMs = Date.now();
+
     // Anular todos los movimientos ligados a la venta, incluyendo abonos.
     const linkedMovements = state.movements.filter(m => m.saleId === sale.id && m.status !== 'cancelled');
     linkedMovements.forEach(mov => {
@@ -3068,7 +3216,7 @@ function parseMoney(value) {
        mov.originalAmount = mov.amount;
        mov.amount = 0;
     });
-    
+
     state.movements.push({
        id:uid('mov'),
        businessId:currentBusiness().id,
@@ -3085,7 +3233,7 @@ function parseMoney(value) {
        cancelledBy:authUser().name || 'Usuario',
        cancelledAt:nowLabel()
     });
-    
+
     addAudit('sale_cancelled', { saleId: sale.id, total: sale.total, reason: reason.trim(), linkedMovements: linkedMovements.length });
     if(!save()) return;
     renderApp('reports');
@@ -3098,23 +3246,34 @@ function parseMoney(value) {
     const sale = state.sales.find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(!['layaway','pending_payment'].includes(sale.status)) return toast('Esta cuenta no tiene saldo pendiente', 'err');
-    
+
     const amountStr = prompt(`Saldo pendiente: ${fmt(sale.balance)}\nIngrese el monto a abonar:`);
     if(!amountStr) return;
     const amount = parseMoney(amountStr);
     if(!Number.isFinite(amount) || amount <= 0) return toast('Monto inválido', 'err');
     if(amount > sale.balance) return toast('El abono no puede superar el saldo pendiente', 'err');
-    
-    sale.received = (sale.received || 0) + amount;
-    sale.balance -= amount;
-    
-    if(sale.balance <= 0) {
-       sale.status = 'paid';
+
+	    sale.received = (sale.received || 0) + amount;
+	    sale.balance -= amount;
+	    sale.payments ||= [];
+	    sale.payments.push({
+	      id: uid('pay'),
+	      date: today(),
+	      when: nowLabel(),
+	      amount,
+	      method: 'Efectivo',
+	      createdBy: authUser().name
+	    });
+	    sale.updatedAt = new Date().toISOString();
+	    sale.updatedAtMs = Date.now();
+
+	    if(sale.balance <= 0) {
+	       sale.status = 'paid';
        toast('Cuenta saldada en su totalidad');
     } else {
        toast(`Abono registrado. Nuevo saldo: ${fmt(sale.balance)}`);
     }
-    
+
     state.movements.push({
       id: uid('mov'),
       businessId: currentBusiness().id,
@@ -3141,7 +3300,7 @@ function parseMoney(value) {
     const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
     const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
     const currentIva = bizSettings.iva || 0;
-    
+
     const receiptHtml = `
       <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:15px; width:80mm; background:white; line-height:1.4;">
         ${logoUrl}
@@ -3161,7 +3320,7 @@ function parseMoney(value) {
             <tr style="border-bottom:1px solid #000;"><th style="text-align:left;">Detalle</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Total</th></tr>
           </thead>
           <tbody>
-            ${s.items.map(i=>`<tr><td style="padding:4px 0;">${escapeHtml(i.name)}</td><td style="text-align:center;">${i.qty}</td><td style="text-align:right;">${fmt(i.price*i.qty)}</td></tr>`).join('')}
+	            ${saleItems(s).map(i=>`<tr><td style="padding:4px 0;">${escapeHtml(i.name)}</td><td style="text-align:center;">${i.qty}</td><td style="text-align:right;">${fmt(i.price*i.qty)}</td></tr>`).join('')}
           </tbody>
         </table>
         <div style="border-top:1px dashed #000; margin:8px 0;"></div>
@@ -3169,32 +3328,32 @@ function parseMoney(value) {
         ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA (${currentIva}%):</span><span>${fmt(s.iva)}</span></div>` : ''}
         ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
         <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px; font-weight:bold; border-top:1px solid #000; padding-top:4px;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(s.received||s.total)}</span></div>
+	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(s.received ?? (s.status === 'paid' ? s.total : 0))}</span></div>
         ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#d9534f; font-weight:bold;"><span>Saldo Pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
         ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha Retiro:</span><span>${escapeHtml(s.dueDate)}</span></div>` : ''}
         <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
         <div style="text-align:center; font-size:10px;">¡Gracias por su compra!<br><small>CLICK 360 - Control de Negocios</small></div>
       </div>
     `;
- 
+
     showModal(`
       <div class="modalHeader"><h2>Venta Completada</h2><button class="closeBtn" data-close>×</button></div>
       <p style="color:var(--green); text-align:center; font-weight:bold; margin-bottom:12px;">✓ Guardado exitosamente</p>
-      
+
       <div style="display:flex; justify-content:center; margin-bottom:16px;">
         <div style="max-height:220px; overflow-y:auto; border:1px solid #444; border-radius:12px; background:#fff; padding:4px;">
           ${receiptHtml}
         </div>
       </div>
-      
+
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
         <button class="btn primary" id="printReceiptBtn">🖨️ Imprimir Ticket</button>
         <button class="btn silver" id="downloadImgBtn">🖼️ Descargar Imagen (PNG)</button>
-        ${s.customerPhone ? `<button class="btn" style="grid-column: 1 / -1; border:1px solid #25D366; color:#25D366; background:transparent;" id="whatsappReminderBtn">💬 Recordatorio WhatsApp</button>` : ''}
+	        ${s.customerPhone && Number(s.balance || 0) > 0 ? `<button class="btn" style="grid-column: 1 / -1; border:1px solid #25D366; color:#25D366; background:transparent;" id="whatsappReminderBtn">💬 Recordatorio WhatsApp</button>` : ''}
       </div>
       <button class="btn block" id="doneSaleBtn" style="border:1px solid var(--gold); color:var(--gold);">Listo / Nueva Venta</button>
     `);
-    
+
     const waBtn = $('#whatsappReminderBtn');
     if (waBtn) {
        waBtn.onclick = () => {
@@ -3218,9 +3377,9 @@ function parseMoney(value) {
       wrapper.innerHTML = receiptHtml;
       wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
       document.body.appendChild(wrapper);
-      
+
       const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+      script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
       script.onload = () => {
         window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
           const a = document.createElement('a');
@@ -3246,7 +3405,7 @@ function parseMoney(value) {
     }
     const m = state.movements.find(x => x.id === id);
     if (!m) return toast('Movimiento no encontrado', 'err');
-    
+
     showModal(`<div class="modalHeader"><h2>Editar movimiento</h2><button class="closeBtn" data-close>×</button></div>
       <form id="editMoveForm">
         <div class="field">
@@ -3269,19 +3428,19 @@ function parseMoney(value) {
         </div>
         <button type="submit" class="btn primary block">Guardar cambios</button>
       </form>`);
-      
+
     const emAmountInput = $('#emAmount');
     if (emAmountInput) {
        emAmountInput.oninput = () => { emAmountInput.value = emAmountInput.value.replace(/[^0-9.,]/g, ''); };
     }
-    
+
     $('#editMoveForm').onsubmit = (e) => {
        e.preventDefault();
        const k = $('#emKind').value;
        const a = parseMoney($('#emAmount').value);
        const n = $('#emNote').value.trim();
        if (!Number.isFinite(a) || a < 0) return toast('Monto inválido', 'err');
-       
+
        m.kind = k;
        m.amount = a;
        m.note = n;
@@ -3298,17 +3457,17 @@ function parseMoney(value) {
       return toast('Solo el propietario puede anular transacciones', 'err');
     }
     if (!confirm('\u00bfSeguro que deseas anular este movimiento? Se conservar\u00e1 el registro.')) return;
-    
+
     const mov = state.movements.find(x => x.id === id);
     if (!mov) return toast('Movimiento no encontrado', 'err');
-    
+
     // Soft delete: mark as cancelled with audit trail
     mov.status = 'cancelled';
     mov.cancelledBy = authUser().name || 'Propietario';
     mov.cancelledAt = nowLabel();
     mov.originalAmount = mov.amount;
     mov.amount = 0;
-    
+
     save();
     renderApp('cash');
     toast(`Movimiento anulado por ${mov.cancelledBy} a las ${mov.cancelledAt}`);
@@ -3349,12 +3508,12 @@ function parseMoney(value) {
      };
      $('#downloadImgCierreBtn').onclick = () => {
           toast('Generando Imagen...');
-          const wrapper = document.createElement('div'); wrapper.innerHTML = r.html; 
+          const wrapper = document.createElement('div'); wrapper.innerHTML = r.html;
           wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
-          document.body.appendChild(wrapper); 
-          
+          document.body.appendChild(wrapper);
+
           const script = document.createElement('script');
-          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+          script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
           script.onload = () => {
             window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
               const a = document.createElement('a');
@@ -3373,32 +3532,36 @@ function parseMoney(value) {
   window.printReports = function(mode = 'print') {
     state.reportsFrom = state.reportsFrom || today();
     state.reportsTo = state.reportsTo || today();
-    const allSales = salesForBiz();
-    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
-    const validSales = sales.filter(s => s.status!=='cancelled');
-    const total = validSales.reduce((a,s)=>a+(s.status==='layaway' ? (s.received||0) : s.total),0);
-    const tickets = validSales.length;
-    const counts={}; validSales.forEach(s=>s.items.forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
+	    const allSales = salesForBiz();
+	    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
+	    const validSales = sales.filter(s => s.status!=='cancelled');
+	    const soldTotal = validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
+	    const collectedTotal = validSales.reduce((a,s)=>a+Number((s.received ?? (s.status === 'paid' ? s.total : 0)) || 0),0);
+	    const pendingTotal = validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
+	    const tickets = validSales.length;
+	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
     const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-    
+
     // Anulados
     const cancelled = sales.filter(s => s.status==='cancelled');
-    
+
     const html = `
       <div style="font-family:sans-serif; color:#000; font-size:12px; margin:0; padding:20px; background:white;">
       <h2 style="font-size:20px; margin:0 0 10px;">${escapeHtml(currentBusiness().name)} - Reporte General</h2>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Periodo:</span><span>${state.reportsFrom} a ${state.reportsTo}</span></div>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Impreso:</span><span>${nowLabel()}</span></div>
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
-      
+
       <div style="width:100%; max-width:400px; margin:0 auto 20px;">
         <h3 style="margin-top:10px; text-align:center;">Crecimiento de Ventas (7 días)</h3>
         ${buildChartHtml(allSales).replace(/var\\(--gold\\)/g, '#D4AF37').replace(/var\\(--line\\)/g, '#ddd').replace(/var\\(--muted\\)/g, '#666')}
       </div>
-      
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingreso Ventas:</span><strong>${fmt(total)}</strong></div>
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tickets Exitosos:</span><strong>${tickets}</strong></div>
-      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio por Ticket:</span><strong>${fmt(tickets?total/tickets:0)}</strong></div>
+
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendido:</span><strong>${fmt(soldTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cobrado:</span><strong>${fmt(collectedTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pendiente:</span><strong>${fmt(pendingTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tickets Exitosos:</span><strong>${tickets}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio cobrado:</span><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div>
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
       <h3 style="margin-top:10px;">Productos Más Vendidos</h3>
       <table style="width:100%; border-collapse:collapse; margin-top:10px;">
@@ -3411,7 +3574,7 @@ function parseMoney(value) {
         <tr><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Fecha/Hora</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Vendedor</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Método</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Estado</th><th style="text-align:left; padding:6px; border-bottom:1px solid #eee;">Total</th></tr>
         ${sales.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.createdBy || s.user || 'Sistema')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.method)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(labelStatus(s.status))}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
       </table>
-      
+
       ${cancelled.length > 0 ? `
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
       <h3 style="margin-top:10px; color:#d9534f;">Anulaciones</h3>
@@ -3420,9 +3583,9 @@ function parseMoney(value) {
         ${cancelled.slice().reverse().map(s=>`<tr><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.cancelledAt || s.when)}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee; color:#d9534f;">${escapeHtml(s.cancelledBy || 'Desconocido')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${escapeHtml(s.createdBy || s.user || 'Sistema')}</td><td style="text-align:left; padding:6px; border-bottom:1px solid #eee;">${fmt(s.total)}</td></tr>`).join('')}
       </table>
       ` : ''}
-      
+
       </div>`;
-      
+
     if (mode === 'print') {
         const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
         root.innerHTML = html;
@@ -3433,9 +3596,9 @@ function parseMoney(value) {
         wrapper.innerHTML = html;
         wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
         document.body.appendChild(wrapper);
-        
+
         const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+        script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
         script.onload = () => {
           window.html2canvas(wrapper.firstElementChild, { scale: 2, useCORS: true }).then(canvas => {
             const a = document.createElement('a');
@@ -3484,10 +3647,21 @@ function parseMoney(value) {
     },200);
     return !!p;
   }
-  window.click360Route=renderApp;
-  window.click360SetSession = setSession;
+	  window.click360Route=renderApp;
+	  window.click360SetSession = setSession;
+	  window.addEventListener('click360-sync-status', () => {
+	    const info = syncStatusInfo();
+	    const side = $('#syncStatusPill');
+	    if (side) side.outerHTML = syncPillHtml(false);
+	    const top = $('#syncStatusPillTop');
+	    if (top) top.outerHTML = syncPillHtml(true);
+	    const title = $('#cloudStatusDynamic');
+	    if (title) title.textContent = `★ ${info.title}`;
+	    const detail = $('#cloudStatusDetail');
+	    if (detail) detail.textContent = info.detail;
+	  });
 
-  // Auto-save safety net: force save every 30s to ensure cloud sync
+	  // Auto-save safety net: force save every 30s to ensure cloud sync
   let _lastAutoSaveHash = '';
   setInterval(() => {
     if (!session) return;
@@ -3504,11 +3678,11 @@ function parseMoney(value) {
   function invoicesView() {
     const biz = currentBusiness();
     const invs = (state.invoices || []).filter(i => i.businessId === biz.id);
-    
+
     // Default dates: start of this month to today
     const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
     const lastDay = today();
-    
+
     return `<div class="pageHead">
         <div>
           <h1>Facturas de Proveedores</h1>
@@ -3516,7 +3690,7 @@ function parseMoney(value) {
         </div>
         <button class="btn primary" id="newInvoiceBtn">➕ Registrar Factura</button>
       </div>
-      
+
       <section class="card sectionCard">
          <h3>Buscar y Filtrar</h3>
          <div class="formGrid" style="margin-bottom:12px;">
@@ -3540,10 +3714,10 @@ function parseMoney(value) {
       return '<p class="empty">No se encontraron facturas en este periodo.</p>';
     }
     return filteredInvoices.slice().reverse().map(i => {
-      const imgBtn = i.imageData ? 
-         `<button class="btn silver mini" onclick="window.viewInvoiceImage('${i.id}')" style="padding:4px 8px; font-size:12px; margin-right:8px;">👁️ Ver Foto</button>` : 
+      const imgBtn = i.imageData ?
+         `<button class="btn silver mini" onclick="window.viewInvoiceImage('${i.id}')" style="padding:4px 8px; font-size:12px; margin-right:8px;">👁️ Ver Foto</button>` :
          `<span style="font-size:11px; color:var(--muted); margin-right:8px;">Sin foto</span>`;
-         
+
       return `<div class="movementItem" style="padding:12px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center;">
          <div style="flex:1; min-width:0;">
             <div style="font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(i.provider)}</div>
@@ -3565,12 +3739,12 @@ function parseMoney(value) {
   function bindInvoices() {
     const list = $('#invoiceList');
     const biz = currentBusiness();
-    
+
     const filterAndRender = () => {
        const q = $('#invoiceSearch')?.value.toLowerCase() || '';
        const dateFrom = $('#invoiceDateFrom')?.value || '';
        const dateTo = $('#invoiceDateTo')?.value || today();
-       
+
        const allInvs = state.invoices || [];
        const filtered = allInvs.filter(i => {
           const matchBiz = i.businessId === biz.id;
@@ -3578,14 +3752,14 @@ function parseMoney(value) {
           const matchDate = (!dateFrom || i.date >= dateFrom) && i.date <= dateTo;
           return matchBiz && matchQuery && matchDate;
        });
-       
+
        list.innerHTML = invoiceListHtml(filtered);
     };
 
     $('#newInvoiceBtn').onclick = () => openInvoiceModal(null, filterAndRender);
     $('#filterInvoicesBtn').onclick = filterAndRender;
     if ($('#invoiceSearch')) $('#invoiceSearch').oninput = filterAndRender;
-    
+
     // Expose helpers globally so they work in inline onclick
     window.viewInvoiceImage = (id) => {
        const inv = (state.invoices || []).find(x => x.id === id);
@@ -3597,7 +3771,7 @@ function parseMoney(value) {
              <button class="btn block primary" style="margin-top:10px;" data-close>Cerrar Vista</button>`);
        }
     };
-    
+
     window.deleteInvoice = (id) => {
        if (confirm('¿Estás seguro de que quieres eliminar esta factura?')) {
           state.invoices = (state.invoices || []).filter(x => x.id !== id);
@@ -3607,7 +3781,7 @@ function parseMoney(value) {
           toast('Factura eliminada');
        }
     };
-    
+
     // Initial render
     filterAndRender();
   }
@@ -3651,12 +3825,12 @@ function parseMoney(value) {
        const date = $('#iDate').value;
        const amount = parseMoney($('#iAmount').value);
        const notes = $('#iNotes').value.trim();
-       
+
        if (!provider || !number || !amount) {
           toast('Por favor completa todos los campos requeridos', 'err');
           return;
        }
-       
+
        const newInv = {
           id: uid('inv'),
           businessId: currentBusiness().id,
@@ -3669,7 +3843,7 @@ function parseMoney(value) {
           createdBy: authUser().name || 'Usuario',
           createdAt: nowLabel()
        };
-       
+
        state.invoices ||= [];
        state.invoices.push(newInv);
        state.movements.push({
@@ -3685,9 +3859,9 @@ function parseMoney(value) {
        });
        addAudit('supplier_invoice_created', { invoiceId: newInv.id, provider, number, amount });
        if(!save()) return;
-       
+
        if (window.click360SyncNow) window.click360SyncNow().catch(()=>{});
-       
+
        closeModal();
        toast('Factura guardada con éxito', 'ok');
        if (onSaved) onSaved();

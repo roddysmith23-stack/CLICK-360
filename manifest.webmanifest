@@ -1,11 +1,14 @@
 {
   "name": "CLICK 360",
   "short_name": "CLICK 360",
+  "id": "/CLICK-360/",
+  "lang": "es-EC",
   "description": "Control total de tu negocio: inventario, ventas, caja, reportes y etiquetas QR.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
+  "categories": ["business", "productivity", "finance"],
   "theme_color": "#050505",
   "background_color": "#050505",
   "icons": [

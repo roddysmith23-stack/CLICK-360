@@ -6,32 +6,28 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function approvedUser() {
-      return signedIn()
-        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
-        && (
-          get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.status == "active"
-          || get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.approved == true
-        )
-        && get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.status != "blocked";
+    function userDoc() {
+      return get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid));
     }
 
-    function ownerUser() {
-      return approvedUser()
-        && (
-          get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.role == "owner"
-          || get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid)).data.isOwner == true
-        );
+    function userData() {
+      return userDoc().data;
     }
 
-    function emailPreapproved() {
+    function inviteDoc(email) {
+      return get(/databases/$(database)/documents/approvedUsersByEmail/$(email));
+    }
+
+    function inviteData(email) {
+      return inviteDoc(email).data;
+    }
+
+    function hasActiveInvite(email) {
       return signedIn()
-        && request.auth.token.email != null
-        && exists(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email))
-        && (
-          get(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email)).data.status == "active"
-          || get(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email)).data.approved == true
-        );
+        && email != null
+        && exists(/databases/$(database)/documents/approvedUsersByEmail/$(email))
+        && inviteData(email).status == "active"
+        && inviteData(email).approved == true;
     }
 
     function tempOwnerEmail() {
@@ -48,21 +44,129 @@ service cloud.firestore {
         ];
     }
 
+    function approvedUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && userData().status != "blocked"
+        && userData().status != "revoked"
+        && (userData().status == "active" || userData().approved == true)
+        && (
+          userData().role == "owner"
+          || userData().isOwner == true
+          || userData().ownerId == request.auth.uid
+          || (
+            request.auth.token.email != null
+            && hasActiveInvite(request.auth.token.email)
+            && inviteData(request.auth.token.email).ownerId == userData().ownerId
+          )
+        );
+    }
+
+    function ownerUser() {
+      return approvedUser()
+        && (
+          userData().role == "owner"
+          || userData().isOwner == true
+          || userData().ownerId == request.auth.uid
+        );
+    }
+
+    function tenantMatches(businessId) {
+      return approvedUser()
+        && (
+          userData().ownerId == businessId
+          || (ownerUser() && request.auth.uid == businessId)
+        );
+    }
+
+    function writeMatchesTenant(businessId) {
+      return tenantMatches(businessId)
+        && (
+          request.resource.data.businessId == null
+          || request.resource.data.businessId == businessId
+        );
+    }
+
+    function validWorkerUserCreate(uid) {
+      return signedIn()
+        && uid == request.auth.uid
+        && request.auth.token.email != null
+        && hasActiveInvite(request.auth.token.email)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role == inviteData(request.auth.token.email).role
+        && request.resource.data.ownerId == inviteData(request.auth.token.email).ownerId
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.isOwner != true;
+    }
+
+    function validTempOwnerCreate(uid) {
+      return signedIn()
+        && uid == request.auth.uid
+        && tempOwnerEmail()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.role == "owner"
+        && request.resource.data.isOwner == true;
+    }
+
+    function ownProfileUpdateOnly(uid) {
+      return signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["name", "photoURL", "updatedAt"]);
+    }
+
+    function ownerRevokesWorker() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.role != "owner"
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["status", "approved", "revokedAt", "revokedBy", "updatedAt"])
+        && (request.resource.data.status == "blocked" || request.resource.data.status == "revoked")
+        && request.resource.data.approved == false
+        && request.resource.data.revokedBy == request.auth.uid;
+    }
+
+    function validInviteWrite(email) {
+      return ownerUser()
+        && request.resource.data.email == email
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.role == "worker"
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true;
+    }
+
+    function validInviteRevoke() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["status", "approved", "revokedAt", "revokedBy", "updatedAt"])
+        && (request.resource.data.status == "blocked" || request.resource.data.status == "revoked")
+        && request.resource.data.approved == false
+        && request.resource.data.revokedBy == request.auth.uid;
+    }
+
     match /approvedUsers/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
-      allow create: if signedIn() && request.auth.uid == uid && (emailPreapproved() || tempOwnerEmail());
-      allow update: if signedIn() && request.auth.uid == uid
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["name", "photoURL", "updatedAt"]);
+      allow create: if validWorkerUserCreate(uid) || validTempOwnerCreate(uid);
+      allow update: if ownProfileUpdateOnly(uid) || ownerRevokesWorker();
       allow delete: if false;
     }
 
     match /approvedUsersByEmail/{email} {
       allow read: if signedIn() && request.auth.token.email == email;
-      allow write: if ownerUser();
+      allow create: if validInviteWrite(email);
+      allow update: if validInviteWrite(email) || validInviteRevoke();
+      allow delete: if false;
     }
 
     match /businesses/{businessId}/{document=**} {
-      allow read, write: if approvedUser();
+      allow read: if tenantMatches(businessId);
+      allow create, update: if writeMatchesTenant(businessId);
+      allow delete: if false;
     }
   }
 }

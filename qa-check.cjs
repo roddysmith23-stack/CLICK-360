@@ -39,7 +39,7 @@ assert('jsQR real local incluido', jsqrSize > 200000);
 assert('qrcode-generator real local incluido', qrgSize > 50000);
 assert('HTML carga qrcode-generator antes de app', html.includes('vendor/qrcode-generator.js') && html.indexOf('vendor/qrcode-generator.js') < html.indexOf('app.js'));
 assert('HTML carga jsQR antes de app', html.includes('vendor/jsQR.js') && html.indexOf('vendor/jsQR.js') < html.indexOf('app.js'));
-assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-mvp-final-offline-safe-v8'));
+assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-mvp-final-platform-safe-v9'));
 assert('service worker cachea vendor QR', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/qrcode-generator.js') && fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/jsQR.js'));
 assert('perfil persistente local', app.includes('CLICK360_USER_PROFILE_') && app.includes('cacheUserProfile'));
 assert('recuperación por almacenamiento lleno', app.includes('optimizeStateForStorage') && app.includes('storage_images_optimized'));
