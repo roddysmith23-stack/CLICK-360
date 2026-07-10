@@ -23,3 +23,7 @@ node scripts/migrate-legacy-v9-to-v10.mjs --project=click-360 --apply --allowlis
 `--apply-all` is intentionally unsupported. The migrator accepts only `LEGACY_CLEAR_OWNER`, stores a backup in `legacyBackups`, rechecks the source hash in a transaction, validates counts before/after, and aborts on an ambiguous tenant, changed source, count mismatch, or backup failure.
 
 Production migration status: not run. No tenant has been changed by this branch.
+
+## Real dry-run result - 2026-07-09
+
+The `click-360` dry-run accepted two `LEGACY_CLEAR_OWNER` tenants with exact before/after count matches and stable logical hashes. The cross-tenant suspect was blocked. No `--apply` command was run and no backup or production document was created in this audit phase.

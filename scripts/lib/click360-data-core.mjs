@@ -51,16 +51,20 @@ export function summarizeState(state = {}) {
   };
 }
 
-export function classifyTenant(document, approvedUsers = []) {
+export function classifyTenant(document, approvedUsers = [], authUsers = []) {
   const ownerId = document.ownerId || document.businessId || null;
   const owner = approvedUsers.find((user) => user.uid === ownerId) || null;
+  const ownerAuth = authUsers.find((user) => user.uid === ownerId) || null;
   const isV10 = document.schemaVersion === SCHEMA_VERSION;
   const state = isV10 ? document.payload?.data : legacyStateFromDocument(document);
   const summary = summarizeState(state || {});
   const reasons = [];
   const internalIds = summary.businessIds.filter(Boolean);
   const writerMatchesOwner = !document.updatedBy || document.updatedBy === ownerId;
-  const emailMatchesOwner = !document.updatedByEmail || !owner?.email || document.updatedByEmail.toLowerCase() === owner.email.toLowerCase();
+  const expectedOwnerEmail = ownerAuth?.email || owner?.email || null;
+  const emailMatchesOwner = !document.updatedByEmail || !expectedOwnerEmail || document.updatedByEmail.toLowerCase() === expectedOwnerEmail.toLowerCase();
+  const observations = [];
+  if (owner?.email && ownerAuth?.email && owner.email.toLowerCase() !== ownerAuth.email.toLowerCase()) observations.push('approved_user_email_stale');
   const identityMatches = isV10
     && document.ownerId === ownerId
     && document.businessId === document.pathBusinessId
@@ -80,7 +84,7 @@ export function classifyTenant(document, approvedUsers = []) {
   else if (writerMatchesOwner && emailMatchesOwner && document.businessId === document.pathBusinessId && state) category = 'LEGACY_CLEAR_OWNER';
   else category = 'LEGACY_AMBIGUOUS';
 
-  return { category, reasons, ownerId, owner, state, summary };
+  return { category, reasons, observations, ownerId, owner, ownerAuth, expectedOwnerEmail, state, summary };
 }
 
 export function toV10Document(legacyDocument, context) {

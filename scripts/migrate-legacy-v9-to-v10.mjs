@@ -20,14 +20,16 @@ if (apply && !args.businessId && !args.allowlist) throw new Error('--apply requi
 
 async function fixtureSource(file) { return JSON.parse(await fs.readFile(path.resolve(file), 'utf8')); }
 async function firebaseSource() {
-  const [{ initializeApp, applicationDefault, cert, getApps }, { getFirestore }] = await Promise.all([import('firebase-admin/app'), import('firebase-admin/firestore')]);
+  const [{ initializeApp, applicationDefault, cert, getApps }, { getFirestore }, { getAuth }] = await Promise.all([import('firebase-admin/app'), import('firebase-admin/firestore'), import('firebase-admin/auth')]);
   const credential = process.env.GOOGLE_APPLICATION_CREDENTIALS ? cert(JSON.parse(await fs.readFile(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8'))) : applicationDefault();
   const app = getApps()[0] || initializeApp({ credential, projectId });
   const db = getFirestore(app);
   const approvedUsers = (await db.collection('approvedUsers').get()).docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
   const stateDocs = await db.collectionGroup('state').get();
   const tenants = stateDocs.docs.filter((doc) => doc.id === 'main').map((doc) => ({ pathBusinessId: doc.ref.parent.parent.id, ...doc.data() }));
-  return { approvedUsers, tenants, db };
+  const auth = getAuth(app); let pageToken; const authUsers = [];
+  do { const page = await auth.listUsers(1000, pageToken); authUsers.push(...page.users.map((user) => ({ uid: user.uid, email: user.email || null }))); pageToken = page.pageToken; } while (pageToken);
+  return { approvedUsers, authUsers, tenants, db };
 }
 async function readAllowlist(file) { return new Set(JSON.parse(await fs.readFile(path.resolve(file), 'utf8'))); }
 
@@ -37,7 +39,7 @@ const selected = source.tenants.filter((tenant) => !args.businessId || tenant.pa
 const results = [];
 
 for (const tenant of selected) {
-  const classified = classifyTenant(tenant, source.approvedUsers);
+  const classified = classifyTenant(tenant, source.approvedUsers, source.authUsers || []);
   if (classified.category !== 'LEGACY_CLEAR_OWNER') {
     results.push({ businessId: tenant.pathBusinessId, action: 'BLOCKED', category: classified.category, reasons: classified.reasons });
     continue;

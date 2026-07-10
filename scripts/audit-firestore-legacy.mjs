@@ -54,8 +54,8 @@ function toMarkdown(report) {
 
 const source = args.fixture ? await loadFixture(args.fixture) : await loadFirebase();
 const tenants = source.tenants.map((tenant) => {
-  const classified = classifyTenant(tenant, source.approvedUsers);
-  return { ...tenant, category: classified.category, reasons: classified.reasons, ownerId: classified.ownerId, summary: classified.summary };
+  const classified = classifyTenant(tenant, source.approvedUsers, source.authUsers || []);
+  return { ...tenant, category: classified.category, reasons: classified.reasons, observations: classified.observations, ownerId: classified.ownerId, expectedOwnerEmail: classified.expectedOwnerEmail, summary: classified.summary };
 });
 const summary = { totalApprovedUsers: source.approvedUsers.length, totalTenants: tenants.length, CLEAN_V10: 0, LEGACY_CLEAR_OWNER: 0, LEGACY_AMBIGUOUS: 0, CROSS_TENANT_SUSPECT: 0, ORPHANED: 0 };
 tenants.forEach((tenant) => { summary[tenant.category] += 1; });
