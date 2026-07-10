@@ -1,0 +1,13 @@
+{
+  "approvedUsers": [
+    { "uid": "owner-a", "email": "a@example.test", "status": "active", "approved": true, "role": "owner", "isOwner": true, "ownerId": "owner-a" },
+    { "uid": "owner-b", "email": "b@example.test", "status": "active", "approved": true, "role": "owner", "isOwner": true, "ownerId": "owner-b" }
+  ],
+  "approvedUsersByEmail": [],
+  "tenants": [
+    { "pathBusinessId": "owner-a", "schemaVersion": 10, "ownerUid": "owner-a", "ownerId": "owner-a", "businessId": "owner-a", "tenantKey": "owner:owner-a:business:owner-a", "updatedBy": "owner-a", "updatedByEmail": "a@example.test", "payload": { "identity": { "ownerId": "owner-a", "businessId": "owner-a" }, "data": { "businesses": [{ "id": "owner-a", "name": "A" }], "products": [{ "code": "A-001" }], "sales": [], "movements": [], "invoices": [], "dailyReports": [], "settings": { "workers": [], "labelTemplates": [] } } } },
+    { "pathBusinessId": "owner-b", "businessId": "owner-b", "updatedBy": "owner-b", "updatedByEmail": "b@example.test", "localStorage": { "click360_mvp_qa_final_state_v1": "{\"businesses\":[{\"id\":\"owner-b\",\"name\":\"B\"}],\"products\":[{\"code\":\"B-001\"}],\"sales\":[],\"movements\":[],\"invoices\":[],\"dailyReports\":[],\"settings\":{\"workers\":[],\"labelTemplates\":[]}}" } },
+    { "pathBusinessId": "owner-a", "businessId": "owner-a", "updatedBy": "owner-b", "updatedByEmail": "b@example.test", "localStorage": { "click360_mvp_qa_final_state_v1": "{\"businesses\":[{\"id\":\"owner-a\",\"name\":\"A\"}],\"products\":[],\"sales\":[],\"movements\":[],\"invoices\":[],\"dailyReports\":[],\"settings\":{\"workers\":[],\"labelTemplates\":[]}}" } },
+    { "pathBusinessId": "unknown", "businessId": "unknown", "updatedBy": "unknown", "localStorage": { "click360_mvp_qa_final_state_v1": "{\"businesses\":[],\"products\":[],\"sales\":[],\"movements\":[],\"invoices\":[],\"dailyReports\":[],\"settings\":{\"workers\":[],\"labelTemplates\":[]}}" } }
+  ]
+}

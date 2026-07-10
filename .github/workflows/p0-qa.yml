@@ -1,0 +1,31 @@
+name: CLICK 360 P0 QA
+
+on:
+  pull_request:
+  push:
+    branches: [hotfix/p0-account-data-isolation]
+
+jobs:
+  p0-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --check app.js
+      - run: node --check firebase-service.js
+      - run: node --check p0-tenant-guard.js
+      - run: node qa-check.cjs
+      - run: node qa-p0-isolation-harness.cjs
+      - run: node qa-p0-offline-harness.cjs
+      - run: node qa-p0-migration-harness.cjs
+      - run: node qa-p0-contamination-harness.cjs
+      - run: node qa-firestore-rules-contract.cjs
+      - run: node scripts/audit-firestore-legacy.mjs --fixture fixtures/firebase-audit-fixture.json --out artifacts/firebase-audit
+      - run: node scripts/migrate-legacy-v9-to-v10.mjs --fixture fixtures/firebase-audit-fixture.json --dry-run
+      - name: Basic secret check
+        run: |
+          ! git grep -nE '(BEGIN PRIVATE KEY|AIza[0-9A-Za-z_-]{20,}|private_key"[[:space:]]*:)' -- . ':!fixtures/**' ':!vendor/**'
