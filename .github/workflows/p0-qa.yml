@@ -14,16 +14,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - run: npm ci
-      - run: node --check app.js
-      - run: node --check firebase-service.js
-      - run: node --check p0-tenant-guard.js
-      - run: node qa-check.cjs
-      - run: node qa-p0-isolation-harness.cjs
-      - run: node qa-p0-offline-harness.cjs
-      - run: node qa-p0-migration-harness.cjs
-      - run: node qa-p0-contamination-harness.cjs
-      - run: node qa-firestore-rules-contract.cjs
+      - run: npm run qa
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: npm run qa:rules
       - run: node scripts/audit-firestore-legacy.mjs --fixture fixtures/firebase-audit-fixture.json --out artifacts/firebase-audit
       - run: node scripts/migrate-legacy-v9-to-v10.mjs --fixture fixtures/firebase-audit-fixture.json --dry-run
       - name: Basic secret check

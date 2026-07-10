@@ -1,17 +1,32 @@
 # CLICK 360 P0 GO / NO-GO
 
-## Current decision: NO-GO
+Fecha: 2026-07-10
 
-The code protections, local fixtures, regression harnesses, CI workflow, and administrative tooling are complete on the hotfix branch. Production approval is blocked until the following external-state gates are completed with an authorized Firebase credential:
+## Decisión: NO-GO
 
-1. The `click-360` read-only audit, dry-runs, and two individually verified migrations are complete: 2 `CLEAN_V10` tenants and 1 unchanged `CROSS_TENANT_SUSPECT` tenant.
-2. Keep `demo-click360` blocked and investigate its owner/writer mismatch separately; do not migrate or repair it automatically.
-3. Execute real Google Auth A -> B -> A acceptance for 10 alternations, using the two legitimate accounts.
-4. Execute physical computer-to-phone create/edit/delete and authenticated offline/reconnect acceptance using disposable test records only.
-5. Confirm GitHub Actions is green after this final report update on PR #1.
+El hotfix queda listo para revisión, no para producción. PR #1 debe permanecer Draft.
 
-Until then, the PR remains draft. No merge, GitHub Pages publication, or Firestore Rules deployment is authorized.
+## P0 resuelto
 
-## Tooling dependency note
+- Dos tenants legítimos están migrados y verificados como `CLEAN_V10`.
+- `demo-click360` sigue intacto y bloqueado como `CROSS_TENANT_SUSPECT`.
+- Tenant, caché, sesión, aprobación, listeners y escrituras están aislados.
+- Legacy, seed vacío, caché corrupta y documento remoto ausente con datos locales quedan bloqueados.
+- Perfiles persisten localmente, se reintentan y resuelven versiones entre dispositivos.
+- Almacenamiento lleno revierte el último cambio sin borrar imágenes ni estado confirmado.
+- Concurrencia usa transacciones, revisiones y cuarentena de conflictos.
+- Ventas en efectivo ya no cuentan el vuelto como ingreso; facturas anuladas neutralizan su movimiento.
+- Reglas reales pasan en emulador y dependencias de producción tienen 0 vulnerabilidades conocidas por `npm audit`.
 
-`npm audit` reports eight moderate transitive advisories in the Firebase Admin toolchain. The available automatic fix requires a breaking Firebase Admin upgrade, so it was not applied inside this P0 safety hotfix. It does not affect the public browser bundle; it remains a maintenance item for the administrative tooling before a production rollout.
+## Bloqueos para GO
+
+1. Migrar el snapshot único a colecciones por entidad o a un command layer que haga efectivos los permisos por rol y preserve registros financieros.
+2. Desplegar las reglas solo después de revisión y autorización expresa.
+3. Ejecutar A → B → A con dos cuentas Google reales durante diez alternancias.
+4. Ejecutar computadora ↔ teléfono con crear, editar, eliminar y confirmar que no reaparece.
+5. Ejecutar offline/reconexión autenticado en dispositivos físicos.
+6. Revalidar CI y observabilidad después de la arquitectura por entidades.
+
+## Acciones prohibidas en este cierre
+
+No merge, no GitHub Pages, no despliegue de reglas y ninguna modificación de producción. Este hotfix no tocó `demo-click360` ni volvió a ejecutar migraciones.

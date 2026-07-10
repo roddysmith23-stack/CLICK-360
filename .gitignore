@@ -8,3 +8,6 @@ output/
 service-account*.json
 *-service-account.json
 firebase-adminsdk-*.json
+firestore-debug.log
+firebase-debug.log
+ui-debug.log

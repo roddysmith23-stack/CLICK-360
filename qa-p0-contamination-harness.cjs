@@ -10,7 +10,7 @@ const assert = require('assert');
   assert(categories.includes('ORPHANED'), 'orphan classified');
   const staleProfileLegacy = {
     pathBusinessId: 'owner-b', businessId: 'owner-b', updatedBy: 'owner-b', updatedByEmail: 'actual@example.test',
-    localStorage: { click360_mvp_qa_final_state_v1: '{"businesses":[],"products":[],"sales":[],"movements":[],"invoices":[],"dailyReports":[],"settings":{"workers":[],"labelTemplates":[]}}' }
+    localStorage: { click360_mvp_qa_final_state_v1: '{"businesses":[{"id":"owner-b","name":"B"}],"products":[],"sales":[],"movements":[],"invoices":[],"dailyReports":[],"settings":{"workers":[],"labelTemplates":[]}}' }
   };
   const staleProfileOwner = [{ uid: 'owner-b', email: 'historical@example.test' }];
   const staleProfileAuth = [{ uid: 'owner-b', email: 'actual@example.test' }];
@@ -22,7 +22,8 @@ const assert = require('assert');
     pathBusinessId: 'owner-b', ownerUid: 'owner-b', ownerId: 'owner-b', businessId: 'owner-b',
     tenantKey: 'owner:owner-b:business:owner-b', schemaVersion: 10,
     payload: {
-      identity: { ownerUid: 'owner-b', ownerId: 'owner-b', businessId: 'owner-b', tenantKey: 'owner:owner-b:business:owner-b' },
+      schemaVersion: 10,
+      identity: { schemaVersion: 10, ownerUid: 'owner-b', ownerId: 'owner-b', businessId: 'owner-b', tenantKey: 'owner:owner-b:business:owner-b' },
       data: { businesses: [{ id: 'biz_main' }], products: [], sales: [], movements: [], invoices: [], dailyReports: [], deletedProducts: [], auditLogs: [], settings: { workers: [], labelTemplates: [] } }
     }
   };

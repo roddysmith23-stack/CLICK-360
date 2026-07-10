@@ -17,6 +17,7 @@ const projectId = args.project || REQUIRED_PROJECT_ID;
 if (projectId !== REQUIRED_PROJECT_ID) throw new Error(`Refusing project ${projectId}. Only ${REQUIRED_PROJECT_ID} is allowed.`);
 const apply = args.apply === true;
 if (apply && !args.businessId && !args.allowlist) throw new Error('--apply requires --businessId or --allowlist. --apply-all is not supported.');
+if (apply && args.fixture) throw new Error('--apply cannot be used with fixture data.');
 
 async function fixtureSource(file) { return JSON.parse(await fs.readFile(path.resolve(file), 'utf8')); }
 async function firebaseSource() {
@@ -42,6 +43,7 @@ function verifyV10Document(document, migration, context) {
     ownerId: document.ownerId === context.ownerId,
     businessId: document.businessId === context.businessId,
     tenantKey: document.tenantKey === expectedTenantKey,
+    payloadSchema: payload.schemaVersion === 10 && payload.identity?.schemaVersion === 10,
     payloadIdentity: payload.identity?.ownerUid === context.ownerId
       && payload.identity?.ownerId === context.ownerId
       && payload.identity?.businessId === context.businessId
@@ -56,6 +58,12 @@ function verifyV10Document(document, migration, context) {
 const source = args.fixture ? await fixtureSource(args.fixture) : await firebaseSource();
 const allowlist = args.allowlist ? await readAllowlist(args.allowlist) : null;
 const selected = source.tenants.filter((tenant) => !args.businessId || tenant.pathBusinessId === args.businessId).filter((tenant) => !allowlist || allowlist.has(tenant.pathBusinessId));
+if ((args.businessId || allowlist) && selected.length === 0) throw new Error('No tenant matched the requested businessId or allowlist.');
+if (allowlist) {
+  const selectedIds = new Set(selected.map((tenant) => tenant.pathBusinessId));
+  const missing = [...allowlist].filter((businessId) => !selectedIds.has(businessId));
+  if (missing.length) throw new Error(`Allowlist contains tenants that were not found: ${missing.join(', ')}`);
+}
 const results = [];
 
 for (const tenant of selected) {
@@ -88,7 +96,19 @@ for (const tenant of selected) {
       const currentBackup = await transaction.get(backupRef);
       if (!current.exists || stableHash({ pathBusinessId: tenant.pathBusinessId, ...current.data() }) !== sourceHash) throw new Error('Source document changed; migration aborted.');
       if (!currentBackup.exists || currentBackup.data().sourceHash !== sourceHash) throw new Error('Administrative backup disappeared; migration aborted.');
-      transaction.set(stateRef, { schemaVersion: 10, ownerUid: classified.ownerId, ownerId: classified.ownerId, businessId: tenant.pathBusinessId, tenantKey: `owner:${classified.ownerId}:business:${tenant.pathBusinessId}`, updatedBy: classified.ownerId, updatedAtMs: Date.now(), reason: 'administrative_legacy_v9_to_v10_migration', payload: migration.payload, migration: { sourceHash, beforeCounts: migration.beforeCounts, afterCounts: migration.afterCounts, logicalHash: migration.logicalHash, backupPath: backupRef.path } });
+      transaction.set(stateRef, {
+        schemaVersion: 10,
+        ownerUid: classified.ownerId,
+        ownerId: classified.ownerId,
+        businessId: tenant.pathBusinessId,
+        tenantKey: `owner:${classified.ownerId}:business:${tenant.pathBusinessId}`,
+        updatedBy: classified.ownerId,
+        ...(typeof tenant.updatedByEmail === 'string' ? { updatedByEmail: tenant.updatedByEmail } : {}),
+        updatedAtMs: Date.now(),
+        reason: 'administrative_legacy_v9_to_v10_migration',
+        payload: migration.payload,
+        migration: { sourceHash, beforeCounts: migration.beforeCounts, afterCounts: migration.afterCounts, logicalHash: migration.logicalHash, backupPath: backupRef.path }
+      });
     });
     const migrated = await stateRef.get();
     result.backupPath = backupRef.path;

@@ -7,15 +7,25 @@ const B = { authUid: 'uid-b', ownerId: 'owner-b', businessId: 'business-b', tena
 const storage = new Map();
 const stateKey = (tenant) => `CLICK360_STATE:${tenant.tenantKey}`;
 
+function stateFor(tenant, code) {
+  return {
+    identity: { ...tenant, ownerUid: tenant.ownerId, schemaVersion: 10 },
+    activeBusinessId: 'biz_main',
+    businesses: [{ id: 'biz_main', name: tenant.ownerId }],
+    products: [{ id: `p-${code}`, businessId: 'biz_main', code }],
+    sales: [], movements: [], invoices: [], dailyReports: [], deletedProducts: [], auditLogs: [],
+    settings: { workers: [], labelTemplates: [] }
+  };
+}
 function status(tenant) {
   const raw = storage.get(stateKey(tenant));
   if (!raw || storage.get(`CLICK360_TENANT:${tenant.tenantKey}:CORRUPT`) || storage.get(`CLICK360_TENANT:${tenant.tenantKey}:LEGACY_MIGRATION_REQUIRED`)) return false;
   try {
     const state = JSON.parse(raw);
-    return state.identity?.ownerId === tenant.ownerId && state.identity?.businessId === tenant.businessId && state.identity?.tenantKey === tenant.tenantKey;
+    return guard.validBusinessPayload({ identity: state.identity, data: state }, tenant);
   } catch { return false; }
 }
-function save(tenant, code) { storage.set(stateKey(tenant), JSON.stringify({ identity: tenant, products: [{ code }] })); }
+function save(tenant, code) { storage.set(stateKey(tenant), JSON.stringify(stateFor(tenant, code))); }
 function offlineEntry(tenant) { const gate = guard.createSyncGate(); gate.begin(tenant); if (status(tenant)) gate.allow(tenant); return gate.canUnlock(tenant); }
 
 save(A, 'A-001');
@@ -29,6 +39,11 @@ assert.strictEqual(JSON.parse(storage.get(stateKey(B))).products[0].code, 'B-001
 storage.set(`CLICK360_TENANT:${A.tenantKey}:LEGACY_MIGRATION_REQUIRED`, '1');
 assert(!offlineEntry(A), 'legacy-pending tenant remains blocked offline');
 storage.delete(`CLICK360_TENANT:${A.tenantKey}:LEGACY_MIGRATION_REQUIRED`);
-storage.set(stateKey(B), JSON.stringify({ identity: A, products: [{ code: 'A-001' }] }));
+storage.set(stateKey(B), JSON.stringify(stateFor(A, 'A-001')));
 assert(!offlineEntry(B), 'foreign tenant cache remains blocked');
+storage.set(stateKey(B), JSON.stringify({ ...stateFor(B, 'B-001'), products: null }));
+assert(!offlineEntry(B), 'same-tenant cache with corrupt structure remains blocked');
 console.log('PASS P0 offline cache validation and cross-tenant blocking');
+
+const firebaseService = require('fs').readFileSync('firebase-service.js', 'utf8');
+assert(firebaseService.includes("['unavailable', 'deadline-exceeded', 'failed-precondition']"), 'network failure falls back to verified tenant cache even when navigator.onLine is stale');

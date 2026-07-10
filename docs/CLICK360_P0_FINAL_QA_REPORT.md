@@ -1,31 +1,36 @@
 # CLICK 360 P0 Final QA Report
 
-## Automated checks
+Fecha: 2026-07-10
 
-- Syntax checks for app, Firebase service, tenant guard, service worker, administrative audit, and migrator.
-- Account isolation harness: A -> logout -> B -> logout -> A for 10 cycles.
-- Offline harness: own valid cache enters; new user, foreign cache, corrupt cache, and legacy-pending cache remain blocked.
-- Migration harness: clear legacy dry-run; ambiguous, changed, count mismatch, and backup failure abort paths.
-- Contamination harness: clean, foreign writer, legacy clear owner, and orphan classifications.
-- Firestore rules contract test. Rules are prepared only and have not been deployed.
+## Automatización
 
-## Browser verification
+- `npm run qa`: PASS.
+- Firestore Rules Emulator: PASS.
+- Auditoría fixture y dry-run de migración: PASS.
+- `npm audit --omit=dev --audit-level=moderate`: PASS, 0 vulnerabilidades.
+- `git diff --check` y sintaxis de app, Firebase, PWA y scripts: PASS.
 
-The real PWA shell was opened locally in desktop and mobile viewports. The Google authentication gate, app update control, service worker registration, and offline reload were verified without console errors. Firebase emitted only its known compat persistence deprecation warning.
+La batería cubre 100 tenants y 1.000 cambios rápidos, A → B → A, legacy sin escritura, cachés corruptas/ajenas, documentos incompletos, revisiones simultáneas, migraciones abortadas, reglas owner/worker/revocado, almacenamiento, perfiles, ventas, facturas, backups y exportación segura.
 
-The browser verification uses no production user login and writes no production data. Captures remain local and ignored by Git.
+## Navegador real
 
-## Live administrative verification
+Playwright local, sin credenciales ni escrituras de producción:
 
-- Read-only audit before migration: 2 `LEGACY_CLEAR_OWNER`, 1 `CROSS_TENANT_SUSPECT`.
-- Individual dry-runs passed for both approved tenants.
-- Each live migration created and re-read an administrative backup before the state write.
-- Source backup hashes, v10 schema/identity fields, tenant keys, count equality, and logical payload hashes passed for both tenants.
-- The post-migration read-only audit reports 2 `CLEAN_V10` and 1 unchanged `CROSS_TENANT_SUSPECT` tenant.
-- The stale historical email remained unchanged while the authenticated UID stayed confirmed.
+- Gate Google desktop 1440×960: PASS.
+- Gate y Home móvil 390×844: PASS.
+- Home desktop: PASS, sin overflow horizontal.
+- Banner: `object-fit: contain`, `object-position: 50% 50%`, relación 16:9 y sin deformación.
+- Service Worker v13 y recarga offline: PASS.
+- Consola: 0 errores; 1 advertencia de deprecación futura del SDK compat Firestore.
+- Venta simulada: total 10, entregado 15, cobrado 10, vuelto 5, stock 3→2, movimiento y caché creados.
+- Perfil simulado: nombre presente en estado tenant, caché por UID y cola pendiente offline.
 
-## External tests pending
+Las capturas están en `output/playwright/` y se mantienen ignoradas por Git.
 
-The executable regression harness covers A -> logout -> B -> logout -> A for 10 cycles, legacy-write blocking, and offline cache/reconnect guards. It is not a substitute for physical-device acceptance.
+## Verificación administrativa previa
 
-Real A/B Firebase Auth, computer-to-phone create/edit/delete convergence, and authenticated offline/reconnect tests require two authorized Google test accounts and a physical mobile device. They are not represented as passed, and no customer data was created or deleted to imitate them.
+La auditoría y migración reales del 2026-07-09 permanecen válidas: 2 `CLEAN_V10`, 1 `CROSS_TENANT_SUSPECT`; backups, hashes, identidades y conteos pasaron. No se hicieron lecturas ni escrituras de producción durante esta auditoría de código.
+
+## No ejecutado
+
+No se marcaron como aprobadas las pruebas con dos cuentas Google reales, dos dispositivos físicos ni el despliegue de reglas. La simulación UI no sustituye esas pruebas.

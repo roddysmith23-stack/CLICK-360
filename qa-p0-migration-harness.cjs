@@ -5,12 +5,16 @@ const assert = require('assert');
   const fixture = await import('node:fs/promises').then((fs) => fs.readFile('./fixtures/firebase-audit-fixture.json', 'utf8')).then(JSON.parse);
   const clear = fixture.tenants[1];
   const ambiguous = { pathBusinessId: 'owner-b', businessId: 'owner-b', updatedBy: 'owner-b', localStorage: { click360_mvp_qa_final_state_v1: '{invalid' } };
-  const clearClass = core.classifyTenant(clear, fixture.approvedUsers);
+  const clearClass = core.classifyTenant(clear, fixture.approvedUsers, fixture.authUsers);
   assert.strictEqual(clearClass.category, 'LEGACY_CLEAR_OWNER');
   const plan = core.toV10Document(clear, { ownerId: 'owner-b', businessId: 'owner-b' });
   assert(core.equalCounts(plan.beforeCounts, plan.afterCounts), 'dry-run counts match');
   assert(plan.logicalHash, 'backup plan has logical hash');
-  assert.notStrictEqual(core.classifyTenant(ambiguous, fixture.approvedUsers).category, 'LEGACY_CLEAR_OWNER', 'ambiguous tenant is blocked');
+  assert.notStrictEqual(core.classifyTenant(ambiguous, fixture.approvedUsers, fixture.authUsers).category, 'LEGACY_CLEAR_OWNER', 'ambiguous tenant is blocked');
+  const wrongPath = { ...clear, ownerId: 'owner-a' };
+  assert.notStrictEqual(core.classifyTenant(wrongPath, fixture.approvedUsers, fixture.authUsers).category, 'LEGACY_CLEAR_OWNER', 'legacy owner/path mismatch is blocked');
+  const missingAuth = core.classifyTenant(clear, fixture.approvedUsers, []);
+  assert.strictEqual(missingAuth.category, 'ORPHANED', 'legacy migration requires a confirmed Firebase Auth UID');
 
   let writes = 0;
   const apply = ({ backupFails = false, sourceChanged = false, countsChanged = false }) => {

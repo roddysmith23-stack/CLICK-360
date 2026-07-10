@@ -40,3 +40,7 @@ Each tenant was re-read, backed up administratively, hash-checked before the tra
 The exact before/after count sets were equal for businesses, products, sales, movements, invoices, daily reports, workers, label templates, deleted products, and audit logs. Both migrated documents now have `schemaVersion: 10`, matching `ownerUid`, `ownerId`, `businessId`, and canonical `tenantKey` values. The historical email of the first tenant was deliberately not changed because the UID is confirmed and the email record is historical metadata.
 
 `demo-click360` was not in the allowlist, was not backed up, was not written, and remains `CROSS_TENANT_SUSPECT`.
+
+## Tooling hardening - 2026-07-10
+
+The migrator now additionally requires a confirmed Firebase Auth UID, canonical owner/path equality and a structurally valid legacy payload. It rejects fixture apply, empty selections and missing allowlist entries, verifies payload schema fields, and preserves historical `updatedByEmail`. No production migration was run as part of this tooling update.
