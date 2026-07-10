@@ -67,6 +67,12 @@
 	  function approvedIdentityStorageKey(uid) {
 	    return uid ? `${APPROVED_IDENTITY_PREFIX}${uid}` : '';
 	  }
+	  function legacyMigrationMarkerKey() {
+	    return tenantStorageKey('LEGACY_MIGRATION_REQUIRED');
+	  }
+	  function tenantCorruptMarkerKey() {
+	    return tenantStorageKey('CORRUPT');
+	  }
 	  function activeStateStorageKey() {
 	    return ACTIVE_CONTEXT ? `${STATE_LS_PREFIX}${ACTIVE_CONTEXT.tenantKey}` : '';
 	  }
@@ -99,6 +105,11 @@
 	  }
 	  function legacyMigrationRequired() {
 	    return tenantGuard.snapshot().mode === window.CLICK360_P0_TENANT_GUARD.MODES.LEGACY_MIGRATION_REQUIRED;
+	  }
+	  function verifiedOfflineTenantCache() {
+	    if (!ACTIVE_CONTEXT || localStorage.getItem(legacyMigrationMarkerKey()) || localStorage.getItem(tenantCorruptMarkerKey())) return false;
+	    const status = window.click360GetTenantCacheStatus?.(ACTIVE_CONTEXT);
+	    return status?.valid === true;
 	  }
 	  function getDeviceId() {
 	    let id = localStorage.getItem(DEVICE_ID_KEY);
@@ -525,6 +536,8 @@
 	    rawSetItem(tenantStorageKey('REMOTE_REVISION'), String(LAST_REMOTE_REVISION));
 	    rawSetItem(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'), snapshotString(payload));
 	    tenantGuard.allow(ACTIVE_CONTEXT);
+	    localStorage.removeItem(legacyMigrationMarkerKey());
+	    localStorage.removeItem(tenantCorruptMarkerKey());
 	    PULL_COMPLETE = true;
 	    setSyncStatus('synced', 'Migración verificada completada. Datos protegidos y sincronización habilitada.', { revision: LAST_REMOTE_REVISION });
 	    unlockApp();
@@ -867,8 +880,15 @@
 	    try {
 	      if (!activeIdentityIsValid()) return false;
 	      if (!navigator.onLine && !force) {
+	        if (!verifiedOfflineTenantCache()) {
+	          tenantGuard.block();
+	          PULL_COMPLETE = false;
+	          setSyncStatus("blocked_identity", "Sin internet y no existe una caché propia, válida y aprobada para esta cuenta.");
+	          return false;
+	        }
+	        tenantGuard.allow(ACTIVE_CONTEXT);
 	        PULL_COMPLETE = true;
-	        setSyncStatus("offline", "Sin internet. Usando datos locales guardados.");
+	        setSyncStatus("offline", "Sin internet. Usando la última caché verificada de esta cuenta.");
 	        return false;
 	      }
 	      setSyncStatus("syncing", "Leyendo datos de Firestore.");
@@ -885,6 +905,7 @@
 	      if (remoteData.schemaVersion !== SCHEMA_VERSION) {
 	        INITIAL_TENANT_SEED_REQUIRED = false;
 	        tenantGuard.requireLegacy(ACTIVE_CONTEXT, { document: remoteData, path: STATE_DOC.path });
+	        rawSetItem(legacyMigrationMarkerKey(), '1');
 	        quarantineIncident("legacy_remote_state", {
 	          path: STATE_DOC.path,
 	          remoteMetadata: { businessId: remoteData.businessId || null, updatedBy: remoteData.updatedBy || null, updatedByEmail: remoteData.updatedByEmail || null, revision: remoteData.revision || null }
@@ -896,6 +917,7 @@
 	      if (!remoteMatchesActiveTenant(remoteData)) {
 	        INITIAL_TENANT_SEED_REQUIRED = false;
 	        tenantGuard.block();
+	        rawSetItem(tenantCorruptMarkerKey(), '1');
 	        quarantineIncident("blocked_pull_identity", { path: STATE_DOC.path, remoteIdentity: { ownerUid: remoteData.ownerUid, ownerId: remoteData.ownerId, businessId: remoteData.businessId, tenantKey: remoteData.tenantKey } });
 	        PULL_COMPLETE = false;
 	        setSyncStatus("error", "Se bloqueó una descarga de otro tenant. Tus datos locales siguen intactos.");
@@ -903,6 +925,8 @@
 	      }
 	      const remotePayload = remoteData.payload;
 	      INITIAL_TENANT_SEED_REQUIRED = false;
+	      localStorage.removeItem(legacyMigrationMarkerKey());
+	      localStorage.removeItem(tenantCorruptMarkerKey());
 	      LAST_REMOTE_REVISION = Number(remoteData.revision || remoteData.updatedAtMs || LAST_REMOTE_REVISION || 0);
 	      rawSetItem(tenantStorageKey("REMOTE_REVISION"), String(LAST_REMOTE_REVISION || 0));
 	      const remoteHash = snapshotString(remotePayload);
@@ -945,6 +969,7 @@
 	      const remoteData = snap.data() || {};
 	      if (remoteData.schemaVersion !== SCHEMA_VERSION) {
 	        tenantGuard.requireLegacy(ACTIVE_CONTEXT, { document: remoteData, path: STATE_DOC.path });
+	        rawSetItem(legacyMigrationMarkerKey(), '1');
 	        AUTH_APPROVED = false;
 	        PULL_COMPLETE = false;
 	        setSyncStatus('migration_required', legacyMigrationMessage());
@@ -953,6 +978,7 @@
 	      }
 	      if (!remoteMatchesActiveTenant(remoteData)) {
 	        tenantGuard.block();
+	        rawSetItem(tenantCorruptMarkerKey(), '1');
 	        AUTH_APPROVED = false;
 	        PULL_COMPLETE = false;
 	        quarantineIncident("blocked_listener_identity", { path: STATE_DOC.path });

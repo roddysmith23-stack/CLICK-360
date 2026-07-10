@@ -60,3 +60,5 @@ assert('aprobación offline aislada por UID', firebaseService.includes('CLICK360
 assert('legacy bloquea push y desbloqueo', firebaseService.includes('legacyMigrationRequired()') && firebaseService.includes('tenantGuard.canWrite(ACTIVE_CONTEXT)') && firebaseService.includes('showLegacyMigrationGate()'));
 assert('migración exige backup y conteos', firebaseService.includes('legacyBackups') && firebaseService.includes('beforeCounts') && firebaseService.includes('afterCounts') && firebaseService.includes('equalCounts'));
 assert('harness P0 ejecutable', fs.existsSync(path.join(__dirname, 'qa-p0-isolation-harness.cjs')) && fs.existsSync(path.join(__dirname, 'p0-tenant-guard.js')));
+assert('arranque offline valida caché del tenant', app.includes('click360GetTenantCacheStatus') && firebaseService.includes('verifiedOfflineTenantCache()'));
+assert('offline sin caché no crea seed', firebaseService.includes('Sin internet y no existe una caché propia') && firebaseService.includes('tenantGuard.block()'));

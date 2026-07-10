@@ -13,6 +13,7 @@ La version anterior usaba una sola llave local, `click360_mvp_qa_final_state_v1`
 - `tenantKey` usa `owner:{ownerId}:business:{businessId}`.
 - El estado se guarda solo como `CLICK360_STATE:{tenantKey}`.
 - La sesion de interfaz se guarda solo como `CLICK360_SESSION:{uid}`.
+- El arranque sin internet solo se habilita para una aprobación cacheada del mismo UID y una caché propia con identidad completa, coincidente y no marcada como corrupta ni legacy pendiente. No se crea un seed offline para una cuenta sin datos.
 - El snapshot remoto ahora contiene identidad declarada y un `payload` con una lista explicita de datos de negocio. No se sincronizan claves Firebase, sesiones, perfiles de otros usuarios, cachés, depuracion ni claves desconocidas.
 - Push, pull y listener remoto validan el tenant completo. Una incoherencia se bloquea, conserva el estado local y crea un registro local de cuarentena.
 - Al cambiar de cuenta o cerrar sesion se cancelan listeners, se bloquea sync, se borra solo la memoria activa y se limpia el DOM. Las caches namespaced de la cuenta anterior se conservan intactas.

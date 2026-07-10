@@ -1,5 +1,6 @@
 const assert = require('assert');
-const guard = require('./p0-tenant-guard.js');
+require('./p0-tenant-guard.js');
+const guard = global.CLICK360_P0_TENANT_GUARD;
 
 const tenantA = { authUid: 'uid-a', ownerId: 'owner-a', businessId: 'business-a', tenantKey: 'owner:owner-a:business:business-a' };
 const tenantB = { authUid: 'uid-b', ownerId: 'owner-b', businessId: 'business-b', tenantKey: 'owner:owner-b:business:business-b' };

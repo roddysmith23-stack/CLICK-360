@@ -163,10 +163,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{businessId}/{document=**} {
-      allow read: if tenantMatches(businessId);
-      allow create, update: if writeMatchesTenant(businessId);
+    // The public client may only read/write the tenant state document. Legacy
+    // backups are created by the administrative migrator with Admin SDK.
+    match /businesses/{businessId}/state/{stateId} {
+      allow read: if stateId == "main" && tenantMatches(businessId);
+      allow create, update: if stateId == "main" && writeMatchesTenant(businessId);
       allow delete: if false;
+    }
+
+    match /businesses/{businessId}/legacyBackups/{backupId} {
+      allow read, write: if false;
     }
   }
 }

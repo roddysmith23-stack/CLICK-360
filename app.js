@@ -298,6 +298,25 @@ function parseMoney(value) {
     if (!activeTenantContext) return null;
     return JSON.parse(JSON.stringify(state));
   };
+  window.click360GetTenantCacheStatus = function(context) {
+    if (!context?.tenantKey || !context?.ownerId || !context?.businessId || !context?.authUid) {
+      return { valid: false, reason: 'context_incomplete' };
+    }
+    const key = `${STATE_PREFIX}${context.tenantKey}`;
+    const corruptKey = `CLICK360_TENANT:${context.tenantKey}:CORRUPT`;
+    if (localStorage.getItem(corruptKey)) return { valid: false, reason: 'cache_marked_corrupt', key };
+    const raw = localStorage.getItem(key);
+    if (!raw) return { valid: false, reason: 'cache_missing', key };
+    try {
+      const parsed = JSON.parse(raw);
+      if (!sameTenantIdentity(parsed.identity, context) || parsed.identity?.tenantKey !== context.tenantKey) {
+        return { valid: false, reason: 'tenant_mismatch', key };
+      }
+      return { valid: true, key, updatedAtMs: Number(parsed.updatedAtMs || 0) };
+    } catch {
+      return { valid: false, reason: 'cache_corrupt', key };
+    }
+  };
   window.click360ApplyTenantState = function(nextState, context) {
     if (!activeTenantContext || !context || !sameTenantIdentity(nextState?.identity || context, activeTenantContext)
       || context.tenantKey !== activeTenantContext.tenantKey) {
@@ -458,6 +477,7 @@ function parseMoney(value) {
       offline: ['Sin internet', 'La app sigue funcionando localmente y subirá cambios al reconectar.'],
       error: ['Revisar nube', s.message || 'No se pudo confirmar la sincronización. Tus datos locales se mantienen.'],
       migration_required: ['Migración requerida', s.message || 'Los datos anteriores están protegidos hasta completar una migración segura.'],
+      blocked_identity: ['Cuenta bloqueada', s.message || 'No se pudo comprobar una caché segura para esta cuenta.'],
       checking: ['Verificando nube', 'Comprobando sesión y datos remotos.'],
       local: ['Modo local', 'Inicia sesión con Google para activar nube.']
     };
