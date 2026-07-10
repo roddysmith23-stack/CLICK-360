@@ -4,11 +4,11 @@
 
 The code protections, local fixtures, regression harnesses, CI workflow, and administrative tooling are complete on the hotfix branch. Production approval is blocked until the following external-state gates are completed with an authorized Firebase credential:
 
-1. The read-only Firebase audit and dry-run are complete for `click-360`: 2 clear legacy candidates and 1 cross-tenant suspect.
-2. Review the `CROSS_TENANT_SUSPECT` tenant; do not migrate it.
-3. Grant the migration-only write role, then migrate only the two audit-approved `LEGACY_CLEAR_OWNER` tenants one at a time.
-4. Execute real A/B, offline/reconnect, and same-account two-device checks.
-5. Confirm GitHub Actions is green on PR #1.
+1. The `click-360` read-only audit, dry-runs, and two individually verified migrations are complete: 2 `CLEAN_V10` tenants and 1 unchanged `CROSS_TENANT_SUSPECT` tenant.
+2. Keep `demo-click360` blocked and investigate its owner/writer mismatch separately; do not migrate or repair it automatically.
+3. Execute real Google Auth A -> B -> A acceptance for 10 alternations, using the two legitimate accounts.
+4. Execute physical computer-to-phone create/edit/delete and authenticated offline/reconnect acceptance using disposable test records only.
+5. Confirm GitHub Actions is green after this final report update on PR #1.
 
 Until then, the PR remains draft. No merge, GitHub Pages publication, or Firestore Rules deployment is authorized.
 

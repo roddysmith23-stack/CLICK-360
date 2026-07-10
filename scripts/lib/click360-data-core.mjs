@@ -59,26 +59,27 @@ export function classifyTenant(document, approvedUsers = [], authUsers = []) {
   const state = isV10 ? document.payload?.data : legacyStateFromDocument(document);
   const summary = summarizeState(state || {});
   const reasons = [];
-  const internalIds = summary.businessIds.filter(Boolean);
   const writerMatchesOwner = !document.updatedBy || document.updatedBy === ownerId;
   const expectedOwnerEmail = ownerAuth?.email || owner?.email || null;
   const emailMatchesOwner = !document.updatedByEmail || !expectedOwnerEmail || document.updatedByEmail.toLowerCase() === expectedOwnerEmail.toLowerCase();
   const observations = [];
   if (owner?.email && ownerAuth?.email && owner.email.toLowerCase() !== ownerAuth.email.toLowerCase()) observations.push('approved_user_email_stale');
   const identityMatches = isV10
+    && document.ownerUid === ownerId
     && document.ownerId === ownerId
     && document.businessId === document.pathBusinessId
+    && document.tenantKey === `owner:${ownerId}:business:${document.pathBusinessId}`
+    && document.payload?.identity?.ownerUid === ownerId
     && document.payload?.identity?.ownerId === ownerId
-    && document.payload?.identity?.businessId === document.pathBusinessId;
+    && document.payload?.identity?.businessId === document.pathBusinessId
+    && document.payload?.identity?.tenantKey === `owner:${ownerId}:business:${document.pathBusinessId}`;
 
   if (!owner) reasons.push('owner_not_found');
   if (document.updatedBy && !writerMatchesOwner) reasons.push('foreign_writer');
   if (document.updatedByEmail && !emailMatchesOwner) reasons.push('foreign_writer_email');
   if (isV10 && !identityMatches) reasons.push('v10_identity_mismatch');
-  if (internalIds.includes(document.pathBusinessId) === false && internalIds.length === 1 && isV10) reasons.push('path_internal_business_mismatch');
-
   let category;
-  if (reasons.some((reason) => ['foreign_writer', 'foreign_writer_email', 'v10_identity_mismatch', 'path_internal_business_mismatch'].includes(reason))) category = 'CROSS_TENANT_SUSPECT';
+  if (reasons.some((reason) => ['foreign_writer', 'foreign_writer_email', 'v10_identity_mismatch'].includes(reason))) category = 'CROSS_TENANT_SUSPECT';
   else if (!owner) category = 'ORPHANED';
   else if (isV10) category = 'CLEAN_V10';
   else if (writerMatchesOwner && emailMatchesOwner && document.businessId === document.pathBusinessId && state) category = 'LEGACY_CLEAR_OWNER';
