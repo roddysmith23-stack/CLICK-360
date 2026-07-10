@@ -11,3 +11,7 @@ The code protections, local fixtures, regression harnesses, CI workflow, and adm
 5. Confirm GitHub Actions is green on PR #1.
 
 Until then, the PR remains draft. No merge, GitHub Pages publication, or Firestore Rules deployment is authorized.
+
+## Tooling dependency note
+
+`npm audit` reports eight moderate transitive advisories in the Firebase Admin toolchain. The available automatic fix requires a breaking Firebase Admin upgrade, so it was not applied inside this P0 safety hotfix. It does not affect the public browser bundle; it remains a maintenance item for the administrative tooling before a production rollout.

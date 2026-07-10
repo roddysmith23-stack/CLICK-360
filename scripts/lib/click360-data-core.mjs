@@ -102,7 +102,9 @@ export function toV10Document(legacyDocument, context) {
       invoices: state.invoices || [], dailyReports: state.dailyReports || [], deletedProducts: state.deletedProducts || [],
       auditLogs: state.auditLogs || [],
       settings: { workers: state.settings?.workers || [], labelTemplates: state.settings?.labelTemplates || [] },
-      updatedAtMs: Number(state.updatedAtMs || Date.now()), updatedAt: state.updatedAt || new Date().toISOString()
+      // Do not invent a clock value during dry-run: the logical migration hash
+      // must remain stable until the administrative transaction writes it.
+      updatedAtMs: Number(state.updatedAtMs || 0), updatedAt: state.updatedAt || null
     }
   };
   const afterCounts = domainCounts(payload.data);
