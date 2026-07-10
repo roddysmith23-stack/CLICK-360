@@ -6,13 +6,19 @@
 
   if (!firebase.apps.length) firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
 
+  if (!window.CLICK360_P0_TENANT_GUARD) {
+    console.error("CLICK360 P0 tenant guard no está cargado.");
+    return;
+  }
+
   // Programmatically clear old caches if needed
-  const CURRENT_CACHE_KEY = 'click360-mvp-final-platform-safe-v9';
+  const CURRENT_CACHE_KEY = 'click360-p0-production-audit-v13';
+  const CLICK360_CACHE_PREFIX = 'click360-';
   try {
     if ('caches' in window) {
       caches.keys().then(keys => {
         keys.forEach(key => {
-          if (key !== CURRENT_CACHE_KEY) {
+          if (key.startsWith(CLICK360_CACHE_PREFIX) && key !== CURRENT_CACHE_KEY) {
             caches.delete(key).catch(() => {});
           }
         });
@@ -32,26 +38,112 @@
   window.click360Db = db;
   let BUSINESS_ID = null;
   let STATE_DOC = null;
+  let ACTIVE_CONTEXT = null;
+  let AUTH_EPOCH = 0;
+	  const tenantGuard = window.CLICK360_P0_TENANT_GUARD.createSyncGate();
 
   let AUTH_APPROVED = false;
   let PULL_COMPLETE = false;
   let IS_RESTORING_REMOTE = false;
+  let INITIAL_TENANT_SEED_REQUIRED = false;
   let REMOTE_UNSUBSCRIBE = null;
   let USER_STATUS_UNSUBSCRIBE = null;
 	  let LOCAL_WRITE_PENDING_UNTIL = 0;
-	  let LAST_REMOTE_REVISION = Number(localStorage.getItem("CLICK360_REMOTE_REVISION") || 0);
+	  let LAST_REMOTE_REVISION = 0;
+	  const PUSH_SCHEDULERS = new Map();
+	  let SYNC_CONFLICT_PENDING = false;
 
 	  const rawSetItem = localStorage.setItem.bind(localStorage);
 	  const PROFILE_CACHE_PREFIX = "CLICK360_USER_PROFILE_";
-	  const STATE_LS_KEY = 'click360_mvp_qa_final_state_v1';
-	  const SESSION_LS_KEY = 'click360_mvp_qa_final_session_v1';
+	  const PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
+	  const LEGACY_STATE_LS_KEY = 'click360_mvp_qa_final_state_v1';
 	  const DEVICE_ID_KEY = "CLICK360_DEVICE_ID";
-	  const LAST_APPROVED_KEY = "CLICK360_LAST_APPROVED_USER";
+	  const APPROVED_IDENTITY_PREFIX = "CLICK360_APPROVED_IDENTITY:";
+	  const SCHEMA_VERSION = 10;
+	  const OFFLINE_APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+	  const MAX_CLOUD_PAYLOAD_BYTES = window.CLICK360_P0_TENANT_GUARD.MAX_CLOUD_PAYLOAD_BYTES;
+	  function tenantKeyFor(ownerId, businessId) {
+	    return `owner:${ownerId}:business:${businessId}`;
+	  }
+	  function tenantStorageKey(suffix) {
+	    return ACTIVE_CONTEXT ? `CLICK360_TENANT:${ACTIVE_CONTEXT.tenantKey}:${suffix}` : '';
+	  }
+	  function tenantStorageKeyFor(context, suffix) {
+	    return context?.tenantKey ? `CLICK360_TENANT:${context.tenantKey}:${suffix}` : '';
+	  }
+	  function approvedIdentityStorageKey(uid) {
+	    return uid ? `${APPROVED_IDENTITY_PREFIX}${uid}` : '';
+	  }
+	  function legacyMigrationMarkerKey() {
+	    return tenantStorageKey('LEGACY_MIGRATION_REQUIRED');
+	  }
+	  function tenantCorruptMarkerKey() {
+	    return tenantStorageKey('CORRUPT');
+	  }
+	  function syncConflictMarkerKey() {
+	    return tenantStorageKey('SYNC_CONFLICT');
+	  }
+	  function activeIdentity() {
+	    return ACTIVE_CONTEXT ? {
+	      ownerUid: ACTIVE_CONTEXT.ownerUid,
+	      ownerId: ACTIVE_CONTEXT.ownerId,
+	      businessId: ACTIVE_CONTEXT.businessId,
+	      tenantKey: ACTIVE_CONTEXT.tenantKey,
+	      schemaVersion: SCHEMA_VERSION
+	    } : null;
+	  }
+	  function sameTenant(identity) {
+	    return window.CLICK360_P0_TENANT_GUARD.sameTenantIdentity(identity, ACTIVE_CONTEXT);
+	  }
+	  function safeStorageSet(key, value) {
+	    if (!key) return false;
+	    try { rawSetItem(key, value); return true; } catch (error) {
+	      console.warn('No se pudo guardar metadato local:', error.message);
+	      return false;
+	    }
+	  }
+	  function isCurrentAuthEpoch(user, expectedEpoch = AUTH_EPOCH) {
+	    return expectedEpoch === AUTH_EPOCH && !!user && auth.currentUser?.uid === user.uid;
+	  }
+	  function isActiveSyncScope(context, stateDoc, expectedEpoch, user = auth.currentUser) {
+	    return isCurrentAuthEpoch(user, expectedEpoch)
+	      && !!context
+	      && !!stateDoc
+	      && ACTIVE_CONTEXT === context
+	      && STATE_DOC === stateDoc
+	      && window.CLICK360_P0_TENANT_GUARD.sameTenant(context, ACTIVE_CONTEXT)
+	      && activeIdentityIsValid(user);
+	  }
+	  function markSyncConflict(details = {}) {
+	    SYNC_CONFLICT_PENDING = true;
+	    safeStorageSet(syncConflictMarkerKey(), '1');
+	    quarantineIncident('same_tenant_conflict', details);
+	  }
+	  function clearSyncConflict() {
+	    SYNC_CONFLICT_PENDING = false;
+	    try { localStorage.removeItem(syncConflictMarkerKey()); } catch {}
+	  }
+	  function activeIdentityIsValid(user = auth.currentUser) {
+	    return !!user && !!ACTIVE_CONTEXT && !!window.click360User
+	      && user.uid === ACTIVE_CONTEXT.authUid
+	      && window.click360User.uid === ACTIVE_CONTEXT.authUid
+	      && window.click360User.ownerId === ACTIVE_CONTEXT.ownerId
+	      && BUSINESS_ID === ACTIVE_CONTEXT.businessId
+	      && !!STATE_DOC;
+	  }
+	  function legacyMigrationRequired() {
+	    return tenantGuard.snapshot().mode === window.CLICK360_P0_TENANT_GUARD.MODES.LEGACY_MIGRATION_REQUIRED;
+	  }
+	  function verifiedOfflineTenantCache() {
+	    if (!ACTIVE_CONTEXT || localStorage.getItem(legacyMigrationMarkerKey()) || localStorage.getItem(tenantCorruptMarkerKey())) return false;
+	    const status = window.click360GetTenantCacheStatus?.(ACTIVE_CONTEXT);
+	    return status?.valid === true;
+	  }
 	  function getDeviceId() {
 	    let id = localStorage.getItem(DEVICE_ID_KEY);
 	    if (!id) {
-	      id = "device_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-	      rawSetItem(DEVICE_ID_KEY, id);
+	      id = `device_${window.crypto?.randomUUID?.() || `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`}`;
+	      safeStorageSet(DEVICE_ID_KEY, id);
 	    }
 	    return id;
 	  }
@@ -89,26 +181,12 @@
 	    if (AUTH_APPROVED && PULL_COMPLETE && STATE_DOC) pushLocalToFirestore("online_reconnect").catch(() => {});
 	  });
 
-  // Early capture of invite parameters
   const initUrlParams = new URLSearchParams(location.search);
-	  if (initUrlParams.get("invite") === "true" && initUrlParams.get("ownerId")) {
-	    rawSetItem("CLICK360_PENDING_INVITE_OWNER", initUrlParams.get("ownerId"));
-	    if (initUrlParams.get("token")) rawSetItem("CLICK360_PENDING_INVITE_TOKEN", initUrlParams.get("token"));
-	  }
 
   if (initUrlParams.get("resetC360") === "1") {
-    Object.keys(localStorage).forEach(k => {
-      if (k.startsWith("CLICK360_")) localStorage.removeItem(k);
-    });
-    sessionStorage.clear();
-    history.replaceState({}, "", location.pathname + "?v=final-mvp");
-  }
-
-  function removeOverlayAndControls() {
-    ["click360-auth-gate", "click360-cloud-controls"].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.remove();
-    });
+    // P0: never erase tenant data from a URL parameter. The old reset flag now
+    // only removes itself from the address bar.
+    history.replaceState({}, "", location.pathname + "?v=p0-production-audit-v13");
   }
 
   function setAppBlocked(blocked) {
@@ -125,489 +203,345 @@
     }
   }
 
-  async function syncLocalToRemoteManual() {
-    await pushLocalToFirestore("manual_sync");
-    alert("Sincronización forzada completada");
-  }
-
-  async function reloadFromRemoteManual() {
-    if(confirm("¿Estás seguro? Esto reemplazará los datos locales con la nube.")){
-      await pullRemoteOnce({ force: true, reload: true });
-    }
-  }
-
-  function renderCloudControls() {
-    if (document.getElementById("click360-cloud-controls")) return;
-    const div = document.createElement("div");
-    div.id = "click360-cloud-controls";
-    div.style.position = "fixed";
-    div.style.bottom = "10px";
-    div.style.left = "10px";
-    div.style.zIndex = "999999";
-    div.style.background = "rgba(0,0,0,0.8)";
-    div.style.padding = "10px";
-    div.style.borderRadius = "8px";
-    div.style.border = "1px solid #444";
-    div.style.display = "flex";
-    div.style.gap = "8px";
-
-    const btnPush = document.createElement("button");
-    btnPush.textContent = "Forzar Subida";
-    btnPush.style.padding = "4px 8px";
-    btnPush.style.cursor = "pointer";
-    btnPush.onclick = syncLocalToRemoteManual;
-
-    const btnPull = document.createElement("button");
-    btnPull.textContent = "Forzar Bajada";
-    btnPull.style.padding = "4px 8px";
-    btnPull.style.cursor = "pointer";
-    btnPull.onclick = reloadFromRemoteManual;
-
-    div.appendChild(btnPush);
-    div.appendChild(btnPull);
-    document.body.appendChild(div);
-  }
-
-  function throttle(func, limit) {
-    let inThrottle;
-    return function(...args) {
-      const context = this;
-      if (!inThrottle) {
-        func.apply(context, args);
-        inThrottle = true;
-        setTimeout(() => inThrottle = false, limit);
-      }
-    };
-  }
-
-  function safeJsonParse(value) {
-    try { return JSON.parse(value); } catch (e) { return null; }
-  }
+	  function safeJsonParse(value) {
+	    try { return JSON.parse(value); } catch (e) { return null; }
+	  }
+	  function escapeHtml(value) {
+	    return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+	  }
 
   function getCachedProfile(uid) {
     if (!uid) return null;
     return safeJsonParse(localStorage.getItem(PROFILE_CACHE_PREFIX + uid));
   }
 
-	  function protectCurrentProfile(user) {
+	  function profileUpdatedAtMs(value) {
+	    if (typeof value?.toMillis === 'function') return value.toMillis();
+	    if (Number.isFinite(Number(value?.seconds))) return Number(value.seconds) * 1000;
+	    const parsed = Date.parse(String(value || ''));
+	    return Number.isFinite(parsed) ? parsed : 0;
+	  }
+	  function protectCurrentProfile(user, remoteData = {}) {
 	    const cached = getCachedProfile(user?.uid);
 	    if (!cached || !window.click360User) return;
-	    if (cached.name) window.click360User.name = cached.name;
-	    if (cached.photoURL) window.click360User.photoURL = cached.photoURL;
+	    const pending = safeJsonParse(localStorage.getItem(`${PROFILE_PENDING_PREFIX}${user.uid}`));
+	    const localWins = pending?.uid === user.uid
+	      || profileUpdatedAtMs(cached.updatedAt) >= profileUpdatedAtMs(remoteData.updatedAt);
+	    if (localWins) {
+	      if (cached.name) window.click360User.name = cached.name;
+	      if (cached.photoURL) window.click360User.photoURL = cached.photoURL;
+	      return;
+	    }
+	    safeStorageSet(PROFILE_CACHE_PREFIX + user.uid, JSON.stringify({
+	      uid: user.uid,
+	      name: window.click360User.name || '',
+	      photoURL: window.CLICK360_P0_TENANT_GUARD.safeImageSrc(window.click360User.photoURL),
+	      email: window.click360User.email || '',
+	      updatedAt: remoteData.updatedAt?.toDate?.().toISOString?.() || remoteData.updatedAt || new Date().toISOString()
+	    }));
 	  }
 	  function cacheApprovedIdentity(user, data) {
-	    if (!user || !data || data.status === "blocked") return;
+	    if (!user || !isExplicitlyActive(data)) return;
 	    const safe = {
 	      uid: user.uid,
 	      email: user.email || data.email || "",
-	      role: data.role || "owner",
+	      role: data.role,
 	      name: data.name || user.displayName || "",
 	      photoURL: data.photoURL || user.photoURL || "",
 	      status: data.status || "active",
 	      approved: data.approved === true,
 	      ownerId: data.ownerId || user.uid,
-	      isOwner: data.isOwner === true || (data.role || "owner") === "owner",
+	      isOwner: data.role === 'owner',
 	      businessLimit: Number(data.businessLimit || 2),
 	      cachedAtMs: Date.now()
 	    };
-	    try { rawSetItem(LAST_APPROVED_KEY, JSON.stringify(safe)); } catch {}
+	    safeStorageSet(approvedIdentityStorageKey(user.uid), JSON.stringify(safe));
 	  }
 	  function getCachedApprovedIdentity(user) {
 	    if (!user) return null;
-	    const cached = safeJsonParse(localStorage.getItem(LAST_APPROVED_KEY));
-	    if (!cached || cached.uid !== user.uid || cached.status === "blocked") return null;
+	    const cached = safeJsonParse(localStorage.getItem(approvedIdentityStorageKey(user.uid)));
+	    if (!cached || cached.uid !== user.uid || cached.status !== 'active' || cached.approved !== true) return null;
 	    if (cached.email && user.email && cached.email.toLowerCase() !== user.email.toLowerCase()) return null;
+	    if (!Number.isFinite(Number(cached.cachedAtMs)) || Date.now() - Number(cached.cachedAtMs) > OFFLINE_APPROVAL_MAX_AGE_MS) return null;
 	    return cached;
 	  }
-	  function applyApprovedIdentity(user, data, source = "remote") {
+	  function applyApprovedIdentity(user, data, source = "remote", expectedEpoch = AUTH_EPOCH) {
+	    if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
+	    const ownerId = data.ownerId || user.uid;
+	    const allowedRoles = ['owner', 'worker', 'cashier', 'inventory'];
+	    const role = allowedRoles.includes(data.role)
+	      ? data.role
+	      : ((data.isOwner === true || ownerId === user.uid) ? 'owner' : null);
+	    if (!role || (role === 'owner' && ownerId !== user.uid) || (role !== 'owner' && ownerId === user.uid)) return false;
+	    // CLICK 360 stores one protected snapshot at the owner's canonical root.
+	    // A different approvedUsers.businessId would not be authorized by the
+	    // deployed contract, so reject it instead of opening an unsyncable tenant.
+	    if (data.businessId && data.businessId !== ownerId) return false;
+	    const businessId = ownerId;
 	    window.click360User = {
 	      uid: user.uid,
 	      email: user.email || data.email,
-	      role: data.role || "owner",
+	      role,
 	      name: data.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
 	      photoURL: data.photoURL || user.photoURL || '',
 	      status: data.status || "active",
 	      approved: data.approved === true,
 	      businessLimit: Number(data.businessLimit || 2),
-	      ownerId: data.ownerId || user.uid,
-	      isOwner: data.isOwner === true || (data.role || "owner") === "owner",
-	      temporaryOwner: data.temporaryOwner === true,
+	      ownerId,
+	      isOwner: role === 'owner',
 	      source
 	    };
-	    protectCurrentProfile(user);
-	    BUSINESS_ID = window.click360User.ownerId || user.uid;
+	    protectCurrentProfile(user, data);
+	    ACTIVE_CONTEXT = Object.freeze({
+	      authUid: user.uid,
+	      ownerUid: ownerId,
+	      ownerId,
+	      businessId,
+	      tenantKey: tenantKeyFor(ownerId, businessId),
+	      schemaVersion: SCHEMA_VERSION
+	    });
+	    tenantGuard.begin(ACTIVE_CONTEXT);
+	    BUSINESS_ID = businessId;
 	    STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
+	    LAST_REMOTE_REVISION = Number(localStorage.getItem(tenantStorageKey("REMOTE_REVISION")) || 0);
+	    SYNC_CONFLICT_PENDING = localStorage.getItem(syncConflictMarkerKey()) === '1';
+	    if (typeof window.click360SetTenantContext !== "function") {
+	      throw new Error("La interfaz segura todavía no está lista.");
+	    }
+	    window.click360SetTenantContext(ACTIVE_CONTEXT);
 	    cacheApprovedIdentity(user, window.click360User);
+	    return true;
 	  }
-
-  function deepNormalizeProductCodes(obj) {
-    let changed = false;
-    if (Array.isArray(obj)) {
-      obj.forEach(item => { if (deepNormalizeProductCodes(item)) changed = true; });
-    } else if (obj !== null && typeof obj === 'object') {
-      if (obj.code && typeof obj.code === 'string') {
-        const oldCode = obj.code;
-        const newCode = oldCode.toUpperCase().trim();
-        if (oldCode !== newCode) {
-          obj.code = newCode;
-          changed = true;
-        }
-      }
-      Object.values(obj).forEach(val => {
-        if (deepNormalizeProductCodes(val)) changed = true;
-      });
-    }
-    return changed;
-  }
-
-	  function normalizeAllLocalProductCodes() {
-	    let changed = false;
-	    for (let i = 0; i < localStorage.length; i++) {
-	      const key = localStorage.key(i);
-	      if (!isCloudSyncedLocalKey(key)) continue;
-
-      const parsed = safeJsonParse(localStorage.getItem(key));
-      if (parsed && deepNormalizeProductCodes(parsed)) {
-        rawSetItem(key, JSON.stringify(parsed));
-        changed = true;
-      }
-    }
-    return changed;
-  }
 
 	  function snapshotString(obj) {
 	    try { return JSON.stringify(obj || {}); } catch (e) { return "{}"; }
 	  }
 
-	  function isCloudSyncedLocalKey(key) {
-	    return key
-	      && !key.startsWith("firebase:")
-	      && !key.startsWith("CLICK360_")
-	      && key !== SESSION_LS_KEY;
+	  function buildBusinessPayload() {
+	    if (!activeIdentityIsValid() || typeof window.click360GetTenantState !== "function") return null;
+	    const state = window.click360GetTenantState();
+	    if (!state || !sameTenant(state.identity)) return null;
+	    const settings = state.settings || {};
+	    const payload = {
+	      schemaVersion: SCHEMA_VERSION,
+	      identity: activeIdentity(),
+	      data: {
+	        businesses: Array.isArray(state.businesses) ? state.businesses : [],
+	        activeBusinessId: state.activeBusinessId || null,
+	        products: Array.isArray(state.products) ? state.products : [],
+	        sales: Array.isArray(state.sales) ? state.sales : [],
+	        movements: Array.isArray(state.movements) ? state.movements : [],
+	        dailyReports: Array.isArray(state.dailyReports) ? state.dailyReports : [],
+	        invoices: Array.isArray(state.invoices) ? state.invoices : [],
+	        deletedProducts: Array.isArray(state.deletedProducts) ? state.deletedProducts : [],
+	        auditLogs: Array.isArray(state.auditLogs) ? state.auditLogs : [],
+	        settings: {
+	          labelTemplates: Array.isArray(settings.labelTemplates) ? settings.labelTemplates : [],
+	          workers: Array.isArray(settings.workers) ? settings.workers : []
+	        },
+	        updatedAtMs: Number(state.updatedAtMs || Date.now()),
+	        updatedAt: state.updatedAt || new Date().toISOString()
+	      }
+	    };
+	    return window.CLICK360_P0_TENANT_GUARD.validBusinessPayload(payload, ACTIVE_CONTEXT) ? payload : null;
 	  }
 
-	  function snapshotStateUpdatedAtMs(storage) {
-    try {
-      const parsed = safeJsonParse(storage?.[STATE_LS_KEY]);
-      return Number(parsed?.updatedAtMs || 0);
-    } catch { return 0; }
-  }
+	  function localPayloadUpdatedAtMs() {
+	    return Number(buildBusinessPayload()?.data?.updatedAtMs || 0);
+	  }
 
-  function localStateUpdatedAtMs() {
-    return snapshotStateUpdatedAtMs({ [STATE_LS_KEY]: localStorage.getItem(STATE_LS_KEY) });
-  }
-
-  function isLocalNewerThanRemote(remoteStorage) {
-    const localMs = localStateUpdatedAtMs();
-    const remoteMs = snapshotStateUpdatedAtMs(remoteStorage);
-    return localMs && (!remoteMs || localMs > remoteMs + 1500);
-  }
-
-  function getLocalSnapshot() {
-    normalizeAllLocalProductCodes();
-
-    const data = {};
-    for (let i = 0; i < localStorage.length; i++) {
-	      const key = localStorage.key(i);
-	      if (!isCloudSyncedLocalKey(key)) continue;
-	      data[key] = localStorage.getItem(key);
-    }
-    return data;
-  }
-
-  function applyRemoteStorage(remoteStorage) {
-    IS_RESTORING_REMOTE = true;
-    const localKeys = [];
-	    for(let i=0; i<localStorage.length; i++){
-	      const k = localStorage.key(i);
-	      if(isCloudSyncedLocalKey(k)) localKeys.push(k);
+	  function quarantineIncident(kind, details = {}) {
+	    const key = `CLICK360_QUARANTINE:${DEVICE_ID}:${Date.now()}:${kind}`;
+	    try {
+	      safeStorageSet(key, JSON.stringify({ kind, createdAt: new Date().toISOString(), context: ACTIVE_CONTEXT, ...details }));
+	      const prefix = `CLICK360_QUARANTINE:${DEVICE_ID}:`;
+	      const keys = [];
+	      for (let index = 0; index < localStorage.length; index += 1) {
+	        const itemKey = localStorage.key(index);
+	        if (itemKey?.startsWith(prefix)) keys.push(itemKey);
+	      }
+	      keys.sort();
+	      keys.slice(0, Math.max(0, keys.length - 25)).forEach((itemKey) => localStorage.removeItem(itemKey));
+	    } catch (error) {
+	      console.warn("No se pudo guardar cuarentena:", error.message);
 	    }
+	  }
 
-    const localBackup = {};
-    localKeys.forEach(k => { localBackup[k] = localStorage.getItem(k); });
+	  function quarantineLegacyLocalState() {
+	    const raw = localStorage.getItem(LEGACY_STATE_LS_KEY);
+	    const marker = `CLICK360_LEGACY_QUARANTINED:${DEVICE_ID}`;
+	    if (!raw || localStorage.getItem(marker)) return;
+	    const legacy = safeJsonParse(raw) || {};
+	    const candidates = Array.isArray(legacy.businesses)
+	      ? legacy.businesses.map(b => ({ id: b.id || null, name: b.name || null })) : [];
+	    quarantineIncident("legacy_local_state", {
+	      detectedUid: auth.currentUser?.uid || null,
+	      detectedEmail: auth.currentUser?.email || null,
+	      businessCandidates: candidates,
+	      remoteMatches: [],
+	      ambiguous: true,
+	      legacyStateBytes: window.CLICK360_P0_TENANT_GUARD.utf8Bytes(raw)
+	    });
+	    safeStorageSet(marker, "1");
+	  }
 
-    try {
-      rawSetItem("CLICK360_BACKUP_BEFORE_REMOTE_APPLY", JSON.stringify({
-        createdAt: new Date().toISOString(),
-        businessId: BUSINESS_ID,
-        localStorage: localBackup
-      }));
-    } catch (e) {
-      console.warn("No se pudo crear respaldo antes de aplicar nube:", e.message);
-    }
-    try {
-      localKeys.forEach(k => localStorage.removeItem(k));
-      Object.entries(remoteStorage || {}).forEach(([key, value]) => {
-        rawSetItem(key, value);
-      });
-      normalizeAllLocalProductCodes();
-    } catch (e) {
-      console.warn("No se pudo aplicar nube. Restaurando datos locales:", e.message);
-      Object.entries(localBackup).forEach(([key, value]) => {
-        if (value !== null && value !== undefined) rawSetItem(key, value);
-      });
-      throw e;
-    } finally {
-      IS_RESTORING_REMOTE = false;
-    }
+	  function remoteMatchesContext(remote, context) {
+	    return !!remote && remote.schemaVersion === SCHEMA_VERSION
+	      && remote.ownerId === context?.ownerId
+	      && remote.businessId === context?.businessId
+	      && remote.ownerUid === context?.ownerUid
+	      && remote.tenantKey === context?.tenantKey
+	      && window.CLICK360_P0_TENANT_GUARD.validBusinessPayload(remote.payload, context);
+	  }
+	  function applyRemotePayload(payload) {
+	    if (!payload || !sameTenant(payload.identity) || typeof window.click360ApplyTenantState !== "function") {
+	      throw new Error("Snapshot remoto pertenece a otro tenant o es inválido.");
+	    }
+	    const current = window.click360GetTenantState?.() || {};
+	    const incoming = payload.data || {};
+	    const nextState = {
+	      ...incoming,
+	      identity: activeIdentity(),
+	      // Per-user profile photos and names remain local to the authenticated uid.
+	      settings: { ...(incoming.settings || {}), userProfiles: current.settings?.userProfiles || {} }
+	    };
+	    IS_RESTORING_REMOTE = true;
+	    try {
+	      window.click360ApplyTenantState(nextState, ACTIVE_CONTEXT);
+	    } finally {
+	      IS_RESTORING_REMOTE = false;
+	    }
+	  }
+
+	  function buildV10StateDocument(payload, reason, extra = {}) {
+	    const user = auth.currentUser;
+	    const revision = Math.max(Date.now(), Number(LAST_REMOTE_REVISION || 0) + 1);
+	    return {
+	      schemaVersion: SCHEMA_VERSION,
+	      ownerUid: ACTIVE_CONTEXT.ownerUid,
+	      ownerId: ACTIVE_CONTEXT.ownerId,
+	      businessId: ACTIVE_CONTEXT.businessId,
+	      tenantKey: ACTIVE_CONTEXT.tenantKey,
+	      revision,
+	      baseRevision: LAST_REMOTE_REVISION || 0,
+	      deviceId: DEVICE_ID,
+	      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+	      updatedAtMs: revision,
+	      updatedBy: user?.uid || null,
+	      updatedByEmail: user?.email || null,
+	      reason,
+	      payload,
+	      ...extra
+	    };
+	  }
+
+	  function legacyMigrationMessage() {
+	    return 'Detectamos datos de una versión anterior. Están protegidos y la operación queda bloqueada hasta que un administrador complete una migración verificada.';
+	  }
+
+	  function showLegacyMigrationGate() {
+	    showGate(legacyMigrationMessage());
+	    setAppBlocked(true);
+	  }
+
+	  // Legacy data is migrated only by scripts/migrate-legacy-v9-to-v10.mjs with
+	  // administrative credentials. A public browser must never rewrite it.
+	  window.click360MigrateLegacyRemote = async function() {
+	    throw new Error('La migración legacy es administrativa. Este tenant permanece protegido hasta completar el proceso verificado.');
+	  };
+
+  function isExplicitlyActive(data) {
+    return !!data && (
+      (data.status === 'active' && data.approved === true)
+      || (!Object.prototype.hasOwnProperty.call(data, 'status') && data.approved === true)
+    );
   }
 
-  async function isApprovedUser(user) {
-    if (!user) return false;
+  function setPendingUser(user, data = {}, status = 'pending') {
+    window.click360User = {
+      uid: user.uid,
+      email: user.email || data.email || '',
+      role: data.role || 'worker',
+      name: data.name || user.displayName || (user.email ? user.email.split('@')[0] : 'Usuario'),
+      photoURL: data.photoURL || user.photoURL || '',
+      status,
+      businessLimit: Number(data.businessLimit || 2),
+      ownerId: data.ownerId || user.uid,
+      isOwner: data.isOwner === true || data.role === 'owner'
+    };
+  }
 
-    // Temporal owners fallback list (case insensitive)
-    const tempOwners = [
-      'roddysmith23@hotmail.com',
-      'sanyagullo1997@gmail.com',
-      'shary10mmv@gmail.com',
-      'shary10mmvv@gmail.com',
-      'debbyaf32@gmail.com',
-      'debbya632@gmail.com',
-      'cheyos@hotmail.es'
-    ];
-    const isTempOwner = user.email && tempOwners.includes(user.email.toLowerCase());
-
-    console.log("[CLICK360 AUTH LOG] UID Autenticado:", user.uid);
-    console.log("[CLICK360 AUTH LOG] Email Autenticado:", user.email);
-    console.log("[CLICK360 AUTH LOG] Ruta Firestore consultada: approvedUsers/" + user.uid);
-
+  async function isApprovedUser(user, expectedEpoch = AUTH_EPOCH) {
+    if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
     try {
-      let doc = await db.collection("approvedUsers").doc(user.uid).get();
-      let d = null;
+      const doc = await db.collection('approvedUsers').doc(user.uid).get();
+      if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
+      let data = doc.exists ? (doc.data() || {}) : null;
 
-      if (doc.exists) {
-        d = doc.data();
-        console.log("[CLICK360 AUTH LOG] Documento encontrado en Firestore:", JSON.stringify(d));
-      } else {
-        console.log("[CLICK360 AUTH LOG] Documento no encontrado en Firestore para el UID:", user.uid);
-      }
-
-      // 1. If status is blocked -> BLOQUEAR
-      if (d && d.status === "blocked") {
-        console.log("[CLICK360 AUTH LOG] Acceso BLOQUEADO. Razón: El documento tiene status === 'blocked'.");
-        window.click360User = {
-          uid: user.uid,
-          email: user.email || d.email,
-          role: d.role || "worker",
-          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
-          photoURL: d.photoURL || user.photoURL || '',
-          status: "blocked",
-          businessLimit: Number(d.businessLimit || 2),
-          ownerId: d.ownerId || user.uid,
-          isOwner: d.isOwner === true || d.role === "owner"
-        };
+      if (data?.status === 'blocked' || data?.status === 'revoked') {
+        setPendingUser(user, data, data.status);
         return false;
       }
 
-      if (!d && user.email) {
-        const emailKey = user.email.toLowerCase();
-        const emailDoc = await db.collection("approvedUsersByEmail").doc(emailKey).get().catch(() => null);
-        if (emailDoc && emailDoc.exists) {
-          const emailData = emailDoc.data() || {};
-          if (emailData.status === "active" || emailData.approved === true) {
-            console.log("[CLICK360 AUTH LOG] Preaprobación por email encontrada. Creando approvedUsers/" + user.uid);
-            d = {
-              uid: user.uid,
-              email: user.email,
-              role: emailData.role || "worker",
-              ownerId: emailData.ownerId || user.uid,
-              name: emailData.name || user.displayName || (user.email ? user.email.split('@')[0] : "Trabajador"),
-              status: "active",
-              approved: true,
-              businessLimit: Number(emailData.businessLimit || 2),
-              photoURL: user.photoURL || '',
-              createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-              approvedFromEmail: true
-            };
-	            await db.collection("approvedUsers").doc(user.uid).set(d, { merge: true });
-	            localStorage.removeItem("CLICK360_PENDING_INVITE_OWNER");
-	            localStorage.removeItem("CLICK360_PENDING_INVITE_TOKEN");
-	          }
+      if (!data && user.email) {
+        const emailDoc = await db.collection('approvedUsersByEmail').doc(user.email.toLowerCase()).get().catch(() => null);
+        if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
+        const invite = emailDoc?.exists ? (emailDoc.data() || {}) : null;
+        if (invite?.status === 'active' && invite.approved === true) {
+          data = {
+            uid: user.uid,
+            email: user.email,
+            role: invite.role || 'worker',
+            ownerId: invite.ownerId || user.uid,
+            name: invite.name || user.displayName || (user.email ? user.email.split('@')[0] : 'Trabajador'),
+            status: 'active',
+            approved: true,
+            businessLimit: Number(invite.businessLimit || 2),
+            photoURL: user.photoURL || '',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            approvedFromEmail: true
+          };
+          await db.collection('approvedUsers').doc(user.uid).set(data, { merge: true });
+          if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
         }
       }
 
-	      // 2. If status is active OR approved is true -> ENTRAR
-	      if (d && (d.status === "active" || d.approved === true)) {
-	        console.log("[CLICK360 AUTH LOG] Acceso PERMITIDO. Razón: El documento tiene status === 'active' o approved === true.");
-	        applyApprovedIdentity(user, d, "approvedUsers");
-	        return true;
-	      }
-
-      // 3. If email is in tempOwners list -> ENTRAR as owner (fallback)
-      if (isTempOwner) {
-        console.log("[CLICK360 AUTH LOG] Acceso PERMITIDO. Razón: El email está en la lista temporal de propietarios.");
-        window.click360User = {
-          uid: user.uid,
-          email: user.email,
-          role: "owner",
-          name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
-          photoURL: user.photoURL || '',
-          status: "active",
-          approved: true,
-          businessLimit: 2,
-          ownerId: user.uid,
-          isOwner: true,
-          temporaryOwner: true
-        };
-	        protectCurrentProfile(user);
-	        cacheApprovedIdentity(user, window.click360User);
-	        db.collection("approvedUsers").doc(user.uid).set({
-          uid: user.uid,
-          email: user.email,
-          role: "owner",
-          name: window.click360User.name,
-          photoURL: window.click360User.photoURL || '',
-          status: "active",
-          approved: true,
-          businessLimit: 2,
-          ownerId: user.uid,
-          isOwner: true,
-          temporaryOwner: true,
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge: true }).catch(err => console.warn("No se pudo materializar propietario temporal:", err.message));
-        BUSINESS_ID = user.uid;
-        STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
-        return true;
+      if (isExplicitlyActive(data)) {
+        if (data.businessId && data.businessId !== (data.ownerId || user.uid)) {
+          setPendingUser(user, data, 'tenant_configuration_invalid');
+          return false;
+        }
+        return applyApprovedIdentity(user, data, 'approvedUsers', expectedEpoch);
       }
 
-	      // 4. Invite links are only hints. Real approval must come from approvedUsersByEmail.
-	      const urlParams = new URLSearchParams(location.search);
-	      const cachedOwnerId = localStorage.getItem("CLICK360_PENDING_INVITE_OWNER");
-	      const isInvite = urlParams.get("invite") === "true" || !!cachedOwnerId;
-	      const inviteOwnerId = urlParams.get("ownerId") || cachedOwnerId;
-
-	      if (!d && isInvite && inviteOwnerId) {
-	        console.log("[CLICK360 AUTH LOG] Invitación detectada, pero falta preaprobación por email.");
-	        d = {
-	          uid: user.uid,
-	          email: user.email,
-	          role: "worker",
-	          ownerId: inviteOwnerId,
-	          name: user.displayName || (user.email ? user.email.split('@')[0] : "Trabajador"),
-	          status: "pending",
-	          photoURL: user.photoURL || ''
-	        };
-	      }
-
-      // 5. If status is pending or doesn't exist -> PENDIENTE
-      if (d && d.status === "pending") {
-        console.log("[CLICK360 AUTH LOG] Acceso BLOQUEADO/PENDIENTE. Razón: El documento tiene status === 'pending'.");
-        window.click360User = {
-          uid: user.uid,
-          email: user.email || d.email,
-          role: d.role || "worker",
-          name: d.name || user.displayName || (user.email ? user.email.split('@')[0] : "Usuario"),
-          photoURL: d.photoURL || user.photoURL || '',
-          status: "pending",
-          businessLimit: Number(d.businessLimit || 2),
-          ownerId: d.ownerId || user.uid,
-          isOwner: d.isOwner === true || d.role === "owner"
-        };
-        return false;
-      }
-
-      console.log("[CLICK360 AUTH LOG] Acceso BLOQUEADO/PENDIENTE. Razón: El documento no existe en Firestore y el email no está en la lista temporal.");
-      window.click360User = {
-        uid: user.uid,
-        email: user.email,
-        role: "owner",
-        status: "pending",
-        businessLimit: 2,
-        ownerId: user.uid,
-        isOwner: false
-      };
+      setPendingUser(user, data || {}, data?.status || 'pending');
       return false;
-    } catch(e) {
-	      console.error("[CLICK360 AUTH LOG] Error al verificar aprobación:", e);
-	      const cached = getCachedApprovedIdentity(user);
-	      if (cached && (!navigator.onLine || e.code === "unavailable")) {
-	        console.log("[CLICK360 AUTH LOG] Acceso offline permitido con identidad aprobada en caché.");
-	        applyApprovedIdentity(user, cached, "offline_cache");
-	        setSyncStatus("offline", "Trabajando sin internet con la última aprobación guardada.");
-	        return true;
-	      }
-	      // Even if firestore check fails, check temporal owner fallback!
-      if (isTempOwner) {
-        console.log("[CLICK360 AUTH LOG] Fallback: Acceso PERMITIDO por lista temporal tras error de Firestore.");
-        window.click360User = {
-          uid: user.uid,
-          email: user.email,
-          role: "owner",
-          name: user.displayName || (user.email ? user.email.split('@')[0] : "Propietario"),
-          photoURL: user.photoURL || '',
-          status: "active",
-          approved: true,
-          businessLimit: 2,
-          ownerId: user.uid,
-          isOwner: true,
-          temporaryOwner: true
-	        };
-	        protectCurrentProfile(user);
-	        cacheApprovedIdentity(user, window.click360User);
-	        BUSINESS_ID = user.uid;
-        STATE_DOC = db.collection("businesses").doc(BUSINESS_ID).collection("state").doc("main");
-        return true;
+    } catch (error) {
+      if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
+      const cached = getCachedApprovedIdentity(user);
+      if (cached && (!navigator.onLine || error.code === 'unavailable')) {
+        const applied = applyApprovedIdentity(user, cached, 'offline_cache', expectedEpoch);
+        if (applied) setSyncStatus('offline', 'Trabajando sin internet con la última aprobación guardada.');
+        return applied;
       }
+      console.warn('No se pudo verificar la aprobación:', error.message);
       return false;
     }
   }
 
-  // Diagnostic function click360DebugAuth
-  window.click360DebugAuth = async function() {
-    console.log("=== CLICK 360 DIAGNÓSTICO DE AUTENTICACIÓN ===");
-    const currentUser = auth.currentUser;
-    if (!currentUser) {
-      console.log("[DEBUG AUTH] No hay usuario autenticado en Firebase Auth.");
-      return;
-    }
-    console.log("[DEBUG AUTH] currentUser.uid:", currentUser.uid);
-    console.log("[DEBUG AUTH] currentUser.email:", currentUser.email);
-    const path = "approvedUsers/" + currentUser.uid;
-    console.log("[DEBUG AUTH] ruta Firestore consultada:", path);
-
-    try {
-      const docSnap = await db.collection("approvedUsers").doc(currentUser.uid).get();
-      const exists = docSnap.exists;
-      const data = exists ? docSnap.data() : null;
-      console.log("[DEBUG AUTH] data encontrada en Firestore:", data);
-
-      const tempOwners = [
-        'roddysmith23@hotmail.com',
-        'sanyagullo1997@gmail.com',
-        'shary10mmv@gmail.com',
-        'shary10mmvv@gmail.com',
-        'debbyaf32@gmail.com',
-        'debbya632@gmail.com',
-        'cheyos@hotmail.es'
-      ];
-      const isTempOwner = currentUser.email && tempOwners.includes(currentUser.email.toLowerCase());
-
-      let decision = "PENDIENTE/BLOQUEADO";
-      if (data && data.status === "blocked") {
-        decision = "BLOQUEADO (status es blocked)";
-      } else if (data && (data.status === "active" || data.approved === true)) {
-        decision = "PERMITIDO (por data de Firestore)";
-      } else if (isTempOwner) {
-        decision = "PERMITIDO (por lista temporal de email)";
-      } else if (data && data.status === "pending") {
-        decision = "PENDIENTE (status es pending)";
-      } else {
-        decision = "PENDIENTE (no existe documento y email no en lista temporal)";
-      }
-      console.log("[DEBUG AUTH] decisión final de acceso:", decision);
-    } catch (err) {
-      console.error("[DEBUG AUTH] Error al consultar Firestore:", err);
-    }
+  window.click360DebugAuth = function() {
+    return {
+      authenticated: !!auth.currentUser,
+      approved: AUTH_APPROVED,
+      tenantKey: ACTIVE_CONTEXT?.tenantKey || null,
+      syncStatus: syncStatus.status
+    };
   };
-  window.click360InviteWorker = async function(email) {
-    if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
-  };
-
 	  window.click360InviteWorkerEmail = async function(email, name) {
 	    if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
 	    const uid = window.click360User.uid;
 	    const normalizedEmail = String(email || "").trim().toLowerCase();
-	    const inviteToken = Math.random().toString(36).slice(2) + Date.now().toString(36);
+	    const inviteToken = window.crypto?.randomUUID?.() || `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 	    await db.collection("approvedUsersByEmail").doc(normalizedEmail).set({
 	      email: normalizedEmail,
 	      role: "worker",
@@ -629,7 +563,7 @@
 	      approved: false,
 	      revokedAt: firebase.firestore.FieldValue.serverTimestamp(),
 	      revokedBy: window.click360User.uid
-	    }, { merge: true }).catch(()=>{});
+	    }, { merge: true });
 	  };
 
 	  window.click360RemoveWorkerUid = async function(workerUid) {
@@ -639,190 +573,315 @@
 	      approved: false,
 	      revokedAt: firebase.firestore.FieldValue.serverTimestamp(),
 	      revokedBy: window.click360User.uid
-	    }, { merge: true }).catch(()=>{});
+	    }, { merge: true });
 	  };
 
-	  async function pushLocalToFirestore(reason = "auto") {
+	  window.click360RevokeWorker = async function(email, workerUid = '') {
+	    if(!window.click360User || window.click360User.role !== 'owner') throw new Error("No tienes permisos");
+	    const normalizedEmail = String(email || '').trim().toLowerCase();
+	    if (!normalizedEmail) throw new Error('Correo de trabajador inválido.');
+	    const inviteRef = db.collection('approvedUsersByEmail').doc(normalizedEmail);
+	    const inviteSnapshot = await inviteRef.get();
+	    const batch = db.batch();
+	    let writes = 0;
+	    if (inviteSnapshot.exists) {
+	      batch.set(inviteRef, {
+	        status: 'blocked',
+	        approved: false,
+	        revokedAt: firebase.firestore.FieldValue.serverTimestamp(),
+	        revokedBy: window.click360User.uid
+	      }, { merge: true });
+	      writes += 1;
+	    }
+	    if (workerUid) {
+	      batch.set(db.collection('approvedUsers').doc(workerUid), {
+	        status: 'blocked',
+	        approved: false,
+	        revokedAt: firebase.firestore.FieldValue.serverTimestamp(),
+	        revokedBy: window.click360User.uid
+	      }, { merge: true });
+	      writes += 1;
+	    }
+	    if (!writes) throw new Error('No se encontró una invitación ni una cuenta de trabajador para revocar.');
+	    await batch.commit();
+	  };
+
+	  function syncError(code, message, details = {}) {
+	    const error = new Error(message);
+	    error.code = code;
+	    error.details = details;
+	    return error;
+	  }
+
+	  async function pushLocalToFirestoreOnce(reason = 'auto') {
+	    const user = auth.currentUser;
+	    const context = ACTIVE_CONTEXT;
+	    const stateDoc = STATE_DOC;
+	    const expectedEpoch = AUTH_EPOCH;
+	    if (legacyMigrationRequired()) {
+	      setSyncStatus('migration_required', legacyMigrationMessage());
+	      return false;
+	    }
+	    if (SYNC_CONFLICT_PENDING) {
+	      setSyncStatus('error', 'Hay un conflicto pendiente. Descarga o respalda los datos antes de volver a sincronizar.');
+	      return false;
+	    }
+	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user) || !AUTH_APPROVED || IS_RESTORING_REMOTE || !PULL_COMPLETE || !tenantGuard.canWrite(context)) return false;
+	    if (!navigator.onLine) {
+	      setSyncStatus('offline', 'Sin internet. Cambios pendientes de subir.');
+	      return false;
+	    }
+
+	    const payload = buildBusinessPayload();
+	    const payloadBytes = window.CLICK360_P0_TENANT_GUARD.utf8Bytes(payload || {});
+	    if (!payload || !sameTenant(payload.identity)) {
+	      quarantineIncident('blocked_push_identity', { reason });
+	      setSyncStatus('error', 'Se bloqueó una escritura porque la identidad o el contenido del tenant no coincide.');
+	      return false;
+	    }
+	    if (payloadBytes > MAX_CLOUD_PAYLOAD_BYTES) {
+	      setSyncStatus('error', `Los datos ocupan ${Math.ceil(payloadBytes / 1024)} KB y superan el límite seguro de sincronización. Reduce imágenes antes de continuar.`);
+	      return false;
+	    }
+
+	    const expectedRevision = Number(LAST_REMOTE_REVISION || 0);
+	    const documentData = buildV10StateDocument(payload, reason);
+	    setSyncStatus('syncing', 'Guardando cambios en Firestore.', { reason });
+
 	    try {
-	      const user = auth.currentUser;
-	      if (!user || !AUTH_APPROVED || IS_RESTORING_REMOTE || !PULL_COMPLETE || !STATE_DOC || !BUSINESS_ID) return false;
-	      if (!navigator.onLine) {
-	        setSyncStatus("offline", "Sin internet. Cambios pendientes de subir.");
+	      const wrote = await window.CLICK360_P0_TENANT_GUARD.guardedWrite(tenantGuard, context, async () => {
+	        await db.runTransaction(async (transaction) => {
+	          if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) throw syncError('click360/stale-auth', 'La cuenta cambió antes de sincronizar.');
+	          const current = await transaction.get(stateDoc);
+	          if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) throw syncError('click360/stale-auth', 'La cuenta cambió durante la sincronización.');
+	          if (!current.exists) {
+	            if (expectedRevision !== 0) throw syncError('click360/revision-conflict', 'El documento remoto fue reemplazado.', { expectedRevision, remoteRevision: null });
+	          } else {
+	            const remote = current.data() || {};
+	            const remoteRevision = Number(remote.revision || remote.updatedAtMs || 0);
+	            if (!remoteMatchesContext(remote, context)) throw syncError('click360/remote-identity', 'La identidad remota no coincide.', { remoteRevision });
+	            if (remoteRevision !== expectedRevision) throw syncError('click360/revision-conflict', 'Hay cambios remotos sin resolver.', { expectedRevision, remoteRevision });
+	          }
+	          transaction.set(stateDoc, documentData);
+	        });
+	      });
+	      if (!wrote) {
+	        setSyncStatus('migration_required', legacyMigrationMessage());
 	        return false;
 	      }
-
-	      const snapshot = getLocalSnapshot();
-	      if(Object.keys(snapshot).length === 0) return false;
-	      const revision = Date.now();
-	      setSyncStatus("syncing", "Guardando cambios en Firestore.", { reason });
-
-	      await STATE_DOC.set({
-	        businessId: BUSINESS_ID,
-	        revision,
-	        baseRevision: LAST_REMOTE_REVISION || 0,
-	        deviceId: DEVICE_ID,
-	        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-	        updatedAtMs: revision,
-	        updatedBy: user.uid,
-	        updatedByEmail: user.email || null,
-	        reason,
-	        localStorage: snapshot
-	      });
-
-	      const hash = snapshotString(snapshot);
-	      rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", hash);
-	      rawSetItem("CLICK360_REMOTE_REVISION", String(revision));
-	      LAST_REMOTE_REVISION = revision;
+	      if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
+	      const hash = snapshotString(payload);
+	      safeStorageSet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'), hash);
+	      safeStorageSet(tenantStorageKeyFor(context, 'REMOTE_REVISION'), String(documentData.revision));
+	      LAST_REMOTE_REVISION = documentData.revision;
 	      LOCAL_WRITE_PENDING_UNTIL = 0;
-	      setSyncStatus("synced", "Datos guardados en la nube.", { reason, revision });
-
-	      console.log("CLICK360 sincronizado:", reason);
+	      setSyncStatus('synced', 'Datos guardados en la nube.', { reason, revision: documentData.revision, payloadBytes });
 	      return true;
-	    } catch (e) {
-	      console.warn("CLICK360 no pudo sincronizar:", e.message);
-	      setSyncStatus("error", e.message || "No se pudo sincronizar.");
+	    } catch (error) {
+	      if (error.code === 'click360/stale-auth') return false;
+	      if (error.code === 'click360/revision-conflict' || error.code === 'click360/remote-identity') {
+	        markSyncConflict({ reason, ...error.details, localRevision: expectedRevision });
+	        setSyncStatus('error', 'Se detectaron cambios simultáneos. Tus cambios locales siguen protegidos y no se sobrescribió la nube.');
+	        return false;
+	      }
+	      console.warn('CLICK360 no pudo sincronizar:', error.message);
+	      setSyncStatus('error', error.message || 'No se pudo sincronizar.');
 	      return false;
 	    }
 	  }
 
+	  async function pushLocalToFirestore(reason = 'auto') {
+	    const context = ACTIVE_CONTEXT;
+	    const schedulerKey = context ? `${AUTH_EPOCH}:${context.authUid}:${context.tenantKey}` : '';
+	    if (!schedulerKey) return false;
+	    const existing = PUSH_SCHEDULERS.get(schedulerKey);
+	    if (existing) {
+	      existing.queuedReason = reason;
+	      return existing.promise;
+	    }
+	    const scheduler = { queuedReason: null, promise: null };
+	    scheduler.promise = (async () => {
+	      let nextReason = reason;
+	      let result = false;
+	      while (nextReason) {
+	        scheduler.queuedReason = null;
+	        result = await pushLocalToFirestoreOnce(nextReason);
+	        nextReason = result ? scheduler.queuedReason : null;
+	      }
+	      return result;
+	    })();
+	    PUSH_SCHEDULERS.set(schedulerKey, scheduler);
+	    try { return await scheduler.promise; }
+	    finally { PUSH_SCHEDULERS.delete(schedulerKey); }
+	  }
+
 	  async function pullRemoteOnce({ force = false, reload = false } = {}) {
-	    try {
-	      if (!STATE_DOC) return false;
-	      if (!navigator.onLine && !force) {
+	    const user = auth.currentUser;
+	    const context = ACTIVE_CONTEXT;
+	    const stateDoc = STATE_DOC;
+	    const expectedEpoch = AUTH_EPOCH;
+	  try {
+	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
+	    const localCacheStatus = window.click360GetTenantCacheStatus?.(context) || { valid: false, reason: 'cache_status_unavailable' };
+	    if (!navigator.onLine && !force) {
+	        if (!verifiedOfflineTenantCache()) {
+	          tenantGuard.block();
+	          PULL_COMPLETE = false;
+	          setSyncStatus('blocked_identity', 'Sin internet y no existe una caché propia, válida y aprobada para esta cuenta.');
+	          return false;
+	        }
+	        tenantGuard.allow(context);
 	        PULL_COMPLETE = true;
-	        setSyncStatus("offline", "Sin internet. Usando datos locales guardados.");
+	        setSyncStatus('offline', 'Sin internet. Usando la última caché verificada de esta cuenta.');
 	        return false;
 	      }
-	      setSyncStatus("syncing", "Leyendo datos de Firestore.");
-	      const snap = await STATE_DOC.get();
-	      if (!snap.exists) {
+	      setSyncStatus('syncing', 'Leyendo datos de Firestore.');
+	      const snap = await stateDoc.get();
+	      if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
+	    if (!snap.exists) {
+	      if (localCacheStatus.reason !== 'cache_missing') {
+	        INITIAL_TENANT_SEED_REQUIRED = false;
+	        tenantGuard.block();
+	        PULL_COMPLETE = false;
+	        quarantineIncident('remote_missing_with_existing_cache', { path: stateDoc.path, cacheReason: localCacheStatus.reason });
+	        setSyncStatus('error', 'El documento remoto no existe, pero este dispositivo conserva datos o una caché dañada. Se bloqueó la creación automática para evitar pérdida de información.');
+	        return false;
+	      }
+	      LAST_REMOTE_REVISION = 0;
+	        safeStorageSet(tenantStorageKey('REMOTE_REVISION'), '0');
+	        tenantGuard.allow(context);
 	        PULL_COMPLETE = true;
-	        const local = getLocalSnapshot();
-	        if(Object.keys(local).length > 0) {
-	          await pushLocalToFirestore("initial_seed");
-	        }
-	        setSyncStatus("synced", "Nube inicializada con datos locales.");
+	        INITIAL_TENANT_SEED_REQUIRED = true;
+	        setSyncStatus('pending', 'Tenant nuevo listo. La primera sincronización se hará al desbloquear la cuenta.');
 	        return false;
 	      }
 
 	      const remoteData = snap.data() || {};
-	      const remoteStorage = remoteData.localStorage || {};
-	      LAST_REMOTE_REVISION = Number(remoteData.revision || remoteData.updatedAtMs || LAST_REMOTE_REVISION || 0);
-	      rawSetItem("CLICK360_REMOTE_REVISION", String(LAST_REMOTE_REVISION || 0));
-	      const remoteHash = snapshotString(remoteStorage);
-	      const localHash = snapshotString(getLocalSnapshot());
-      const alreadyApplied = localStorage.getItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
+	      if (remoteData.schemaVersion !== SCHEMA_VERSION) {
+	        INITIAL_TENANT_SEED_REQUIRED = false;
+	        tenantGuard.requireLegacy(context, { document: remoteData, path: stateDoc.path });
+	        safeStorageSet(legacyMigrationMarkerKey(), '1');
+	        quarantineIncident('legacy_remote_state', {
+	          path: stateDoc.path,
+	          remoteMetadata: { businessId: remoteData.businessId || null, updatedBy: remoteData.updatedBy || null, updatedByEmail: remoteData.updatedByEmail || null, revision: remoteData.revision || null }
+	        });
+	        PULL_COMPLETE = false;
+	        setSyncStatus('migration_required', legacyMigrationMessage());
+	        return false;
+	      }
+	      if (!remoteMatchesContext(remoteData, context)) {
+	        INITIAL_TENANT_SEED_REQUIRED = false;
+	        tenantGuard.block();
+	        safeStorageSet(tenantCorruptMarkerKey(), '1');
+	        quarantineIncident('blocked_pull_identity', { path: stateDoc.path, remoteIdentity: { ownerUid: remoteData.ownerUid, ownerId: remoteData.ownerId, businessId: remoteData.businessId, tenantKey: remoteData.tenantKey } });
+	        PULL_COMPLETE = false;
+	        setSyncStatus('error', 'Se bloqueó una descarga con identidad o contenido inválido. Tus datos locales siguen intactos.');
+	        return false;
+	      }
 
-      if (force || (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== alreadyApplied)) {
-        // PROTECT: Don't overwrite local data if it has MORE records than remote
-        let shouldApply = true;
+	      const remotePayload = remoteData.payload;
+	      const remoteRevision = Number(remoteData.revision || remoteData.updatedAtMs || 0);
+	      const remoteHash = snapshotString(remotePayload);
+	    const localPayload = buildBusinessPayload();
+	    const localHash = snapshotString(localPayload);
+	    const alreadyApplied = localStorage.getItem(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'));
+	    const localChanged = localCacheStatus.valid === true && (
+	      Date.now() < LOCAL_WRITE_PENDING_UNTIL
+	      || !alreadyApplied
+	      || localHash !== alreadyApplied
+	    );
 
-        if (Date.now() < LOCAL_WRITE_PENDING_UNTIL || isLocalNewerThanRemote(remoteStorage)) {
-          console.log("[CLICK360 SYNC] Local más reciente que remoto. Subiendo local.");
-          PULL_COMPLETE = true;
-          await pushLocalToFirestore("local_newer");
-          return false;
-        }
-
-        if (isLocalRicher(remoteStorage)) {
-          console.log("[CLICK360 SYNC] Local tiene más datos que remoto. Subiendo local en vez de sobrescribir.");
-          shouldApply = false;
-          PULL_COMPLETE = true;
-          await pushLocalToFirestore("local_richer");
-          return false;
-        }
-
-        if (shouldApply) {
-	          applyRemoteStorage(remoteStorage);
-	          rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
-	          PULL_COMPLETE = true;
-	          setSyncStatus("synced", "Datos actualizados desde la nube.", { revision: LAST_REMOTE_REVISION });
-
-	          if (window.click360ReloadState) window.click360ReloadState();
-
-          if (reload) {
-            if(window.click360Route) {
-              const currentRoute = window.location.hash.replace('#','') || 'home';
-              window.click360Route(currentRoute);
-              const toastEl = document.getElementById("toast");
-              if(toastEl) { toastEl.textContent = "Actualizado desde la nube"; toastEl.className = "toast show ok"; setTimeout(()=>toastEl.className="toast", 2800); }
-            } else {
-               location.reload();
-            }
-            return true;
-          }
-        }
-      }
-
+	      INITIAL_TENANT_SEED_REQUIRED = false;
+	      localStorage.removeItem(legacyMigrationMarkerKey());
+	      localStorage.removeItem(tenantCorruptMarkerKey());
+	      LAST_REMOTE_REVISION = remoteRevision;
+	      safeStorageSet(tenantStorageKey('REMOTE_REVISION'), String(remoteRevision));
+	      tenantGuard.allow(context);
 	      PULL_COMPLETE = true;
-	      setSyncStatus("synced", "Datos locales y nube coinciden.", { revision: LAST_REMOTE_REVISION });
+	    if (force || (remoteHash && remoteHash !== localHash && remoteHash !== alreadyApplied)) {
+	      if (localChanged && !force) {
+	          markSyncConflict({ path: stateDoc.path, remoteRevision, localUpdatedAtMs: localPayloadUpdatedAtMs(), source: 'pull' });
+	          setSyncStatus('error', 'Hay cambios locales y remotos simultáneos. No se sobrescribió ninguna versión.');
+	          return false;
+	        }
+	        applyRemotePayload(remotePayload);
+	        safeStorageSet(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'), remoteHash);
+	        if (force) clearSyncConflict();
+	        setSyncStatus('synced', 'Datos actualizados desde la nube.', { revision: remoteRevision });
+	        if (window.click360ReloadState) window.click360ReloadState();
+	        if (reload && window.click360Route) window.click360Route(window.location.hash.replace('#','') || 'home');
+	      return true;
+	    }
+	    if (force || remoteHash === localHash) clearSyncConflict();
+	      setSyncStatus('synced', 'Datos locales y nube coinciden.', { revision: remoteRevision });
 	      return false;
-	    } catch (e) {
+	  } catch (error) {
+	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
+	    const transientOffline = ['unavailable', 'deadline-exceeded', 'failed-precondition'].includes(error.code);
+	    if (!force && transientOffline && verifiedOfflineTenantCache()) {
+	      tenantGuard.allow(context);
 	      PULL_COMPLETE = true;
-	      console.warn("CLICK360 no pudo traer nube:", e.message);
-	      setSyncStatus(navigator.onLine ? "error" : "offline", e.message || "No se pudo leer la nube.");
+	      setSyncStatus('offline', 'La red no respondió. Usando la última caché verificada de esta cuenta.');
+	      return false;
+	    }
+	    PULL_COMPLETE = false;
+	      console.warn('CLICK360 no pudo traer nube:', error.message);
+	      setSyncStatus(navigator.onLine ? 'error' : 'offline', error.message || 'No se pudo leer la nube.');
 	      return false;
 	    }
 	  }
-
-  function isLocalRicher(remoteStorage) {
-    const STATE_KEY = 'click360_mvp_qa_final_state_v1';
-    const localStateRaw = localStorage.getItem(STATE_KEY);
-    const remoteStateRaw = remoteStorage[STATE_KEY];
-    if (!localStateRaw || !remoteStateRaw) return false;
-    try {
-      const localState = JSON.parse(localStateRaw);
-      const remoteState = JSON.parse(remoteStateRaw);
-      const countState = (s) =>
-        (s.movements || []).length +
-        (s.sales || []).length +
-        (s.products || []).length +
-	        (s.dailyReports || []).length +
-	        (s.invoices || []).length +
-	        (s.deletedProducts || []).length +
-	        (s.businesses || []).length +
-        ((s.settings && s.settings.workers) || []).length;
-      const localCount = countState(localState);
-      const remoteCount = countState(remoteState);
-      return localCount > remoteCount;
-    } catch(e) { return false; }
-  }
 
   function listenRemoteChanges() {
     if (REMOTE_UNSUBSCRIBE) return;
 
-	    REMOTE_UNSUBSCRIBE = STATE_DOC.onSnapshot((snap) => {
-	      if (!AUTH_APPROVED || !PULL_COMPLETE || !snap.exists) return;
+	    const context = ACTIVE_CONTEXT;
+	    const stateDoc = STATE_DOC;
+	    const expectedEpoch = AUTH_EPOCH;
+	    const user = auth.currentUser;
+	    REMOTE_UNSUBSCRIBE = stateDoc.onSnapshot((snap) => {
+	      if (!AUTH_APPROVED || !PULL_COMPLETE || !snap.exists || !isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return;
 
 	      const remoteData = snap.data() || {};
-	      const remoteStorage = remoteData.localStorage || {};
+	      if (remoteData.schemaVersion !== SCHEMA_VERSION) {
+	        tenantGuard.requireLegacy(context, { document: remoteData, path: stateDoc.path });
+	        safeStorageSet(legacyMigrationMarkerKey(), '1');
+	        AUTH_APPROVED = false;
+	        PULL_COMPLETE = false;
+	        setSyncStatus('migration_required', legacyMigrationMessage());
+	        showLegacyMigrationGate();
+	        return;
+	      }
+	      if (!remoteMatchesContext(remoteData, context)) {
+	        tenantGuard.block();
+	        safeStorageSet(tenantCorruptMarkerKey(), '1');
+	        AUTH_APPROVED = false;
+	        PULL_COMPLETE = false;
+	        quarantineIncident("blocked_listener_identity", { path: stateDoc.path });
+	        setSyncStatus("error", "Cambio remoto de otro tenant bloqueado.");
+	        showGate('Se detectó un cambio remoto de otra cuenta. La operación fue bloqueada para proteger los datos.');
+	        return;
+	      }
+	      const remotePayload = remoteData.payload;
 	      LAST_REMOTE_REVISION = Number(remoteData.revision || remoteData.updatedAtMs || LAST_REMOTE_REVISION || 0);
-	      rawSetItem("CLICK360_REMOTE_REVISION", String(LAST_REMOTE_REVISION || 0));
-	      const remoteHash = snapshotString(remoteStorage);
-      const localHash = snapshotString(getLocalSnapshot());
-      const lastApplied = localStorage.getItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
+	      safeStorageSet(tenantStorageKey("REMOTE_REVISION"), String(LAST_REMOTE_REVISION || 0));
+	      const remoteHash = snapshotString(remotePayload);
+      const localHash = snapshotString(buildBusinessPayload());
+      const lastApplied = localStorage.getItem(tenantStorageKey("LAST_APPLIED_REMOTE_HASH"));
 
-      if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== lastApplied && !IS_RESTORING_REMOTE) {
-        // PROTECT: Don't overwrite fresher/richer local data
-        if (Date.now() < LOCAL_WRITE_PENDING_UNTIL || isLocalNewerThanRemote(remoteStorage)) {
-          console.log("[CLICK360 SYNC] Listener: local más reciente, subiendo local.");
-          pushLocalToFirestore("listener_local_newer").catch(() => {});
-          return;
-        }
-
-        if (isLocalRicher(remoteStorage)) {
-          console.log("[CLICK360 SYNC] Listener: local tiene más datos, subiendo local.");
-          pushLocalToFirestore("listener_local_richer").catch(() => {});
-          return;
-        }
-	        applyRemoteStorage(remoteStorage);
-	        rawSetItem("CLICK360_LAST_APPLIED_REMOTE_HASH", remoteHash);
+	      if (remoteHash && remoteHash !== "{}" && remoteHash !== localHash && remoteHash !== lastApplied && !IS_RESTORING_REMOTE) {
+	        if (Date.now() < LOCAL_WRITE_PENDING_UNTIL) {
+	          markSyncConflict({ path: stateDoc.path, remoteRevision: LAST_REMOTE_REVISION, localUpdatedAtMs: localPayloadUpdatedAtMs(), source: 'listener' });
+	          setSyncStatus('error', 'Se detectaron cambios simultáneos. No se sobrescribió ninguna versión.');
+	          return;
+	        }
+	        applyRemotePayload(remotePayload);
+	        safeStorageSet(tenantStorageKey("LAST_APPLIED_REMOTE_HASH"), remoteHash);
 	        setSyncStatus("synced", "Cambios remotos aplicados.", { revision: LAST_REMOTE_REVISION });
 	        console.log("CLICK360 recibió cambios remotos.");
 
         if (window.click360ReloadState) window.click360ReloadState();
 
-        const hasOpenModal = !!document.getElementById('modalRoot');
+        const hasOpenModal = !!document.querySelector('#modalRoot .modalOverlay.show');
         const hasActiveInput = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
 
         if (!hasOpenModal && !hasActiveInput) {
@@ -835,6 +894,7 @@
         }
       }
 	    }, (err) => {
+	      if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return;
 	      console.warn("No se pudo escuchar cambios remotos:", err.message);
 	      setSyncStatus(navigator.onLine ? "error" : "offline", err.message || "No se pudo escuchar la nube.");
 	    });
@@ -855,7 +915,7 @@
 
           <button id="c360-google-login" style="width:100%;padding:17px;border-radius:18px;border:1px solid #444;background:#fff;color:#000;font-weight:900;font-size:17px;margin-bottom:12px;cursor:pointer;display:none;">Entrar con Google</button>
           <button id="c360-change-google" style="width:100%;padding:13px;border-radius:18px;border:1px solid #333;background:#000;color:#f4c431;font-weight:800;font-size:14px;cursor:pointer;display:none;">Cambiar cuenta / Cerrar sesión</button>
-          <button id="c360-clear-cache" style="width:100%;padding:10px;border-radius:18px;border:1px dashed #555;background:#000;color:#aaa;font-weight:600;font-size:12px;cursor:pointer;margin-top:12px;display:none;">Limpiar Caché y Forzar Recarga</button>
+          <button id="c360-clear-cache" style="width:100%;padding:10px;border-radius:18px;border:1px dashed #555;background:#000;color:#aaa;font-weight:600;font-size:12px;cursor:pointer;margin-top:12px;display:none;">Actualizar archivos de la app</button>
 
           <p id="c360-auth-msg" style="margin-top:14px;color:#ffdc6b;font-size:14px;word-break:break-word;line-height:1.45;"></p>
         </div>
@@ -873,27 +933,24 @@
 
       document.getElementById("c360-clear-cache").onclick = async () => {
         const btn = document.getElementById("c360-clear-cache");
-        btn.textContent = "Limpiando...";
+        btn.textContent = "Actualizando...";
         btn.disabled = true;
         try {
-          if ('serviceWorker' in navigator) {
-            const regs = await navigator.serviceWorker.getRegistrations();
-            for (let reg of regs) {
-              await reg.unregister();
-            }
+	          if ('serviceWorker' in navigator) {
+	            const registration = await navigator.serviceWorker.getRegistration();
+	            if (registration) await registration.unregister();
+	          }
+	          if ('caches' in window) {
+	            const keys = await caches.keys();
+	            for (let key of keys) {
+	              if (key.startsWith(CLICK360_CACHE_PREFIX)) await caches.delete(key);
+	            }
           }
-          if ('caches' in window) {
-            const keys = await caches.keys();
-            for (let key of keys) {
-              await caches.delete(key);
-            }
-          }
-          localStorage.clear();
-          sessionStorage.clear();
+          // Asset caches are disposable; tenant data and sign-in state are not.
           window.location.reload(true);
         } catch (e) {
           alert("Error al limpiar caché: " + e.message);
-          btn.textContent = "Limpiar Caché y Forzar Recarga";
+          btn.textContent = "Actualizar archivos de la app";
           btn.disabled = false;
         }
       };
@@ -923,8 +980,8 @@
 
   function showPending(user) {
     showGate(`
-      Tu cuenta (<b>${user.email || "sin email"}</b>) está pendiente de aprobación.<br><br>
-      UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${user.uid}</code><br><br>
+      Tu cuenta (<b>${escapeHtml(user.email || "sin email")}</b>) está pendiente de aprobación.<br><br>
+      UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${escapeHtml(user.uid)}</code><br><br>
       Por favor, dile a tu administrador que apruebe tu acceso usando este UID en Firestore.
     `);
 
@@ -932,19 +989,23 @@
     if(loginBtn) {
       loginBtn.textContent = "Ya me aprobaron (Actualizar)";
       loginBtn.onclick = async () => {
-         const ok = await isApprovedUser(user);
-         if(ok) await enterApprovedApp(user);
+         const epoch = AUTH_EPOCH;
+         const ok = await isApprovedUser(user, epoch);
+         if(ok) await enterApprovedApp(user, epoch);
          else showPending(user);
       };
     }
   }
 
   function unlockApp() {
+    if (!tenantGuard.canUnlock(ACTIVE_CONTEXT) || legacyMigrationRequired()) {
+      showLegacyMigrationGate();
+      return false;
+    }
     AUTH_APPROVED = true;
     setAppBlocked(false);
 
     const gate = document.getElementById("click360-auth-gate");
-    createControls();
 
     try {
       if(window.click360Route) {
@@ -975,13 +1036,6 @@
     const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
     const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-    // Save invite parameters before Google login redirects/popups
-    const urlParams = new URLSearchParams(location.search);
-	    if(urlParams.get("invite") === "true" && urlParams.get("ownerId")) {
-	       localStorage.setItem("CLICK360_PENDING_INVITE_OWNER", urlParams.get("ownerId"));
-	       if (urlParams.get("token")) localStorage.setItem("CLICK360_PENDING_INVITE_TOKEN", urlParams.get("token"));
-	    }
-
     if (isIOS && isStandalone) {
       if (msg) {
         msg.innerHTML = `<div style="text-align:left; padding:12px; background:rgba(214,170,44,0.1); border:1px solid var(--gold); border-radius:16px; font-size:13px; line-height:1.4; color:var(--text);">
@@ -1005,13 +1059,9 @@
         if (msg) msg.textContent = "Redireccionando a Google...";
         auth.signInWithRedirect(providerGoogle());
       } else if (err.code !== 'auth/popup-closed-by-user') {
-        if (msg) msg.innerHTML = "Error al iniciar sesión con Google. Intenta abrir la app directamente desde Safari o Chrome.<br><br>Error: " + err.message;
+        if (msg) msg.innerHTML = "Error al iniciar sesión con Google. Intenta abrir la app directamente desde Safari o Chrome.<br><br>Error: " + escapeHtml(err.message);
       }
     });
-  }
-
-  function createControls() {
-    // Los controles ahora se manejan en la pestaña "Más" de app.js nativamente.
   }
 
   function debounce(fn, wait = 1000) {
@@ -1024,24 +1074,14 @@
 
   const debouncedSync = debounce(() => pushLocalToFirestore("local_change"), 1200);
 
-  localStorage.setItem = function(key, value) {
-    rawSetItem(key, value);
-    if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE) {
-      normalizeAllLocalProductCodes();
-      // Immediate sync for state data to prevent loss on app close
-	      if (key === STATE_LS_KEY) {
-	        LOCAL_WRITE_PENDING_UNTIL = Date.now() + 6000;
-	        setSyncStatus(navigator.onLine ? "pending" : "offline", navigator.onLine ? "Cambio local pendiente de nube." : "Cambio local guardado sin internet.");
-	        pushLocalToFirestore("immediate_save").catch(() => {});
-	      } else {
-        debouncedSync();
-      }
-    }
-  };
-
-  window.addEventListener("beforeunload", () => {
-    if (AUTH_APPROVED && PULL_COMPLETE) pushLocalToFirestore("beforeunload");
-  });
+	  window.addEventListener('click360-local-state-saved', (event) => {
+	    if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE
+	      && event.detail?.tenantKey === ACTIVE_CONTEXT?.tenantKey) {
+	      LOCAL_WRITE_PENDING_UNTIL = Date.now() + 6000;
+	      setSyncStatus(navigator.onLine ? "pending" : "offline", navigator.onLine ? "Cambio local pendiente de nube." : "Cambio local guardado sin internet.");
+	      debouncedSync();
+	    }
+	  });
 
   // Sync when user returns to the app (tab/app switch)
   document.addEventListener("visibilitychange", () => {
@@ -1060,54 +1100,114 @@
 	    role: window.click360User?.role || null,
 	    ownerId: window.click360User?.ownerId || null,
 	    businessId: BUSINESS_ID,
+	    tenantKey: ACTIVE_CONTEXT?.tenantKey || null,
 	    stateDocPath: STATE_DOC?.path || null,
 	    deviceId: DEVICE_ID,
 	    revision: LAST_REMOTE_REVISION,
 	    status: { ...syncStatus },
-	    localUpdatedAtMs: localStateUpdatedAtMs()
+	    localUpdatedAtMs: localPayloadUpdatedAtMs()
 	  });
+	  function deactivateActiveAccount() {
+	    AUTH_EPOCH += 1;
+	    AUTH_APPROVED = false;
+	    PULL_COMPLETE = false;
+	    IS_RESTORING_REMOTE = false;
+	    INITIAL_TENANT_SEED_REQUIRED = false;
+	    LOCAL_WRITE_PENDING_UNTIL = 0;
+	    if (REMOTE_UNSUBSCRIBE) { REMOTE_UNSUBSCRIBE(); REMOTE_UNSUBSCRIBE = null; }
+	    if (USER_STATUS_UNSUBSCRIBE) { USER_STATUS_UNSUBSCRIBE(); USER_STATUS_UNSUBSCRIBE = null; }
+	    BUSINESS_ID = null;
+	    STATE_DOC = null;
+	    ACTIVE_CONTEXT = null;
+	    LAST_REMOTE_REVISION = 0;
+	    SYNC_CONFLICT_PENDING = false;
+	    tenantGuard.reset();
+	    window.click360User = null;
+	    if (typeof window.click360ClearTenantContext === "function") window.click360ClearTenantContext();
+	  }
 	  window.click360Logout = async () => {
-    try {
-      await auth.signOut();
-      localStorage.removeItem("click360_mvp_qa_final_session_v1");
-      localStorage.removeItem("CLICK360_LAST_APPLIED_REMOTE_HASH");
-      sessionStorage.clear();
-      location.reload();
-    } catch(e) {}
+    deactivateActiveAccount();
+    try { await auth.signOut(); } catch(e) { console.warn("No se pudo cerrar sesión:", e.message); }
+    showGate("Inicia sesión con Google para continuar.");
   };
 
-  function listenUserApproval(user) {
-    if (USER_STATUS_UNSUBSCRIBE || window.click360User?.temporaryOwner) return;
-    USER_STATUS_UNSUBSCRIBE = db.collection("approvedUsers").doc(user.uid).onSnapshot((snap) => {
-      if (!AUTH_APPROVED) return;
-      const data = snap.exists ? snap.data() : null;
-      const stillApproved = data && data.status !== "blocked" && (data.status === "active" || data.approved === true);
-      if (!stillApproved) {
-        AUTH_APPROVED = false;
-        PULL_COMPLETE = false;
+  function listenUserApproval(user, expectedEpoch = AUTH_EPOCH) {
+    if (USER_STATUS_UNSUBSCRIBE) return;
+    const context = ACTIVE_CONTEXT;
+	  USER_STATUS_UNSUBSCRIBE = db.collection("approvedUsers").doc(user.uid).onSnapshot((snap) => {
+	    if (!AUTH_APPROVED || !isCurrentAuthEpoch(user, expectedEpoch) || ACTIVE_CONTEXT !== context) return;
+	    const data = snap.exists ? snap.data() : null;
+	    const stillApproved = isExplicitlyActive(data);
+	    const ownerId = data?.ownerId || user.uid;
+	    const identityChanged = ownerId !== context.ownerId
+	      || (data?.businessId && data.businessId !== ownerId)
+	      || (data?.role || 'owner') !== window.click360User?.role;
+	    if (!stillApproved || identityChanged) {
+	      AUTH_APPROVED = false;
+	      PULL_COMPLETE = false;
         if (REMOTE_UNSUBSCRIBE) {
           REMOTE_UNSUBSCRIBE();
           REMOTE_UNSUBSCRIBE = null;
         }
-        showGate(`
-          Tu acceso a CLICK 360 fue revocado o bloqueado.<br><br>
-          UID de usuario: <code style="background:#222;padding:4px 8px;border-radius:4px;color:#ff9f43;font-family:monospace;font-size:13px;display:inline-block;margin:4px 0;user-select:all;">${user.uid}</code>
-        `);
-      }
-    }, (err) => console.warn("No se pudo escuchar estado de usuario:", err.message));
+	        showGate(`
+	          ${identityChanged ? 'La configuración de tu acceso cambió y debe verificarse de nuevo.' : 'Tu acceso a CLICK 360 fue revocado o bloqueado.'}<br><br>
+	          UID de usuario: <code style="background:#222;padding:4px 8px;border-radius:4px;color:#ff9f43;font-family:monospace;font-size:13px;display:inline-block;margin:4px 0;user-select:all;">${escapeHtml(user.uid)}</code>
+	        `);
+	      return;
+	    }
+	    const previousProfile = `${window.click360User.name || ''}\n${window.click360User.photoURL || ''}`;
+	    window.click360User.name = data.name || user.displayName || window.click360User.name;
+	    window.click360User.photoURL = data.photoURL || user.photoURL || '';
+	    protectCurrentProfile(user, data);
+	    cacheApprovedIdentity(user, window.click360User);
+	    const nextProfile = `${window.click360User.name || ''}\n${window.click360User.photoURL || ''}`;
+	    const editing = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+	    if (previousProfile !== nextProfile && !editing && !document.querySelector('#modalRoot .modalOverlay.show')) {
+	      window.click360Route?.(window.location.hash.replace('#', '') || 'home');
+	    }
+	  }, (err) => console.warn("No se pudo escuchar estado de usuario:", err.message));
   }
 
-  async function enterApprovedApp(user) {
-    const userRole = (window.click360User && window.click360User.role) || 'owner';
-    const userName = (window.click360User && (window.click360User.name || window.click360User.email)) || 'demo';
-    const newSession = { username: userName, role: userRole };
-    localStorage.setItem('click360_mvp_qa_final_session_v1', JSON.stringify(newSession));
-    if(window.click360SetSession) window.click360SetSession(newSession);
-
+  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
+	    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+	    quarantineLegacyLocalState();
     await pullRemoteOnce({ force: false, reload: false });
-    unlockApp();
+	    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+	    if (legacyMigrationRequired()) {
+	      showLegacyMigrationGate();
+	      return false;
+	    }
+	    if (!tenantGuard.canUnlock(ACTIVE_CONTEXT)) {
+	      showGate('No se pudo verificar de forma segura la identidad y los datos de esta cuenta. La operación permanece bloqueada para proteger la información.');
+	      return false;
+	    }
+	    if (INITIAL_TENANT_SEED_REQUIRED) {
+	      if (window.click360PersistTenantState?.() !== true) {
+	        tenantGuard.block();
+	        PULL_COMPLETE = false;
+	        showGate('No se pudo guardar la copia local inicial. La cuenta permanece bloqueada para proteger la información.');
+	        return false;
+	      }
+	      AUTH_APPROVED = true;
+	      const seeded = await pushLocalToFirestore('initial_tenant_seed');
+	      if (!seeded && navigator.onLine) {
+	        AUTH_APPROVED = false;
+	        PULL_COMPLETE = false;
+	        tenantGuard.block();
+	        showGate('No se pudo crear y verificar el documento inicial en Firestore. La cuenta permanece bloqueada.');
+	        return false;
+	      }
+	      INITIAL_TENANT_SEED_REQUIRED = false;
+	    }
+	  const userRole = (window.click360User && window.click360User.role) || 'owner';
+	  const userName = (window.click360User && (window.click360User.name || window.click360User.email)) || 'Usuario';
+	  const newSession = { username: userName, role: userRole };
+	  if(window.click360SetSession) window.click360SetSession(newSession);
+	  unlockApp();
+	    window.click360FlushPendingProfile?.().catch(() => {});
     listenRemoteChanges();
-    listenUserApproval(user);
+    listenUserApproval(user, expectedEpoch);
+    return true;
   }
 
   let HAS_BOOTED = false;
@@ -1126,32 +1226,34 @@
 
 
     auth.onAuthStateChanged(async user => {
+	      const epoch = AUTH_EPOCH + 1;
+	      deactivateActiveAccount();
       if (!user) {
-        localStorage.removeItem('click360_mvp_qa_final_session_v1');
-        if(window.click360SetSession) window.click360SetSession(null);
         showGate("Inicia sesión con Google para continuar.");
         return;
       }
 
 	      showGate("Verificando aprobación en CLICK360...");
 	      setSyncStatus(navigator.onLine ? "checking" : "offline", navigator.onLine ? "Verificando aprobación." : "Sin internet. Buscando aprobación guardada.");
-	      const approved = await isApprovedUser(user);
+	      const approved = await isApprovedUser(user, epoch);
+	      if (epoch !== AUTH_EPOCH || auth.currentUser?.uid !== user.uid) return;
 
-      if (!approved) {
-        localStorage.removeItem('click360_mvp_qa_final_session_v1');
-        if(window.click360SetSession) window.click360SetSession(null);
-
-        if (window.click360User && window.click360User.status === "blocked") {
-          showGate(`
-            Tu cuenta (<b>${user.email || "sin email"}</b>) ha sido bloqueada.<br><br>
-            Por favor, ponte en contacto con el administrador o soporte.
-          `);
-          const loginBtn = document.getElementById("c360-google-login");
-          if (loginBtn) loginBtn.style.display = "none";
+	      if (!approved) {
+	        if (window.click360User && ["blocked", "revoked"].includes(window.click360User.status)) {
+	          showGate(`
+	            Tu cuenta (<b>${escapeHtml(user.email || "sin email")}</b>) ha sido bloqueada o revocada.<br><br>
+	            Por favor, ponte en contacto con el administrador o soporte.
+	          `);
+	          const loginBtn = document.getElementById("c360-google-login");
+	          if (loginBtn) loginBtn.style.display = "none";
+	        } else if (window.click360User && window.click360User.status === "tenant_configuration_invalid") {
+	          showGate("La configuración de esta cuenta no coincide con el tenant seguro. La operación fue bloqueada para proteger los datos; requiere corrección administrativa.");
+	          const loginBtn = document.getElementById("c360-google-login");
+	          if (loginBtn) loginBtn.style.display = "none";
         } else if (window.click360User && window.click360User.role === "worker") {
           showGate(`
-            Tu solicitud de acceso como trabajador (<b>${user.email || "sin email"}</b>) está <b>pendiente de aprobación</b> por el dueño del negocio.<br><br>
-            UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${user.uid}</code><br><br>
+	            Tu solicitud de acceso como trabajador (<b>${escapeHtml(user.email || "sin email")}</b>) está <b>pendiente de aprobación</b> por el dueño del negocio.<br><br>
+	            UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${escapeHtml(user.uid)}</code><br><br>
             Por favor, pídele al administrador que apruebe tu acceso desde la sección "Trabajadores" en su sistema usando tu UID.
           `);
           const loginBtn = document.getElementById("c360-google-login");
@@ -1159,8 +1261,9 @@
             loginBtn.textContent = "Ya me aprobaron (Actualizar)";
             loginBtn.onclick = async () => {
               showGate("Verificando aprobación en CLICK 360...");
-              const ok = await isApprovedUser(user);
-              if (ok) await enterApprovedApp(user);
+	              const activeEpoch = AUTH_EPOCH;
+	              const ok = await isApprovedUser(user, activeEpoch);
+	              if (ok) await enterApprovedApp(user, activeEpoch);
               else showPending(user);
             };
           }
@@ -1170,7 +1273,7 @@
         return;
       }
 
-      await enterApprovedApp(user);
+      await enterApprovedApp(user, epoch);
     });
   }
 

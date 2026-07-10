@@ -1,36 +1,43 @@
 # CLICK 360 Architecture
 
-## Estado actual
+Fecha: 2026-07-10
 
-- Frontend estatico: `index.html`, `styles.css`, `app.js`.
-- PWA/offline shell: `manifest.webmanifest`, `service-worker.js`.
-- Auth y nube: Firebase Auth Google + Firestore compat SDK local en `vendor/`.
-- Estado principal local: `click360_mvp_qa_final_state_v1`.
-- Estado cloud compatible: `businesses/{ownerId}/state/main`.
-- Identidad aprobada: `approvedUsers/{uid}`.
-- Invitaciones por correo: `approvedUsersByEmail/{email}`.
+## Arquitectura actual
 
-## Regla de negocio
+- Frontend estático/PWA: `index.html`, `styles.css`, `app.js`, `service-worker.js`.
+- Firebase Auth Google y Firestore compat, servidos desde `vendor/` para funcionamiento offline del shell.
+- Identidad: `approvedUsers/{uid}`; trabajadores vinculados al owner mediante invitación activa por email.
+- Documento canónico: `businesses/{ownerId}/state/main`.
+- Estado v10: identidad estricta, revisión, dispositivo, payload explícito y máximo de 850 KB.
+- Estado local: caché por `tenantKey`, perfil y aprobación por UID, backups por tenant.
+- Sincronización: transacciones por revisión, scheduler por epoch de autenticación y bloqueo conservador de conflictos.
 
-Misma cuenta + mismo negocio = mismos datos en todos los dispositivos.
+`activeBusinessId` selecciona uno de los negocios internos del owner; no cambia el tenant Firestore.
 
-Para sostener esa regla, la ruta canonica de nube es `ownerId`. El `activeBusinessId` dentro de la app representa el negocio seleccionado dentro de la cuenta, no el tenant de Firestore.
+## Garantías implementadas
 
-## Sincronizacion
+- Un callback, listener o escritura de A no puede aplicar estado ni metadatos a B.
+- Una caché ausente, corrupta, extranjera o legacy no desbloquea un tenant.
+- Un documento legacy nunca se migra desde el navegador.
+- Un seed nuevo solo se crea si no existe documento remoto y tampoco existe caché local previa.
+- Varias pestañas reciben cambios válidos del mismo tenant mediante el evento `storage`.
+- Una actualización del Service Worker no recarga la app en mitad de una venta.
 
-El MVP mantiene el snapshot completo por compatibilidad, pero ahora agrega:
+## Bloqueo arquitectónico
 
-- `revision`
-- `baseRevision`
-- `deviceId`
-- `updatedBy`
-- `updatedByEmail`
-- estado visible: offline, pending, syncing, synced, error
+Productos, ventas, caja, cierres, facturas, trabajadores y reportes viven dentro de un solo snapshot. Firestore Rules puede aislar el tenant, pero no puede impedir que un trabajador autorizado altere otra sección del mapa. Tampoco existe inmutabilidad por registro financiero, y el límite de 1 MiB de Firestore impide crecimiento sostenido; el cliente bloquea antes, a 850 KB.
 
-La sesion del dispositivo queda fuera de la nube. Los perfiles se mantienen en cache local protegida y tambien en `settings.userProfiles`.
+## Arquitectura objetivo
 
-## Offline/PWA
+- `businesses/{ownerId}/products/{productId}`
+- `businesses/{ownerId}/sales/{saleId}`
+- `businesses/{ownerId}/movements/{movementId}`
+- `businesses/{ownerId}/cashSessions/{sessionId}`
+- `businesses/{ownerId}/invoices/{invoiceId}`
+- `businesses/{ownerId}/reports/{reportId}`
+- `businesses/{ownerId}/workers/{uid}`
+- Cloud Storage para imágenes, no data URLs dentro del estado.
+- Comandos sensibles en Cloud Functions o backend transaccional.
+- Ventas, pagos, cierres y anulaciones como eventos append-only.
 
-El service worker cachea shell, imagenes y librerias locales. Firebase/Excel/PDF/html2canvas ya no dependen de CDN para cargar despues de instalado.
-
-Limite honesto: la primera autenticacion con Google y la primera aprobacion requieren internet.
+La transición debe ser aditiva: backfill verificado, lectura dual, escritura dual, comparación y retiro final del snapshot. No se implementó dentro de este hotfix porque sería un cambio de contrato y de producción no autorizado.
