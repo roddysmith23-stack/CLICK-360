@@ -12,6 +12,9 @@ function parseArgs(argv) {
   return result;
 }
 const args = parseArgs(process.argv.slice(2));
+const REQUIRED_PROJECT_ID = 'click-360';
+const projectId = args.project || REQUIRED_PROJECT_ID;
+if (projectId !== REQUIRED_PROJECT_ID) throw new Error(`Refusing project ${projectId}. Only ${REQUIRED_PROJECT_ID} is allowed.`);
 const apply = args.apply === true;
 if (apply && !args.businessId && !args.allowlist) throw new Error('--apply requires --businessId or --allowlist. --apply-all is not supported.');
 
@@ -19,7 +22,7 @@ async function fixtureSource(file) { return JSON.parse(await fs.readFile(path.re
 async function firebaseSource() {
   const [{ initializeApp, applicationDefault, cert, getApps }, { getFirestore }] = await Promise.all([import('firebase-admin/app'), import('firebase-admin/firestore')]);
   const credential = process.env.GOOGLE_APPLICATION_CREDENTIALS ? cert(JSON.parse(await fs.readFile(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf8'))) : applicationDefault();
-  const app = getApps()[0] || initializeApp({ credential });
+  const app = getApps()[0] || initializeApp({ credential, projectId });
   const db = getFirestore(app);
   const approvedUsers = (await db.collection('approvedUsers').get()).docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
   const stateDocs = await db.collectionGroup('state').get();
@@ -56,4 +59,4 @@ for (const tenant of selected) {
   results.push(result);
 }
 
-console.log(JSON.stringify({ mode: apply ? 'APPLY' : 'DRY_RUN', results }, null, 2));
+console.log(JSON.stringify({ projectId, mode: apply ? 'APPLY' : 'DRY_RUN', results }, null, 2));

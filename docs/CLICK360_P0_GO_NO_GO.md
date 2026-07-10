@@ -4,7 +4,7 @@
 
 The code protections, local fixtures, regression harnesses, CI workflow, and administrative tooling are complete on the hotfix branch. Production approval is blocked until the following external-state gates are completed with an authorized Firebase credential:
 
-1. Run the read-only Firebase audit and retain the generated report outside Git.
+1. Grant the authorized ADC principal the documented read-only roles on `click-360`, then run the read-only Firebase audit and retain the generated report outside Git.
 2. Review all `CROSS_TENANT_SUSPECT`, `LEGACY_AMBIGUOUS`, and `ORPHANED` tenants; do not migrate them.
 3. Run the administrative migration dry-run and migrate only audit-approved `LEGACY_CLEAR_OWNER` tenants.
 4. Execute real A/B, offline/reconnect, and same-account two-device checks.

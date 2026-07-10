@@ -5,19 +5,19 @@ The public app detects and blocks legacy documents. The administrative migrator 
 ## Dry run
 
 ```bash
-node scripts/migrate-legacy-v9-to-v10.mjs --dry-run --businessId=BUSINESS_ID
+node scripts/migrate-legacy-v9-to-v10.mjs --project=click-360 --dry-run --businessId=BUSINESS_ID
 ```
 
 ## Apply one audited tenant
 
 ```bash
-node scripts/migrate-legacy-v9-to-v10.mjs --apply --businessId=BUSINESS_ID
+node scripts/migrate-legacy-v9-to-v10.mjs --project=click-360 --apply --businessId=BUSINESS_ID
 ```
 
 ## Apply an audit-reviewed allowlist
 
 ```bash
-node scripts/migrate-legacy-v9-to-v10.mjs --apply --allowlist=path/to/approved-tenants.json
+node scripts/migrate-legacy-v9-to-v10.mjs --project=click-360 --apply --allowlist=path/to/approved-tenants.json
 ```
 
 `--apply-all` is intentionally unsupported. The migrator accepts only `LEGACY_CLEAR_OWNER`, stores a backup in `legacyBackups`, rechecks the source hash in a transaction, validates counts before/after, and aborts on an ambiguous tenant, changed source, count mismatch, or backup failure.
