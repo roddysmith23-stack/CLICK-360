@@ -22,7 +22,7 @@ El bloqueo P0 de datos cruzados queda resuelto en el candidato de lanzamiento. L
 
 1. CI y emulador de reglas verdes sobre el PR de lanzamiento.
 2. Reglas desplegadas desde este commit; no modificar datos de clientes ni `demo-click360`.
-3. GitHub Pages publicado con la versión `mvp-launch-v14`.
+3. GitHub Pages publicado con la versión `mvp-launch-v15`.
 4. Smoke autenticado de las dos cuentas legítimas sin crear datos reales. Si el entorno no permite controlar la sesión de Chrome, usar el checklist manual sin revertir un release correcto por esa limitación.
 
 ## Acciones prohibidas en este cierre
