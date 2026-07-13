@@ -27,6 +27,8 @@ For that verified V10 tenant, `reconcileLocalStateWithRemoteV10()` removes only 
 
 `npm run qa:rules` runs the Firestore emulator and verifies A/B isolation, workers, pending users, trial creation, server-time trial writing, expired read-only access, manual plan escalation denial, and explicit denial of `demo-click360`.
 
+The owner-access reconciliation tool verifies UID, active owner role, disabled status, and the canonical V10 tenant before it can add missing historical owner flags. A mismatched historical email is preserved exactly as it was and recorded as an observation in the administrative backup; the tool never replaces it automatically.
+
 ## Final authenticated smoke checklist
 
 Use only the two existing legitimate Google accounts. Do not create, edit, sell, or delete real customer data.

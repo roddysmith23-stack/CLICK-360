@@ -2,6 +2,7 @@ import { validV10StateShape } from './click360-data-core.mjs';
 
 export function normalizeOwnerAccessAssessment({ uid, approvedUser, authUser, stateDocument }) {
   const reasons = [];
+  const observations = [];
   const data = approvedUser || {};
   const emailMatches = !data.email || !authUser?.email
     || String(data.email).toLowerCase() === String(authUser.email).toLowerCase();
@@ -24,7 +25,10 @@ export function normalizeOwnerAccessAssessment({ uid, approvedUser, authUser, st
   if (data.status && data.status !== 'active') reasons.push('approved_user_not_active');
   if (data.role !== 'owner' && data.isOwner !== true) reasons.push('approved_user_not_owner');
   if (data.ownerId && data.ownerId !== uid) reasons.push('approved_owner_mismatch');
-  if (!emailMatches) reasons.push('approved_email_mismatch');
+  // UID, disabled status, owner role, and the canonical V10 tenant are the
+  // authorization proof. Preserve a stale historical email unchanged while
+  // documenting it in the verified administrative backup and command output.
+  if (!emailMatches) observations.push('approved_email_mismatch_preserved');
   if (!stateIdentityMatches) reasons.push('tenant_v10_identity_invalid');
 
   const patch = {};
@@ -35,6 +39,7 @@ export function normalizeOwnerAccessAssessment({ uid, approvedUser, authUser, st
     allowed: reasons.length === 0,
     action: reasons.length ? 'BLOCKED' : (Object.keys(patch).length ? 'NORMALIZATION_REQUIRED' : 'ALREADY_NORMALIZED'),
     reasons,
+    observations,
     patch,
     stateIdentityMatches
   };
