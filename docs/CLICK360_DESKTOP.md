@@ -1,13 +1,22 @@
 # CLICK 360 Desktop And PWA
 
-Fecha: 2026-07-10
+## Estado PWA
 
-- Cache actual: `click360-p0-production-audit-v13`.
-- Shell, Firebase compat, QR, Excel, PDF, html2canvas, iconos y banners están disponibles localmente.
-- Auth y Firestore cross-origin son network-only en el Service Worker.
-- Desktop 1440×960 y móvil 390×844 pasaron sin overflow horizontal ni errores de consola.
-- El banner usa 16:9, `object-fit: contain`, `object-position: center` y bordes redondeados.
-- La app se instala como PWA desde HTTPS. Primera autenticación/aprobación requiere internet.
-- En iPhone instalado puede ser necesario autenticar primero desde Safari.
+- `manifest.webmanifest` tiene `id`, `lang`, `display: standalone`, `orientation: any`, iconos y shortcuts.
+- `service-worker.js` cachea shell, assets, QR, Firebase, Excel, PDF y html2canvas.
+- JS/CSS/manifest usan network-first para recibir versiones nuevas cuando hay internet.
+- Cache version: `mvp-final-platform-safe-v9`.
 
-Una publicación en tiendas requiere un wrapper y firma en una fase separada. GitHub Pages no se publicó en este hotfix.
+## Instalacion
+
+La app puede instalarse como PWA desde Chrome/Edge/Android y Safari iOS cuando se abre desde HTTPS en GitHub Pages.
+
+## Limites
+
+- iPhone PWA puede requerir iniciar sesion primero desde Safari normal por restricciones de Google OAuth.
+- Primera autenticacion y primera aprobacion requieren internet.
+- Una app nativa macOS/Windows/iOS/Android todavia requiere wrapper dedicado (Capacitor/Tauri/Electron) y firma.
+
+## Recomendacion
+
+Mantener PWA para MVP vendible y preparar una fase separada para wrapper nativo si se requiere publicacion en tiendas.

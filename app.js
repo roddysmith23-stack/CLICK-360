@@ -2,16 +2,11 @@
 (() => {
   'use strict';
 
-  const STATE_PREFIX = 'CLICK360_STATE:';
-  const SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'p0-production-audit-v13';
+  const LS = 'click360_mvp_qa_final_state_v1';
+  const SESSION = 'click360_mvp_qa_final_session_v1';
+  const APP_ASSET_VERSION = 'mvp-final-platform-safe-v9';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
-  const PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
-  const tenantRuntime = window.CLICK360_P0_TENANT_GUARD;
-  const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
-  const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
-  const LOCAL_BACKUP_RETENTION = 3;
   const $ = (sel, root=document) => root.querySelector(sel);
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
@@ -22,48 +17,29 @@
     if(m.includes('ResizeObserver')) return;
     const link = `https://wa.me/593969399562?text=${encodeURIComponent("Error en CLICK 360:\\n" + m + "\\nLínea: " + line)}`;
     if(toastEl) {
-      toastEl.innerHTML = `Algo falló. <a href="${link}" target="_blank" rel="noopener noreferrer" style="color:var(--gold);text-decoration:underline;pointer-events:auto;">Reportar a CLICK</a>`;
+      toastEl.innerHTML = `Algo falló. <a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;pointer-events:auto;">Reportar a CLICK</a>`;
       toastEl.className = 'toast show err';
       clearTimeout(toastEl._t);
     }
   };
 
-  // No business state is loaded until Firebase resolves an authenticated tenant.
-  let activeTenantContext = null;
-  let state = seed();
-  let lastPersistedState = null;
-  let session = null;
+  let state = loadState();
+  let session = loadSession();
   let route = 'home';
   let scanStream = null;
   let scanTimer = null;
   let lastScanAt = 0;
   let deferredInstallPrompt = null;
-  let lastAutoSaveHash = '';
 
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
     deferredInstallPrompt = event;
   });
 
-  function uid(prefix='id') {
-    if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
-    return `${prefix}_${Math.random().toString(36).slice(2,8)}${Date.now().toString(36).slice(-4)}`;
-  }
+  function uid(prefix='id') { return `${prefix}_${Math.random().toString(36).slice(2,8)}${Date.now().toString(36).slice(-4)}`; }
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
   let workingDate = null;
-  function localDateKey(date = new Date()) {
-    const pad = (value) => String(value).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  }
-  function today() { return workingDate || localDateKey(); }
-  function safeDateInputValue(value, fallback = today()) {
-    const date = String(value || '');
-    return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : fallback;
-  }
-  function numericInputValue(value, fallback = 0) {
-    const number = Number(value);
-    return Number.isFinite(number) ? String(number) : String(fallback);
-  }
+  function today() { return workingDate || new Date().toISOString().slice(0,10); }
   function setWorkingDate(d) {
     workingDate = d || null;
     renderApp(route);
@@ -81,118 +57,28 @@
     return `${dayName}, ${dayNum} de ${monthName} de ${year}`;
   }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-  function actionId(value) { return encodeURIComponent(String(value ?? '')).replace(/'/g, '%27'); }
-  function decodeActionId(value) { try { return decodeURIComponent(String(value ?? '')); } catch { return ''; } }
-  function safeImageSrc(value) { return tenantRuntime?.safeImageSrc(value) || ''; }
-  function safeColor(value, fallback) {
-    const color = String(value || '').trim();
-    return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
-  }
-  function sanitizeStoredReportHtml(value) {
-    const template = document.createElement('template');
-    template.innerHTML = String(value || '');
-    template.content.querySelectorAll('script,iframe,object,embed,link,meta,base,form,input,button,svg,math').forEach(node => node.remove());
-    template.content.querySelectorAll('*').forEach(node => {
-      [...node.attributes].forEach(attribute => {
-        const name = attribute.name.toLowerCase();
-        const content = attribute.value.trim();
-        if (name.startsWith('on') || name === 'srcdoc' || name === 'href' || name === 'src') {
-          node.removeAttribute(attribute.name);
-        } else if (name === 'style' && /(?:url\s*\(|expression\s*\(|@import|javascript:|behavior:)/i.test(content)) {
-          node.removeAttribute(attribute.name);
-        }
-      });
-    });
-    return template.innerHTML;
-  }
-  let html2canvasLoader = null;
-  function loadHtml2Canvas() {
-    if (typeof window.html2canvas === 'function') return Promise.resolve(window.html2canvas);
-    if (html2canvasLoader) return html2canvasLoader;
-    html2canvasLoader = new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
-      script.onload = () => {
-        script.remove();
-        if (typeof window.html2canvas === 'function') resolve(window.html2canvas);
-        else reject(new Error('html2canvas no quedó disponible.'));
-      };
-      script.onerror = () => {
-        script.remove();
-        html2canvasLoader = null;
-        reject(new Error('No se pudo cargar html2canvas.'));
-      };
-      document.head.appendChild(script);
-    });
-    return html2canvasLoader;
-  }
-  function downloadHtmlAsPng(html, filename, options = {}) {
-    toast('Generando Imagen...');
-    const wrapper = document.createElement('div');
-    wrapper.innerHTML = html;
-    wrapper.style.position = 'fixed';
-    wrapper.style.top = '0';
-    wrapper.style.left = '0';
-    wrapper.style.width = options.width || '480px';
-    wrapper.style.zIndex = '-9999';
-    wrapper.style.pointerEvents = 'none';
-    document.body.appendChild(wrapper);
-    return loadHtml2Canvas()
-      .then(renderer => renderer(wrapper.firstElementChild, { scale: 2, useCORS: options.useCORS === true }))
-      .then(canvas => {
-        const link = document.createElement('a');
-        link.href = canvas.toDataURL('image/png');
-        link.download = filename;
-        link.click();
-        toast('Imagen descargada');
-      })
-      .catch(error => {
-        console.warn('No se pudo generar la imagen:', error.message);
-        toast('No se pudo generar la imagen. Usa Imprimir.', 'err');
-      })
-      .finally(() => wrapper.remove());
-  }
 
   function imageThumb(product){
-    const src = safeImageSrc(product?.imageData);
-    if(src) return `<img class="productImg" src="${escapeHtml(src)}" alt="${escapeHtml(product.name || 'Producto')}" loading="lazy">`;
+    if(product?.imageData) return `<img class="productImg" src="${product.imageData}" alt="${escapeHtml(product.name || 'Producto')}" loading="lazy">`;
     return `<div class="productImg emptyImg">▧</div>`;
-  }
-  function dataUrlBytes(value) {
-    const src = String(value || '');
-    const comma = src.indexOf(',');
-    return comma < 0 ? 0 : Math.floor((src.length - comma - 1) * 0.75);
   }
   function readImageInput(input, cb, options={}){
     const file = input?.files?.[0];
     if(!file) return cb('');
     if(!file.type.startsWith('image/')) return toast('Selecciona una imagen válida','err');
-    if(file.size > MAX_IMAGE_INPUT_BYTES) return toast('La imagen supera 8 MB. Elige una foto más ligera.', 'err');
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const maxBytes = options.maxBytes || 30 * 1024;
-        let max = options.max || 320;
-        let quality = options.quality || 0.52;
-        let encoded = '';
-        for (let attempt = 0; attempt < 6; attempt += 1) {
-          const ratio = Math.min(1, max / Math.max(img.width, img.height));
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.round(img.width * ratio));
-          canvas.height = Math.max(1, Math.round(img.height * ratio));
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          encoded = canvas.toDataURL('image/jpeg', quality);
-          if (dataUrlBytes(encoded) <= maxBytes) break;
-          max = Math.max(96, Math.floor(max * 0.72));
-          quality = Math.max(0.34, quality - 0.06);
-        }
-        if (dataUrlBytes(encoded) > maxBytes) {
-          toast('No se pudo reducir la foto lo suficiente. Elige una imagen más simple.', 'err');
-          return;
-        }
-        cb(safeImageSrc(encoded));
+        const max = options.max || 320;
+        const quality = options.quality || 0.52;
+        const ratio = Math.min(1, max / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * ratio));
+        canvas.height = Math.max(1, Math.round(img.height * ratio));
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        cb(canvas.toDataURL('image/jpeg', quality));
       };
       img.onerror = () => toast('No se pudo leer la imagen','err');
       img.src = reader.result;
@@ -242,132 +128,80 @@ function parseMoney(value) {
         gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
         osc.connect(gain); gain.connect(ctx.destination);
         osc.start(now); osc.stop(now + 0.13);
-        osc.onended = () => ctx.close().catch(() => {});
       }
     } catch {}
     try { if (navigator.vibrate) navigator.vibrate(kind === 'err' ? [50,30,50] : 35); } catch {}
   }
 
   function stateSizeBytes(obj=state) {
-    try {
-      const text = typeof obj === 'string' ? obj : JSON.stringify(obj);
-      if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).byteLength;
-      return new Blob([text]).size;
-    } catch { return 0; }
+    try { return new Blob([JSON.stringify(obj)]).size; } catch { return 0; }
   }
-  function cloneState(value) {
-    try { return JSON.parse(JSON.stringify(value)); } catch { return null; }
-  }
-  function rememberPersistedState() {
-    lastPersistedState = cloneState(state);
-  }
-  function restoreLastPersistedState() {
-    if (lastPersistedState) state = cloneState(lastPersistedState) || state;
+  function optimizeStateForStorage(reason='quota') {
+    let changed = false;
+    (state.products || []).forEach(p => {
+      if (p.imageData && p.imageData.length > 42000) {
+        p.imageData = '';
+        p.imageRemovedForStorage = true;
+        changed = true;
+      }
+    });
+    (state.invoices || []).forEach(inv => {
+      if (inv.imageData && inv.imageData.length > 52000) {
+        inv.imageData = '';
+        inv.imageRemovedForStorage = true;
+        changed = true;
+      }
+    });
+    (state.businesses || []).forEach(b => {
+      if (b.settings?.logoUrl && b.settings.logoUrl.length > 38000) {
+        b.settings.logoUrl = '';
+        b.settings.logoRemovedForStorage = true;
+        changed = true;
+      }
+    });
+    if (changed) addAudit('storage_images_optimized', { reason, sizeBytes: stateSizeBytes(state) });
+    return changed;
   }
   function save() {
-    if (!activeTenantContext || !stateStorageKey()) {
-      console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
-      return false;
-    }
     try {
       state.updatedAtMs = Date.now();
       state.updatedAt = new Date().toISOString();
-      state.identity = tenantIdentity();
-      const serialized = JSON.stringify(state);
-      if (stateSizeBytes(serialized) > MAX_LOCAL_TENANT_STATE_BYTES) {
-        const error = new Error('El estado supera el espacio local seguro.');
-        error.code = 'click360/local-state-too-large';
-        throw error;
-      }
-      localStorage.setItem(stateStorageKey(), serialized);
-      rememberPersistedState();
-      window.dispatchEvent(new CustomEvent('click360-local-state-saved', {
-        detail: { tenantKey: activeTenantContext.tenantKey, updatedAtMs: state.updatedAtMs }
-      }));
+      localStorage.setItem(LS, JSON.stringify(state));
       return true;
     } catch(e) {
       console.error(e);
-      restoreLastPersistedState();
-      if (e.code === 'click360/local-state-too-large') {
-        toast('El último cambio supera el espacio seguro y no se guardó. No se eliminaron datos existentes.', 'err');
-        return false;
-      }
       if(e.name === 'QuotaExceededError' || e.message.includes('quota')) {
-        toast('Almacenamiento lleno. El último cambio no se guardó y los datos anteriores siguen intactos.', 'err');
+        try {
+          const changed = optimizeStateForStorage('quota_recovery');
+          if (changed) {
+            state.updatedAtMs = Date.now();
+            state.updatedAt = new Date().toISOString();
+            localStorage.setItem(LS, JSON.stringify(state));
+            toast('CLICK 360 liberó espacio optimizando fotos. Tus datos quedaron guardados.', 'ok');
+            return true;
+          }
+        } catch(retryError) {
+          console.error(retryError);
+        }
+        toast('Almacenamiento lleno. Respalda datos y reduce fotos para liberar espacio.', 'err');
       } else {
-        toast('Error al guardar. Los datos anteriores siguen intactos.', 'err');
+        toast('Error al guardar datos.', 'err');
       }
       return false;
     }
   }
-  function stateStorageKey() {
-    return activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.tenantKey}` : '';
-  }
-  function sessionStorageKey() {
-    return activeTenantContext?.authUid ? `${SESSION_PREFIX}${activeTenantContext.authUid}` : '';
-  }
-  function tenantIdentity() {
-    if (!activeTenantContext) return null;
-    return {
-      ownerUid: activeTenantContext.ownerUid || activeTenantContext.authUid,
-      ownerId: activeTenantContext.ownerId,
-      businessId: activeTenantContext.businessId,
-      tenantKey: activeTenantContext.tenantKey,
-      schemaVersion: 10
-    };
-  }
-  function sameTenantIdentity(identity, context=activeTenantContext) {
-    return tenantRuntime?.sameTenantIdentity(identity, context) === true;
-  }
-  function markTenantCacheCorrupt(reason) {
-    if (!activeTenantContext?.tenantKey) return;
-    try { localStorage.setItem(`CLICK360_TENANT:${activeTenantContext.tenantKey}:CORRUPT`, reason); } catch {}
-  }
   function loadState() {
-    const key = stateStorageKey();
-    if (!key) return seed();
     try {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || !sameTenantIdentity(parsed.identity)) {
-          markTenantCacheCorrupt('missing_or_mismatched_identity');
-          return seed();
-        }
-        if (!tenantRuntime?.validBusinessPayload({ identity: parsed.identity, data: parsed }, activeTenantContext)) {
-          markTenantCacheCorrupt('invalid_local_payload_shape');
-          return seed();
-        }
-        const loaded = normalizeState(parsed);
-        loaded.identity = tenantIdentity();
-        return loaded;
-      }
-    } catch { markTenantCacheCorrupt('json_parse_failed'); }
-    const fresh = seed();
-    fresh.identity = tenantIdentity();
-    return fresh;
+      const raw = localStorage.getItem(LS);
+      if (raw) return normalizeState(JSON.parse(raw));
+    } catch {}
+    return seed();
   }
-  function loadSession() {
-    const key = sessionStorageKey();
-    try {
-      const parsed = key ? JSON.parse(localStorage.getItem(key) || 'null') : null;
-      return parsed?.uid === activeTenantContext?.authUid ? parsed : null;
-    } catch { return null; }
-  }
+  function loadSession() { try { return JSON.parse(localStorage.getItem(SESSION) || 'null'); } catch { return null; } }
   function setSession(s) {
-    session = s ? {
-      uid: activeTenantContext?.authUid || '',
-      username: String(s.username || '').slice(0, 120),
-      updatedAt: new Date().toISOString()
-    } : null;
-    const key = sessionStorageKey();
-    if (!key) return;
-    try {
-      if(session) localStorage.setItem(key, JSON.stringify(session));
-      else localStorage.removeItem(key);
-    } catch (error) {
-      console.warn('No se pudo guardar la sesión de interfaz:', error.message);
-    }
+    session=s;
+    if(s) localStorage.setItem(SESSION, JSON.stringify(s));
+    else localStorage.removeItem(SESSION);
   }
   function profileCacheKey(uid) { return uid ? `${PROFILE_CACHE_PREFIX}${uid}` : ''; }
   function cacheUserProfile(profile) {
@@ -383,120 +217,23 @@ function parseMoney(value) {
     state.settings ||= {};
     state.settings.userProfiles ||= {};
     state.settings.userProfiles[uid] = safeProfile;
-    return safeProfile;
+    try { localStorage.setItem(profileCacheKey(uid), JSON.stringify(safeProfile)); } catch {}
   }
-  function persistUserProfileCache(profile) {
-    if (!profile?.uid) return;
-    try { localStorage.setItem(profileCacheKey(profile.uid), JSON.stringify(profile)); } catch {}
-  }
-  function pendingProfileKey(uid) { return uid ? `${PROFILE_PENDING_PREFIX}${uid}` : ''; }
-  function queuePendingProfile(profile) {
-    const key = pendingProfileKey(profile?.uid);
-    if (!key) return false;
-    try { localStorage.setItem(key, JSON.stringify(profile)); return true; } catch { return false; }
-  }
-  async function flushPendingProfile() {
-    const uid = window.click360Auth?.currentUser?.uid || '';
-    const key = pendingProfileKey(uid);
-    if (!uid || !key || !navigator.onLine || !window.click360Db || uid !== activeTenantContext?.authUid) return false;
+  function cachedUserProfile(uid) {
+    if (!uid) return null;
     try {
-      const profile = JSON.parse(localStorage.getItem(key) || 'null');
-      if (!profile || profile.uid !== uid) return false;
-      await window.click360Db.collection('approvedUsers').doc(uid).update({
-        name: String(profile.name || ''),
-        photoURL: safeImageSrc(profile.photoURL),
-        updatedAt: new Date().toISOString()
-      });
-      localStorage.removeItem(key);
-      return true;
-    } catch (error) {
-      console.warn('Perfil local pendiente de nube:', error.message);
-      return false;
-    }
+      return state.settings?.userProfiles?.[uid] || JSON.parse(localStorage.getItem(profileCacheKey(uid)) || 'null');
+    } catch { return null; }
   }
-  window.click360FlushPendingProfile = flushPendingProfile;
   window.click360AppLogout = async function() {
     setSession(null);
     if(window.click360Logout) await window.click360Logout();
     else renderLogin();
   };
-  window.click360SetTenantContext = function(context) {
-    if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
-      throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
-    }
-    activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
-    window.click360TenantContext = activeTenantContext;
-    state = loadState();
-    rememberPersistedState();
-    lastAutoSaveHash = JSON.stringify(state);
-    session = loadSession();
-    return { ...activeTenantContext };
-  };
-  window.click360ClearTenantContext = function() {
-    stopScanner();
-    activeTenantContext = null;
-    window.click360TenantContext = null;
-    state = seed();
-    lastPersistedState = null;
-    lastAutoSaveHash = '';
-    session = null;
-    route = 'home';
-    workingDate = null;
-    if (app) app.innerHTML = '';
-  };
-  window.click360GetTenantState = function() {
-    if (!activeTenantContext) return null;
-    return JSON.parse(JSON.stringify(state));
-  };
-  window.click360PersistTenantState = function() {
-    return save();
-  };
-  window.click360GetTenantCacheStatus = function(context) {
-    if (!context?.tenantKey || !context?.ownerId || !context?.businessId || !context?.authUid) {
-      return { valid: false, reason: 'context_incomplete' };
-    }
-    const key = `${STATE_PREFIX}${context.tenantKey}`;
-    const corruptKey = `CLICK360_TENANT:${context.tenantKey}:CORRUPT`;
-    if (localStorage.getItem(corruptKey)) return { valid: false, reason: 'cache_marked_corrupt', key };
-    const raw = localStorage.getItem(key);
-    if (!raw) return { valid: false, reason: 'cache_missing', key };
-    try {
-      const parsed = JSON.parse(raw);
-      if (!sameTenantIdentity(parsed.identity, context) || parsed.identity?.tenantKey !== context.tenantKey) {
-        return { valid: false, reason: 'tenant_mismatch', key };
-      }
-      if (!tenantRuntime?.validBusinessPayload({ identity: parsed.identity, data: parsed }, context)) {
-        return { valid: false, reason: 'cache_payload_invalid', key };
-      }
-      return { valid: true, key, updatedAtMs: Number(parsed.updatedAtMs || 0) };
-    } catch {
-      return { valid: false, reason: 'cache_corrupt', key };
-    }
-  };
-  window.click360ApplyTenantState = function(nextState, context) {
-    const candidatePayload = { identity: nextState?.identity || context, data: nextState || {} };
-    if (!activeTenantContext || !context || context.tenantKey !== activeTenantContext.tenantKey
-      || !tenantRuntime?.validBusinessPayload(candidatePayload, activeTenantContext)) {
-      markTenantCacheCorrupt('remote_payload_invalid');
-      throw new Error('Snapshot de otro tenant bloqueado.');
-    }
-    const previousState = state;
-    const next = normalizeState(nextState || {});
-    next.identity = tenantIdentity();
-    try {
-      localStorage.setItem(stateStorageKey(), JSON.stringify(next));
-      state = next;
-      rememberPersistedState();
-      lastAutoSaveHash = JSON.stringify(state);
-      localStorage.removeItem(`CLICK360_TENANT:${activeTenantContext.tenantKey}:CORRUPT`);
-    } catch (error) {
-      state = previousState;
-      throw error;
-    }
-  };
   function normalizeState(s) {
     const d = seed();
     const out = Object.assign(d, s || {});
+    if (!out.users || out.users.length === 0) out.users = d.users;
     if (!out.businesses || out.businesses.length === 0) out.businesses = d.businesses;
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     out.invoices ||= [];
@@ -539,10 +276,15 @@ function parseMoney(value) {
   function seed() {
     const b1 = { id:'biz_main', code:'EMPRESA-001', name:'Mi Negocio', type:'ropa', status:'activo', due:'2026-07-08' };
     return {
-      version:'CLICK360_V10',
+      version:'MVP_QA_FINAL',
       updatedAtMs: Date.now(),
       updatedAt: new Date().toISOString(),
       activeBusinessId:b1.id,
+      users:[
+        { username:'owner', role:'owner', label:'Dueño', businessIds:[b1.id] },
+        { username:'cajero', role:'cashier', label:'Cajero', businessIds:[b1.id] },
+        { username:'inventario', role:'inventory', label:'Inventario', businessIds:[b1.id] }
+      ],
       businesses:[b1],
       products:[],
       sales:[],
@@ -551,7 +293,7 @@ function parseMoney(value) {
       dailyReports:[],
       auditLogs:[],
       deletedProducts:[],
-      settings:{ workers: [], labelTemplates: [], userProfiles: {} }
+      settings:{ workers: [], userProfiles: {} }
     };
   }
 
@@ -572,44 +314,53 @@ function parseMoney(value) {
 
   window.click360ReloadState = () => {
     state = loadState();
-    rememberPersistedState();
-    lastAutoSaveHash = JSON.stringify(state);
-  };
 
-  window.addEventListener('storage', (event) => {
-    if (!activeTenantContext || event.key !== stateStorageKey() || !event.newValue) return;
-    try {
-      const parsed = JSON.parse(event.newValue);
-      const payload = { identity: parsed?.identity, data: parsed || {} };
-      if (!tenantRuntime?.validBusinessPayload(payload, activeTenantContext)) {
-        markTenantCacheCorrupt('cross_tab_payload_invalid');
-        toast('Se bloqueó un cambio inválido de otra pestaña.', 'err');
+    // Auto de-activate worker if not in settings list
+    if (window.click360User && window.click360User.role === 'worker') {
+      const workers = state.settings?.workers || [];
+      const isStillApproved = workers.some(w => w.email.toLowerCase() === window.click360User.email.toLowerCase());
+      if (!isStillApproved) {
+        if (window.click360RemoveWorkerUid) {
+          window.click360RemoveWorkerUid(window.click360User.uid).catch(()=>{});
+        }
+        window.click360AppLogout();
         return;
       }
-      state = normalizeState(parsed);
-      state.identity = tenantIdentity();
-      rememberPersistedState();
-      lastAutoSaveHash = JSON.stringify(state);
-      const editing = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
-      if (!editing && !document.querySelector('#modalRoot .modalOverlay.show')) renderApp(route);
-    } catch {
-      markTenantCacheCorrupt('cross_tab_json_invalid');
-      toast('Se bloqueó una caché dañada de otra pestaña.', 'err');
+
+      const match = workers.find(w => w.email.toLowerCase() === window.click360User.email.toLowerCase());
+      if (match && !match.uid) {
+        match.uid = window.click360User.uid;
+        save();
+      }
     }
-  });
+  };
 
   function currentUser(){
-    const cloudUser = window.click360User;
-    if (!cloudUser || !activeTenantContext || cloudUser.uid !== activeTenantContext.authUid) return null;
-    return {
-      username: cloudUser.uid,
-      role: cloudUser.role || 'guest',
-      label: cloudUser.name || cloudUser.email || 'Usuario'
-    };
+    if (!session) return null;
+    let localUser = state.users.find(u=>u.username===session.username);
+    if (!localUser && session.username) {
+      const role = session.role || (window.click360User ? window.click360User.role : 'owner');
+      const label = window.click360User ? (window.click360User.name || window.click360User.email) : session.username;
+      localUser = {
+        username: session.username,
+        role: role,
+        label: label,
+        businessIds: state.businesses.map(b => b.id)
+      };
+    }
+    return localUser;
   }
   function authUser() {
-    if (currentUser()) return window.click360User;
-    return { name: 'Sistema', role: 'guest', email: '' };
+    if (window.click360User) return window.click360User;
+    const u = currentUser();
+    if (u) {
+      return {
+        name: u.label || u.username,
+        role: u.role,
+        email: ''
+      };
+    }
+    return { name: 'Sistema', role: 'owner', email: '' };
   }
   function isOwnerUser() {
     const u = authUser();
@@ -617,13 +368,6 @@ function parseMoney(value) {
   }
   function saleItems(s) {
     return Array.isArray(s?.items) ? s.items : [];
-  }
-  function collectedAmount(sale) {
-    if (!sale || sale.status === 'cancelled') return 0;
-    const total = Math.max(0, Number(sale.total) || 0);
-    const raw = Number(sale.received);
-    if (sale.status === 'paid') return Math.min(total, Number.isFinite(raw) && raw > 0 ? raw : total);
-    return Math.min(total, Math.max(0, Number.isFinite(raw) ? raw : 0));
   }
   function syncStatusInfo() {
     const fallback = navigator.onLine
@@ -636,8 +380,6 @@ function parseMoney(value) {
       pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando conexión o confirmación de nube.'],
       offline: ['Sin internet', 'La app sigue funcionando localmente y subirá cambios al reconectar.'],
       error: ['Revisar nube', s.message || 'No se pudo confirmar la sincronización. Tus datos locales se mantienen.'],
-      migration_required: ['Migración requerida', s.message || 'Los datos anteriores están protegidos hasta completar una migración segura.'],
-      blocked_identity: ['Cuenta bloqueada', s.message || 'No se pudo comprobar una caché segura para esta cuenta.'],
       checking: ['Verificando nube', 'Comprobando sesión y datos remotos.'],
       local: ['Modo local', 'Inicia sesión con Google para activar nube.']
     };
@@ -683,8 +425,14 @@ function parseMoney(value) {
     return false;
   }
   function checkAuth(required='business') {
+    if (!session) { renderLogin(); return false; }
     const u = currentUser();
     if (!u) { setSession(null); renderLogin(); return false; }
+    if (required === 'admin') {
+      if (u.role !== 'admin') { renderLogin('No tienes permiso para abrir admin.'); return false; }
+      return true;
+    }
+    if (u.role === 'admin') { renderAdmin(); return false; }
     const b = currentBusiness();
     if (b && ['pausado','vencido'].includes(b.status)) { renderPaused(b); return false; }
     return true;
@@ -758,6 +506,10 @@ function parseMoney(value) {
     // QR ultra-simple for faster camera/photo decoding. The business is validated by the active inventory.
     return String(product.code || '').trim().toUpperCase();
   }
+  function productDeepLink(product){
+    const base = `${location.origin}${location.pathname}`;
+    return `${base}?scan=${encodeURIComponent(productPayload(product))}`;
+  }
   function normalizeCode(input) {
     const s = String(input||'').trim();
     if (!s) return '';
@@ -808,19 +560,17 @@ function parseMoney(value) {
       </div>`;
 
     const b=currentBusiness();
-    const bizOptions=state.businesses.map(x=>`<option value="${escapeHtml(x.id)}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
-    const businessLogo = safeImageSrc(b?.settings?.logoUrl);
-    const profilePhoto = safeImageSrc(authUser().photoURL);
-    const logoIconSide = businessLogo
-      ? `<img src="${escapeHtml(businessLogo)}" style="width:48px;height:48px;object-fit:cover;border-radius:10px;">`
+    const bizOptions=state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
+    const logoIconSide = b?.settings?.logoUrl
+      ? `<img src="${escapeHtml(b.settings.logoUrl)}" style="width:48px;height:48px;object-fit:cover;border-radius:10px;">`
       : `<div class="logoIcon" style="width:48px;height:48px;"></div>`;
-    const logoIconTop = businessLogo
-      ? `<img src="${escapeHtml(businessLogo)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;">`
+    const logoIconTop = b?.settings?.logoUrl
+      ? `<img src="${escapeHtml(b.settings.logoUrl)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;">`
       : `<div class="logoIcon" style="width:44px;height:44px;"></div>`;
-    const avatarHtml = profilePhoto
-      ? `<img src="${escapeHtml(profilePhoto)}" style="width:100%;height:100%;object-fit:cover;">`
-      : (businessLogo
-        ? `<img src="${escapeHtml(businessLogo)}" style="width:100%;height:100%;object-fit:cover;">`
+    const avatarHtml = authUser().photoURL
+      ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%;height:100%;object-fit:cover;">`
+      : (b?.settings?.logoUrl
+        ? `<img src="${escapeHtml(b.settings.logoUrl)}" style="width:100%;height:100%;object-fit:cover;">`
         : (authUser().name || 'U').charAt(0).toUpperCase());
 
 	    return `<div class="app"><div class="desktopLayout">
@@ -877,7 +627,7 @@ function parseMoney(value) {
   function bottomNav(active){ return `<nav class="bottomNav">${navButtons(active)}</nav>`; }
   function bindShell(){
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
-    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;if(!save()) return;renderApp(route);}; });
+    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;save();renderApp(route);}; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
     $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
 
@@ -951,7 +701,7 @@ function parseMoney(value) {
           <img src="${HOME_BANNER_SRC}" alt="Banner CLICK 360 para negocios" onerror="this.closest('.homeBannerFrame').style.display='none'">
         </div>
         <p class="homeBannerPhrase">${todayPhrase}</p>
-        <a href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" rel="noopener noreferrer" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
+        <a href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
       </section>
       <section class="split" style="margin-top:14px">
 	        <div class="card sectionCard"><h3>\u00DAltimas ventas</h3>${sales.slice(-3).reverse().map(s=>`<div class="movement"><span>${saleItems(s).map(i=>escapeHtml(i.name)).join(', ') || 'Venta sin detalle'}</span><b class="pos">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">A\u00fan no hay ventas hoy.</p>'}</div>
@@ -973,12 +723,12 @@ function parseMoney(value) {
               <div class="card" style="background:#171717; border:1px solid #333; padding:12px; border-radius:12px; display:flex; flex-direction:column; gap:8px;">
                 <div style="font-weight:bold; display:flex; justify-content:space-between; align-items:center;">
                   <span style="color:var(--text);">${escapeHtml(t.name)}</span>
-                  <button class="iconBtn danger small-del-btn" data-del-tpl="${escapeHtml(t.id)}" title="Eliminar plantilla" style="font-size:12px; padding:4px 8px; border:none; cursor:pointer;">✕</button>
+                  <button class="iconBtn danger small-del-btn" data-del-tpl="${t.id}" title="Eliminar plantilla" style="font-size:12px; padding:4px 8px; border:none; cursor:pointer;">✕</button>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center;">
-                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${safeColor(t.bgColor, '#ffffff')}; border:1px solid #555;" title="Fondo de Etiqueta"></span>
-                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${safeColor(t.qrBgColor || t.bgColor, '#ffffff')}; border:1px solid #555;" title="Fondo de QR"></span>
-                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${safeColor(t.fgColor, '#000000')}; border:1px solid #555;" title="Texto/QR"></span>
+                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${t.bgColor}; border:1px solid #555;" title="Fondo de Etiqueta"></span>
+                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${t.qrBgColor || t.bgColor}; border:1px solid #555;" title="Fondo de QR"></span>
+                  <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${t.fgColor}; border:1px solid #555;" title="Texto/QR"></span>
                   <span style="font-size:11px; color:#aaa; margin-left:4px;">Colores</span>
                 </div>
                 ${t.social ? `<div style="font-size:12px; color:#ccc;">📱 ${escapeHtml(t.social)}</div>` : ''}
@@ -1010,10 +760,10 @@ function parseMoney(value) {
   }
   function productList(products,v) {
     if(!products.length) return `<div class="card empty">Aún no hay ${escapeHtml(v.plural)}. Crea el primero con Nuevo.</div>`;
-    return products.map(p=>`<article class="card productCard hasImage" data-pid="${escapeHtml(p.id)}">
+    return products.map(p=>`<article class="card productCard hasImage" data-pid="${p.id}">
       ${imageThumb(p)}
       <div class="productInfo"><h3>${escapeHtml(p.name)}</h3><div class="meta"><span>${escapeHtml(p.category||'General')}</span><span class="badge">${escapeHtml(p.code)}</span><span>Stock: <b>${p.qty}</b></span><span class="badge gold">${fmt(p.price)}${p.cardPrice && p.cardPrice !== p.price ? ' / ' + fmt(p.cardPrice) + ' 💳' : ''} <span style="font-size:10px; opacity:0.8;">(incluye IVA)</span></span></div></div>
-      <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Etiqueta QR">▦</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar">✎</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar">🗑</button></div>
+      <div class="actions"><button class="iconBtn gold" data-label="${p.id}" title="Etiqueta QR">▦</button><button class="iconBtn" data-edit="${p.id}" title="Editar">✎</button><button class="iconBtn danger" data-del="${p.id}" title="Borrar">🗑</button></div>
     </article>`).join('');
   }
 
@@ -1146,8 +896,8 @@ function parseMoney(value) {
               const isCancelled = m.status === 'cancelled';
               const editDeleteButtons = (authUser().role === 'owner' && !isCancelled) ? `
                 <div style="display:flex; gap:6px; margin-top:6px; justify-content:flex-end;">
-                  <button class="btn silver" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.editMovement('${actionId(m.id)}')">✎ Editar</button>
-                  <button class="btn danger" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.deleteMovement('${actionId(m.id)}')">🗑 Anular</button>
+                  <button class="btn silver" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.editMovement('${m.id}')">✎ Editar</button>
+                  <button class="btn danger" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.deleteMovement('${m.id}')">🗑 Anular</button>
                 </div>
               ` : '';
               const cancelledLabel = isCancelled ? `<br><span style="font-size:11px;color:#ff4d4d;font-weight:bold;">🚫 ANULADO por ${escapeHtml(m.cancelledBy || 'owner')} a las ${escapeHtml(m.cancelledAt || '')}</span>` : '';
@@ -1168,7 +918,7 @@ function parseMoney(value) {
       </section>
       ` : ''}
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial de Cierres</h3><div class="movementList">
-	         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)} ${r.status === 'reopened' ? '<span class="badge gold">Reabierto</span>' : ''}<br><small>Caja F.: ${fmt(r.closeCash)}${r.reopenReason ? ' · Motivo: ' + escapeHtml(r.reopenReason) : ''}</small></span><button class="btn silver" onclick="window.viewDailyReport('${actionId(r.id)}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
+	         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)} ${r.status === 'reopened' ? '<span class="badge gold">Reabierto</span>' : ''}<br><small>Caja F.: ${fmt(r.closeCash)}${r.reopenReason ? ' · Motivo: ' + escapeHtml(r.reopenReason) : ''}</small></span><button class="btn silver" onclick="window.viewDailyReport('${r.id}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
       </div></section>`;
   }
   function labelKind(k){ return ({apertura:'Apertura',ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
@@ -1184,7 +934,7 @@ function parseMoney(value) {
      last7Days.forEach(d => salesByDay[d] = 0);
      sales.filter(s=>s.status!=='cancelled').forEach(s => {
        if (salesByDay[s.date] !== undefined) {
-	       salesByDay[s.date] += collectedAmount(s);
+	       salesByDay[s.date] += Number((s.received ?? (s.status === 'paid' ? s.total : 0)) || 0);
        }
      });
 
@@ -1272,7 +1022,7 @@ function parseMoney(value) {
 	    const validSales = sales.filter(s => s.status !== 'cancelled');
 	    const tickets=validSales.length;
 	    const soldTotal=validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal=validSales.reduce((a,s)=>a+collectedAmount(s),0);
+	    const collectedTotal=validSales.reduce((a,s)=>a+Number((s.received ?? (s.status === 'paid' ? s.total : 0)) || 0),0);
 	    const pendingTotal=validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
 	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
@@ -1283,8 +1033,8 @@ function parseMoney(value) {
         </div>
       </div>
       <div class="card sectionCard" style="display:flex; gap:10px; margin-bottom:14px; align-items:center;">
-        <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${safeDateInputValue(state.reportsFrom)}"></div>
-        <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
+        <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${state.reportsFrom}"></div>
+        <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${state.reportsTo}"></div>
       </div>
 	      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText">${fmt(soldTotal)}</strong></div><div class="card kpi"><small>Cobrado</small><strong class="goldText">${fmt(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${fmt(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div></section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Crecimiento</h3>${buildChartHtml(sales)}</section>
@@ -1301,10 +1051,10 @@ function parseMoney(value) {
              <b class="${s.status==='cancelled'?'neg':'goldText'}">${fmt(s.total)}</b>
           </div>
           <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
-            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
+            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${s.id}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Ticket
             </button>
-            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.cancelSale('${actionId(s.id)}')">
+            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.cancelSale('${s.id}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg> Anular
             </button>` : ''}
           </div>
@@ -1332,13 +1082,13 @@ function parseMoney(value) {
           </div>
           <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
             ${s.customerPhone ? `
-            <button class="btn" style="min-height:32px; padding:6px 12px; font-size:12px; border:1px solid #25D366; color:#25D366; background:transparent;" onclick="window.sendWhatsAppReminder('${actionId(s.id)}')">
+            <button class="btn" style="min-height:32px; padding:6px 12px; font-size:12px; border:1px solid #25D366; color:#25D366; background:transparent;" onclick="window.sendWhatsAppReminder('${s.id}')">
                💬 Recordatorio
             </button>` : ''}
-            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
+            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${s.id}')">
                Ticket
             </button>
-            <button class="btn primary" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.payLayaway('${actionId(s.id)}')">
+            <button class="btn primary" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.payLayaway('${s.id}')">
                Abonar
             </button>
           </div>
@@ -1368,9 +1118,9 @@ function parseMoney(value) {
 	    </section>`;
 	  }
 	  function backupView(){
-	    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = localDateKey(yest);
-	    const firstDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-	    const lastDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
+	    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = yest.toISOString().slice(0, 10);
+	    const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+	    const lastDay = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toISOString().slice(0, 10);
 	    const cloud = syncStatusInfo();
 
 	    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronizaci\u00f3n y reportes contables.</p></div></div>
@@ -1428,8 +1178,8 @@ function parseMoney(value) {
     const ruc = bizSettings.ruc || '';
     const phone = bizSettings.phone || '';
     const address = bizSettings.address || '';
-	    const logoUrl = safeImageSrc(bizSettings.logoUrl);
-    const bizOptions = state.businesses.map(x=>`<option value="${escapeHtml(x.id)}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
+	    const logoUrl = bizSettings.logoUrl || '';
+	    const bizOptions = state.businesses.map(x=>`<option value="${x.id}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
 	    const ownerOnlyStyle = isOwnerUser() ? '' : 'display:none;';
 
 	    return `<div class="pageHead"><div><h1>Ajustes</h1><p>Configura tu empresa.</p></div></div>
@@ -1450,7 +1200,7 @@ function parseMoney(value) {
         <div class="field"><label>Teléfono</label><input id="bizPhone" type="tel" value="${escapeHtml(phone)}" placeholder="+593 999999999"></div>
         <div class="field"><label>Dirección del Local</label><input id="bizAddress" value="${escapeHtml(address)}" placeholder="Ej. Av. de los Shyris y Naciones Unidas"></div>
         <div class="field"><label>¿Cuál es tu negocio?</label><select id="bizType">${typeOptions(b.type)}</select></div>
-        <div class="field"><label>IVA Global (%)</label><input type="number" inputmode="numeric" id="bizIva" value="${numericInputValue(iva)}" placeholder="0 para desactivar"></div>
+        <div class="field"><label>IVA Global (%)</label><input type="number" inputmode="numeric" id="bizIva" value="${iva}" placeholder="0 para desactivar"></div>
         <button type="button" class="btn primary block" id="saveBiz">Guardar cambios</button>
       </section>
 
@@ -1458,7 +1208,7 @@ function parseMoney(value) {
         <h3>Mi Perfil (Usuario)</h3>
         <div class="field" style="display:flex; flex-direction:column; align-items:center;">
           <div style="width:80px; height:80px; border-radius:50%; background:#222; border:1px solid #444; overflow:hidden; margin-bottom:10px; display:flex; justify-content:center; align-items:center;">
-             ${safeImageSrc(authUser().photoURL) ? `<img src="${escapeHtml(safeImageSrc(authUser().photoURL))}" style="width:100%; height:100%; object-fit:cover;">` : `<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" style="display:block; margin:0;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`}
+             ${authUser().photoURL ? `<img src="${escapeHtml(authUser().photoURL)}" style="width:100%; height:100%; object-fit:cover;">` : `<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2" style="display:block; margin:0;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`}
           </div>
           <label class="btn silver" style="font-size:12px; padding:4px 8px; position:relative; display:inline-flex; justify-content:center; align-items:center; min-height:28px; gap:6px;">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="display:block; margin:0;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
@@ -1496,7 +1246,7 @@ function parseMoney(value) {
 
       <section class="card sectionCard" style="margin-top:14px; text-align:center;">
         <h3>Soporte y Legales</h3>
-        <button type="button" class="btn" style="border:1px solid #25D366; color:#25D366; background:transparent; width:100%; margin-bottom:12px;" onclick="window.open('https://wa.me/593969399562?text=Hola,%20necesito%20soporte%20con%20CLICK%20360', '_blank', 'noopener,noreferrer')">📱 Contactar Soporte (WhatsApp)</button>
+        <button type="button" class="btn" style="border:1px solid #25D366; color:#25D366; background:transparent; width:100%; margin-bottom:12px;" onclick="window.open('https://wa.me/593969399562?text=Hola,%20necesito%20soporte%20con%20CLICK%20360', '_blank')">📱 Contactar Soporte (WhatsApp)</button>
         <p style="font-size:11px; color:#888; line-height:1.4;">Al usar el sistema, aceptas los <a href="#" id="showTerms" style="color:var(--gold); text-decoration:underline;">Términos y Condiciones</a>.</p>
       </section>`;
   }
@@ -1533,7 +1283,7 @@ function parseMoney(value) {
              const tplId = btn.dataset.delTpl;
              state.settings ||= {};
              state.settings.labelTemplates = (state.settings.labelTemplates || []).filter(t => t.id !== tplId);
-             if(!save()) return;
+             save();
              renderApp('inventory');
              toast('Plantilla eliminada');
           }
@@ -1550,36 +1300,33 @@ function parseMoney(value) {
   function openProductModal(product=null){
     const b=currentBusiness(), v=businessVocabulary(b.type);
     const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,notes:'',imageData:''};
-    const productImage = safeImageSrc(p.imageData);
     showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
       <form id="productForm" class="formGrid">
         <div class="field full productImageField">
           <label>Imagen del producto (opcional)</label>
           <div class="imagePicker">
-            <div id="imagePreview">${productImage ? `<img src="${escapeHtml(productImage)}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
+            <div id="imagePreview">${p.imageData ? `<img src="${p.imageData}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
             <div style="display:flex; gap:8px;">
                <label class="btn silver"><input type="file" id="pImageCam" accept="image/*" capture="environment" hidden>Tomar foto</label>
                <label class="btn silver"><input type="file" id="pImageGal" accept="image/*" hidden>Galería</label>
             </div>
-            ${productImage ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
+            ${p.imageData ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
           </div>
         </div>
         <div class="field"><label>Código</label><input id="pCode" value="${escapeHtml(p.code)}" placeholder="Auto si vacío"></div>
         <div class="field"><label>${escapeHtml(v.category)}</label><input id="pCat" value="${escapeHtml(p.category)}" placeholder="${escapeHtml(v.examples)}"></div>
         <div class="field full"><label>Nombre</label><input id="pName" required value="${escapeHtml(p.name)}"></div>
-        <div class="field"><label>Cantidad</label><input id="pQty" inputmode="numeric" value="${numericInputValue(p.qty)}"></div>
-        <div class="field"><label>Costo</label><input id="pCost" inputmode="decimal" value="${numericInputValue(p.cost).replace('.',',')}"></div>
-        <div class="field"><label>Precio (Efectivo)</label><input id="pPrice" inputmode="decimal" value="${numericInputValue(p.price).replace('.',',')}"></div>
-        <div class="field"><label>Precio con Tarjeta</label><input id="pCardPrice" inputmode="decimal" value="${numericInputValue(p.cardPrice ?? p.price).replace('.',',')}"></div>
+        <div class="field"><label>Cantidad</label><input id="pQty" inputmode="numeric" value="${p.qty}"></div>
+        <div class="field"><label>Costo</label><input id="pCost" inputmode="decimal" value="${String(p.cost||0).replace('.',',')}"></div>
+        <div class="field"><label>Precio (Efectivo)</label><input id="pPrice" inputmode="decimal" value="${String(p.price||0).replace('.',',')}"></div>
+        <div class="field"><label>Precio con Tarjeta</label><input id="pCardPrice" inputmode="decimal" value="${String(p.cardPrice||p.price||0).replace('.',',')}"></div>
         <div class="field full"><label>Notas</label><textarea id="pNotes">${escapeHtml(p.notes||'')}</textarea></div>
         <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button>
       </form>`);
-    let imageData = productImage;
+    let imageData = p.imageData || '';
     const imgHandler = e => readImageInput(e.target, data => {
       imageData = data;
-      const safe = safeImageSrc(data);
-      imageData = safe;
-      $('#imagePreview').innerHTML = safe ? `<img src="${escapeHtml(safe)}" alt="Imagen del producto">` : '<span>Sin imagen</span>';
+      $('#imagePreview').innerHTML = data ? `<img src="${data}" alt="Imagen del producto">` : '<span>Sin imagen</span>';
     });
     $('#pImageCam').onchange = imgHandler;
     $('#pImageGal').onchange = imgHandler;
@@ -1612,7 +1359,7 @@ function parseMoney(value) {
 	      const updatedAtMs = Date.now();
 	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
 	      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name});
-	      if(!save()) return; closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
+	      save(); closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
 	    };
 	  }
 	  function deleteProduct(id){
@@ -1623,7 +1370,7 @@ function parseMoney(value) {
 	        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name});
 	      }
 	      state.products=state.products.filter(x=>x.id!==id);
-	      if(!save()) return; renderApp('inventory'); toast('Producto eliminado');
+	      save(); renderApp('inventory'); toast('Producto eliminado');
 	    }
 	  }
 
@@ -1654,7 +1401,7 @@ function parseMoney(value) {
          subView.style.display = 'none'; ivaView.style.display = 'none';
       }
 
-      $('#cartItems').innerHTML=cart.length?cart.map(i=>{ const src=safeImageSrc(i.imageData); return `<div class="cartItem cartWithImage">${src ? `<img class="productImg small" src="${escapeHtml(src)}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(isCard ? i.cardPrice : i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button type="button" data-minus="${escapeHtml(i.id)}">−</button><b>${i.qty}</b><button type="button" data-plus="${escapeHtml(i.id)}">＋</button><button type="button" class="iconBtn danger" data-remove="${escapeHtml(i.id)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`; }).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
+      $('#cartItems').innerHTML=cart.length?cart.map(i=>`<div class="cartItem cartWithImage">${i.imageData ? `<img class="productImg small" src="${i.imageData}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(isCard ? i.cardPrice : i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button type="button" data-minus="${i.id}">−</button><b>${i.qty}</b><button type="button" data-plus="${i.id}">＋</button><button type="button" class="iconBtn danger" data-remove="${i.id}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
       $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
@@ -1675,7 +1422,7 @@ function parseMoney(value) {
             if (dueInput && !dueInput.value) {
                const future = new Date();
                future.setDate(future.getDate() + 30);
-               dueInput.value = localDateKey(future);
+               dueInput.value = future.toISOString().slice(0, 10);
             }
          }
       } else {
@@ -1759,7 +1506,7 @@ function parseMoney(value) {
         }
     };
     $('#manualCode').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#addCode').click();}});
-    $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>String(p.name || '').toLowerCase().includes(q)||String(p.code || '').toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${escapeHtml(p.code)}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
+    $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>p.name.toLowerCase().includes(q)||p.code.toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${p.code}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
     $('#openCamera').onclick=()=>startScanner(addProduct);
     $('#chargeBtn').onclick=()=>{
       if(!cart.length){ beep('err'); return toast('El carrito está vacío','err'); }
@@ -1783,7 +1530,7 @@ function parseMoney(value) {
       }
 
       const rec = parseMoney($('#cashReceived').value);
-	      let received = 0; let tendered = 0; let change = 0; let balance = 0;
+      let received = 0; let change = 0; let balance = 0;
       let status = "paid";
 
       const customerName = $('#customer').value.trim();
@@ -1796,7 +1543,7 @@ function parseMoney(value) {
 
       if(method === 'Efectivo') {
          if(!Number.isFinite(rec) || rec < total) { beep('err'); return toast('Efectivo recibido es menor al total','err'); }
-	         tendered = rec; received = total; change = rec - total;
+         received = rec; change = rec - total;
       } else if (method === 'Apartado') {
          if(!Number.isFinite(rec) || rec < 0) { beep('err'); return toast('Monto de abono inválido','err'); }
          if(rec > total) { beep('err'); return toast('El abono no puede superar el total','err'); }
@@ -1830,10 +1577,9 @@ function parseMoney(value) {
         customerCedula:customerCedulaVal,
         customerPhone:customerPhoneVal,
         dueDate: method === 'Apartado' ? $('#layawayDueDate').value : null,
-        user:authUser().name,
+        user:session.username,
 	        status,
 	        received,
-	        tendered,
 	        change,
 	        balance,
 	        payments: received > 0 ? [{ id: uid('pay'), date: today(), when: nowLabel(), amount: received, method, createdBy: authUser().name }] : [],
@@ -1848,22 +1594,19 @@ function parseMoney(value) {
 
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
-        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:authUser().name, saleId: sale.id, paymentMethod: sale.method, createdBy: authUser().name});
+        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:session.username, saleId: sale.id, paymentMethod: sale.method, createdBy: authUser().name});
       }
 
       addAudit('sale_created', { saleId: sale.id, total: sale.total, method: sale.method, status: sale.status });
       if(!save()) return;
-      cart=[];
-      $('#cashReceived').value='';
-      $('#discount').value='0';
+      cart=[]; renderCart(); $('#cashReceived').value='';
       $('#customer').value = '';
       $('#customerCedula').value = '';
       $('#customerPhone').value = '';
-      renderCart();
       beep('sale'); toast(`Venta registrada · ${fmt(total)}`);
 
       setTimeout(() => {
-        if(window.printReceipt) window.printReceipt(actionId(sale.id));
+        if(window.printReceipt) window.printReceipt(sale.id);
       }, 500);
     };
   }
@@ -2156,7 +1899,7 @@ function parseMoney(value) {
 	            reopened: true
 	          });
 	          addAudit('cash_reopened', { businessId: bid, date: today(), reason: reason.trim(), reports: closedReports.map(r => r.id) });
-	          if(!save()) return;
+	          save();
 	          renderApp('cash');
 	          toast('Caja reabierta con auditoría');
 	        }
@@ -2183,7 +1926,7 @@ function parseMoney(value) {
                note: 'Apertura de caja diaria',
                createdBy: authUser().name
              });
-             if(!save()) return;
+             save();
              renderApp('cash');
              toast('Jornada iniciada exitosamente');
           };
@@ -2256,8 +1999,7 @@ function parseMoney(value) {
            const bizSettings = currentBusiness().settings || {};
            const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
            const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
-	           const logoSrc = safeImageSrc(bizSettings.logoUrl);
-	           const logoUrl = logoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(logoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+           const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
 
            const html = `
             <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
@@ -2307,8 +2049,27 @@ function parseMoney(value) {
                setTimeout(()=>window.print(), 250);
            };
 
-	           $('#downloadImgCierreBtn').onclick = () => {
-	                downloadHtmlAsPng(html, `Cierre_Caja_${today()}.png`);
+           $('#downloadImgCierreBtn').onclick = () => {
+                toast('Generando Imagen...');
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = html;
+                wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
+                document.body.appendChild(wrapper);
+
+                const script = document.createElement('script');
+                script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
+                script.onload = () => {
+                  window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
+                    const a = document.createElement('a');
+                    a.href = canvas.toDataURL('image/png');
+                    a.download = `Cierre_Caja_${today()}.png`;
+                    a.click();
+                    document.body.removeChild(wrapper);
+                    toast('Imagen descargada');
+	                  });
+	                };
+	                script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
+	                document.head.appendChild(script);
 	            };
 
 	           const repId = uid('rep');
@@ -2328,6 +2089,10 @@ function parseMoney(value) {
          if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
          else window.click360AppLogout();
      });
+	     $('#forceSyncCloud')?.addEventListener('click', ()=>{
+	         if(window.click360RefreshNow) window.click360RefreshNow();
+	         else toast('Nube no disponible en este entorno', 'err');
+	     });
 	     $('#installAppBtn')?.addEventListener('click', async () => {
 	       const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
 	       const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -2413,58 +2178,21 @@ function parseMoney(value) {
       return;
     }
 
-    let displayedWorkers = [];
-    const loadWorkers = async () => {
-      let workers = (state.settings?.workers || []).map(worker => ({ ...worker }));
-      const ownerUid = window.click360User?.uid || '';
-      if (ownerUid && window.click360Db) {
-        try {
-          const remoteSnapshot = await window.click360Db.collection('approvedUsers')
-            .where('ownerId', '==', ownerUid)
-            .where('role', '==', 'worker')
-            .get();
-          if (window.click360User?.uid !== ownerUid) return;
-          const remoteWorkers = remoteSnapshot.docs.map(snapshot => {
-            const data = snapshot.data() || {};
-            return {
-              uid: snapshot.id,
-              email: String(data.email || '').toLowerCase(),
-              name: String(data.name || data.email || 'Trabajador'),
-              status: data.status || 'pending',
-              approved: data.approved === true,
-              ownerId: data.ownerId || ownerUid
-            };
-          }).filter(worker => worker.email);
-          const remoteByEmail = new Map(remoteWorkers.map(worker => [worker.email, worker]));
-          const knownEmails = new Set();
-          workers = workers.map(worker => {
-            const email = String(worker.email || '').toLowerCase();
-            knownEmails.add(email);
-            const remote = remoteByEmail.get(email);
-            return remote ? { ...worker, ...remote, inviteToken: worker.inviteToken || '' } : worker;
-          });
-          remoteWorkers.forEach(worker => {
-            if (!knownEmails.has(worker.email)) workers.push(worker);
-          });
-        } catch (error) {
-          console.warn('No se pudo actualizar el directorio de trabajadores:', error.message);
-        }
-      }
-      displayedWorkers = workers;
+    const loadWorkers = () => {
+      const workers = state.settings?.workers || [];
       if (workers.length === 0) {
         list.innerHTML = '<p class="empty">No hay trabajadores registrados.</p>';
         return;
       }
 
       list.innerHTML = workers.map(w => {
-        const active = w.status === 'active' && w.approved !== false;
-        const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${escapeHtml(String(w.name || 'W').charAt(0).toUpperCase())}</div>`;
+        const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${(w.name || 'W').charAt(0).toUpperCase()}</div>`;
         return `
           <div class="movement" style="align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--line);">
              ${avatarHtml}
              <div style="flex:1;">
                <b>${escapeHtml(w.name)}</b>
-               <span class="badge ${active ? 'green' : 'danger'}" style="margin-left:6px; font-size:10px; padding:2px 6px;">${active ? 'Activo' : 'Bloqueado'}</span>
+               <span class="badge green" style="margin-left:6px; font-size:10px; padding:2px 6px;">Activo</span>
                <br><small style="color:#aaa;">${escapeHtml(w.email)}</small>
              </div>
              <div>
@@ -2484,30 +2212,31 @@ function parseMoney(value) {
           btn.disabled = true;
 
           // Find UID if worker has logged in
-          const match = displayedWorkers.find(w => String(w.email || '').toLowerCase() === email);
-          try {
-            if (!window.click360RevokeWorker) throw new Error('La revocación en nube no está disponible.');
-            await window.click360RevokeWorker(email, match?.uid || '');
-            addAudit('worker_revoked', { email, uid: match?.uid || '' });
-            state.settings.workers = (state.settings.workers || []).filter(w => String(w.email || '').toLowerCase() !== email);
-            if(!save()) {
-              toast('El acceso fue revocado en nube, pero no se pudo actualizar la lista local.', 'err');
-              await loadWorkers();
-              return;
-            }
-            toast('Acceso removido');
-            await loadWorkers();
-          } catch (error) {
-            console.warn('No se pudo revocar trabajador:', error.message);
-            btn.textContent = 'Eliminar';
-            btn.disabled = false;
-            toast('No se pudo revocar el acceso. No se alteró la lista local.', 'err');
+          const workersList = state.settings?.workers || [];
+          const match = workersList.find(w => w.email.toLowerCase() === email);
+
+	          addAudit('worker_revoked', { email, uid: match?.uid || '' });
+	          // Remove from local list after recording the revocation locally.
+	          state.settings.workers = (state.settings.workers || []).filter(w => w.email.toLowerCase() !== email);
+	          save();
+
+          // Cancel invite in Firestore if worker hasn't registered yet
+          if (window.click360CancelInviteEmail) {
+             await window.click360CancelInviteEmail(email);
           }
+
+          // Try to remove worker doc in approvedUsers if worker already registered
+          if (match && match.uid && window.click360RemoveWorkerUid) {
+             await window.click360RemoveWorkerUid(match.uid);
+          }
+
+          toast('Acceso removido');
+          renderApp('workers');
         };
       });
     };
 
-    await loadWorkers();
+    loadWorkers();
 
     $('#addWorkerForm').onsubmit = async (e) => {
       e.preventDefault();
@@ -2529,18 +2258,17 @@ function parseMoney(value) {
       submitBtn.disabled = true;
 
       try {
-         // 1. Write the cloud invitation before presenting it as active.
-	         if (!window.click360InviteWorkerEmail) throw new Error('La invitación en nube no está disponible.');
-	         const inviteMeta = await window.click360InviteWorkerEmail(email, name);
+         // 1. Write invite to Firestore approvedUsersByEmail
+	         let inviteMeta = null;
+	         if (window.click360InviteWorkerEmail) {
+	            inviteMeta = await window.click360InviteWorkerEmail(email, name);
+	         }
 
          // 2. Add to local storage settings list
          state.settings ||= {};
          state.settings.workers ||= [];
-	         state.settings.workers.push({ email, name, status: 'pending', approved: false, inviteToken: inviteMeta?.inviteToken || '', ownerId: window.click360User.uid });
-	         if (!save()) {
-	           await window.click360CancelInviteEmail(email).catch(() => {});
-	           throw new Error('No se pudo guardar la invitación localmente; la invitación en nube fue cancelada.');
-	         }
+	         state.settings.workers.push({ email, name, status: 'active', inviteToken: inviteMeta?.inviteToken || '', ownerId: window.click360User.uid });
+	         save();
 
          // 3. Display invite link PWA-compatible
          $('#inviteLinkBox').style.display = 'block';
@@ -2548,7 +2276,7 @@ function parseMoney(value) {
          $('#inviteLinkVal').value = inviteLink;
 
          toast('Trabajador registrado y pre-aprobado', 'ok');
-         await loadWorkers();
+         loadWorkers();
 
          // Reset fields
          $('#workerName').value = '';
@@ -2570,33 +2298,33 @@ function parseMoney(value) {
   }
 
   function bindReports(){
-      $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; if(!save()) return; renderApp('reports'); };
-      $('#repTo').onchange = (e) => { state.reportsTo = e.target.value; if(!save()) return; renderApp('reports'); };
+      $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; save(); renderApp('reports'); };
+      $('#repTo').onchange = (e) => { state.reportsTo = e.target.value; save(); renderApp('reports'); };
   }
 
   function bindSettings(){
-    let pendingLogoUrl = safeImageSrc((currentBusiness().settings || {}).logoUrl);
+    let pendingLogoUrl = (currentBusiness().settings || {}).logoUrl || '';
     const logoUpload = $('#bizLogoUpload');
     if (logoUpload) {
       logoUpload.addEventListener('change', (e) => {
          readImageInput(e.target, (data) => {
             if (!data) return;
-            pendingLogoUrl = safeImageSrc(data);
-            e.target.parentElement.previousElementSibling.innerHTML = `<img src="${escapeHtml(pendingLogoUrl)}" style="width:100%; height:100%; object-fit:cover;">`;
-         }, { max: 260, quality: 0.48, maxBytes: 24 * 1024 });
+            pendingLogoUrl = data;
+            e.target.parentElement.previousElementSibling.innerHTML = `<img src="${pendingLogoUrl}" style="width:100%; height:100%; object-fit:cover;">`;
+         }, { max: 260, quality: 0.48 });
       });
     }
 
-    let pendingUserPhotoUrl = safeImageSrc(authUser().photoURL);
+    let pendingUserPhotoUrl = authUser().photoURL || '';
     const userPhotoUpload = $('#userPhotoUpload');
     if (userPhotoUpload) {
       userPhotoUpload.addEventListener('change', (e) => {
          readImageInput(e.target, (data) => {
             if (data) {
-              pendingUserPhotoUrl = safeImageSrc(data);
-              e.target.parentElement.previousElementSibling.innerHTML = `<img src="${escapeHtml(pendingUserPhotoUrl)}" style="width:100%; height:100%; object-fit:cover;">`;
+              pendingUserPhotoUrl = data;
+              e.target.parentElement.previousElementSibling.innerHTML = `<img src="${data}" style="width:100%; height:100%; object-fit:cover;">`;
             }
-         }, { max: 220, quality: 0.5, maxBytes: 16 * 1024 });
+         }, { max: 220, quality: 0.5 });
       });
     }
 
@@ -2609,17 +2337,20 @@ function parseMoney(value) {
        btn.disabled = true;
        try {
          const uid = window.click360User?.uid || window.click360Auth?.currentUser?.uid || '';
-         const role = window.click360User?.role || 'guest';
+         const role = window.click360User?.role || session?.role || 'owner';
          const email = window.click360User?.email || window.click360Auth?.currentUser?.email || '';
          const profile = { uid, name: newName, photoURL: pendingUserPhotoUrl || '', email };
-         const safeProfile = cacheUserProfile(profile);
-         if(!save()) throw new Error('No se pudo guardar localmente');
+
          if (window.click360User) {
            window.click360User.name = newName;
-           window.click360User.photoURL = safeProfile.photoURL;
+           window.click360User.photoURL = pendingUserPhotoUrl || '';
          }
+
+         cacheUserProfile(profile);
          setSession({ username: newName, role });
-         persistUserProfileCache(safeProfile);
+         const localUser = currentUser();
+         if (localUser) localUser.label = newName;
+         if(!save()) throw new Error('No se pudo guardar localmente');
 
          if (window.click360Auth?.currentUser?.updateProfile) {
            await window.click360Auth.currentUser.updateProfile({
@@ -2629,9 +2360,30 @@ function parseMoney(value) {
          }
 
          if (window.click360Db && uid) {
-           queuePendingProfile(safeProfile);
-           const profileSynced = await flushPendingProfile();
-           toast(profileSynced ? 'Perfil actualizado y sincronizado' : 'Perfil actualizado localmente; la nube sigue pendiente', profileSynced ? 'ok' : 'err');
+           const payload = {
+             uid,
+             email,
+             name: newName,
+             photoURL: pendingUserPhotoUrl || '',
+             role,
+             status: window.click360User?.status || 'active',
+             approved: window.click360User?.approved !== false,
+             ownerId: window.click360User?.ownerId || uid,
+             businessLimit: Number(window.click360User?.businessLimit || 2),
+             updatedAt: new Date().toISOString()
+           };
+           try {
+             await window.click360Db.collection("approvedUsers").doc(uid).set(payload, { merge: true });
+           } catch(profileWriteError) {
+             console.warn('Perfil: escritura completa rechazada, reintentando campos seguros:', profileWriteError.message);
+             await window.click360Db.collection("approvedUsers").doc(uid).update({
+               name: newName,
+               photoURL: pendingUserPhotoUrl || '',
+               updatedAt: new Date().toISOString()
+             }).catch(secondError => console.warn('Perfil guardado localmente; nube pendiente:', secondError.message));
+           }
+           if (window.click360SyncNow) await window.click360SyncNow();
+           toast('Perfil actualizado y protegido');
          } else {
            toast('Perfil guardado en este dispositivo');
          }
@@ -2671,6 +2423,8 @@ function parseMoney(value) {
       b.settings.address = '';
       state.businesses.push(b);
       state.activeBusinessId=b.id;
+      const user=currentUser();
+      if(user&&!user.businessIds.includes(b.id))user.businessIds.push(b.id);
       addAudit('business_created', { businessId: b.id, name: b.name });
       if(!save()) return;
       renderApp('settings'); toast('Negocio creado');
@@ -2680,7 +2434,7 @@ function parseMoney(value) {
     if (pickSettings) {
       pickSettings.onchange = () => {
         state.activeBusinessId = pickSettings.value;
-        if(!save()) return;
+        save();
         renderApp('settings');
         toast('Cambiaste de negocio');
       };
@@ -2756,6 +2510,16 @@ function parseMoney(value) {
     };
   }
 
+  function renderAdmin(){
+    if(!checkAuth('admin'))return;
+    const rows=state.businesses.map(b=>`<div class="card adminRow"><div><h3>${escapeHtml(b.name)} <span class="status ${b.status}">${escapeHtml(b.status)}</span></h3><p>Código: ${escapeHtml(b.code||b.id)} · Vence: ${escapeHtml(b.due||'')}</p></div><div class="actions"><button class="btn primary" data-admin-act="${b.id}">Activar</button><button class="btn" data-admin-pause="${b.id}">Pausar</button><button class="btn silver" data-admin-month="${b.id}">+ Mes</button></div></div>`).join('');
+    app.innerHTML=`<div class="app"><header class="topbar" style="display:flex"><div class="logoMark"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360 · ADMIN</span><small>Panel de administración</small></div></div><button class="logoutBtn" id="adminLogout">↗</button></header><main class="main"><div class="pageHead"><div><h1>Clientes y negocios</h1><p>Gestiona acceso, estados y vencimientos.</p></div></div><section class="adminList">${rows}</section></main></div>`;
+    $('#adminLogout').onclick=()=>window.click360AppLogout();
+    $$('[data-admin-act]').forEach(btn=>btn.onclick=()=>{const b=state.businesses.find(x=>x.id===btn.dataset.adminAct); b.status='activo'; save(); renderAdmin();});
+    $$('[data-admin-pause]').forEach(btn=>btn.onclick=()=>{const b=state.businesses.find(x=>x.id===btn.dataset.adminPause); b.status='pausado'; save(); renderAdmin();});
+    $$('[data-admin-month]').forEach(btn=>btn.onclick=()=>{const b=state.businesses.find(x=>x.id===btn.dataset.adminMonth); const d=new Date(b.due||Date.now()); d.setMonth(d.getMonth()+1); b.due=d.toISOString().slice(0,10); b.status='activo'; save(); renderAdmin();});
+  }
+
   function showModal(html){ closeModal(); const root=document.createElement('div'); root.id='modalRoot'; root.innerHTML=`<div class="modalOverlay show"><div class="modal">${html}</div></div>`; document.body.appendChild(root); $$('[data-close]',root).forEach(b=>b.onclick=closeModal); }
   function closeModal(){ $('#modalRoot')?.remove(); }
 
@@ -2771,11 +2535,11 @@ function parseMoney(value) {
     ctx.save();
 
     // Background color
-    ctx.fillStyle = safeColor(options.bgColor, '#ffffff');
+    ctx.fillStyle = options.bgColor || '#ffffff';
     roundRect(ctx, 0, 0, w, h, 18 * scale, true, false);
 
     // Text and QR color
-    const fg = safeColor(options.fgColor, '#000000');
+    const fg = options.fgColor || '#000000';
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
 
@@ -2798,7 +2562,7 @@ function parseMoney(value) {
 
     // QR Code (centered)
     const qrCanvas = document.createElement('canvas');
-    QR.draw(qrCanvas, productPayload(product), 170 * scale, 5, fg, safeColor(options.qrBgColor || options.bgColor, '#ffffff'));
+    QR.draw(qrCanvas, productPayload(product), 170 * scale, 5, fg, options.qrBgColor || options.bgColor || '#ffffff');
     ctx.drawImage(qrCanvas, (w - 170 * scale) / 2, yOffset);
 
     // QR Footer text ("Sistema contable Click 360")
@@ -2875,7 +2639,7 @@ function parseMoney(value) {
     const address = bizSettings.address || '';
 
     const templates = state.settings?.labelTemplates || [];
-    const templateOptions = templates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+    const templateOptions = templates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
 
     showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div>
       <style>
@@ -2956,9 +2720,9 @@ function parseMoney(value) {
     const getOptions = (extraScale = null) => {
        return {
           scale: extraScale || 2,
-          bgColor: safeColor($('#labelBgColor').value, '#ffffff'),
-          qrBgColor: safeColor($('#qrBgColor').value, '#ffffff'),
-          fgColor: safeColor($('#labelFgColor').value, '#000000'),
+          bgColor: $('#labelBgColor').value,
+          qrBgColor: $('#qrBgColor').value,
+          fgColor: $('#labelFgColor').value,
           social: $('#labelSocial').value.trim(),
           address: $('#labelAddress').value.trim(),
           yOffsetAdj: parseFloat($('#labelYOffset').value || '0'),
@@ -2999,9 +2763,9 @@ function parseMoney(value) {
        if (!tplId) return;
        const tpl = (state.settings.labelTemplates || []).find(t => t.id === tplId);
        if (tpl) {
-          $('#labelBgColor').value = safeColor(tpl.bgColor, '#ffffff');
-          $('#qrBgColor').value = safeColor(tpl.qrBgColor || tpl.bgColor, '#ffffff');
-          $('#labelFgColor').value = safeColor(tpl.fgColor, '#000000');
+          $('#labelBgColor').value = tpl.bgColor;
+          $('#qrBgColor').value = tpl.qrBgColor || tpl.bgColor;
+          $('#labelFgColor').value = tpl.fgColor;
           $('#labelSocial').value = tpl.social || '';
           $('#labelAddress').value = tpl.address || '';
           $('#labelYOffset').value = tpl.yOffsetAdj || 0;
@@ -3010,7 +2774,7 @@ function parseMoney(value) {
           $('#yOffsetVal').textContent = ($('#labelYOffset').value) + 'px';
           $('#nameScaleVal').textContent = ($('#labelNameScale').value) + 'x';
           $('#priceScaleVal').textContent = ($('#labelPriceScale').value) + 'x';
-          lastBgColor = $('#labelBgColor').value;
+          lastBgColor = tpl.bgColor;
           updatePreview();
        }
     };
@@ -3035,13 +2799,13 @@ function parseMoney(value) {
        state.settings ||= {};
        state.settings.labelTemplates ||= [];
        state.settings.labelTemplates.push(tpl);
-       if(!save()) return;
+       save();
        toast('Plantilla guardada con éxito', 'ok');
 
        // Reload select dropdown options
        const updatedTemplates = state.settings.labelTemplates;
        $('#applyTemplateSelect').innerHTML = `<option value="">-- Seleccionar plantilla --</option>` +
-          updatedTemplates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+          updatedTemplates.map(t => `<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('');
     };
 
     updatePreview();
@@ -3090,9 +2854,9 @@ function parseMoney(value) {
 
        const opt = {
           scale: 3,
-          bgColor: safeColor(options.bgColor, '#ffffff'),
-          qrBgColor: safeColor(options.qrBgColor || options.bgColor, '#ffffff'),
-          fgColor: safeColor(options.fgColor, '#000000'),
+          bgColor: options.bgColor || '#ffffff',
+          qrBgColor: options.qrBgColor || options.bgColor || '#ffffff',
+          fgColor: options.fgColor || '#000000',
           social: options.social || '',
           address: options.address || '',
           yOffsetAdj: options.yOffsetAdj || 0,
@@ -3112,53 +2876,45 @@ function parseMoney(value) {
       businessId: currentBusiness()?.id || '',
       state
     };
-    const prefix = activeTenantContext?.tenantKey ? `CLICK360_BACKUP:${activeTenantContext.tenantKey}:` : '';
     try {
-      if (prefix) {
-        localStorage.setItem(`${prefix}${Date.now()}:${reason}`, JSON.stringify(backup));
-        const keys = [];
-        for (let index = 0; index < localStorage.length; index += 1) {
-          const key = localStorage.key(index);
-          if (key?.startsWith(prefix)) keys.push(key);
-        }
-        keys.sort();
-        keys.slice(0, Math.max(0, keys.length - LOCAL_BACKUP_RETENTION)).forEach((key) => localStorage.removeItem(key));
-      }
+      localStorage.setItem(`CLICK360_BACKUP_${reason}_${Date.now()}`, JSON.stringify(backup));
     } catch {}
     return backup;
   }
   function downloadBackup(reason='manual'){
     const backup = createBackupSnapshot(reason);
     const a=document.createElement('a');
-    const objectUrl = URL.createObjectURL(new Blob([JSON.stringify(backup.state,null,2)],{type:'application/json'}));
-    a.href=objectUrl;
+    a.href=URL.createObjectURL(new Blob([JSON.stringify(backup.state,null,2)],{type:'application/json'}));
     a.download=`click360-respaldo-${reason}-${today()}.json`;
     a.click();
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
     addAudit('backup_exported', { reason });
     toast('Respaldo guardado');
     return true;
   }
   function validateBackupData(data) {
-    if (!data || typeof data !== 'object' || stateSizeBytes(data) > MAX_LOCAL_TENANT_STATE_BYTES) return false;
-    return tenantRuntime?.validBusinessPayload({ identity: data.identity, data }, activeTenantContext) === true;
+    return data && typeof data === 'object'
+      && Array.isArray(data.businesses)
+      && Array.isArray(data.products)
+      && Array.isArray(data.sales)
+      && Array.isArray(data.movements);
   }
+	  function restoreBackup(e){
+	    if(!isOwnerUser()) return toast('Solo el dueño puede restaurar respaldos.', 'err');
+	    const file=e.target.files[0]; if(!file)return; const reader=new FileReader(); reader.onload=()=>{try{const data=JSON.parse(reader.result); if(!validateBackupData(data)) return toast('Respaldo inválido o incompleto','err'); const summary=`Productos: ${(data.products||[]).length}\nVentas: ${(data.sales||[]).length}\nMovimientos: ${(data.movements||[]).length}\nNegocios: ${(data.businesses||[]).length}`; if(!confirm(`Este respaldo reemplazará los datos actuales.\n\n${summary}\n\nSe creará un respaldo automático antes de restaurar. ¿Continuar?`)) return; const word=prompt('Escribe RESTAURAR para confirmar:'); if(word!=='RESTAURAR') return toast('Restauración cancelada','err'); downloadBackup('antes-de-restaurar'); state=normalizeState(data); addAudit('backup_restored', { summary }); if(!save()) return;renderApp('home');toast('Respaldo restaurado')}catch{toast('No se pudo restaurar','err')}}; reader.readAsText(file);
+	  }
 	  function bindBackup(){
 	    $('#backupBtn').onclick=downloadBackup;
 	    $('#forceSyncCloud')?.addEventListener('click', async ()=>{
 	      if(window.click360SyncNow) {
 	        toast('Guardando en nube...');
-	        const synced = await window.click360SyncNow();
-	        toast(synced ? 'Nube actualizada' : 'No se pudo sincronizar', synced ? 'ok' : 'err');
+	        await window.click360SyncNow().then(()=>toast('Nube actualizada')).catch(()=>toast('No se pudo sincronizar', 'err'));
 	      } else toast('Nube no disponible en este entorno', 'err');
 	    });
 	    $('#refreshCloudBtn')?.addEventListener('click', async ()=>{
-	      if(!window.click360RefreshNow) return toast('Nube no disponible en este entorno', 'err');
-	      if(!confirm('Actualizar desde nube reemplazará la copia local actual. Se descargará un respaldo antes de continuar. ¿Deseas seguir?')) return;
-	      if(prompt('Escribe exactamente REEMPLAZAR LOCAL para confirmar:') !== 'REEMPLAZAR LOCAL') return toast('Actualización cancelada', 'err');
-	      downloadBackup('antes-de-actualizar-desde-nube');
-	      toast('Actualizando desde nube...');
-	      await window.click360RefreshNow().catch(()=>toast('No se pudo actualizar desde nube', 'err'));
+	      if(window.click360RefreshNow) {
+	        toast('Actualizando desde nube...');
+	        await window.click360RefreshNow().catch(()=>toast('No se pudo actualizar desde nube', 'err'));
+	      } else toast('Nube no disponible en este entorno', 'err');
 	    });
 	    $('#restoreFile').onchange = (e) => {
 	        if(!isOwnerUser()) {
@@ -3170,20 +2926,19 @@ function parseMoney(value) {
         r.onload = async (ev) => {
           try {
              const data = JSON.parse(ev.target.result);
-	             if(!validateBackupData(data)) {
-	                toast('Respaldo inválido, incompleto o de otra cuenta', 'err');
+             if(!validateBackupData(data)) {
+                toast('Respaldo inválido o incompleto', 'err');
                 return;
              }
              const summary = `Productos: ${(data.products||[]).length}\nVentas: ${(data.sales||[]).length}\nMovimientos: ${(data.movements||[]).length}\nNegocios: ${(data.businesses||[]).length}`;
              if(!confirm(`Este respaldo reemplazará los datos actuales y luego se sincronizará con la nube.\n\n${summary}\n\nSe creará un respaldo automático antes de restaurar. ¿Continuar?`)) return;
              const word = prompt('Escribe RESTAURAR para confirmar la restauración:');
-	             if(word !== 'RESTAURAR') {
-	                toast('Restauración cancelada', 'err');
-	                return;
-	             }
-	             downloadBackup('antes-de-restaurar');
-	             state = normalizeState(data);
-	             state.identity = tenantIdentity();
+             if(word !== 'RESTAURAR') {
+                toast('Restauración cancelada', 'err');
+                return;
+             }
+             downloadBackup('antes-de-restaurar');
+             state = normalizeState(data);
              addAudit('backup_restored', { summary });
              if(!save()) return;
              if (window.click360SyncNow) {
@@ -3215,7 +2970,7 @@ function parseMoney(value) {
           if (s.status !== 'cancelled') salesCount++;
           if (s.status !== 'cancelled') {
              totalVentas += s.total || 0;
-             totalCobrado += collectedAmount(s);
+             totalCobrado += s.received || (s.status === 'paid' ? s.total || 0 : 0);
              totalPendiente += s.balance || 0;
           }
 	          (s.items || []).forEach(item => {
@@ -3232,7 +2987,7 @@ function parseMoney(value) {
                 s.discount || 0,
                 s.iva || 0,
                 s.total || rowTotal,
-                collectedAmount(s),
+                s.received || 0,
                 s.balance || 0,
                 s.customer || '',
                 s.customerCedula || '',
@@ -3277,7 +3032,7 @@ function parseMoney(value) {
        });
 
        const invoiceRows = [
-          ["FECHA", "ID FACTURA", "PROVEEDOR", "NUMERO", "MONTO", "IVA", "NOTAS", "ATENDIDO POR", "CREADA", "ESTADO"]
+          ["FECHA", "ID FACTURA", "PROVEEDOR", "NUMERO", "MONTO", "IVA", "NOTAS", "ATENDIDO POR", "CREADA"]
        ];
        state.invoices.filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
           invoiceRows.push([
@@ -3289,8 +3044,7 @@ function parseMoney(value) {
              i.iva || '',
              i.notes || '',
              i.createdBy || 'Sistema',
-             i.createdAt || '',
-             i.status === 'cancelled' ? `ANULADA por ${i.cancelledBy || '?'} ${i.cancelledAt || ''}` : 'OK'
+             i.createdAt || ''
           ]);
        });
 
@@ -3315,10 +3069,10 @@ function parseMoney(value) {
        // Create workbook
        const wb = XLSX.utils.book_new();
 
-       const wsSummary = XLSX.utils.aoa_to_sheet(safeSheetRows(summaryRows));
-       const wsSales = XLSX.utils.aoa_to_sheet(safeSheetRows(salesRows));
-       const wsMovs = XLSX.utils.aoa_to_sheet(safeSheetRows(movRows));
-       const wsInvoices = XLSX.utils.aoa_to_sheet(safeSheetRows(invoiceRows));
+       const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+       const wsSales = XLSX.utils.aoa_to_sheet(salesRows);
+       const wsMovs = XLSX.utils.aoa_to_sheet(movRows);
+       const wsInvoices = XLSX.utils.aoa_to_sheet(invoiceRows);
 
        XLSX.utils.book_append_sheet(wb, wsSummary, "Resumen");
        XLSX.utils.book_append_sheet(wb, wsSales, "Ventas");
@@ -3326,22 +3080,15 @@ function parseMoney(value) {
        XLSX.utils.book_append_sheet(wb, wsInvoices, "Facturas");
 
        const filename = dateFrom === dateTo ?
-          `Reporte_Contable_${slug(biz.name)}_${dateFrom}.xlsx` :
-          `Reporte_Contable_${slug(biz.name)}_${dateFrom}_a_${dateTo}.xlsx`;
+          `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}.xlsx` :
+          `Reporte_Contable_${biz.name.replace(/\s+/g, '_')}_${dateFrom}_a_${dateTo}.xlsx`;
 
 	       XLSX.writeFile(wb, filename);
 	       return { totalVentas, salesCount, movCount };
 	    }
 
-	    function spreadsheetCell(value) {
-	      if (typeof value !== 'string') return value;
-	      return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
-	    }
-	    function safeSheetRows(rows) {
-	      return rows.map(row => row.map(spreadsheetCell));
-	    }
 	    function csvCell(value) {
-	      const text = String(spreadsheetCell(value) ?? '').replace(/\r?\n/g, ' ');
+	      const text = String(value ?? '').replace(/\r?\n/g, ' ');
 	      return /[",;\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 	    }
 	    function downloadCsvFallback(dateFrom, dateTo) {
@@ -3373,18 +3120,16 @@ function parseMoney(value) {
 	        rows.push(["MOVIMIENTO", m.when || m.date, m.id, m.kind || '', m.note || '', '', m.amount || 0, '', m.createdBy || m.user || 'Sistema', m.status || 'OK']);
 	      });
 	      (state.invoices || []).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
-	        rows.push(["FACTURA", i.date, i.id, i.provider || '', i.number || '', '', i.amount || 0, '', i.createdBy || 'Sistema', i.status === 'cancelled' ? 'ANULADA' : 'OK']);
+	        rows.push(["FACTURA", i.date, i.id, i.provider || '', i.number || '', '', i.amount || 0, '', i.createdBy || 'Sistema', 'OK']);
 	      });
 	      rows.push([]);
 	      rows.push(["RESUMEN", "NEGOCIO", biz.name, "PERIODO", `${dateFrom} al ${dateTo}`, "", "", "", "", ""]);
 	      rows.push(["RESUMEN", "TOTAL VENTAS", "", "", "", "", totalVentas, "", "", ""]);
 	      const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
 	      const a = document.createElement('a');
-	      const objectUrl = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8' }));
-	      a.href = objectUrl;
+	      a.href = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8' }));
 	      a.download = `Reporte_Contable_${slug(biz.name)}_${dateFrom}_a_${dateTo}.csv`;
 	      a.click();
-	      setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 	      return { totalVentas, salesCount, movCount, csv: true };
 	    }
 
@@ -3418,7 +3163,7 @@ function parseMoney(value) {
 
 	         toast(`${info.csv ? 'CSV' : 'Excel'} descargado. Abriendo WhatsApp... Adjunta el archivo al chat.`, 'ok', 6000);
          setTimeout(() => {
-	            window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer');
+            window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
          }, 1000);
       } catch (err) {
          console.error(err);
@@ -3426,12 +3171,11 @@ function parseMoney(value) {
       }
     };
 
-	    const cloudBtn = $('#cloudSoon');
-	    if (cloudBtn) {
-	       cloudBtn.onclick = async () => {
-	          if (window.click360SyncNow) {
-	             const synced = await window.click360SyncNow();
-	             toast(synced ? 'Sincronizado con la nube' : 'No se pudo sincronizar', synced ? 'ok' : 'err');
+    const cloudBtn = $('#cloudSoon');
+    if (cloudBtn) {
+       cloudBtn.onclick = () => {
+          if (window.click360SyncNow) {
+             window.click360SyncNow().then(() => toast('Sincronizado con la nube')).catch(() => toast('Error al sincronizar', 'err'));
           } else {
              toast('Preparado para CLICK 360 Cloud. Requiere backend real.');
           }
@@ -3440,7 +3184,6 @@ function parseMoney(value) {
   }
 
   window.cancelSale = function(saleId) {
-	  saleId = decodeActionId(saleId);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede anular ventas', 'err');
     }
@@ -3483,7 +3226,7 @@ function parseMoney(value) {
        amount:0,
        originalAmount:sale.total,
        note:`Venta anulada: ${reason.trim()}`,
-       user:authUser().name,
+       user:session.username,
        saleId:sale.id,
        createdBy:authUser().name,
        status:'cancelled',
@@ -3498,7 +3241,6 @@ function parseMoney(value) {
   };
 
   window.payLayaway = function(saleId) {
-	  saleId = decodeActionId(saleId);
     if (!isDayStarted()) return toast('Debes iniciar caja diaria antes de registrar abonos', 'err');
     if (isDayClosed()) return toast('La caja de hoy ya está cerrada', 'err');
     const sale = state.sales.find(s=>s.id === saleId);
@@ -3540,7 +3282,7 @@ function parseMoney(value) {
       kind: 'ingreso',
       amount: amount,
       note: `Abono a ticket ${saleId}`,
-      user: authUser().name,
+      user: session.username,
       saleId: sale.id,
       paymentMethod: 'Efectivo',
       createdBy: authUser().name
@@ -3551,14 +3293,12 @@ function parseMoney(value) {
   };
 
   window.showSaleCompleteModal = function(id) {
-	  id = decodeActionId(id);
     const s = state.sales.find(x=>x.id===id);
     if(!s) return;
     const bizSettings = currentBusiness().settings || {};
     const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
     const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
-    const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
-    const logoUrl = receiptLogoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+    const logoUrl = bizSettings.logoUrl ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(bizSettings.logoUrl)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
     const currentIva = bizSettings.iva || 0;
 
     const receiptHtml = `
@@ -3588,8 +3328,7 @@ function parseMoney(value) {
         ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA (${currentIva}%):</span><span>${fmt(s.iva)}</span></div>` : ''}
         ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
         <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px; font-weight:bold; border-top:1px solid #000; padding-top:4px;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
-	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(collectedAmount(s))}</span></div>
-	        ${s.method === 'Efectivo' && Number(s.tendered || 0) > 0 ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo entregado:</span><span>${fmt(s.tendered)}</span></div>` : ''}
+	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(s.received ?? (s.status === 'paid' ? s.total : 0))}</span></div>
         ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#d9534f; font-weight:bold;"><span>Saldo Pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
         ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha Retiro:</span><span>${escapeHtml(s.dueDate)}</span></div>` : ''}
         <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
@@ -3622,7 +3361,7 @@ function parseMoney(value) {
          const bizName = currentBusiness().name;
          const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
          const url = `https://wa.me/${phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(text)}`;
-	         window.open(url, '_blank', 'noopener,noreferrer');
+         window.open(url, '_blank');
        };
     }
 
@@ -3633,7 +3372,26 @@ function parseMoney(value) {
     };
 
     $('#downloadImgBtn').onclick = () => {
-      downloadHtmlAsPng(receiptHtml, `Recibo_${s.id.slice(-6).toUpperCase()}.png`);
+      toast('Generando Imagen...');
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = receiptHtml;
+      wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
+      document.body.appendChild(wrapper);
+
+      const script = document.createElement('script');
+      script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
+      script.onload = () => {
+        window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
+          const a = document.createElement('a');
+          a.href = canvas.toDataURL('image/png');
+          a.download = `Recibo_${s.id.slice(-6).toUpperCase()}.png`;
+          a.click();
+          document.body.removeChild(wrapper);
+          toast('Imagen descargada');
+        });
+      };
+      script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
+      document.head.appendChild(script);
     };
 
     $('#doneSaleBtn').onclick = () => {
@@ -3642,7 +3400,6 @@ function parseMoney(value) {
   };
 
   window.editMovement = function(id) {
-	  id = decodeActionId(id);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede editar transacciones', 'err');
     }
@@ -3688,7 +3445,7 @@ function parseMoney(value) {
        m.amount = a;
        m.note = n;
        m.updatedBy = authUser().name;
-       if(!save()) return;
+       save();
        closeModal();
        renderApp('cash');
        toast('Movimiento actualizado');
@@ -3696,7 +3453,6 @@ function parseMoney(value) {
   };
 
   window.deleteMovement = function(id) {
-	  id = decodeActionId(id);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede anular transacciones', 'err');
     }
@@ -3712,7 +3468,7 @@ function parseMoney(value) {
     mov.originalAmount = mov.amount;
     mov.amount = 0;
 
-    if(!save()) return;
+    save();
     renderApp('cash');
     toast(`Movimiento anulado por ${mov.cancelledBy} a las ${mov.cancelledAt}`);
   };
@@ -3722,25 +3478,22 @@ function parseMoney(value) {
   };
 
   window.sendWhatsAppReminder = function(id) {
-	  id = decodeActionId(id);
     const s = state.sales.find(x => x.id === id);
     if (!s) return;
     const phone = s.customerPhone || '';
     const bizName = currentBusiness().name;
     const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
     const url = `https://wa.me/${phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(text)}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
+    window.open(url, '_blank');
   };
 
   window.viewDailyReport = function(id) {
-	 id = decodeActionId(id);
      const r = state.dailyReports?.find(x=>x.id===id);
      if(!r) return;
-     const reportHtml = sanitizeStoredReportHtml(r.html);
      showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
        <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
          <div id="pdfContentPreview" style="transform: scale(0.85); transform-origin: top center;">
-           ${reportHtml}
+           ${r.html}
          </div>
        </div>
        <div style="display:flex; gap:10px;">
@@ -3750,11 +3503,29 @@ function parseMoney(value) {
      `);
      $('#printCierreBtn').onclick = () => {
          const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-         root.innerHTML = reportHtml;
+         root.innerHTML = r.html;
          setTimeout(()=>window.print(), 250);
      };
      $('#downloadImgCierreBtn').onclick = () => {
-          downloadHtmlAsPng(reportHtml, `Cierre_Caja_${r.date}.png`);
+          toast('Generando Imagen...');
+          const wrapper = document.createElement('div'); wrapper.innerHTML = r.html;
+          wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '480px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
+          document.body.appendChild(wrapper);
+
+          const script = document.createElement('script');
+          script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
+          script.onload = () => {
+            window.html2canvas(wrapper.firstElementChild, { scale: 2 }).then(canvas => {
+              const a = document.createElement('a');
+              a.href = canvas.toDataURL('image/png');
+              a.download = `Cierre_Caja_${r.date}.png`;
+              a.click();
+              document.body.removeChild(wrapper);
+              toast('Imagen descargada');
+            });
+          };
+          script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
+          document.head.appendChild(script);
       };
   };
 
@@ -3765,7 +3536,7 @@ function parseMoney(value) {
 	    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
 	    const validSales = sales.filter(s => s.status!=='cancelled');
 	    const soldTotal = validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal = validSales.reduce((a,s)=>a+collectedAmount(s),0);
+	    const collectedTotal = validSales.reduce((a,s)=>a+Number((s.received ?? (s.status === 'paid' ? s.total : 0)) || 0),0);
 	    const pendingTotal = validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
 	    const tickets = validSales.length;
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
@@ -3820,10 +3591,62 @@ function parseMoney(value) {
         root.innerHTML = html;
         setTimeout(()=>window.print(), 250);
     } else if (mode === 'image') {
-        downloadHtmlAsPng(html, `Reporte_Ventas_${state.reportsFrom}.png`, { width: '800px', useCORS: true });
+        toast('Generando Imagen...');
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = html;
+        wrapper.style.position = 'fixed'; wrapper.style.top = '0'; wrapper.style.left = '0'; wrapper.style.width = '800px'; wrapper.style.zIndex = '-9999'; wrapper.style.pointerEvents = 'none';
+        document.body.appendChild(wrapper);
+
+        const script = document.createElement('script');
+        script.src = `vendor/html2canvas.min.js?v=${APP_ASSET_VERSION}`;
+        script.onload = () => {
+          window.html2canvas(wrapper.firstElementChild, { scale: 2, useCORS: true }).then(canvas => {
+            const a = document.createElement('a');
+            a.href = canvas.toDataURL('image/png');
+            a.download = `Reporte_Ventas_${state.reportsFrom}.png`;
+            a.click();
+            document.body.removeChild(wrapper);
+            toast('Imagen descargada');
+          });
+        };
+        script.onerror = () => { document.body.removeChild(wrapper); toast('Sin internet para generar imagen. Usa Imprimir.', 'err'); };
+        document.head.appendChild(script);
     }
   };
 
+  function runQa(){
+    const results=[]; const ok=(name,cond)=>results.push(`${cond?'PASS':'FAIL'} ${name}`);
+    const oldState=state, oldSession=session;
+    state=seed(); setSession(null); save();
+    ok('parse 5,50', parseMoney('5,50')===5.5);
+    ok('parse 12.99', parseMoney('12.99')===12.99);
+    const p={id:'p1',businessId:state.businesses[0].id,code:'TEST01',name:'Buzo QA',category:'Prueba',qty:5,cost:2.25,price:5.5};
+    state.products.push(p);
+    ok('qr payload local', productPayload(p)==='TEST01');
+    ok('normalize QR', normalizeCode(productPayload(p))==='TEST01');
+    QR.make(productPayload(p)); ok('qr generator', true);
+    const pre=document.createElement('pre'); pre.id='qa-results'; pre.textContent=results.join('\\n'); document.body.appendChild(pre);
+    console.log(pre.textContent);
+    state=oldState; session=oldSession; save();
+  }
+
+  function handleInitialScan(){
+    const url = new URL(location.href);
+    const scan = url.searchParams.get('scan') || (location.hash.startsWith('#scan=') ? decodeURIComponent(location.hash.slice(6)) : '');
+    if(!scan || !session || currentUser()?.role === 'admin') return false;
+    const code = normalizeCode(scan);
+    if(!code) return false;
+    const p = productsForBiz().find(x=>x.code.toUpperCase()===code.toUpperCase());
+    renderApp('sell');
+    setTimeout(()=>{
+      const input = $('#manualCode');
+      if(input) input.value = code;
+      const btn = $('#addCode');
+      if(btn) btn.click();
+      history.replaceState({}, '', location.pathname);
+    },200);
+    return !!p;
+  }
 	  window.click360Route=renderApp;
 	  window.click360SetSession = setSession;
 	  window.addEventListener('click360-sync-status', () => {
@@ -3838,16 +3661,16 @@ function parseMoney(value) {
 	    if (detail) detail.textContent = info.detail;
 	  });
 
-	  // Safety net for mutations that have not yet persisted through their action handler.
+	  // Auto-save safety net: force save every 30s to ensure cloud sync
+  let _lastAutoSaveHash = '';
   setInterval(() => {
-    if (!currentUser() || !activeTenantContext) return;
+    if (!session) return;
     try {
       const currentHash = JSON.stringify(state);
-      if (currentHash !== lastAutoSaveHash) {
-        if (save()) {
-          lastAutoSaveHash = JSON.stringify(state);
-          console.log('[CLICK360] Auto-save ejecutado');
-        }
+      if (currentHash !== _lastAutoSaveHash) {
+        _lastAutoSaveHash = currentHash;
+        save();
+        console.log('[CLICK360] Auto-save ejecutado');
       }
     } catch(e) {}
   }, 30000);
@@ -3857,7 +3680,7 @@ function parseMoney(value) {
     const invs = (state.invoices || []).filter(i => i.businessId === biz.id);
 
     // Default dates: start of this month to today
-    const firstDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    const firstDay = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
     const lastDay = today();
 
     return `<div class="pageHead">
@@ -3891,25 +3714,22 @@ function parseMoney(value) {
       return '<p class="empty">No se encontraron facturas en este periodo.</p>';
     }
     return filteredInvoices.slice().reverse().map(i => {
-      const imageSrc = safeImageSrc(i.imageData);
-      const invoiceId = actionId(i.id);
-      const cancelled = i.status === 'cancelled';
-      const imgBtn = imageSrc ?
-         `<button class="btn silver mini" onclick="window.viewInvoiceImage('${invoiceId}')" style="padding:4px 8px; font-size:12px; margin-right:8px;">👁️ Ver Foto</button>` :
+      const imgBtn = i.imageData ?
+         `<button class="btn silver mini" onclick="window.viewInvoiceImage('${i.id}')" style="padding:4px 8px; font-size:12px; margin-right:8px;">👁️ Ver Foto</button>` :
          `<span style="font-size:11px; color:var(--muted); margin-right:8px;">Sin foto</span>`;
 
-      return `<div class="movementItem" style="padding:12px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center;${cancelled ? 'opacity:.65;' : ''}">
+      return `<div class="movementItem" style="padding:12px; border-bottom:1px solid #333; display:flex; justify-content:space-between; align-items:center;">
          <div style="flex:1; min-width:0;">
             <div style="font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(i.provider)}</div>
             <small style="color:var(--muted); display:block; margin:2px 0;">Factura: ${escapeHtml(i.number)} | Fecha: ${escapeHtml(i.date)}</small>
             ${i.notes ? `<small style="color:#aaa; font-style:italic; display:block;">Nota: ${escapeHtml(i.notes)}</small>` : ''}
-            <small style="color:var(--muted); display:block; font-size:10px;">Atendido por: ${escapeHtml(i.createdBy || 'Sistema')} ${cancelled ? '· ANULADA' : ''}</small>
+            <small style="color:var(--muted); display:block; font-size:10px;">Atendido por: ${escapeHtml(i.createdBy || 'Sistema')}</small>
          </div>
          <div style="text-align:right; margin-left:12px;">
             <div style="font-weight:bold; color:var(--gold); font-size:16px; margin-bottom:6px;">${fmt(i.amount)}</div>
             <div style="display:flex; align-items:center; justify-content:flex-end;">
                ${imgBtn}
-               ${cancelled ? '' : `<button class="btn danger mini" onclick="window.deleteInvoice('${invoiceId}')" style="padding:4px 8px; font-size:12px;">🗑️</button>`}
+               <button class="btn danger mini" onclick="window.deleteInvoice('${i.id}')" style="padding:4px 8px; font-size:12px;">🗑️</button>
             </div>
          </div>
       </div>`;
@@ -3928,7 +3748,7 @@ function parseMoney(value) {
        const allInvs = state.invoices || [];
        const filtered = allInvs.filter(i => {
           const matchBiz = i.businessId === biz.id;
-          const matchQuery = String(i.provider || '').toLowerCase().includes(q) || String(i.number || '').toLowerCase().includes(q) || String(i.notes || '').toLowerCase().includes(q);
+          const matchQuery = i.provider.toLowerCase().includes(q) || i.number.toLowerCase().includes(q) || (i.notes || '').toLowerCase().includes(q);
           const matchDate = (!dateFrom || i.date >= dateFrom) && i.date <= dateTo;
           return matchBiz && matchQuery && matchDate;
        });
@@ -3942,42 +3762,23 @@ function parseMoney(value) {
 
     // Expose helpers globally so they work in inline onclick
     window.viewInvoiceImage = (id) => {
-	   id = decodeActionId(id);
        const inv = (state.invoices || []).find(x => x.id === id);
-       const imageSrc = safeImageSrc(inv?.imageData);
-       if (inv && imageSrc) {
+       if (inv && inv.imageData) {
           showModal(`<div class="modalHeader"><h2>Factura de ${escapeHtml(inv.provider)}</h2><button class="closeBtn" data-close>×</button></div>
              <div style="text-align:center; padding:10px; background:#000;">
-                <img src="${escapeHtml(imageSrc)}" style="max-width:100%; max-height:75vh; border-radius:8px; border:1px solid #333;" alt="Foto de factura">
+                <img src="${inv.imageData}" style="max-width:100%; max-height:75vh; border-radius:8px; border:1px solid #333;" alt="Foto de factura">
              </div>
              <button class="btn block primary" style="margin-top:10px;" data-close>Cerrar Vista</button>`);
        }
     };
 
     window.deleteInvoice = (id) => {
-	   id = decodeActionId(id);
-       if (!isOwnerUser()) return toast('Solo el dueño puede anular facturas.', 'err');
-       const invoice = (state.invoices || []).find(x => x.id === id);
-       if (!invoice || invoice.status === 'cancelled') return;
-       if (confirm('¿Anular esta factura? Se conservará el registro y también se anulará su movimiento de caja.')) {
-          invoice.status = 'cancelled';
-          invoice.originalAmount = invoice.amount;
-          invoice.amount = 0;
-          invoice.cancelledBy = authUser().name || 'Propietario';
-          invoice.cancelledAt = nowLabel();
-          const linked = state.movements.filter(m => m.invoiceId === id && m.status !== 'cancelled');
-          linked.forEach(movement => {
-            movement.status = 'cancelled';
-            movement.originalAmount = movement.amount;
-            movement.amount = 0;
-            movement.cancelledBy = invoice.cancelledBy;
-            movement.cancelledAt = invoice.cancelledAt;
-          });
-          addAudit('supplier_invoice_cancelled', { invoiceId: id, linkedMovements: linked.length });
-          if(!save()) return;
+       if (confirm('¿Estás seguro de que quieres eliminar esta factura?')) {
+          state.invoices = (state.invoices || []).filter(x => x.id !== id);
+          save();
           if (window.click360SyncNow) window.click360SyncNow().catch(()=>{});
           filterAndRender();
-          toast('Factura y movimiento anulados');
+          toast('Factura eliminada');
        }
     };
 
@@ -4009,9 +3810,7 @@ function parseMoney(value) {
     let imageData = '';
     const imgHandler = e => readImageInput(e.target, data => {
       imageData = data;
-      const safe = safeImageSrc(data);
-      imageData = safe;
-      $('#invoiceImagePreview').innerHTML = safe ? `<img src="${escapeHtml(safe)}" style="max-height:160px; object-fit:contain; border-radius:8px;" alt="Foto de factura">` : '<span>Sin foto</span>';
+      $('#invoiceImagePreview').innerHTML = data ? `<img src="${data}" style="max-height:160px; object-fit:contain; border-radius:8px;" alt="Foto de factura">` : '<span>Sin foto</span>';
     });
     $('#iImageCam').onchange = imgHandler;
     $('#iImageGal').onchange = imgHandler;
@@ -4027,7 +3826,7 @@ function parseMoney(value) {
        const amount = parseMoney($('#iAmount').value);
        const notes = $('#iNotes').value.trim();
 
-       if (!provider || !number || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amount) || amount <= 0) {
+       if (!provider || !number || !amount) {
           toast('Por favor completa todos los campos requeridos', 'err');
           return;
        }
@@ -4069,10 +3868,14 @@ function parseMoney(value) {
     };
   }
 
-  window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR};
+  window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, runQa};
 
-  window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h); });
-  if('serviceWorker' in navigator) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
-  renderLogin();
+  if('serviceWorker' in navigator && !location.search.includes('nosw')) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+  if(location.search.includes('qa')) { renderLogin(); setTimeout(runQa,300); }
+  else if(!session) renderLogin(); else if(session.role==='admin') renderAdmin(); else if(!handleInitialScan()) {
+    const h = location.hash.replace('#','');
+    if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h);
+    else renderApp('home');
+  }
 })();

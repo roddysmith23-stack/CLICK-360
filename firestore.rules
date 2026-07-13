@@ -30,15 +30,26 @@ service cloud.firestore {
         && inviteData(email).approved == true;
     }
 
+    function tempOwnerEmail() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email in [
+          "roddysmith23@hotmail.com",
+          "sanyagullo1997@gmail.com",
+          "shary10mmv@gmail.com",
+          "shary10mmvv@gmail.com",
+          "debbyaf32@gmail.com",
+          "debbya632@gmail.com",
+          "cheyos@hotmail.es"
+        ];
+    }
+
     function approvedUser() {
       return signedIn()
         && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
-        && (
-          (userData().keys().hasAll(["status", "approved"])
-            && userData().status == "active"
-            && userData().approved == true)
-          || (!userData().keys().hasAll(["status"]) && userData().approved == true)
-        )
+        && userData().status != "blocked"
+        && userData().status != "revoked"
+        && (userData().status == "active" || userData().approved == true)
         && (
           userData().role == "owner"
           || userData().isOwner == true
@@ -53,59 +64,27 @@ service cloud.firestore {
 
     function ownerUser() {
       return approvedUser()
-        && userData().ownerId == request.auth.uid
-        && (userData().role == "owner" || userData().isOwner == true);
-    }
-
-    function workerUser() {
-      return approvedUser()
-        && userData().ownerId != request.auth.uid
-        && (userData().role == "worker" || userData().role == "cashier" || userData().role == "inventory")
-        && request.auth.token.email != null
-        && hasActiveInvite(request.auth.token.email)
-        && inviteData(request.auth.token.email).ownerId == userData().ownerId;
+        && (
+          userData().role == "owner"
+          || userData().isOwner == true
+          || userData().ownerId == request.auth.uid
+        );
     }
 
     function tenantMatches(businessId) {
-      return (ownerUser() && request.auth.uid == businessId)
-        || (workerUser() && userData().ownerId == businessId);
-    }
-
-    function validStatePayload() {
-      return request.resource.data.payload.keys().hasAll(["schemaVersion", "identity", "data"])
-        && request.resource.data.payload.data.keys().hasAll([
-          "businesses", "products", "sales", "movements", "invoices", "dailyReports",
-          "deletedProducts", "auditLogs", "settings"
-        ])
-        && request.resource.data.payload.data.businesses is list
-        && request.resource.data.payload.data.businesses.size() > 0
-        && request.resource.data.payload.data.products is list
-        && request.resource.data.payload.data.sales is list
-        && request.resource.data.payload.data.movements is list
-        && request.resource.data.payload.data.invoices is list
-        && request.resource.data.payload.data.dailyReports is list
-        && request.resource.data.payload.data.deletedProducts is list
-        && request.resource.data.payload.data.auditLogs is list
-        && request.resource.data.payload.data.settings is map
-        && request.resource.data.payload.data.settings.keys().hasAll(["workers", "labelTemplates"])
-        && request.resource.data.payload.data.settings.workers is list
-        && request.resource.data.payload.data.settings.labelTemplates is list;
+      return approvedUser()
+        && (
+          userData().ownerId == businessId
+          || (ownerUser() && request.auth.uid == businessId)
+        );
     }
 
     function writeMatchesTenant(businessId) {
       return tenantMatches(businessId)
-        && request.resource.data.schemaVersion == 10
-        && request.resource.data.ownerUid == businessId
-        && request.resource.data.ownerId == businessId
-        && request.resource.data.businessId == businessId
-        && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
-        && request.resource.data.payload.schemaVersion == 10
-        && request.resource.data.payload.identity.schemaVersion == 10
-        && request.resource.data.payload.identity.ownerUid == businessId
-        && request.resource.data.payload.identity.ownerId == businessId
-        && request.resource.data.payload.identity.businessId == businessId
-        && request.resource.data.payload.identity.tenantKey == "owner:" + businessId + ":business:" + businessId
-        && validStatePayload();
+        && (
+          request.resource.data.businessId == null
+          || request.resource.data.businessId == businessId
+        );
     }
 
     function validWorkerUserCreate(uid) {
@@ -119,24 +98,25 @@ service cloud.firestore {
         && request.resource.data.ownerId == inviteData(request.auth.token.email).ownerId
         && request.resource.data.status == "active"
         && request.resource.data.approved == true
-        && request.resource.data.isOwner != true
-        && request.resource.data.keys().hasOnly([
-          "uid", "email", "role", "ownerId", "name", "photoURL", "status",
-          "approved", "businessLimit", "createdAt", "updatedAt", "approvedFromEmail", "isOwner"
-        ]);
+        && request.resource.data.isOwner != true;
     }
 
-    function validProfileFields() {
-      return request.resource.data.name is string
-        && request.resource.data.name.size() <= 120
-        && request.resource.data.photoURL is string
-        && request.resource.data.photoURL.size() <= 100000;
+    function validTempOwnerCreate(uid) {
+      return signedIn()
+        && uid == request.auth.uid
+        && tempOwnerEmail()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.role == "owner"
+        && request.resource.data.isOwner == true;
     }
 
     function ownProfileUpdateOnly(uid) {
-      return approvedUser()
+      return signedIn()
         && request.auth.uid == uid
-        && validProfileFields()
         && request.resource.data.diff(resource.data).changedKeys().hasOnly(["name", "photoURL", "updatedAt"]);
     }
 
@@ -156,11 +136,7 @@ service cloud.firestore {
         && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.role == "worker"
         && request.resource.data.status == "active"
-        && request.resource.data.approved == true
-        && request.resource.data.keys().hasOnly([
-          "email", "role", "ownerId", "inviteToken", "status", "approved",
-          "name", "businessLimit", "createdAt", "updatedAt"
-        ]);
+        && request.resource.data.approved == true;
     }
 
     function validInviteRevoke() {
@@ -174,36 +150,23 @@ service cloud.firestore {
     }
 
     match /approvedUsers/{uid} {
-      allow read: if signedIn() && (
-        request.auth.uid == uid
-        || (ownerUser() && resource.data.ownerId == request.auth.uid && resource.data.role == "worker")
-      );
-      // Owner accounts are provisioned only by an administrative credential.
-      allow create: if validWorkerUserCreate(uid);
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if validWorkerUserCreate(uid) || validTempOwnerCreate(uid);
       allow update: if ownProfileUpdateOnly(uid) || ownerRevokesWorker();
       allow delete: if false;
     }
 
     match /approvedUsersByEmail/{email} {
-      allow read: if signedIn() && (
-        request.auth.token.email == email
-        || (ownerUser() && resource.data.ownerId == request.auth.uid)
-      );
+      allow read: if signedIn() && request.auth.token.email == email;
       allow create: if validInviteWrite(email);
       allow update: if validInviteWrite(email) || validInviteRevoke();
       allow delete: if false;
     }
 
-    // The public client may only read/write the tenant state document. Legacy
-    // backups are created by the administrative migrator with Admin SDK.
-    match /businesses/{businessId}/state/{stateId} {
-      allow read: if stateId == "main" && tenantMatches(businessId);
-      allow create, update: if stateId == "main" && writeMatchesTenant(businessId);
+    match /businesses/{businessId}/{document=**} {
+      allow read: if tenantMatches(businessId);
+      allow create, update: if writeMatchesTenant(businessId);
       allow delete: if false;
-    }
-
-    match /businesses/{businessId}/legacyBackups/{backupId} {
-      allow read, write: if false;
     }
   }
 }
