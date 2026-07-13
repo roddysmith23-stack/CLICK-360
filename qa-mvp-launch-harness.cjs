@@ -107,6 +107,7 @@ assert.strictEqual(createTrialOnce('new-user', start).startedAt, createTrialOnce
 
 assert(firebaseService.includes('reconcileLocalStateWithRemoteV10(remoteData, context)'), 'remote V10 reconciliation executes before normal unlock');
 assert(firebaseService.includes('remoteMustHydrate'), 'empty seed cannot win over a valid remote V10 snapshot');
+assert(firebaseService.includes('const localChanged = !remoteMustHydrate && localCacheStatus.valid === true'), 'deferred V10 hydration cannot be blocked by stale local pending metadata');
 assert(firebaseService.includes('ACCESS_READ_ONLY') && firebaseService.includes('window.click360CanMutate'), 'expired accounts cannot persist local or remote edits');
 assert(firebaseService.includes("ACCOUNT_ACCESS_COLLECTION = 'accountAccess'") && firebaseService.includes('FieldValue.serverTimestamp()'), 'trial uses the account-access collection and Firestore server time');
 assert(!firebaseService.includes('STATE_DOC.set('), 'legacy or first edits never use direct state last-write-wins');

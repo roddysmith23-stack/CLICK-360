@@ -1,14 +1,14 @@
 # CLICK 360 MVP Launch Readiness
 
-Version: `mvp-launch-v14`
+Version: `mvp-launch-v15`
 
 ## Decision model
 
-This release is safe to publish for a private beta when CI, the Firestore rules emulator, the deployed rules, and GitHub Pages all match this commit. No client-data migration is part of this release. `demo-click360` remains a protected `CROSS_TENANT_SUSPECT` tenant and is never read, changed, or unlocked by the application.
+This release is safe to publish for a private beta when CI, the Firestore rules emulator, the deployed rules, and GitHub Pages all match this commit. Administrative legacy migrations and their backups are verified outside the client; the client never migrates production data. `demo-click360` remains a protected `CROSS_TENANT_SUSPECT` tenant and is never read, changed, or unlocked by the application.
 
 ## V10 reconciliation
 
-After Google authentication establishes the current owner and tenant context, CLICK 360 reads `businesses/{ownerId}/state/main` before loading a business cache. A remote document is authoritative only when it has schema version 10, canonical owner fields, tenant key, and a valid payload.
+After Google authentication establishes the current owner and tenant context, CLICK 360 reads `businesses/{ownerId}/state/main` before loading a business cache. A remote document is authoritative only when it has schema version 10, canonical owner fields, tenant key, and a valid payload. During this deferred first hydration, a verified remote snapshot always wins over stale local pending metadata, so a seed cannot render or synchronize in its place.
 
 For that verified V10 tenant, `reconcileLocalStateWithRemoteV10()` removes only exact tenant markers and fully identified quarantine records for that UID and tenant. It is idempotent. Global or ambiguous legacy records are preserved and cannot block a verified V10 tenant. A legacy remote document stays blocked and cannot push, seed, edit, sell, delete, or synchronize.
 
@@ -31,7 +31,7 @@ For that verified V10 tenant, `reconcileLocalStateWithRemoteV10()` removes only 
 
 Use only the two existing legitimate Google accounts. Do not create, edit, sell, or delete real customer data.
 
-1. Open `https://roddysmith23-stack.github.io/CLICK-360/?v=mvp-launch-v14` in a normal browser and confirm each legitimate account reaches its own Home view.
+1. Open `https://roddysmith23-stack.github.io/CLICK-360/?v=mvp-launch-v15` in a normal browser and confirm each legitimate account reaches its own Home view.
 2. Sign out A, sign in B, then repeat A -> B -> A ten times. Confirm business name, route, cache indicator, and Firestore path remain account-specific.
 3. Open a second tab for the same account, refresh one tab, and verify no other account data appears.
 4. On a phone or responsive browser, install the PWA, open it offline after one successful authenticated load, reconnect, and confirm the sync badge recovers without cross-account data.

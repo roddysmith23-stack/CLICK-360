@@ -4,7 +4,7 @@
 
   const STATE_PREFIX = 'CLICK360_STATE:';
   const SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v14';
+  const APP_ASSET_VERSION = 'mvp-launch-v15';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
@@ -4268,6 +4268,6 @@ function parseMoney(value) {
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h); });
-  if('serviceWorker' in navigator) navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+  if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();

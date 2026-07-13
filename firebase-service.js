@@ -12,7 +12,8 @@
   }
 
   // Programmatically clear old caches if needed
-  const CURRENT_CACHE_KEY = 'click360-mvp-launch-v14';
+  const APP_ASSET_VERSION = 'mvp-launch-v15';
+  const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
     if ('caches' in window) {
@@ -208,7 +209,7 @@
   if (initUrlParams.get("resetC360") === "1") {
     // P0: never erase tenant data from a URL parameter. The old reset flag now
     // only removes itself from the address bar.
-    history.replaceState({}, "", location.pathname + "?v=mvp-launch-v14");
+    history.replaceState({}, "", location.pathname + `?v=${APP_ASSET_VERSION}`);
   }
 
   function setAppBlocked(blocked) {
@@ -953,7 +954,11 @@
 	    const localHash = snapshotString(localPayload);
 	    const alreadyApplied = localStorage.getItem(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'));
 	    const remoteMustHydrate = window.click360IsTenantStateDeferred?.() === true;
-	    const localChanged = localCacheStatus.valid === true && (
+    // A deferred context has not loaded any tenant cache yet. The verified V10
+    // remote snapshot is authoritative in that first hydration, even if an old
+    // device cache has stale pending metadata. Otherwise a seed could render
+    // while the actual remote data remained protected but unapplied.
+    const localChanged = !remoteMustHydrate && localCacheStatus.valid === true && (
 	      Date.now() < LOCAL_WRITE_PENDING_UNTIL
 	      || !alreadyApplied
 	      || localHash !== alreadyApplied
