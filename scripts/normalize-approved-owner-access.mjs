@@ -55,7 +55,7 @@ for (const uid of selected) {
   const stateDocument = stateSnap.exists ? stateSnap.data() || {} : null;
   const assessment = normalizeOwnerAccessAssessment({ uid, approvedUser: original, authUser, stateDocument });
   const sourceHash = original ? stableHash(original) : null;
-  const result = { uid, action: assessment.action, reasons: assessment.reasons, patch: assessment.patch, sourceHash };
+  const result = { uid, action: assessment.action, reasons: assessment.reasons, observations: assessment.observations, patch: assessment.patch, sourceHash };
 
   if (!assessment.allowed || assessment.action === 'ALREADY_NORMALIZED' || !apply) {
     results.push(result);

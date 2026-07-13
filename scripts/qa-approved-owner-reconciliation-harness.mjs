@@ -32,13 +32,22 @@ const normalized = normalizeOwnerAccessAssessment({
 });
 assert.equal(normalized.action, 'ALREADY_NORMALIZED');
 
-const rejected = normalizeOwnerAccessAssessment({
+const staleEmail = normalizeOwnerAccessAssessment({
   uid,
   approvedUser: { status: 'active', role: 'owner', email: 'other@example.com' },
   authUser: { uid, email: 'owner@example.com', disabled: false },
   stateDocument
 });
-assert.equal(rejected.action, 'BLOCKED');
-assert.ok(rejected.reasons.includes('approved_email_mismatch'));
+assert.equal(staleEmail.action, 'NORMALIZATION_REQUIRED');
+assert.ok(staleEmail.observations.includes('approved_email_mismatch_preserved'));
+
+const disabled = normalizeOwnerAccessAssessment({
+  uid,
+  approvedUser: { status: 'active', role: 'owner' },
+  authUser: { uid, email: 'owner@example.com', disabled: true },
+  stateDocument
+});
+assert.equal(disabled.action, 'BLOCKED');
+assert.ok(disabled.reasons.includes('auth_user_disabled'));
 
 console.log('qa-approved-owner-reconciliation: PASS');
