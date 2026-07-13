@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-  const CURRENT_CACHE_KEY = 'click360-p0-production-audit-v13';
+  const CURRENT_CACHE_KEY = 'click360-mvp-launch-v14';
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
     if ('caches' in window) {
@@ -48,6 +48,8 @@
   let INITIAL_TENANT_SEED_REQUIRED = false;
   let REMOTE_UNSUBSCRIBE = null;
   let USER_STATUS_UNSUBSCRIBE = null;
+	  let ACCESS_UNSUBSCRIBE = null;
+	  let ACCESS_READ_ONLY = false;
 	  let LOCAL_WRITE_PENDING_UNTIL = 0;
 	  let LAST_REMOTE_REVISION = 0;
 	  const PUSH_SCHEDULERS = new Map();
@@ -57,8 +59,10 @@
 	  const PROFILE_CACHE_PREFIX = "CLICK360_USER_PROFILE_";
 	  const PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
 	  const LEGACY_STATE_LS_KEY = 'click360_mvp_qa_final_state_v1';
-	  const DEVICE_ID_KEY = "CLICK360_DEVICE_ID";
+	  const DEVICE_ID_KEY = "CLICK360:V10:DEVICE_ID";
 	  const APPROVED_IDENTITY_PREFIX = "CLICK360_APPROVED_IDENTITY:";
+	  const ACCOUNT_ACCESS_COLLECTION = 'accountAccess';
+	  const TRIAL_DAYS = 7;
 	  const SCHEMA_VERSION = 10;
 	  const OFFLINE_APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 	  const MAX_CLOUD_PAYLOAD_BYTES = window.CLICK360_P0_TENANT_GUARD.MAX_CLOUD_PAYLOAD_BYTES;
@@ -77,6 +81,24 @@
 	  function legacyMigrationMarkerKey() {
 	    return tenantStorageKey('LEGACY_MIGRATION_REQUIRED');
 	  }
+	  function accountAccessRef(uid = auth.currentUser?.uid) {
+	    return uid ? db.collection(ACCOUNT_ACCESS_COLLECTION).doc(uid) : null;
+	  }
+	  function publishAccessState(next = {}) {
+	    const state = Object.freeze({
+	      mode: next.mode || 'founder',
+	      plan: next.plan || 'founder',
+	      readOnly: next.readOnly === true,
+	      trialEndsAtMs: Number(next.trialEndsAtMs || 0),
+	      serverNowMs: Number(next.serverNowMs || 0),
+	      source: next.source || 'approvedUsers'
+	    });
+	    ACCESS_READ_ONLY = state.readOnly;
+	    window.click360AccessState = state;
+	    window.dispatchEvent(new CustomEvent('click360-access-changed', { detail: state }));
+	    return state;
+	  }
+	  window.click360CanMutate = () => AUTH_APPROVED && !ACCESS_READ_ONLY && !legacyMigrationRequired() && tenantGuard.canWrite(ACTIVE_CONTEXT);
 	  function tenantCorruptMarkerKey() {
 	    return tenantStorageKey('CORRUPT');
 	  }
@@ -186,7 +208,7 @@
   if (initUrlParams.get("resetC360") === "1") {
     // P0: never erase tenant data from a URL parameter. The old reset flag now
     // only removes itself from the address bar.
-    history.replaceState({}, "", location.pathname + "?v=p0-production-audit-v13");
+    history.replaceState({}, "", location.pathname + "?v=mvp-launch-v14");
   }
 
   function setAppBlocked(blocked) {
@@ -308,7 +330,10 @@
 	    if (typeof window.click360SetTenantContext !== "function") {
 	      throw new Error("La interfaz segura todavía no está lista.");
 	    }
-	    window.click360SetTenantContext(ACTIVE_CONTEXT);
+	    // The remote V10 document is authoritative. Do not hydrate a local cache
+	    // before it has been read and its identity validated.
+	    window.click360SetTenantContext(ACTIVE_CONTEXT, { deferLocalLoad: true });
+	    window.click360User.access = publishAccessState({ mode: 'founder', plan: 'founder', source: source === 'offline_cache' ? 'approved_offline' : 'approvedUsers' });
 	    cacheApprovedIdentity(user, window.click360User);
 	    return true;
 	  }
@@ -337,7 +362,10 @@
 	        auditLogs: Array.isArray(state.auditLogs) ? state.auditLogs : [],
 	        settings: {
 	          labelTemplates: Array.isArray(settings.labelTemplates) ? settings.labelTemplates : [],
-	          workers: Array.isArray(settings.workers) ? settings.workers : []
+	          workers: Array.isArray(settings.workers) ? settings.workers : [],
+	          customers: Array.isArray(settings.customers) ? settings.customers : [],
+	          reminders: Array.isArray(settings.reminders) ? settings.reminders : [],
+	          onboarding: settings.onboarding && typeof settings.onboarding === 'object' ? settings.onboarding : {}
 	        },
 	        updatedAtMs: Number(state.updatedAtMs || Date.now()),
 	        updatedAt: state.updatedAt || new Date().toISOString()
@@ -351,10 +379,11 @@
 	  }
 
 	  function quarantineIncident(kind, details = {}) {
-	    const key = `CLICK360_QUARANTINE:${DEVICE_ID}:${Date.now()}:${kind}`;
+	    const scope = ACTIVE_CONTEXT ? `${ACTIVE_CONTEXT.authUid}:${ACTIVE_CONTEXT.tenantKey}` : 'unauthenticated';
+	    const key = `CLICK360:V10:QUARANTINE:${scope}:${Date.now()}:${kind}`;
 	    try {
 	      safeStorageSet(key, JSON.stringify({ kind, createdAt: new Date().toISOString(), context: ACTIVE_CONTEXT, ...details }));
-	      const prefix = `CLICK360_QUARANTINE:${DEVICE_ID}:`;
+	      const prefix = `CLICK360:V10:QUARANTINE:${scope}:`;
 	      const keys = [];
 	      for (let index = 0; index < localStorage.length; index += 1) {
 	        const itemKey = localStorage.key(index);
@@ -369,7 +398,7 @@
 
 	  function quarantineLegacyLocalState() {
 	    const raw = localStorage.getItem(LEGACY_STATE_LS_KEY);
-	    const marker = `CLICK360_LEGACY_QUARANTINED:${DEVICE_ID}`;
+	    const marker = ACTIVE_CONTEXT ? `CLICK360:V10:QUARANTINE:${ACTIVE_CONTEXT.authUid}:${ACTIVE_CONTEXT.tenantKey}:legacy-local-seen` : '';
 	    if (!raw || localStorage.getItem(marker)) return;
 	    const legacy = safeJsonParse(raw) || {};
 	    const candidates = Array.isArray(legacy.businesses)
@@ -382,7 +411,7 @@
 	      ambiguous: true,
 	      legacyStateBytes: window.CLICK360_P0_TENANT_GUARD.utf8Bytes(raw)
 	    });
-	    safeStorageSet(marker, "1");
+	    safeStorageSet(marker, JSON.stringify({ context: ACTIVE_CONTEXT, detectedUid: auth.currentUser?.uid || null }));
 	  }
 
 	  function remoteMatchesContext(remote, context) {
@@ -393,6 +422,28 @@
 	      && remote.tenantKey === context?.tenantKey
 	      && window.CLICK360_P0_TENANT_GUARD.validBusinessPayload(remote.payload, context);
 	  }
+	  function reconcileLocalStateWithRemoteV10(remote, context = ACTIVE_CONTEXT) {
+	    if (!remoteMatchesContext(remote, context)) return { reconciled: false, removed: [] };
+	    const removed = window.CLICK360_P0_TENANT_GUARD.reconcileLegacyMarkers(localStorage, context);
+	    // These two keys are exact namespaced metadata for the active tenant.
+	    // They may only be removed after the authoritative remote V10 identity is valid.
+	    [legacyMigrationMarkerKey(), tenantCorruptMarkerKey()].filter(Boolean).forEach((key) => {
+	      if (localStorage.getItem(key) != null && !removed.includes(key)) {
+	        localStorage.removeItem(key);
+	        removed.push(key);
+	      }
+	    });
+	    return { reconciled: true, removed };
+	  }
+	  window.reconcileLocalStateWithRemoteV10 = async function() {
+	    const context = ACTIVE_CONTEXT;
+	    const stateDoc = STATE_DOC;
+	    const user = auth.currentUser;
+	    if (!isActiveSyncScope(context, stateDoc, AUTH_EPOCH, user)) return { reconciled: false, removed: [] };
+	    const snap = await stateDoc.get({ source: 'server' });
+	    if (!snap.exists) return { reconciled: false, removed: [] };
+	    return reconcileLocalStateWithRemoteV10(snap.data() || {}, context);
+	  };
 	  function applyRemotePayload(payload) {
 	    if (!payload || !sameTenant(payload.identity) || typeof window.click360ApplyTenantState !== "function") {
 	      throw new Error("Snapshot remoto pertenece a otro tenant o es inválido.");
@@ -467,7 +518,8 @@
       status,
       businessLimit: Number(data.businessLimit || 2),
       ownerId: data.ownerId || user.uid,
-      isOwner: data.isOwner === true || data.role === 'owner'
+      isOwner: data.isOwner === true || data.role === 'owner',
+      hasApprovedRecord: Object.keys(data || {}).length > 0
     };
   }
 
@@ -528,6 +580,111 @@
       return false;
     }
   }
+
+  function serverTimestampMs(value) {
+    if (typeof value?.toMillis === 'function') return value.toMillis();
+    if (Number.isFinite(Number(value?.seconds))) return Number(value.seconds) * 1000;
+    const parsed = Date.parse(String(value || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function accessStateFromData(data = {}) {
+    const status = String(data.status || '').toLowerCase();
+    const plan = String(data.plan || 'normal').toLowerCase();
+    const serverNowMs = serverTimestampMs(data.lastSeenAt);
+    const startedAtMs = serverTimestampMs(data.trialStartedAt);
+    return {
+      ...window.CLICK360_P0_TENANT_GUARD.evaluateAccountAccess({ status, plan, trialStartedAtMs: startedAtMs }, serverNowMs, TRIAL_DAYS),
+      serverNowMs,
+      source: 'accountAccess'
+    };
+  }
+
+  async function resolveAccountAccess(user, expectedEpoch = AUTH_EPOCH) {
+    if (!isCurrentAuthEpoch(user, expectedEpoch) || !navigator.onLine) return null;
+    const ref = accountAccessRef(user.uid);
+    if (!ref) return null;
+    try {
+      let snap = await ref.get({ source: 'server' });
+      if (!isCurrentAuthEpoch(user, expectedEpoch)) return null;
+      if (!snap.exists) {
+        await db.runTransaction(async (transaction) => {
+          const current = await transaction.get(ref);
+          if (current.exists) return;
+          transaction.set(ref, {
+            uid: user.uid,
+            email: user.email || '',
+            name: user.displayName || '',
+            status: 'trial',
+            plan: 'normal',
+            trialDays: TRIAL_DAYS,
+            trialStartedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            lastSeenAt: firebase.firestore.FieldValue.serverTimestamp(),
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            source: 'self_service'
+          });
+        });
+        snap = await ref.get({ source: 'server' });
+      } else if ((snap.data() || {}).status === 'trial') {
+        await ref.update({ lastSeenAt: firebase.firestore.FieldValue.serverTimestamp() });
+        snap = await ref.get({ source: 'server' });
+      }
+      if (!isCurrentAuthEpoch(user, expectedEpoch) || !snap.exists) return null;
+      return { data: snap.data() || {}, state: accessStateFromData(snap.data() || {}) };
+    } catch (error) {
+      console.warn('No se pudo resolver el acceso de cuenta:', error.message);
+      return null;
+    }
+  }
+
+  function applyAccountAccessIdentity(user, account, expectedEpoch = AUTH_EPOCH) {
+    if (!isCurrentAuthEpoch(user, expectedEpoch) || !account?.state?.allowed) return false;
+    const access = account.state;
+    const data = account.data || {};
+    const ownerId = user.uid;
+    const limits = access.plan === 'pro' ? { businesses: 5, workers: 10 } : { businesses: 1, workers: 2 };
+    window.click360User = {
+      uid: user.uid,
+      email: user.email || data.email || '',
+      role: 'owner',
+      name: data.name || user.displayName || (user.email ? user.email.split('@')[0] : 'Usuario'),
+      photoURL: user.photoURL || '',
+      status: access.mode,
+      approved: false,
+      businessLimit: limits.businesses,
+      workerLimit: limits.workers,
+      ownerId,
+      isOwner: true,
+      access: publishAccessState(access)
+    };
+    ACTIVE_CONTEXT = Object.freeze({
+      authUid: user.uid,
+      ownerUid: ownerId,
+      ownerId,
+      businessId: ownerId,
+      tenantKey: tenantKeyFor(ownerId, ownerId),
+      schemaVersion: SCHEMA_VERSION
+    });
+    tenantGuard.begin(ACTIVE_CONTEXT);
+    BUSINESS_ID = ownerId;
+    STATE_DOC = db.collection('businesses').doc(BUSINESS_ID).collection('state').doc('main');
+    LAST_REMOTE_REVISION = Number(localStorage.getItem(tenantStorageKey('REMOTE_REVISION')) || 0);
+    SYNC_CONFLICT_PENDING = localStorage.getItem(syncConflictMarkerKey()) === '1';
+    if (typeof window.click360SetTenantContext !== 'function') throw new Error('La interfaz segura todavía no está lista.');
+    window.click360SetTenantContext(ACTIVE_CONTEXT, { deferLocalLoad: true });
+    return true;
+  }
+
+  window.click360UpdateAccessProfile = async function(profile = {}) {
+    const user = auth.currentUser;
+    const ref = accountAccessRef(user?.uid);
+    if (!user || !ref || user.uid !== ACTIVE_CONTEXT?.authUid) return false;
+    await ref.update({
+      name: String(profile.name || '').slice(0, 120),
+      lastSeenAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    return true;
+  };
 
   window.click360DebugAuth = function() {
     return {
@@ -626,7 +783,7 @@
 	      setSyncStatus('error', 'Hay un conflicto pendiente. Descarga o respalda los datos antes de volver a sincronizar.');
 	      return false;
 	    }
-	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user) || !AUTH_APPROVED || IS_RESTORING_REMOTE || !PULL_COMPLETE || !tenantGuard.canWrite(context)) return false;
+	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user) || !AUTH_APPROVED || ACCESS_READ_ONLY || IS_RESTORING_REMOTE || !PULL_COMPLETE || !tenantGuard.canWrite(context)) return false;
 	    if (!navigator.onLine) {
 	      setSyncStatus('offline', 'Sin internet. Cambios pendientes de subir.');
 	      return false;
@@ -722,7 +879,7 @@
 	    const expectedEpoch = AUTH_EPOCH;
 	  try {
 	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
-	    const localCacheStatus = window.click360GetTenantCacheStatus?.(context) || { valid: false, reason: 'cache_status_unavailable' };
+	    let localCacheStatus = window.click360GetTenantCacheStatus?.(context) || { valid: false, reason: 'cache_status_unavailable' };
 	    if (!navigator.onLine && !force) {
 	        if (!verifiedOfflineTenantCache()) {
 	          tenantGuard.block();
@@ -730,6 +887,7 @@
 	          setSyncStatus('blocked_identity', 'Sin internet y no existe una caché propia, válida y aprobada para esta cuenta.');
 	          return false;
 	        }
+	        window.click360LoadDeferredTenantCache?.();
 	        tenantGuard.allow(context);
 	        PULL_COMPLETE = true;
 	        setSyncStatus('offline', 'Sin internet. Usando la última caché verificada de esta cuenta.');
@@ -761,6 +919,7 @@
 	        INITIAL_TENANT_SEED_REQUIRED = false;
 	        tenantGuard.requireLegacy(context, { document: remoteData, path: stateDoc.path });
 	        safeStorageSet(legacyMigrationMarkerKey(), '1');
+	        quarantineLegacyLocalState();
 	        quarantineIncident('legacy_remote_state', {
 	          path: stateDoc.path,
 	          remoteMetadata: { businessId: remoteData.businessId || null, updatedBy: remoteData.updatedBy || null, updatedByEmail: remoteData.updatedByEmail || null, revision: remoteData.revision || null }
@@ -778,6 +937,14 @@
 	        setSyncStatus('error', 'Se bloqueó una descarga con identidad o contenido inválido. Tus datos locales siguen intactos.');
 	        return false;
 	      }
+	      const reconciliation = reconcileLocalStateWithRemoteV10(remoteData, context);
+	      if (!reconciliation.reconciled) {
+	        tenantGuard.block();
+	        PULL_COMPLETE = false;
+	        setSyncStatus('error', 'No se pudo reconciliar de forma segura el tenant V10.');
+	        return false;
+	      }
+	      localCacheStatus = window.click360GetTenantCacheStatus?.(context) || localCacheStatus;
 
 	      const remotePayload = remoteData.payload;
 	      const remoteRevision = Number(remoteData.revision || remoteData.updatedAtMs || 0);
@@ -785,6 +952,7 @@
 	    const localPayload = buildBusinessPayload();
 	    const localHash = snapshotString(localPayload);
 	    const alreadyApplied = localStorage.getItem(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'));
+	    const remoteMustHydrate = window.click360IsTenantStateDeferred?.() === true;
 	    const localChanged = localCacheStatus.valid === true && (
 	      Date.now() < LOCAL_WRITE_PENDING_UNTIL
 	      || !alreadyApplied
@@ -792,13 +960,11 @@
 	    );
 
 	      INITIAL_TENANT_SEED_REQUIRED = false;
-	      localStorage.removeItem(legacyMigrationMarkerKey());
-	      localStorage.removeItem(tenantCorruptMarkerKey());
 	      LAST_REMOTE_REVISION = remoteRevision;
 	      safeStorageSet(tenantStorageKey('REMOTE_REVISION'), String(remoteRevision));
 	      tenantGuard.allow(context);
 	      PULL_COMPLETE = true;
-	    if (force || (remoteHash && remoteHash !== localHash && remoteHash !== alreadyApplied)) {
+	    if (force || remoteMustHydrate || (remoteHash && remoteHash !== localHash && remoteHash !== alreadyApplied)) {
 	      if (localChanged && !force) {
 	          markSyncConflict({ path: stateDoc.path, remoteRevision, localUpdatedAtMs: localPayloadUpdatedAtMs(), source: 'pull' });
 	          setSyncStatus('error', 'Hay cambios locales y remotos simultáneos. No se sobrescribió ninguna versión.');
@@ -1116,6 +1282,9 @@
 	    LOCAL_WRITE_PENDING_UNTIL = 0;
 	    if (REMOTE_UNSUBSCRIBE) { REMOTE_UNSUBSCRIBE(); REMOTE_UNSUBSCRIBE = null; }
 	    if (USER_STATUS_UNSUBSCRIBE) { USER_STATUS_UNSUBSCRIBE(); USER_STATUS_UNSUBSCRIBE = null; }
+	    if (ACCESS_UNSUBSCRIBE) { ACCESS_UNSUBSCRIBE(); ACCESS_UNSUBSCRIBE = null; }
+	    ACCESS_READ_ONLY = false;
+	    window.click360AccessState = null;
 	    BUSINESS_ID = null;
 	    STATE_DOC = null;
 	    ACTIVE_CONTEXT = null;
@@ -1168,9 +1337,29 @@
 	  }, (err) => console.warn("No se pudo escuchar estado de usuario:", err.message));
   }
 
+  function listenAccountAccess(user, expectedEpoch = AUTH_EPOCH) {
+    if (ACCESS_UNSUBSCRIBE) return;
+    const context = ACTIVE_CONTEXT;
+    const ref = accountAccessRef(user.uid);
+    if (!ref) return;
+    ACCESS_UNSUBSCRIBE = ref.onSnapshot((snap) => {
+      if (!AUTH_APPROVED || !isCurrentAuthEpoch(user, expectedEpoch) || ACTIVE_CONTEXT !== context) return;
+      const next = snap.exists ? accessStateFromData(snap.data() || {}) : { allowed: false, mode: 'pending', readOnly: true };
+      if (!next.allowed) {
+        AUTH_APPROVED = false;
+        PULL_COMPLETE = false;
+        if (REMOTE_UNSUBSCRIBE) { REMOTE_UNSUBSCRIBE(); REMOTE_UNSUBSCRIBE = null; }
+        showGate('Tu acceso de prueba o plan ya no está activo. Contacta a CLICK 360 para continuar.');
+        return;
+      }
+      window.click360User.access = publishAccessState(next);
+      if (next.readOnly) setSyncStatus('read_only', 'La prueba terminó. Tus datos permanecen disponibles en modo lectura.');
+      window.click360Route?.(window.location.hash.replace('#', '') || 'home');
+    }, (error) => console.warn('No se pudo escuchar el acceso de cuenta:', error.message));
+  }
+
   async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
 	    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
-	    quarantineLegacyLocalState();
     await pullRemoteOnce({ force: false, reload: false });
 	    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
 	    if (legacyMigrationRequired()) {
@@ -1182,6 +1371,12 @@
 	      return false;
 	    }
 	    if (INITIAL_TENANT_SEED_REQUIRED) {
+	      if (ACCESS_READ_ONLY) {
+	        tenantGuard.block();
+	        PULL_COMPLETE = false;
+	        showGate('La prueba terminó antes de crear este negocio. Contacta a CLICK 360 para activar tu plan.');
+	        return false;
+	      }
 	      if (window.click360PersistTenantState?.() !== true) {
 	        tenantGuard.block();
 	        PULL_COMPLETE = false;
@@ -1205,8 +1400,9 @@
 	  if(window.click360SetSession) window.click360SetSession(newSession);
 	  unlockApp();
 	    window.click360FlushPendingProfile?.().catch(() => {});
-    listenRemoteChanges();
-    listenUserApproval(user, expectedEpoch);
+	    listenRemoteChanges();
+    if (window.click360User?.access?.source === 'accountAccess') listenAccountAccess(user, expectedEpoch);
+    else listenUserApproval(user, expectedEpoch);
     return true;
   }
 
@@ -1250,9 +1446,9 @@
 	          showGate("La configuración de esta cuenta no coincide con el tenant seguro. La operación fue bloqueada para proteger los datos; requiere corrección administrativa.");
 	          const loginBtn = document.getElementById("c360-google-login");
 	          if (loginBtn) loginBtn.style.display = "none";
-        } else if (window.click360User && window.click360User.role === "worker") {
+        } else if (window.click360User?.hasApprovedRecord) {
           showGate(`
-	            Tu solicitud de acceso como trabajador (<b>${escapeHtml(user.email || "sin email")}</b>) está <b>pendiente de aprobación</b> por el dueño del negocio.<br><br>
+	            Tu solicitud de acceso (<b>${escapeHtml(user.email || "sin email")}</b>) está <b>pendiente de aprobación</b>.<br><br>
 	            UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${escapeHtml(user.uid)}</code><br><br>
             Por favor, pídele al administrador que apruebe tu acceso desde la sección "Trabajadores" en su sistema usando tu UID.
           `);
@@ -1266,9 +1462,15 @@
 	              if (ok) await enterApprovedApp(user, activeEpoch);
               else showPending(user);
             };
-          }
+	          }
         } else {
-          showPending(user);
+	          const account = await resolveAccountAccess(user, epoch);
+	          if (!isCurrentAuthEpoch(user, epoch)) return;
+	          if (account?.state?.allowed && applyAccountAccessIdentity(user, account, epoch)) {
+	            await enterApprovedApp(user, epoch);
+	            return;
+	          }
+	          showPending(user, account?.state?.mode || 'pending');
         }
         return;
       }

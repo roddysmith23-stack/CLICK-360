@@ -105,6 +105,8 @@ assert(app.includes('CLICK360_PROFILE_PENDING:') && firebaseService.includes('cl
 assert(firebaseService.includes('profileUpdatedAtMs') && firebaseService.includes('localWins'), 'newer remote profiles replace stale local cache while pending offline edits remain protected');
 assert(serviceWorker.includes('cross-origin request must stay network-only'), 'service worker does not cache auth or Firestore network responses');
 assert(serviceWorker.includes("key.startsWith('click360-')"), 'service worker clears only CLICK 360 caches');
+assert(firebaseService.includes('reconcileLocalStateWithRemoteV10') && firebaseService.includes('remoteMustHydrate'), 'coherent V10 remote state reconciles stale local markers before unlock');
+assert(firebaseService.includes('CLICK360:V10:QUARANTINE:') && !firebaseService.includes('CLICK360_DEVICE_ID'), 'new quarantine and device identifiers are application-version namespaced');
 
 console.log('PASS P0 production stress: 100 tenants, 1000 rapid switches, strict cache isolation');
 console.log('PASS P0 production stress: corrupt payload, image, revision, and stale-write guards');

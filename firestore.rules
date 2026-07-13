@@ -51,10 +51,45 @@ service cloud.firestore {
         );
     }
 
-    function ownerUser() {
+    function legacyOwnerUser() {
       return approvedUser()
         && userData().ownerId == request.auth.uid
         && (userData().role == "owner" || userData().isOwner == true);
+    }
+
+    function accessDoc() {
+      return get(/databases/$(database)/documents/accountAccess/$(request.auth.uid));
+    }
+
+    function accessData() {
+      return accessDoc().data;
+    }
+
+    function accountAccessReadable() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid))
+        && accessData().uid == request.auth.uid
+        && (accessData().status == "trial" || accessData().status == "expired" || accessData().status == "active");
+    }
+
+    function activeAccountOwnerUser() {
+      return accountAccessReadable()
+        && (
+          (accessData().status == "trial"
+            && accessData().trialDays == 7
+            && accessData().trialStartedAt is timestamp
+            && request.time < accessData().trialStartedAt + duration.value(7, "d"))
+          || (accessData().status == "active"
+            && (accessData().plan == "normal" || accessData().plan == "pro" || accessData().plan == "founder"))
+        );
+    }
+
+    function ownerUser() {
+      return legacyOwnerUser() || activeAccountOwnerUser();
+    }
+
+    function ownerReadUser() {
+      return legacyOwnerUser() || accountAccessReadable();
     }
 
     function workerUser() {
@@ -68,6 +103,11 @@ service cloud.firestore {
 
     function tenantMatches(businessId) {
       return (ownerUser() && request.auth.uid == businessId)
+        || (workerUser() && userData().ownerId == businessId);
+    }
+
+    function tenantReadable(businessId) {
+      return (ownerReadUser() && request.auth.uid == businessId)
         || (workerUser() && userData().ownerId == businessId);
     }
 
@@ -194,10 +234,41 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /accountAccess/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+          "uid", "email", "name", "status", "plan", "trialDays",
+          "trialStartedAt", "lastSeenAt", "createdAt", "source"
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.status == "trial"
+        && request.resource.data.plan == "normal"
+        && request.resource.data.trialDays == 7
+        && request.resource.data.source == "self_service"
+        && request.resource.data.trialStartedAt == request.time
+        && request.resource.data.lastSeenAt == request.time
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(["name", "lastSeenAt"])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.lastSeenAt == request.time;
+      allow delete: if false;
+    }
+
     // The public client may only read/write the tenant state document. Legacy
     // backups are created by the administrative migrator with Admin SDK.
     match /businesses/{businessId}/state/{stateId} {
-      allow read: if stateId == "main" && tenantMatches(businessId);
+      allow read: if stateId == "main" && tenantReadable(businessId);
       allow create, update: if stateId == "main" && writeMatchesTenant(businessId);
       allow delete: if false;
     }

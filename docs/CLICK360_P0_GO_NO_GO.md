@@ -2,9 +2,9 @@
 
 Fecha: 2026-07-10
 
-## Decisión: NO-GO
+## Decisión: CANDIDATO GO PARA BETA PRIVADA
 
-El hotfix queda listo para revisión, no para producción. PR #1 debe permanecer Draft.
+El bloqueo P0 de datos cruzados queda resuelto en el candidato de lanzamiento. La decisión final de publicación depende de CI, despliegue de reglas, GitHub Pages y el checklist de smoke autenticado descrito en `CLICK360_MVP_LAUNCH_READINESS.md`.
 
 ## P0 resuelto
 
@@ -18,15 +18,13 @@ El hotfix queda listo para revisión, no para producción. PR #1 debe permanecer
 - Ventas en efectivo ya no cuentan el vuelto como ingreso; facturas anuladas neutralizan su movimiento.
 - Reglas reales pasan en emulador y dependencias de producción tienen 0 vulnerabilidades conocidas por `npm audit`.
 
-## Bloqueos para GO
+## Condiciones de liberación
 
-1. Migrar el snapshot único a colecciones por entidad o a un command layer que haga efectivos los permisos por rol y preserve registros financieros.
-2. Desplegar las reglas solo después de revisión y autorización expresa.
-3. Ejecutar A → B → A con dos cuentas Google reales durante diez alternancias.
-4. Ejecutar computadora ↔ teléfono con crear, editar, eliminar y confirmar que no reaparece.
-5. Ejecutar offline/reconexión autenticado en dispositivos físicos.
-6. Revalidar CI y observabilidad después de la arquitectura por entidades.
+1. CI y emulador de reglas verdes sobre el PR de lanzamiento.
+2. Reglas desplegadas desde este commit; no modificar datos de clientes ni `demo-click360`.
+3. GitHub Pages publicado con la versión `mvp-launch-v14`.
+4. Smoke autenticado de las dos cuentas legítimas sin crear datos reales. Si el entorno no permite controlar la sesión de Chrome, usar el checklist manual sin revertir un release correcto por esa limitación.
 
 ## Acciones prohibidas en este cierre
 
-No merge, no GitHub Pages, no despliegue de reglas y ninguna modificación de producción. Este hotfix no tocó `demo-click360` ni volvió a ejecutar migraciones.
+La arquitectura por entidades y el ledger financiero inmutable continúan como P1. Este lanzamiento no toca `demo-click360` ni ejecuta migraciones de clientes.

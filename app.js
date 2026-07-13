@@ -4,7 +4,7 @@
 
   const STATE_PREFIX = 'CLICK360_STATE:';
   const SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'p0-production-audit-v13';
+  const APP_ASSET_VERSION = 'mvp-launch-v14';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
@@ -39,6 +39,8 @@
   let lastScanAt = 0;
   let deferredInstallPrompt = null;
   let lastAutoSaveHash = '';
+  let tenantStateDeferred = false;
+  let onboardingPrompted = false;
 
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
@@ -269,6 +271,11 @@ function parseMoney(value) {
       console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
       return false;
     }
+    if (typeof window.click360CanMutate === 'function' && !window.click360CanMutate()) {
+      restoreLastPersistedState();
+      toast('Tu acceso está en modo lectura. Contacta a CLICK 360 para activar tu plan.', 'err');
+      return false;
+    }
     try {
       state.updatedAtMs = Date.now();
       state.updatedAt = new Date().toISOString();
@@ -402,11 +409,15 @@ function parseMoney(value) {
     try {
       const profile = JSON.parse(localStorage.getItem(key) || 'null');
       if (!profile || profile.uid !== uid) return false;
-      await window.click360Db.collection('approvedUsers').doc(uid).update({
-        name: String(profile.name || ''),
-        photoURL: safeImageSrc(profile.photoURL),
-        updatedAt: new Date().toISOString()
-      });
+      if (window.click360User?.access?.source === 'accountAccess' && typeof window.click360UpdateAccessProfile === 'function') {
+        await window.click360UpdateAccessProfile(profile);
+      } else {
+        await window.click360Db.collection('approvedUsers').doc(uid).update({
+          name: String(profile.name || ''),
+          photoURL: safeImageSrc(profile.photoURL),
+          updatedAt: new Date().toISOString()
+        });
+      }
       localStorage.removeItem(key);
       return true;
     } catch (error) {
@@ -420,21 +431,31 @@ function parseMoney(value) {
     if(window.click360Logout) await window.click360Logout();
     else renderLogin();
   };
-  window.click360SetTenantContext = function(context) {
+  window.click360SetTenantContext = function(context, options = {}) {
     if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
       throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
     }
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
+    onboardingPrompted = false;
     window.click360TenantContext = activeTenantContext;
-    state = loadState();
-    rememberPersistedState();
-    lastAutoSaveHash = JSON.stringify(state);
+    tenantStateDeferred = options.deferLocalLoad === true;
+    if (tenantStateDeferred) {
+      state = seed();
+      state.identity = tenantIdentity();
+      lastPersistedState = null;
+      lastAutoSaveHash = '';
+    } else {
+      state = loadState();
+      rememberPersistedState();
+      lastAutoSaveHash = JSON.stringify(state);
+    }
     session = loadSession();
     return { ...activeTenantContext };
   };
   window.click360ClearTenantContext = function() {
     stopScanner();
     activeTenantContext = null;
+    onboardingPrompted = false;
     window.click360TenantContext = null;
     state = seed();
     lastPersistedState = null;
@@ -442,7 +463,17 @@ function parseMoney(value) {
     session = null;
     route = 'home';
     workingDate = null;
+    tenantStateDeferred = false;
     if (app) app.innerHTML = '';
+  };
+  window.click360IsTenantStateDeferred = () => tenantStateDeferred;
+  window.click360LoadDeferredTenantCache = function() {
+    if (!activeTenantContext) return false;
+    state = loadState();
+    tenantStateDeferred = false;
+    rememberPersistedState();
+    lastAutoSaveHash = JSON.stringify(state);
+    return true;
   };
   window.click360GetTenantState = function() {
     if (!activeTenantContext) return null;
@@ -486,6 +517,7 @@ function parseMoney(value) {
     try {
       localStorage.setItem(stateStorageKey(), JSON.stringify(next));
       state = next;
+      tenantStateDeferred = false;
       rememberPersistedState();
       lastAutoSaveHash = JSON.stringify(state);
       localStorage.removeItem(`CLICK360_TENANT:${activeTenantContext.tenantKey}:CORRUPT`);
@@ -506,6 +538,9 @@ function parseMoney(value) {
     out.settings.labelTemplates ||= [];
     out.settings.workers ||= [];
     out.settings.userProfiles ||= {};
+    out.settings.customers ||= [];
+    out.settings.reminders ||= [];
+    out.settings.onboarding ||= {};
 
     out.products.forEach(p => {
       p.code = String(p.code || '').trim().toUpperCase();
@@ -551,7 +586,7 @@ function parseMoney(value) {
       dailyReports:[],
       auditLogs:[],
       deletedProducts:[],
-      settings:{ workers: [], labelTemplates: [], userProfiles: {} }
+      settings:{ workers: [], labelTemplates: [], userProfiles: {}, customers: [], reminders: [], onboarding: {} }
     };
   }
 
@@ -636,6 +671,7 @@ function parseMoney(value) {
       pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando conexión o confirmación de nube.'],
       offline: ['Sin internet', 'La app sigue funcionando localmente y subirá cambios al reconectar.'],
       error: ['Revisar nube', s.message || 'No se pudo confirmar la sincronización. Tus datos locales se mantienen.'],
+      read_only: ['Modo lectura', s.message || 'Tu información está protegida. Activa un plan para volver a editar.'],
       migration_required: ['Migración requerida', s.message || 'Los datos anteriores están protegidos hasta completar una migración segura.'],
       blocked_identity: ['Cuenta bloqueada', s.message || 'No se pudo comprobar una caché segura para esta cuenta.'],
       checking: ['Verificando nube', 'Comprobando sesión y datos remotos.'],
@@ -677,9 +713,9 @@ function parseMoney(value) {
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-    if (role === 'worker') return ['home','inventory','sell','cash','more','settings'].includes(section);
-    if (role === 'cashier') return ['home','sell','cash','more'].includes(section);
-    if (role === 'inventory') return ['home','inventory','more'].includes(section);
+    if (role === 'worker') return ['home','inventory','sell','cash','more','settings','access'].includes(section);
+    if (role === 'cashier') return ['home','sell','cash','more','access'].includes(section);
+    if (role === 'inventory') return ['home','inventory','more','access'].includes(section);
     return false;
   }
   function checkAuth(required='business') {
@@ -901,9 +937,11 @@ function parseMoney(value) {
       if(!can(r)) r='home';
       stopScanner(); route=r;
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
+      checkDueReminders();
+      if (r === 'home') setTimeout(showOnboardingForNewAccount, 0);
     } catch(e) {
       console.error("Error al renderizar la app:", e);
       app.innerHTML = `<div style="padding:24px; color:#ff4444; background:#110000; border:1px solid #ff4444; border-radius:16px; margin:20px; font-family:sans-serif;">
@@ -939,6 +977,7 @@ function parseMoney(value) {
     const todayPhrase = motivationalPhrases[new Date().getDate() % motivationalPhrases.length];
 
     return `<div class="pageHead"><div><h1>Hola, ${escapeHtml(authUser().name || 'Usuario')} \uD83D\uDC4B</h1><p>${escapeHtml(b.name)}</p></div></div>
+      ${accessBannerHtml()}
       <section class="grid kpis">
         <div class="card kpi gold"><div class="icon">\u2197</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
         <div class="card kpi"><div class="icon">\u25A3</div><small>Caja</small><strong>${fmt(saldo)}</strong></div>
@@ -1346,9 +1385,158 @@ function parseMoney(value) {
       </section>`;
   }
 
+	  function accessInfo() {
+	    return window.click360AccessState || { mode: 'founder', plan: 'founder', readOnly: false, source: 'approvedUsers' };
+	  }
+	  function purchaseWhatsAppUrl() {
+	    const plan = accessInfo().plan || 'normal';
+	    return `https://wa.me/593969399562?text=${encodeURIComponent(`Hola CLICK 360, quiero activar mi plan ${plan}.`)}`;
+	  }
+	  function accessBannerHtml() {
+	    const access = accessInfo();
+	    if (access.mode === 'founder') return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b style="color:#37d57e;">Acceso fundador activo</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Tu cuenta conserva acceso completo a CLICK 360.</p></section>`;
+	    if (access.mode === 'trial') {
+	      const remaining = Math.max(0, Math.ceil((Number(access.trialEndsAtMs || 0) - Number(access.serverNowMs || 0)) / 86400000));
+	      return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(244,196,49,.45);"><b style="color:var(--gold);">Prueba gratuita: ${remaining} ${remaining === 1 ? 'dia' : 'dias'} restantes</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">La prueba se controla con la hora segura de Firestore.</p></section>`;
+	    }
+	    if (access.readOnly) return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(255,92,98,.6);"><b style="color:#ff8d92;">Tu prueba termino: tus datos estan protegidos en modo lectura.</b><a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn primary block" style="margin-top:10px;">Activar plan por WhatsApp</a></section>`;
+	    return `<section class="card sectionCard" style="margin:0 0 14px;"><b>Plan ${escapeHtml(access.plan || 'normal')}</b></section>`;
+	  }
+	  function accessView() {
+	    const access = accessInfo();
+	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', expired: 'Modo lectura', active: `Plan ${(access.plan || 'normal').toUpperCase()}` };
+	    return `<div class="pageHead"><div><h1>Mi acceso</h1><p>Estado de tu cuenta y plan.</p></div></div>
+	      ${accessBannerHtml()}
+	      <section class="card sectionCard"><h3>${escapeHtml(labels[access.mode] || 'Acceso')}</h3>
+	        <p class="cloudStatus">${access.mode === 'trial' ? 'Dispones de todas las funciones durante siete dias.' : access.readOnly ? 'Puedes consultar tu informacion; la edicion se habilita al activar un plan.' : 'Tu acceso esta activo.'}</p>
+	        ${access.mode !== 'founder' ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}
+	      </section>`;
+	  }
+	  function crmCustomers() {
+	    return (state.settings?.customers || []).filter((customer) => !customer.businessId || customer.businessId === currentBusiness()?.id);
+	  }
+	  function crmView() {
+	    const customers = crmCustomers();
+	    return `<div class="pageHead"><div><h1>Clientes</h1><p>CRM simple para seguimiento y WhatsApp.</p></div><div class="toolbar"><button class="btn primary" id="newCustomerBtn">Nuevo cliente</button></div></div>
+	      <section class="card sectionCard"><div class="field"><label>Buscar</label><input id="customerSearch" placeholder="Nombre o telefono"></div><div id="customerList">${customerCards(customers)}</div></section>`;
+	  }
+	  function customerCards(customers) {
+	    if (!customers.length) return '<p class="empty">Todavia no hay clientes registrados.</p>';
+	    return customers.map((customer) => {
+	      const phone = String(customer.phone || '').replace(/\D/g, '');
+	      return `<article class="movement" style="align-items:flex-start;gap:10px;"><div style="flex:1;"><b>${escapeHtml(customer.name || 'Cliente')}</b><br><small>${escapeHtml(customer.phone || 'Sin telefono')}${customer.notes ? ` - ${escapeHtml(customer.notes)}` : ''}</small></div><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">${phone ? `<a class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" target="_blank" rel="noopener noreferrer" href="https://wa.me/${escapeHtml(phone)}">WhatsApp</a>` : ''}<button class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" data-customer-edit="${actionId(customer.id)}">Editar</button><button class="btn danger" style="min-height:30px;padding:5px 9px;font-size:12px;" data-customer-delete="${actionId(customer.id)}">Eliminar</button></div></article>`;
+	    }).join('');
+	  }
+	  function openCustomerModal(customerId = '') {
+	    const customer = crmCustomers().find((item) => item.id === customerId) || { id: '', name: '', phone: '', notes: '' };
+	    showModal(`<div class="modalHeader"><h2>${customer.id ? 'Editar' : 'Nuevo'} cliente</h2><button class="closeBtn" data-close>×</button></div><form id="customerForm" class="formGrid"><div class="field"><label>Nombre</label><input id="customerName" required value="${escapeHtml(customer.name)}"></div><div class="field"><label>Telefono / WhatsApp</label><input id="customerPhoneCrm" inputmode="tel" value="${escapeHtml(customer.phone)}" placeholder="593999999999"></div><div class="field full"><label>Notas</label><input id="customerNotes" value="${escapeHtml(customer.notes)}"></div><button class="btn primary block" type="submit">Guardar cliente</button></form>`);
+	    $('#customerForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const name = $('#customerName').value.trim();
+	      if (!name) return toast('Ingresa el nombre del cliente.', 'err');
+	      state.settings.customers ||= [];
+	      const next = { id: customer.id || uid('customer'), businessId: currentBusiness().id, name, phone: $('#customerPhoneCrm').value.trim(), notes: $('#customerNotes').value.trim(), updatedAt: new Date().toISOString() };
+	      const index = state.settings.customers.findIndex((item) => item.id === next.id);
+	      if (index >= 0) state.settings.customers[index] = next;
+	      else state.settings.customers.push(next);
+	      if (!save()) return;
+	      closeModal(); renderApp('crm'); toast('Cliente guardado');
+	    };
+	  }
+	  function remindersForBusiness() {
+	    return (state.settings?.reminders || []).filter((reminder) => !reminder.businessId || reminder.businessId === currentBusiness()?.id);
+	  }
+	  function remindersView() {
+	    const reminders = remindersForBusiness().slice().sort((a, b) => String(a.dueAt || '').localeCompare(String(b.dueAt || '')));
+	    return `<div class="pageHead"><div><h1>Recordatorios</h1><p>Alertas de seguimiento para clientes y negocio.</p></div><div class="toolbar"><button class="btn primary" id="newReminderBtn">Nuevo recordatorio</button></div></div><section class="card sectionCard"><div id="reminderList">${reminderCards(reminders)}</div></section>`;
+	  }
+	  function reminderCards(reminders) {
+	    if (!reminders.length) return '<p class="empty">No hay recordatorios pendientes.</p>';
+	    return reminders.map((reminder) => `<article class="movement" style="align-items:flex-start;gap:10px;"><div style="flex:1;"><b>${escapeHtml(reminder.title || 'Recordatorio')}</b><br><small>${escapeHtml(reminder.dueAt ? new Date(reminder.dueAt).toLocaleString('es-EC') : 'Sin fecha')}${reminder.notes ? ` - ${escapeHtml(reminder.notes)}` : ''}</small></div><div style="display:flex;gap:6px;">${reminder.done ? '<span class="badge">Hecho</span>' : `<button class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" data-reminder-done="${actionId(reminder.id)}">Completar</button>`}<button class="btn danger" style="min-height:30px;padding:5px 9px;font-size:12px;" data-reminder-delete="${actionId(reminder.id)}">Eliminar</button></div></article>`).join('');
+	  }
+	  function openReminderModal() {
+	    showModal(`<div class="modalHeader"><h2>Nuevo recordatorio</h2><button class="closeBtn" data-close>×</button></div><form id="reminderForm" class="formGrid"><div class="field"><label>Titulo</label><input id="reminderTitle" required placeholder="Ej. Llamar a cliente"></div><div class="field"><label>Fecha y hora</label><input id="reminderDue" type="datetime-local" required></div><div class="field full"><label>Notas</label><input id="reminderNotes"></div><button class="btn primary block" type="submit">Guardar recordatorio</button></form>`);
+	    $('#reminderForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const dueAt = new Date($('#reminderDue').value);
+	      if (!Number.isFinite(dueAt.getTime())) return toast('Fecha invalida.', 'err');
+	      state.settings.reminders ||= [];
+	      state.settings.reminders.push({ id: uid('reminder'), businessId: currentBusiness().id, title: $('#reminderTitle').value.trim(), dueAt: dueAt.toISOString(), notes: $('#reminderNotes').value.trim(), done: false, createdAt: new Date().toISOString() });
+	      if (!save()) return;
+	      closeModal(); renderApp('reminders'); toast('Recordatorio guardado');
+	    };
+	  }
+	  function bindCrm() {
+	    $('#newCustomerBtn')?.addEventListener('click', () => openCustomerModal());
+	    $('#customerSearch')?.addEventListener('input', (event) => {
+	      const query = String(event.target.value || '').toLowerCase();
+	      $('#customerList').innerHTML = customerCards(crmCustomers().filter((customer) => `${customer.name || ''} ${customer.phone || ''}`.toLowerCase().includes(query)));
+	      bindCrmActions();
+	    });
+	    bindCrmActions();
+	  }
+	  function bindCrmActions() {
+	    $$('[data-customer-edit]').forEach((button) => button.onclick = () => openCustomerModal(decodeActionId(button.dataset.customerEdit)));
+	    $$('[data-customer-delete]').forEach((button) => button.onclick = () => {
+	      const id = decodeActionId(button.dataset.customerDelete);
+	      state.settings.customers = (state.settings.customers || []).filter((customer) => customer.id !== id);
+	      if (!save()) return;
+	      renderApp('crm'); toast('Cliente eliminado');
+	    });
+	  }
+	  function bindReminders() {
+	    $('#newReminderBtn')?.addEventListener('click', openReminderModal);
+	    $$('[data-reminder-done]').forEach((button) => button.onclick = () => {
+	      const reminder = state.settings.reminders?.find((item) => item.id === decodeActionId(button.dataset.reminderDone));
+	      if (!reminder) return;
+	      reminder.done = true; reminder.completedAt = new Date().toISOString();
+	      if (!save()) return;
+	      renderApp('reminders');
+	    });
+	    $$('[data-reminder-delete]').forEach((button) => button.onclick = () => {
+	      const id = decodeActionId(button.dataset.reminderDelete);
+	      state.settings.reminders = (state.settings.reminders || []).filter((item) => item.id !== id);
+	      if (!save()) return;
+	      renderApp('reminders');
+	    });
+	  }
+	  const alertedReminderIds = new Set();
+	  function checkDueReminders() {
+	    const now = Date.now();
+	    remindersForBusiness().filter((reminder) => !reminder.done && Date.parse(reminder.dueAt || '') <= now).forEach((reminder) => {
+	      if (alertedReminderIds.has(reminder.id)) return;
+	      alertedReminderIds.add(reminder.id);
+	      toast(`Recordatorio: ${reminder.title || 'pendiente'}`, 'ok');
+	    });
+	  }
+	  function showOnboardingForNewAccount() {
+	    const access = accessInfo();
+    if (onboardingPrompted || access.source !== 'accountAccess' || access.readOnly || !isOwnerUser() || state.settings?.onboarding?.completedAt) return;
+    onboardingPrompted = true;
+	    const business = currentBusiness();
+	    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Tu nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><button class="btn primary block" type="submit">Comenzar prueba</button></form>`);
+	    $('#onboardingForm').onsubmit = async (event) => {
+	      event.preventDefault();
+	      const name = $('#onboardingName').value.trim();
+	      const businessName = $('#onboardingBusiness').value.trim();
+	      if (!name || !businessName) return toast('Completa tu nombre y empresa.', 'err');
+	      business.name = businessName; business.type = $('#onboardingType').value;
+	      state.settings.onboarding = { completedAt: new Date().toISOString(), version: 1 };
+	      window.click360User.name = name;
+	      cacheUserProfile({ uid: window.click360User.uid, name, email: window.click360User.email, photoURL: window.click360User.photoURL });
+	      persistUserProfileCache(cachedUserProfile(window.click360User.uid));
+	      queuePendingProfile(cachedUserProfile(window.click360User.uid));
+	      if (!save()) return;
+	      await flushPendingProfile();
+	      closeModal(); renderApp('home'); toast('Tu negocio esta listo');
+	    };
+	  }
+
 	  function moreView(){
 	    const ownerTools = isOwnerUser() ? `
 	      <button class="card bigRow" data-more="reports"><span>\u25A5 Reportes</span><b>\u203A</b></button>
+	      <button class="card bigRow" data-more="crm"><span>Clientes y WhatsApp</span><b>\u203A</b></button>
+	      <button class="card bigRow" data-more="reminders"><span>Recordatorios</span><b>\u203A</b></button>
 	      <button class="card bigRow" data-more="backup"><span>\u2601 Respaldo y nube</span><b>\u203A</b></button>
 	      <button class="card bigRow" data-more="workers">
 	        <span>\uD83D\uDC65 Trabajadores</span>
@@ -1362,6 +1550,7 @@ function parseMoney(value) {
 	    ` : `<button class="card bigRow" data-more="settings"><span>\u2699 Mi perfil</span><b>\u203A</b></button>`;
 	    return `<div class="pageHead"><div><h1>M\u00e1s</h1></div></div><section class="moreList">
 	      ${ownerTools}
+	      <button class="card bigRow" data-more="access"><span>Mi plan y acceso</span><b>\u203A</b></button>
 	      <button class="card bigRow" id="installAppBtn"><span>⬇ Instalar CLICK 360 como app</span><b>\u203A</b></button>
 	      <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
 	      <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
@@ -1512,6 +1701,8 @@ function parseMoney(value) {
     if(r==='workers') bindWorkers();
     if(r==='reports') bindReports();
     if(r==='invoices') bindInvoices();
+    if(r==='crm') bindCrm();
+    if(r==='reminders') bindReminders();
   }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
@@ -2515,9 +2706,10 @@ function parseMoney(value) {
       const email = $('#workerEmail').value.trim().toLowerCase();
 
       const workers = state.settings?.workers || [];
-      const activeCount = workers.length;
-      if (activeCount >= 2) {
-         return toast('Límite de 2 trabajadores activos alcanzado en plan gratuito.', 'err');
+      const activeCount = workers.filter(worker => worker.status !== 'revoked' && worker.status !== 'blocked').length;
+      const workerLimit = Number(window.click360User?.workerLimit || 2);
+      if (activeCount >= workerLimit) {
+         return toast(`Tu plan permite hasta ${workerLimit} trabajadores activos.`, 'err');
       }
 
       if (workers.some(w => w.email.toLowerCase() === email)) {
@@ -3836,6 +4028,9 @@ function parseMoney(value) {
 	    if (title) title.textContent = `★ ${info.title}`;
 	    const detail = $('#cloudStatusDetail');
 	    if (detail) detail.textContent = info.detail;
+	  });
+	  window.addEventListener('click360-access-changed', () => {
+	    if (currentUser()) renderApp(route);
 	  });
 
 	  // Safety net for mutations that have not yet persisted through their action handler.
