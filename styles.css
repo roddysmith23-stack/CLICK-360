@@ -34,7 +34,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--gold);box-shadow:0 0 
 textarea{min-height:96px;resize:vertical}
 a{color:inherit;text-decoration:none}
 .logoMark{display:flex;gap:12px;align-items:center;min-width:0}
-.logoIcon { display: block; width: 42px; height: 42px; background: url('assets/logo.png?v=mvp-final-platform-safe-v9') center/contain no-repeat; border-radius: 8px; }
+.logoIcon { display: block; width: 42px; height: 42px; background: url('assets/logo.png?v=p0-production-audit-v13') center/contain no-repeat; border-radius: 8px; }
 .logoText{font-size:20px;letter-spacing:1px;font-weight:900;line-height:1;display:flex;flex-direction:column;gap:2px;}
 .logoText b{color:#fff}
 .logoText span{display:block;letter-spacing:6px;color:var(--gold);font-size:10px;font-weight:950;margin-top:1px}
@@ -47,7 +47,7 @@ a{color:inherit;text-decoration:none}
 }
 .loginShell{width:min(430px,100%);display:grid;gap:24px}
 .loginBrand {
-  background: url('assets/logo.png?v=mvp-final-platform-safe-v9') center/contain no-repeat; width: 140px; height: 140px; margin: 0 auto 30px;
+  background: url('assets/logo.png?v=p0-production-audit-v13') center/contain no-repeat; width: 140px; height: 140px; margin: 0 auto 30px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   border-radius: 24px;
 }
@@ -164,12 +164,11 @@ a{color:inherit;text-decoration:none}
 }
 .homeBannerFrame{
   width:100%;
-  aspect-ratio:16 / 7;
-  min-height:180px;
-  max-height:360px;
+  aspect-ratio:16 / 9;
+  min-height:0;
   border-radius:18px;
   overflow:hidden;
-  background:#070707;
+  background:#050505;
   border:1px solid rgba(244,196,49,.14);
   position:relative;
   z-index:1;
@@ -178,7 +177,7 @@ a{color:inherit;text-decoration:none}
   width:100%;
   height:100%;
   display:block;
-  object-fit:cover;
+  object-fit:contain;
   object-position:center center;
 }
 .homeBannerPhrase{
@@ -248,8 +247,6 @@ a{color:inherit;text-decoration:none}
 .neg{color:#e8e8e8}
 .moreList{display:grid;gap:12px}
 .bigRow{padding:18px;display:flex;align-items:center;justify-content:space-between}
-.adminList{display:grid;gap:12px}
-.adminRow{padding:18px;display:grid;grid-template-columns:1fr;gap:12px;align-items:center}
 .status{font-size:12px;padding:4px 8px;border-radius:999px;margin-left:8px}
 .status.activo{background:rgba(55,213,126,.15);color:var(--green)}
 .status.pendiente{background:rgba(255,204,77,.15);color:var(--warning)}
@@ -294,7 +291,6 @@ a{color:inherit;text-decoration:none}
   .sellWrap{grid-template-columns:1.2fr .8fr}
   .cartPanel{position:sticky;top:24px}
   .businessSelect{max-width:100%}
-  .adminRow{grid-template-columns:1fr auto}
 }
 @media(max-width:480px){
   .topbar{padding-left:12px;padding-right:12px}
@@ -307,8 +303,7 @@ a{color:inherit;text-decoration:none}
   .sticker canvas{width:170px!important;height:170px!important}
   .btn.block{width:100%}
   .homeBannerFrame{
-    aspect-ratio:4 / 3;
-    min-height:210px;
+    aspect-ratio:16 / 9;
   }
   .homeBannerFrame img{
     object-position:center center;

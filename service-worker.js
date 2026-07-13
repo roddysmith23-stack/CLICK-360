@@ -1,10 +1,11 @@
-const CACHE = 'click360-mvp-final-platform-safe-v9';
+const CACHE = 'click360-p0-production-audit-v13';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './firebase-config.js',
+  './p0-tenant-guard.js',
   './firebase-service.js',
   './manifest.webmanifest',
   './vendor/qrcode-generator.js',
@@ -37,7 +38,10 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys
+    .filter(key => key.startsWith('click360-') && key !== CACHE)
+    .map(key => caches.delete(key))
+  )).then(() => self.clients.claim()));
 });
 
 self.addEventListener('fetch', event => {
@@ -48,9 +52,12 @@ self.addEventListener('fetch', event => {
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request).then(response => {
+        if (!response || !response.ok) return response;
         const copy = response.clone();
-        caches.open(CACHE).then(cache => cache.put('./index.html', copy)).catch(() => {});
-        return response;
+        return caches.open(CACHE)
+          .then(cache => cache.put('./index.html', copy))
+          .catch(() => {})
+          .then(() => response);
       }).catch(() => caches.match('./index.html'))
     );
     return;
@@ -64,7 +71,10 @@ self.addEventListener('fetch', event => {
         fetch(request).then(response => {
           if (response && response.ok) {
             const copy = response.clone();
-            caches.open(CACHE).then(cache => cache.put(request, copy)).catch(() => {});
+            return caches.open(CACHE)
+              .then(cache => cache.put(request, copy))
+              .catch(() => {})
+              .then(() => response);
           }
           return response;
         }).catch(() => caches.match(request, { ignoreSearch: true }))
@@ -78,7 +88,10 @@ self.addEventListener('fetch', event => {
         return fetch(request).then(response => {
           if (response && response.ok) {
             const copy = response.clone();
-            caches.open(CACHE).then(cache => cache.put(request, copy)).catch(() => {});
+            return caches.open(CACHE)
+              .then(cache => cache.put(request, copy))
+              .catch(() => {})
+              .then(() => response);
           }
           return response;
         });
@@ -87,11 +100,7 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then(match => match || fetch(request).then(response => {
-      const copy = response.clone();
-      caches.open(CACHE).then(cache => cache.put(request, copy)).catch(() => {});
-      return response;
-    }))
-  );
+  // Auth, Firestore, and any other cross-origin request must stay network-only.
+  // Caching them risks preserving authenticated responses beyond their session.
+  event.respondWith(fetch(request));
 });
