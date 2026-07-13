@@ -16,14 +16,16 @@ Fecha: 2026-07-10
 - HTML de cierres se sanea y las fórmulas de Excel/CSV se neutralizan.
 - Service Worker no cachea respuestas de Auth o Firestore y solo elimina cachés `click360-*`.
 - Reglas niegan autoaprovisionamiento de owners, acceso cruzado, deletes sensibles y acceso cliente a backups legacy.
+- Un remoto V10 válido reconcilia únicamente sus propios marcadores de cuarentena/legacy; nunca importa el estado legacy ni borra claves de otro tenant.
+- `accountAccess/{uid}` permite al cliente crear solo una prueba normal de 7 días con timestamps de servidor. Los cambios de plan son administrativos; una prueba expirada puede leer, no escribir.
 
 ## Reglas verificadas en emulador
 
-Se probaron owner A/B, worker, usuario no aprobado, atacante, revocación atómica, perfiles limitados, invitaciones, payload inválido y backups legacy. Las reglas del repositorio no fueron desplegadas por instrucción expresa.
+Se probaron owner A/B, worker, usuario no aprobado, atacante, revocación atómica, perfiles limitados, invitaciones, payload inválido, backups legacy, creación de prueba, vencimiento en modo lectura y denegación explícita de `demo-click360`.
 
 ## Riesgo crítico pendiente
 
-Un worker autorizado puede escribir un snapshot completo semánticamente válido. Los roles `cashier`, `inventory` y `worker` restringen la interfaz, pero no son una frontera de seguridad de datos. Antes de producción se requieren colecciones por entidad y reglas/comandos por operación.
+Un worker autorizado puede escribir un snapshot completo semánticamente válido. Los roles `cashier`, `inventory` y `worker` restringen la interfaz, pero no son una frontera de seguridad por módulo. La migración a colecciones por entidad y un command layer queda como P1 antes de ampliar el uso a operaciones de alto riesgo.
 
 ## Riesgos residuales
 

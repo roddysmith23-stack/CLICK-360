@@ -5,7 +5,7 @@ const {
   assertSucceeds,
   initializeTestEnvironment
 } = require('@firebase/rules-unit-testing');
-const { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where, writeBatch } = require('firebase/firestore');
+const { Timestamp, collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } = require('firebase/firestore');
 
 const RULES = fs.readFileSync('firestore.rules', 'utf8');
 const PROJECT_ID = 'demo-click360-p0-rules';
@@ -101,6 +101,12 @@ async function main() {
       await setDoc(doc(db, 'approvedUsers', 'worker-a'), workerProfile('worker-a', 'worker-a@example.test', 'owner-a'));
       await setDoc(doc(db, 'approvedUsers', 'self-worker'), workerProfile('self-worker', 'self-worker@example.test', 'self-worker'));
       await setDoc(doc(db, 'approvedUsersByEmail', 'worker-a@example.test'), invite('worker-a@example.test', 'owner-a'));
+      const expiredStart = Timestamp.fromMillis(Date.now() - 8 * 24 * 60 * 60 * 1000);
+      await setDoc(doc(db, 'accountAccess', 'expired-trial'), {
+        uid: 'expired-trial', email: 'expired@example.test', name: 'Expired', status: 'trial', plan: 'normal', trialDays: 7,
+        trialStartedAt: expiredStart, lastSeenAt: Timestamp.now(), createdAt: expiredStart, source: 'self_service'
+      });
+      await setDoc(doc(db, 'businesses', 'expired-trial', 'state', 'main'), state('expired-trial'));
     });
 
     const ownerA = env.authenticatedContext('owner-a', { email: 'owner-a@example.test' }).firestore();
@@ -109,9 +115,13 @@ async function main() {
     const notApproved = env.authenticatedContext('active-not-approved', { email: 'not-approved@example.test' }).firestore();
     const attacker = env.authenticatedContext('attacker', { email: 'attacker@example.test' }).firestore();
     const selfWorker = env.authenticatedContext('self-worker', { email: 'self-worker@example.test' }).firestore();
+    const trial = env.authenticatedContext('trial-user', { email: 'trial@example.test' }).firestore();
+    const expiredTrial = env.authenticatedContext('expired-trial', { email: 'expired@example.test' }).firestore();
     const unauthenticated = env.unauthenticatedContext().firestore();
     const stateA = doc(ownerA, 'businesses', 'owner-a', 'state', 'main');
     const stateB = doc(ownerB, 'businesses', 'owner-b', 'state', 'main');
+    const trialAccess = doc(trial, 'accountAccess', 'trial-user');
+    const trialState = doc(trial, 'businesses', 'trial-user', 'state', 'main');
 
     await assertSucceeds(setDoc(stateA, state('owner-a')));
     await assertSucceeds(getDoc(stateA));
@@ -137,6 +147,18 @@ async function main() {
       payload: { ...state('owner-a', 2).payload, identity: { ...state('owner-a', 2).payload.identity, schemaVersion: 9 } }
     }));
     await assertFails(setDoc(doc(ownerA, 'businesses', 'owner-a', 'legacyBackups', 'test'), { original: true }));
+
+    await assertSucceeds(setDoc(trialAccess, {
+      uid: 'trial-user', email: 'trial@example.test', name: 'Trial user', status: 'trial', plan: 'normal', trialDays: 7,
+      trialStartedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), createdAt: serverTimestamp(), source: 'self_service'
+    }));
+    await assertSucceeds(getDoc(trialAccess));
+    await assertSucceeds(updateDoc(trialAccess, { name: 'Trial user renamed', lastSeenAt: serverTimestamp() }));
+    await assertFails(updateDoc(trialAccess, { status: 'active', lastSeenAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(trialState, state('trial-user')));
+    await assertFails(getDoc(doc(trial, 'businesses', 'demo-click360', 'state', 'main')));
+    await assertSucceeds(getDoc(doc(expiredTrial, 'businesses', 'expired-trial', 'state', 'main')));
+    await assertFails(setDoc(doc(expiredTrial, 'businesses', 'expired-trial', 'state', 'main'), state('expired-trial', 2)));
 
     await assertSucceeds(getDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main')));
     await assertSucceeds(setDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main'), state('owner-a', 2)));
@@ -165,6 +187,7 @@ async function main() {
     const stored = await getDoc(doc(ownerA, 'businesses', 'owner-a', 'state', 'main'));
     assert.strictEqual(stored.data().revision, 2, 'the authorized shared worker write reaches only owner-a state');
     console.log('PASS Firestore emulator: tenant reads/writes, approval, invite, revocation boundaries, and legacy backups');
+    console.log('PASS Firestore emulator: trial creation, server-time write window, expired read-only, and demo tenant denial');
     console.log('PASS Firestore emulator: active-but-unapproved and cross-tenant attempts are denied');
   } finally {
     await env.cleanup();

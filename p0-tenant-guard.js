@@ -64,9 +64,79 @@
     if (!REQUIRED_STATE_ARRAYS.every((key) => Array.isArray(data[key]))) return false;
     if (!Array.isArray(data.deletedProducts || []) || !Array.isArray(data.auditLogs || [])) return false;
     if (!data.settings || !Array.isArray(data.settings.workers || []) || !Array.isArray(data.settings.labelTemplates || [])) return false;
+    if (data.settings.customers != null && !Array.isArray(data.settings.customers)) return false;
+    if (data.settings.reminders != null && !Array.isArray(data.settings.reminders)) return false;
     const businessIds = new Set(data.businesses.map((business) => business?.id).filter(Boolean));
     if (businessIds.size === 0 || businessIds.size !== data.businesses.length) return false;
     return !data.activeBusinessId || businessIds.has(data.activeBusinessId);
+  }
+
+  function markerIdentityMatches(value, context) {
+    if (!context || !value || typeof value !== 'object') return false;
+    const candidates = [value.context, value.identity, value.tenant, value];
+    return candidates.some((candidate) => candidate
+      && candidate.authUid === context.authUid
+      && candidate.ownerId === context.ownerId
+      && candidate.businessId === context.businessId
+      && candidate.tenantKey === context.tenantKey);
+  }
+
+  function parseMarker(value) {
+    try { return JSON.parse(value); } catch { return null; }
+  }
+
+  // Both timestamps come from Firestore. Device time is never used to decide
+  // whether a trial can write data.
+  function evaluateAccountAccess(data = {}, serverNowMs = 0, trialDays = 7) {
+    const status = String(data.status || '').toLowerCase();
+    const plan = String(data.plan || 'normal').toLowerCase();
+    const startedAtMs = Number(data.trialStartedAtMs || 0);
+    const now = Number(serverNowMs || 0);
+    const trialEndsAtMs = startedAtMs ? startedAtMs + Number(trialDays || 7) * 24 * 60 * 60 * 1000 : 0;
+    if (status === 'trial') {
+      const readOnly = !now || !trialEndsAtMs || now >= trialEndsAtMs;
+      return { allowed: true, readOnly, mode: readOnly ? 'expired' : 'trial', plan: 'normal', trialEndsAtMs };
+    }
+    if (status === 'expired') return { allowed: true, readOnly: true, mode: 'expired', plan: 'normal', trialEndsAtMs };
+    if (status === 'active' && ['normal', 'pro', 'founder'].includes(plan)) {
+      return { allowed: true, readOnly: false, mode: plan === 'founder' ? 'founder' : 'active', plan, trialEndsAtMs };
+    }
+    return { allowed: false, readOnly: true, mode: status || 'pending', plan, trialEndsAtMs };
+  }
+
+  // Old CLICK 360 builds used several marker shapes. Only remove a marker when
+  // it is the exact active tenant key or its serialized identity is complete.
+  // Ambiguous global legacy keys are intentionally preserved and never unlock a
+  // tenant by themselves.
+  function reconcileLegacyMarkers(storage, context) {
+    if (!storage || !context?.authUid || !context?.tenantKey) return [];
+    const removable = new Set([
+      `CLICK360_TENANT:${context.tenantKey}:LEGACY_MIGRATION_REQUIRED`,
+      `CLICK360_TENANT:${context.tenantKey}:CORRUPT`
+    ]);
+    const namespacedPrefix = `CLICK360:V10:QUARANTINE:${context.authUid}:${context.tenantKey}:`;
+    const oldPrefixes = ['CLICK360_QUARANTINED:', 'CLICK360_QUARANTINE:', 'CLICK360_LEGACY_QUARANTINED:'];
+    const keys = [];
+    for (let index = 0; index < Number(storage.length || 0); index += 1) {
+      const key = storage.key(index);
+      if (key) keys.push(key);
+    }
+    keys.forEach((key) => {
+      if (key.startsWith(namespacedPrefix)) {
+        removable.add(key);
+        return;
+      }
+      if (!oldPrefixes.some((prefix) => key.startsWith(prefix))) return;
+      const value = storage.getItem(key);
+      if (markerIdentityMatches(parseMarker(value), context)) removable.add(key);
+    });
+    const removed = [];
+    removable.forEach((key) => {
+      if (storage.getItem(key) == null) return;
+      storage.removeItem(key);
+      removed.push(key);
+    });
+    return removed;
   }
 
   function createSyncGate() {
@@ -133,6 +203,9 @@
     utf8Bytes,
     safeImageSrc,
     validBusinessPayload,
+    evaluateAccountAccess,
+    markerIdentityMatches,
+    reconcileLegacyMarkers,
     createSyncGate,
     guardedWrite
   };

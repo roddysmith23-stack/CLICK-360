@@ -39,7 +39,7 @@ assert('jsQR real local incluido', jsqrSize > 200000);
 assert('qrcode-generator real local incluido', qrgSize > 50000);
 assert('HTML carga qrcode-generator antes de app', html.includes('vendor/qrcode-generator.js') && html.indexOf('vendor/qrcode-generator.js') < html.indexOf('app.js'));
 assert('HTML carga jsQR antes de app', html.includes('vendor/jsQR.js') && html.indexOf('vendor/jsQR.js') < html.indexOf('app.js'));
-assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-p0-production-audit-v13'));
+assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-mvp-launch-v14'));
 assert('service worker cachea guard P0', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./p0-tenant-guard.js'));
 assert('service worker cachea vendor QR', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/qrcode-generator.js') && fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/jsQR.js'));
 assert('perfil persistente local', app.includes('CLICK360_USER_PROFILE_') && app.includes('cacheUserProfile'));
@@ -57,7 +57,7 @@ assert('no sincroniza todo localStorage', !firebaseService.includes('function ge
 assert('guard de identidad en push', firebaseService.includes('activeIdentityIsValid(user)') && firebaseService.includes('blocked_push_identity'));
 assert('guard de identidad en pull', firebaseService.includes('remoteMatchesContext(remoteData, context)') && firebaseService.includes('blocked_pull_identity'));
 assert('logout descarga tenant', firebaseService.includes('function deactivateActiveAccount()') && firebaseService.includes('click360ClearTenantContext'));
-assert('legacy entra en cuarentena', firebaseService.includes('quarantineLegacyLocalState') && firebaseService.includes('CLICK360_QUARANTINE:'));
+assert('legacy entra en cuarentena namespaced', firebaseService.includes('quarantineLegacyLocalState') && firebaseService.includes('CLICK360:V10:QUARANTINE:'));
 assert('no resetea almacenamiento de negocio', !firebaseService.includes('localStorage.clear()'));
 assert('aprobación offline aislada por UID', firebaseService.includes('CLICK360_APPROVED_IDENTITY:') && !firebaseService.includes('CLICK360_LAST_APPROVED_USER'));
 assert('legacy bloquea push y desbloqueo', firebaseService.includes('legacyMigrationRequired()') && firebaseService.includes('tenantGuard.canWrite(context)') && firebaseService.includes('showLegacyMigrationGate()'));
@@ -65,3 +65,6 @@ assert('migración exige backup y conteos administrativos', administrativeMigrat
 assert('harness P0 ejecutable', fs.existsSync(path.join(__dirname, 'qa-p0-isolation-harness.cjs')) && fs.existsSync(path.join(__dirname, 'p0-tenant-guard.js')));
 assert('arranque offline valida caché del tenant', app.includes('click360GetTenantCacheStatus') && firebaseService.includes('verifiedOfflineTenantCache()'));
 assert('offline sin caché no crea seed', firebaseService.includes('Sin internet y no existe una caché propia') && firebaseService.includes('tenantGuard.block()'));
+assert('V10 remoto reconcilia marcadores locales propios', firebaseService.includes('reconcileLocalStateWithRemoteV10') && firebaseService.includes('reconcileLegacyMarkers') && firebaseService.includes('remoteMustHydrate'));
+assert('nueva prueba usa tiempo de servidor y modo lectura', firebaseService.includes("ACCOUNT_ACCESS_COLLECTION = 'accountAccess'") && firebaseService.includes('FieldValue.serverTimestamp()') && firebaseService.includes('ACCESS_READ_ONLY'));
+assert('la interfaz ofrece CRM, recordatorios y acceso', app.includes('function crmView') && app.includes('function remindersView') && app.includes('function accessView'));

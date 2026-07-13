@@ -2,7 +2,7 @@
 
 Fecha: 2026-07-10
 
-- Cache actual: `click360-p0-production-audit-v13`.
+- Cache actual: `click360-mvp-launch-v14`.
 - Shell, Firebase compat, QR, Excel, PDF, html2canvas, iconos y banners están disponibles localmente.
 - Auth y Firestore cross-origin son network-only en el Service Worker.
 - Desktop 1440×960 y móvil 390×844 pasaron sin overflow horizontal ni errores de consola.

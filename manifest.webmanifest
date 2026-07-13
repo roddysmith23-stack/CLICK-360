@@ -4,7 +4,7 @@
   "id": "/CLICK-360/",
   "lang": "es-EC",
   "description": "Control total de tu negocio: inventario, ventas, caja, reportes y etiquetas QR.",
-  "start_url": "./",
+  "start_url": "./?v=mvp-launch-v14",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
