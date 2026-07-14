@@ -1,0 +1,34 @@
+const assert = require('node:assert');
+const fs = require('node:fs');
+
+const app = fs.readFileSync('app.js', 'utf8');
+const firebase = fs.readFileSync('firebase-service.js', 'utf8');
+const rules = fs.readFileSync('firestore.rules', 'utf8');
+const html = fs.readFileSync('index.html', 'utf8');
+const worker = fs.readFileSync('service-worker.js', 'utf8');
+const admin = fs.readFileSync('scripts/admin-access-v16.mjs', 'utf8');
+
+assert(app.includes("const STATE_PREFIX = 'CLICK360:V16:STATE:'"), 'tenant state uses V16 namespace');
+assert(app.includes("const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:'"), 'profiles use application and UID namespace');
+assert(app.includes('workerMutationAllowed(previous, next)'), 'worker permissions are enforced before local persistence');
+assert(app.includes("e.code === 'click360/permission-denied'"), 'denied worker mutations restore confirmed state');
+assert(app.includes('item.total ?? (i.price*i.qty)') || app.includes('i.total ?? (i.price*i.qty)'), 'receipts use frozen line totals');
+assert(app.includes('s.taxRate ?? bizSettings.tax?.rate'), 'receipts use the sale tax rate');
+assert(app.includes('previewGeneration'), 'label previews reject stale asynchronous renders');
+assert(app.includes("mode: resize ? 'resize' : 'move'"), 'label canvas supports drag and resize');
+assert(firebase.includes('click360CreateActivationRequest') && firebase.includes('click360SaveLegalAcceptance'), 'activation and legal records persist separately');
+assert(firebase.includes("status: 'trial'") && firebase.includes('FieldValue.serverTimestamp()'), 'new trials are created with server timestamps');
+assert(firebase.includes('function scheduleAccessExpiry(') && firebase.includes('refreshAccountEntitlement(user'), 'active entitlements revalidate and expire while the app remains open');
+assert(firebase.includes("await ref.update({ lastSeenAt: firebase.firestore.FieldValue.serverTimestamp() })"), 'each account access resolves against fresh server time');
+assert(firebase.includes('ownerInviteSecrets') && firebase.includes('sha256(inviteToken)'), 'raw invite tokens are owner-only and public records use hashes');
+assert(rules.includes('workerListMutationAllowed') && rules.includes('validWorkerAuditAppend'), 'rules enforce worker action and audit boundaries');
+assert(rules.includes('request.time < data.trialStartedAt + duration.value(7, "d")'), 'rules enforce the seven-day trial on server time');
+assert(rules.includes('request.time < data.expiresAt'), 'rules enforce paid expiration on server time');
+assert(!rules.includes('changedKeys()'), 'rules reject unauthorized added and removed fields through affectedKeys');
+assert(firebase.includes('onlineOnlyEmptyDevice') && firebase.includes('click360LoadIndexedTenantCache(context)'), 'new online-only tenants check IndexedDB before cloud bootstrap');
+assert(app.includes("const fullName = [name, lastName].filter(Boolean).join(' ')"), 'onboarding persists first and last name');
+assert(admin.includes("REQUIRED_PROJECT_ID") && admin.includes("expected-before-hash") && admin.includes('adminBackups'), 'secure administration is project-locked, hash-confirmed, and backed up');
+assert(firebase.includes('click360RecordTelemetry') && rules.includes('match /telemetryEvents/{eventId}'), 'V16 telemetry is non-blocking and protected by an explicit server contract');
+assert(html.includes('v16-domain.js') && html.includes('v16-storage.js'), 'V16 modules load before the application');
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-r2'"), 'PWA cache version is V16');
+console.log('PASS V16 contract: storage, profiles, permissions, receipts, labels, plans, rules, and PWA');

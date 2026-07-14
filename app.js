@@ -2,12 +2,17 @@
 (() => {
   'use strict';
 
-  const STATE_PREFIX = 'CLICK360_STATE:';
-  const SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v15';
+  const STATE_PREFIX = 'CLICK360:V16:STATE:';
+  const SESSION_PREFIX = 'CLICK360:V16:SESSION:';
+  const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
+  const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
+  const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-r2';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
-  const PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
-  const PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
+  const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:';
+  const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
+  const LEGACY_PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
+  const LEGACY_PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
   const tenantRuntime = window.CLICK360_P0_TENANT_GUARD;
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
@@ -41,6 +46,16 @@
   let lastAutoSaveHash = '';
   let tenantStateDeferred = false;
   let onboardingPrompted = false;
+  let clockTimer = null;
+  let storageState = Object.freeze({ mode: 'checking', indexedDbReady: false, localReady: true, tenantKey: null, message: '' });
+
+  function publishStorageState(next = {}) {
+    storageState = Object.freeze({ ...storageState, ...next, tenantKey: activeTenantContext?.tenantKey || next.tenantKey || null });
+    window.click360StorageState = storageState;
+    window.dispatchEvent(new CustomEvent('click360-storage-mode', { detail: storageState }));
+    return storageState;
+  }
+  window.click360GetStorageState = () => ({ ...storageState });
 
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
@@ -81,6 +96,14 @@
     const monthName = months[d.getMonth()];
     const year = d.getFullYear();
     return `${dayName}, ${dayNum} de ${monthName} de ${year}`;
+  }
+  function businessTimeZone() {
+    return currentBusiness?.()?.settings?.timeZone || 'America/Guayaquil';
+  }
+  function liveClockLabel() {
+    try {
+      return new Intl.DateTimeFormat('es-EC', { day: 'numeric', month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZone: businessTimeZone() }).format(new Date());
+    } catch { return new Date().toLocaleString('es-EC'); }
   }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
   function actionId(value) { return encodeURIComponent(String(value ?? '')).replace(/'/g, '%27'); }
@@ -266,6 +289,90 @@ function parseMoney(value) {
   function restoreLastPersistedState() {
     if (lastPersistedState) state = cloneState(lastPersistedState) || state;
   }
+  function cacheMetaKey(context = activeTenantContext) {
+    return context?.authUid && context?.tenantKey ? `${CACHE_META_PREFIX}${context.authUid}:${context.tenantKey}` : '';
+  }
+  function writeCacheMeta(source, bytes, extra = {}) {
+    const key = cacheMetaKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify({ source, bytes: Number(bytes || 0), updatedAtMs: Number(state.updatedAtMs || Date.now()), tenantKey: activeTenantContext.tenantKey, ...extra }));
+    } catch {}
+  }
+  function queueIndexedSnapshot(snapshot, metadata = {}) {
+    if (!activeTenantContext || !window.CLICK360_V16_STORAGE) return Promise.resolve(false);
+    const context = activeTenantContext;
+    return window.CLICK360_V16_STORAGE.putSnapshot(context, cloneState(snapshot), metadata).then(() => {
+      if (activeTenantContext !== context) return false;
+      publishStorageState({ mode: 'indexeddb_cache', indexedDbReady: true, message: 'Copia sin conexion disponible en este dispositivo.' });
+      writeCacheMeta('indexeddb', stateSizeBytes(snapshot));
+      return true;
+    }).catch((error) => {
+      if (activeTenantContext === context && navigator.onLine) {
+        publishStorageState({ mode: 'online_only_safe', indexedDbReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
+      }
+      console.warn('No se pudo guardar snapshot IndexedDB:', error.message);
+      return false;
+    });
+  }
+  function sameValue(left, right) {
+    try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
+  }
+  function listMutationAction(before, after) {
+    const previous = Array.isArray(before) ? before : [];
+    const next = Array.isArray(after) ? after : [];
+    if (sameValue(previous, next)) return 'none';
+    if (next.length > previous.length) return 'create';
+    if (next.length < previous.length) return 'delete';
+    return 'edit';
+  }
+  function workerHasPermission(module, action) {
+    return window.click360User?.permissions?.[module]?.[action] === true
+      || window.click360User?.permissions?.[module]?.manage === true;
+  }
+  function workerMutationAllowed(previous, next) {
+    if (authUser().role === 'owner') return true;
+    if (!previous || !next || !window.click360User?.permissions) return false;
+    if (!sameValue(previous.businesses, next.businesses) || previous.activeBusinessId !== next.activeBusinessId) return false;
+
+    const requireList = (module, key) => {
+      const action = listMutationAction(previous[key], next[key]);
+      return action === 'none' || workerHasPermission(module, action);
+    };
+    if (!requireList('inventory', 'products')) return false;
+    if (listMutationAction(previous.deletedProducts, next.deletedProducts) !== 'none'
+      && !workerHasPermission('inventory', 'delete')) return false;
+    if (!requireList('sales', 'sales') || !requireList('sales', 'layaways')) return false;
+    if (!requireList('suppliers', 'invoices')) return false;
+    const salesChanged = listMutationAction(previous.sales, next.sales) !== 'none'
+      || listMutationAction(previous.layaways, next.layaways) !== 'none';
+    const invoicesChanged = listMutationAction(previous.invoices, next.invoices) !== 'none';
+    if (listMutationAction(previous.movements, next.movements) !== 'none'
+      && !salesChanged && !invoicesChanged && !requireList('cash', 'movements')) return false;
+    if (!requireList('cash', 'dailyReports') || !requireList('cash', 'cashSessions')) return false;
+    if (!requireList('reminders', 'notifications')) return false;
+    if (!sameValue(previous.legalAcceptances, next.legalAcceptances)) return false;
+
+    const beforeSettings = previous.settings || {};
+    const nextSettings = next.settings || {};
+    if (listMutationAction(beforeSettings.labelTemplates, nextSettings.labelTemplates) !== 'none'
+      && !workerHasPermission('inventory', listMutationAction(beforeSettings.labelTemplates, nextSettings.labelTemplates))) return false;
+    if (listMutationAction(beforeSettings.customers, nextSettings.customers) !== 'none'
+      && !workerHasPermission('customers', listMutationAction(beforeSettings.customers, nextSettings.customers))) return false;
+    if (listMutationAction(beforeSettings.reminders, nextSettings.reminders) !== 'none'
+      && !workerHasPermission('reminders', listMutationAction(beforeSettings.reminders, nextSettings.reminders))) return false;
+    for (const ownerOnly of ['workers', 'onboarding', 'activationRequests', 'policies', 'legal']) {
+      if (!sameValue(beforeSettings[ownerOnly], nextSettings[ownerOnly])) return false;
+    }
+
+    const beforeAudit = Array.isArray(previous.auditLogs) ? previous.auditLogs : [];
+    const nextAudit = Array.isArray(next.auditLogs) ? next.auditLogs : [];
+    if (!sameValue(beforeAudit, nextAudit)) {
+      if (nextAudit.length < beforeAudit.length || !sameValue(nextAudit.slice(0, beforeAudit.length), beforeAudit)) return false;
+      if (nextAudit.slice(beforeAudit.length).some((entry) => entry?.userId !== window.click360User?.uid)) return false;
+    }
+    return true;
+  }
   function save() {
     if (!activeTenantContext || !stateStorageKey()) {
       console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
@@ -276,7 +383,13 @@ function parseMoney(value) {
       toast('Tu acceso está en modo lectura. Contacta a CLICK 360 para activar tu plan.', 'err');
       return false;
     }
+    const previousState = cloneState(lastPersistedState);
     try {
+      if (!workerMutationAllowed(previousState, state)) {
+        const error = new Error('Tu rol no permite realizar este cambio.');
+        error.code = 'click360/permission-denied';
+        throw error;
+      }
       state.updatedAtMs = Date.now();
       state.updatedAt = new Date().toISOString();
       state.identity = tenantIdentity();
@@ -286,15 +399,29 @@ function parseMoney(value) {
         error.code = 'click360/local-state-too-large';
         throw error;
       }
-      localStorage.setItem(stateStorageKey(), serialized);
+      let localPersisted = false;
+      try {
+        localStorage.setItem(stateStorageKey(), serialized);
+        localPersisted = true;
+        writeCacheMeta('localstorage', stateSizeBytes(serialized));
+      } catch (storageError) {
+        if (!navigator.onLine && !storageState.indexedDbReady) throw storageError;
+        publishStorageState({ mode: 'online_only_safe', localReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
+      }
       rememberPersistedState();
+      queueIndexedSnapshot(state);
       window.dispatchEvent(new CustomEvent('click360-local-state-saved', {
-        detail: { tenantKey: activeTenantContext.tenantKey, updatedAtMs: state.updatedAtMs }
+        detail: { tenantKey: activeTenantContext.tenantKey, updatedAtMs: state.updatedAtMs, localPersisted, storageMode: storageState.mode }
       }));
+      if (!localPersisted) toast('Cambio guardado en la nube. El modo sin conexion no esta disponible en este dispositivo.', 'ok');
       return true;
     } catch(e) {
       console.error(e);
-      restoreLastPersistedState();
+      state = previousState || state;
+      if (e.code === 'click360/permission-denied') {
+        toast(e.message, 'err');
+        return false;
+      }
       if (e.code === 'click360/local-state-too-large') {
         toast('El último cambio supera el espacio seguro y no se guardó. No se eliminaron datos existentes.', 'err');
         return false;
@@ -308,10 +435,16 @@ function parseMoney(value) {
     }
   }
   function stateStorageKey() {
-    return activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.tenantKey}` : '';
+    return activeTenantContext?.authUid && activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.authUid}:${activeTenantContext.tenantKey}` : '';
+  }
+  function legacyStateStorageKey(context = activeTenantContext) {
+    return context?.tenantKey ? `${LEGACY_STATE_PREFIX}${context.tenantKey}` : '';
   }
   function sessionStorageKey() {
     return activeTenantContext?.authUid ? `${SESSION_PREFIX}${activeTenantContext.authUid}` : '';
+  }
+  function legacySessionStorageKey(context = activeTenantContext) {
+    return context?.authUid ? `${LEGACY_SESSION_PREFIX}${context.authUid}` : '';
   }
   function tenantIdentity() {
     if (!activeTenantContext) return null;
@@ -334,7 +467,7 @@ function parseMoney(value) {
     const key = stateStorageKey();
     if (!key) return seed();
     try {
-      const raw = localStorage.getItem(key);
+      const raw = localStorage.getItem(key) || localStorage.getItem(legacyStateStorageKey());
       if (raw) {
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object' || !sameTenantIdentity(parsed.identity)) {
@@ -347,6 +480,10 @@ function parseMoney(value) {
         }
         const loaded = normalizeState(parsed);
         loaded.identity = tenantIdentity();
+        try {
+          localStorage.setItem(key, JSON.stringify(loaded));
+          localStorage.removeItem(legacyStateStorageKey());
+        } catch {}
         return loaded;
       }
     } catch { markTenantCacheCorrupt('json_parse_failed'); }
@@ -357,7 +494,7 @@ function parseMoney(value) {
   function loadSession() {
     const key = sessionStorageKey();
     try {
-      const parsed = key ? JSON.parse(localStorage.getItem(key) || 'null') : null;
+      const parsed = key ? JSON.parse(localStorage.getItem(key) || localStorage.getItem(legacySessionStorageKey()) || 'null') : null;
       return parsed?.uid === activeTenantContext?.authUid ? parsed : null;
     } catch { return null; }
   }
@@ -372,11 +509,26 @@ function parseMoney(value) {
     try {
       if(session) localStorage.setItem(key, JSON.stringify(session));
       else localStorage.removeItem(key);
+      localStorage.removeItem(legacySessionStorageKey());
     } catch (error) {
       console.warn('No se pudo guardar la sesión de interfaz:', error.message);
     }
   }
   function profileCacheKey(uid) { return uid ? `${PROFILE_CACHE_PREFIX}${uid}` : ''; }
+  function cachedUserProfile(uid) {
+    if (!uid) return null;
+    const stateProfile = state.settings?.userProfiles?.[uid];
+    if (stateProfile?.uid === uid) return { ...stateProfile };
+    try {
+      const key = profileCacheKey(uid);
+      const legacyKey = `${LEGACY_PROFILE_CACHE_PREFIX}${uid}`;
+      const parsed = JSON.parse(localStorage.getItem(key) || localStorage.getItem(legacyKey) || 'null');
+      if (parsed?.uid !== uid) return null;
+      localStorage.setItem(key, JSON.stringify(parsed));
+      localStorage.removeItem(legacyKey);
+      return parsed;
+    } catch { return null; }
+  }
   function cacheUserProfile(profile) {
     const uid = profile?.uid || window.click360User?.uid || '';
     if (!uid) return;
@@ -407,7 +559,8 @@ function parseMoney(value) {
     const key = pendingProfileKey(uid);
     if (!uid || !key || !navigator.onLine || !window.click360Db || uid !== activeTenantContext?.authUid) return false;
     try {
-      const profile = JSON.parse(localStorage.getItem(key) || 'null');
+      const legacyKey = `${LEGACY_PROFILE_PENDING_PREFIX}${uid}`;
+      const profile = JSON.parse(localStorage.getItem(key) || localStorage.getItem(legacyKey) || 'null') || cachedUserProfile(uid);
       if (!profile || profile.uid !== uid) return false;
       if (window.click360User?.access?.source === 'accountAccess' && typeof window.click360UpdateAccessProfile === 'function') {
         await window.click360UpdateAccessProfile(profile);
@@ -419,6 +572,7 @@ function parseMoney(value) {
         });
       }
       localStorage.removeItem(key);
+      localStorage.removeItem(legacyKey);
       return true;
     } catch (error) {
       console.warn('Perfil local pendiente de nube:', error.message);
@@ -450,7 +604,22 @@ function parseMoney(value) {
       lastAutoSaveHash = JSON.stringify(state);
     }
     session = loadSession();
+    publishStorageState({ mode: 'checking', tenantKey: activeTenantContext.tenantKey, message: 'Comprobando almacenamiento seguro.' });
     return { ...activeTenantContext };
+  };
+  window.click360PrepareTenantStorage = async function(context = activeTenantContext) {
+    if (!context || context.tenantKey !== activeTenantContext?.tenantKey || !window.CLICK360_V16_STORAGE) {
+      publishStorageState({ mode: navigator.onLine ? 'online_only_safe' : 'unavailable', indexedDbReady: false, message: 'Almacenamiento sin conexion no disponible.' });
+      return false;
+    }
+    try {
+      await window.CLICK360_V16_STORAGE.probe();
+      publishStorageState({ mode: 'indexeddb_ready', indexedDbReady: true, localReady: true, message: 'Almacenamiento seguro listo.' });
+      return true;
+    } catch (error) {
+      publishStorageState({ mode: navigator.onLine ? 'online_only_safe' : 'unavailable', indexedDbReady: false, localReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
+      return false;
+    }
   };
   window.click360ClearTenantContext = function() {
     stopScanner();
@@ -464,6 +633,7 @@ function parseMoney(value) {
     route = 'home';
     workingDate = null;
     tenantStateDeferred = false;
+    publishStorageState({ mode: 'checking', indexedDbReady: false, tenantKey: null, message: '' });
     if (app) app.innerHTML = '';
   };
   window.click360IsTenantStateDeferred = () => tenantStateDeferred;
@@ -474,6 +644,33 @@ function parseMoney(value) {
     rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
     return true;
+  };
+  window.click360LoadIndexedTenantCache = async function(context = activeTenantContext) {
+    if (!context || context.tenantKey !== activeTenantContext?.tenantKey || !window.CLICK360_V16_STORAGE) return false;
+    try {
+      const record = await window.CLICK360_V16_STORAGE.getSnapshot(context);
+      const candidate = record?.snapshot;
+      if (!candidate || !sameTenantIdentity(candidate.identity, context)
+        || !tenantRuntime?.validBusinessPayload({ identity: candidate.identity, data: candidate }, context)) return false;
+      state = normalizeState(candidate);
+      state.identity = tenantIdentity();
+      tenantStateDeferred = false;
+      rememberPersistedState();
+      lastAutoSaveHash = JSON.stringify(state);
+      publishStorageState({ mode: 'indexeddb_cache', indexedDbReady: true, message: 'Copia sin conexion cargada.' });
+      return true;
+    } catch (error) {
+      console.warn('No se pudo cargar snapshot IndexedDB:', error.message);
+      return false;
+    }
+  };
+  window.click360RetryTenantStorage = async function() {
+    if (!activeTenantContext) return false;
+    const prepared = await window.click360PrepareTenantStorage(activeTenantContext);
+    if (!prepared) return false;
+    const saved = await queueIndexedSnapshot(state);
+    if (saved) toast('Modo sin conexion activado para este dispositivo.');
+    return saved;
   };
   window.click360GetTenantState = function() {
     if (!activeTenantContext) return null;
@@ -486,11 +683,24 @@ function parseMoney(value) {
     if (!context?.tenantKey || !context?.ownerId || !context?.businessId || !context?.authUid) {
       return { valid: false, reason: 'context_incomplete' };
     }
-    const key = `${STATE_PREFIX}${context.tenantKey}`;
+    const key = `${STATE_PREFIX}${context.authUid}:${context.tenantKey}`;
     const corruptKey = `CLICK360_TENANT:${context.tenantKey}:CORRUPT`;
-    if (localStorage.getItem(corruptKey)) return { valid: false, reason: 'cache_marked_corrupt', key };
-    const raw = localStorage.getItem(key);
-    if (!raw) return { valid: false, reason: 'cache_missing', key };
+    let raw = '';
+    try {
+      if (localStorage.getItem(corruptKey)) return { valid: false, reason: 'cache_marked_corrupt', key };
+      raw = localStorage.getItem(key) || localStorage.getItem(`${LEGACY_STATE_PREFIX}${context.tenantKey}`) || '';
+    } catch (error) {
+      if (storageState.indexedDbReady && storageState.mode === 'indexeddb_cache' && storageState.tenantKey === context.tenantKey) {
+        return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0) };
+      }
+      return { valid: false, reason: 'localstorage_unavailable', key };
+    }
+    if (!raw) {
+      if (storageState.indexedDbReady && storageState.mode === 'indexeddb_cache' && storageState.tenantKey === context.tenantKey) {
+        return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0) };
+      }
+      return { valid: false, reason: 'cache_missing', key };
+    }
     try {
       const parsed = JSON.parse(raw);
       if (!sameTenantIdentity(parsed.identity, context) || parsed.identity?.tenantKey !== context.tenantKey) {
@@ -511,20 +721,23 @@ function parseMoney(value) {
       markTenantCacheCorrupt('remote_payload_invalid');
       throw new Error('Snapshot de otro tenant bloqueado.');
     }
-    const previousState = state;
     const next = normalizeState(nextState || {});
     next.identity = tenantIdentity();
+    let localPersisted = false;
     try {
       localStorage.setItem(stateStorageKey(), JSON.stringify(next));
-      state = next;
-      tenantStateDeferred = false;
-      rememberPersistedState();
-      lastAutoSaveHash = JSON.stringify(state);
-      localStorage.removeItem(`CLICK360_TENANT:${activeTenantContext.tenantKey}:CORRUPT`);
+      localPersisted = true;
+      writeCacheMeta('localstorage', stateSizeBytes(next));
     } catch (error) {
-      state = previousState;
-      throw error;
+      publishStorageState({ mode: navigator.onLine ? 'online_only_safe' : 'unavailable', localReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
     }
+    state = next;
+    tenantStateDeferred = false;
+    rememberPersistedState();
+    lastAutoSaveHash = JSON.stringify(state);
+    queueIndexedSnapshot(state);
+    try { localStorage.removeItem(`CLICK360_TENANT:${activeTenantContext.tenantKey}:CORRUPT`); } catch {}
+    return { applied: true, localPersisted, storageMode: storageState.mode };
   };
   function normalizeState(s) {
     const d = seed();
@@ -534,6 +747,10 @@ function parseMoney(value) {
     out.invoices ||= [];
     out.auditLogs ||= [];
     out.deletedProducts ||= [];
+    out.layaways ||= [];
+    out.cashSessions ||= [];
+    out.notifications ||= [];
+    out.legalAcceptances ||= [];
     out.settings ||= {};
     out.settings.labelTemplates ||= [];
     out.settings.workers ||= [];
@@ -541,6 +758,9 @@ function parseMoney(value) {
     out.settings.customers ||= [];
     out.settings.reminders ||= [];
     out.settings.onboarding ||= {};
+    out.settings.activationRequests ||= [];
+    out.settings.policies ||= {};
+    out.settings.legal ||= {};
 
     out.products.forEach(p => {
       p.code = String(p.code || '').trim().toUpperCase();
@@ -574,7 +794,7 @@ function parseMoney(value) {
   function seed() {
     const b1 = { id:'biz_main', code:'EMPRESA-001', name:'Mi Negocio', type:'ropa', status:'activo', due:'2026-07-08' };
     return {
-      version:'CLICK360_V10',
+      version:'CLICK360_V16',
       updatedAtMs: Date.now(),
       updatedAt: new Date().toISOString(),
       activeBusinessId:b1.id,
@@ -586,7 +806,11 @@ function parseMoney(value) {
       dailyReports:[],
       auditLogs:[],
       deletedProducts:[],
-      settings:{ workers: [], labelTemplates: [], userProfiles: {}, customers: [], reminders: [], onboarding: {} }
+      layaways:[],
+      cashSessions:[],
+      notifications:[],
+      legalAcceptances:[],
+      settings:{ workers: [], labelTemplates: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.0.0' }
     };
   }
 
@@ -693,6 +917,29 @@ function parseMoney(value) {
       || state.businesses[0]
       || { id:'biz_main', code:'EMPRESA-001', name:'Mi Negocio', type:'ropa', status:'activo', due:'2026-07-08', settings:{} };
   }
+  function businessTaxConfig(business = currentBusiness()) {
+    const settings = business?.settings || {};
+    return window.CLICK360_V16_DOMAIN?.normalizeTaxConfig(settings.tax || { iva: settings.iva || 0 })
+      || { enabled: Number(settings.iva || 0) > 0, rate: Number(settings.iva || 0), priceMode: 'included', showLabel: true, rounding: 'line' };
+  }
+  function productTaxLegend(product) {
+    return window.CLICK360_V16_DOMAIN?.taxLegend(product, businessTaxConfig()) || '';
+  }
+  function businessPolicies(business = currentBusiness()) {
+    const stored = business?.settings?.policies || state.settings?.policies || {};
+    return {
+      version: Number(stored.version || 1),
+      layaway: String(stored.layaway || 'El producto queda reservado al registrar el anticipo.'),
+      pickup: String(stored.pickup || 'El retiro debe realizarse hasta la fecha acordada con el negocio.'),
+      returns: String(stored.returns || 'Las devoluciones y cambios se revisan directamente con el negocio.'),
+      damages: String(stored.damages || 'El negocio verificara el estado del producto al entregarlo.'),
+      additional: String(stored.additional || '')
+    };
+  }
+  function layawayTermsText(business = currentBusiness()) {
+    const policy = businessPolicies(business);
+    return [policy.layaway, policy.pickup, policy.returns, policy.damages, policy.additional].filter(Boolean).join('\n');
+  }
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
@@ -713,9 +960,13 @@ function parseMoney(value) {
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-    if (role === 'worker') return ['home','inventory','sell','cash','more','settings','access'].includes(section);
-    if (role === 'cashier') return ['home','sell','cash','more','access'].includes(section);
-    if (role === 'inventory') return ['home','inventory','more','access'].includes(section);
+    if (['home','more','access','legal'].includes(section)) return ['worker','cashier','inventory'].includes(role);
+    const permissions = window.click360User?.permissions || {};
+    const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
+    if (routeModule && Object.keys(permissions).length) return permissions[routeModule]?.view === true;
+    if (role === 'worker') return ['inventory','sell','cash','settings'].includes(section);
+    if (role === 'cashier') return ['sell','cash'].includes(section);
+    if (role === 'inventory') return section === 'inventory';
     return false;
   }
   function checkAuth(required='business') {
@@ -858,15 +1109,17 @@ function parseMoney(value) {
       : (businessLogo
         ? `<img src="${escapeHtml(businessLogo)}" style="width:100%;height:100%;object-fit:cover;">`
         : (authUser().name || 'U').charAt(0).toUpperCase());
+    const unreadCount = notificationItems().filter((item) => !item.read).length;
 
 	    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
-	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>Control total de tu negocio</small></div></div>
+	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>V16 · Control total de tu negocio</small></div></div>
 	          <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
 	          <nav class="sideNav">${navButtons(active, true)}</nav>
 	        </div>
 	        <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:grid; gap:10px;">
+	          <div class="sidebarStatusRow"><div class="businessClock js-business-clock" aria-live="off">${escapeHtml(liveClockLabel())}</div><button type="button" id="notificationBellSide" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}"><span aria-hidden="true">&#128276;</span>${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button></div>
 	          ${syncPillHtml(false)}
 	          <div style="display:flex; align-items:center; gap:10px;">
 	            <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
@@ -880,6 +1133,8 @@ function parseMoney(value) {
 	          <div style="flex:1; display:flex; justify-content:center; min-width:0; padding:0 8px;">
 	            <select class="businessSelect" id="businessPickerTop" style="font-size:13px; padding:8px; min-height:36px; max-width:140px; margin:0 auto;">${bizOptions}</select>
 	          </div>
+	          <div id="businessClock" class="businessClock js-business-clock" aria-live="off">${escapeHtml(liveClockLabel())}</div>
+	          <button type="button" id="notificationBell" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}"><span aria-hidden="true">&#128276;</span>${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button>
 	          <div style="display:none;" class="syncTopWrap">${syncPillHtml(true)}</div>
 	          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
 	          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" style="width:36px; height:36px; border-radius:10px;">↗</button>
@@ -912,10 +1167,16 @@ function parseMoney(value) {
   }
   function bottomNav(active){ return `<nav class="bottomNav">${navButtons(active)}</nav>`; }
   function bindShell(){
+    clearInterval(clockTimer);
+    const updateClock = () => { $$('.js-business-clock').forEach((element) => { element.textContent = liveClockLabel(); }); };
+    updateClock();
+    clockTimer = setInterval(updateClock, 1000);
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
-    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;if(!save()) return;renderApp(route);}; });
+    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;if(authUser().role === 'owner' && !save()) return;renderApp(route);}; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
     $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
+    $('#notificationBell')?.addEventListener('click', openNotificationCenter);
+    $('#notificationBellSide')?.addEventListener('click', openNotificationCenter);
 
     const dateInput = $('#workingDateInput');
     if (dateInput) {
@@ -936,8 +1197,9 @@ function parseMoney(value) {
       if(!checkAuth('business')) return;
       if(!can(r)) r='home';
       stopScanner(); route=r;
+      clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -1009,10 +1271,9 @@ function parseMoney(value) {
           <h3>Plantillas de Etiquetas QR</h3>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; margin-top:10px;">
             ${templates.map(t => `
-              <div class="card" style="background:#171717; border:1px solid #333; padding:12px; border-radius:12px; display:flex; flex-direction:column; gap:8px;">
+              <div class="templateRow">
                 <div style="font-weight:bold; display:flex; justify-content:space-between; align-items:center;">
-                  <span style="color:var(--text);">${escapeHtml(t.name)}</span>
-                  <button class="iconBtn danger small-del-btn" data-del-tpl="${escapeHtml(t.id)}" title="Eliminar plantilla" style="font-size:12px; padding:4px 8px; border:none; cursor:pointer;">✕</button>
+                  <span style="color:var(--text);">${escapeHtml(t.name)} ${t.isDefault ? '<span class="badge gold">Predeterminada</span>' : ''}</span>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center;">
                   <span style="display:inline-block; width:18px; height:18px; border-radius:4px; background:${safeColor(t.bgColor, '#ffffff')}; border:1px solid #555;" title="Fondo de Etiqueta"></span>
@@ -1022,6 +1283,7 @@ function parseMoney(value) {
                 </div>
                 ${t.social ? `<div style="font-size:12px; color:#ccc;">📱 ${escapeHtml(t.social)}</div>` : ''}
                 ${t.address ? `<div style="font-size:12px; color:#ccc; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">📍 ${escapeHtml(t.address)}</div>` : ''}
+                <div class="templateActions"><button class="btn silver" data-edit-tpl="${escapeHtml(t.id)}">Editar</button><button class="btn silver" data-rename-tpl="${escapeHtml(t.id)}">Renombrar</button><button class="btn silver" data-duplicate-tpl="${escapeHtml(t.id)}">Duplicar</button><button class="btn silver" data-default-tpl="${escapeHtml(t.id)}">Predeterminada</button><button class="iconBtn danger small-del-btn" data-del-tpl="${escapeHtml(t.id)}" title="Eliminar plantilla" aria-label="Eliminar plantilla">&#128465;</button></div>
               </div>
             `).join('')}
           </div>
@@ -1051,7 +1313,7 @@ function parseMoney(value) {
     if(!products.length) return `<div class="card empty">Aún no hay ${escapeHtml(v.plural)}. Crea el primero con Nuevo.</div>`;
     return products.map(p=>`<article class="card productCard hasImage" data-pid="${escapeHtml(p.id)}">
       ${imageThumb(p)}
-      <div class="productInfo"><h3>${escapeHtml(p.name)}</h3><div class="meta"><span>${escapeHtml(p.category||'General')}</span><span class="badge">${escapeHtml(p.code)}</span><span>Stock: <b>${p.qty}</b></span><span class="badge gold">${fmt(p.price)}${p.cardPrice && p.cardPrice !== p.price ? ' / ' + fmt(p.cardPrice) + ' 💳' : ''} <span style="font-size:10px; opacity:0.8;">(incluye IVA)</span></span></div></div>
+      <div class="productInfo"><h3>${escapeHtml(p.name)}</h3><div class="meta"><span>${escapeHtml(p.category||'General')}</span><span class="badge">${escapeHtml(p.code)}</span><span>Stock: <b>${p.qty}</b></span><span class="badge gold">${fmt(p.price)}${p.cardPrice && p.cardPrice !== p.price ? ' / ' + fmt(p.cardPrice) + ' tarjeta' : ''}${productTaxLegend(p) ? ` <span style="font-size:10px;opacity:.8;">(${escapeHtml(productTaxLegend(p))})</span>` : ''}</span></div></div>
       <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Etiqueta QR">▦</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar">✎</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar">🗑</button></div>
     </article>`).join('');
   }
@@ -1101,6 +1363,7 @@ function parseMoney(value) {
             <div class="field"><label>Cédula/RUC del Cliente</label><input id="customerCedula" placeholder="Ej. 1712345678" /></div>
             <div class="field"><label id="lblCustomerPhone">Teléfono (WhatsApp)</label><input id="customerPhone" placeholder="Ej. 593969399562" /></div>
             <div class="field" id="layawayDueDateField" style="display:none;"><label>Fecha Límite de Retiro</label><input type="date" id="layawayDueDate" /></div>
+            <div class="field full" id="layawayTermsField" style="display:none;"><details class="termsDetails"><summary>Leer terminos del apartado</summary><p>${escapeHtml(layawayTermsText()).replace(/\n/g, '<br>')}</p><small>Estas politicas pertenecen al negocio. CLICK 360 proporciona herramientas de gestion, no asesoria legal.</small></details><label class="consentCheck"><input type="checkbox" id="layawayTermsAccepted"><span>El cliente conoce y acepta estos terminos.</span></label></div>
           </div>
           <div class="cartSummary" style="margin-bottom:10px; font-size:13px; color:var(--muted); text-align:right;">
              <div id="cartSubtotalView" style="display:none; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span> <b>$0.00</b></div>
@@ -1353,6 +1616,7 @@ function parseMoney(value) {
 
   function debtorsView() {
     const pendings = salesForBiz().filter(s=>s.status==='layaway' || s.status==='pending_payment');
+    const layaways = (state.layaways || []).filter((item) => item.businessId === currentBusiness().id && !['cancelled','refunded','picked_up'].includes(item.status));
     const totalPending = pendings.reduce((a,s)=>a+(s.balance||0),0);
     return `<div class="pageHead"><div><h1>Por Cobrar</h1><p>Apartados y deudas pendientes.</p></div></div>
       <section class="grid cashGrid"><div class="card kpi"><small>Saldo en la calle</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Cuentas activas</small><strong>${pendings.length}</strong></div></section>
@@ -1382,35 +1646,70 @@ function parseMoney(value) {
             </button>
           </div>
         </div>`).join('') || '<p class="empty">No hay apartados ni deudas pendientes.</p>'}
-      </section>`;
+      </section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Retiros de apartados</h3>${layaways.map((layaway) => { const status = window.CLICK360_V16_DOMAIN?.layawayStatus(layaway) || layaway.status; return `<div class="movement"><span><b>${escapeHtml(layaway.customerSnapshot?.name || 'Cliente')}</b><br><small>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(layaway.pickupDueAt ? `${layaway.pickupDueAt}T12:00:00` : '', 'es-EC', businessTimeZone(), false) || layaway.pickupDueAt || 'Sin fecha')}</small><br><span class="badge gold">${escapeHtml(status)}</span></span><div class="reminderActions">${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo para retiro</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregado</button>` : ''}</div></div>`; }).join('') || '<p class="empty">No hay retiros pendientes.</p>'}</section>`;
   }
+
+  window.markLayawayStatus = function(layawayId, nextStatus) {
+	  layawayId = decodeActionId(layawayId);
+	  if (!['ready_for_pickup','picked_up'].includes(nextStatus)) return;
+	  const layaway = state.layaways?.find((item) => item.id === layawayId && item.businessId === currentBusiness().id);
+	  if (!layaway) return toast('Apartado no encontrado.', 'err');
+	  if (nextStatus === 'picked_up' && !confirm('Confirma que el cliente recibio todos los productos reservados.')) return;
+	  layaway.status = nextStatus;
+	  layaway.updatedAt = new Date().toISOString();
+	  if (nextStatus === 'picked_up') layaway.pickedUpAt = layaway.updatedAt;
+	  addAudit('layaway_status_updated', { layawayId, saleId: layaway.saleId, status: nextStatus });
+	  if (!save()) return;
+	  renderApp('debtors');
+	  toast(nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro');
+	};
 
 	  function accessInfo() {
 	    return window.click360AccessState || { mode: 'founder', plan: 'founder', readOnly: false, source: 'approvedUsers' };
 	  }
 	  function purchaseWhatsAppUrl() {
-	    const plan = accessInfo().plan || 'normal';
-	    return `https://wa.me/593969399562?text=${encodeURIComponent(`Hola CLICK 360, quiero activar mi plan ${plan}.`)}`;
+	    const plan = accessInfo().plan || 'base';
+	    return `https://wa.me/593969399562?text=${encodeURIComponent(`Hola CLICK 360, quiero activar mi plan ${plan}. Negocio: ${currentBusiness()?.name || ''}. Correo: ${authUser()?.email || ''}.`)}`;
 	  }
 	  function accessBannerHtml() {
 	    const access = accessInfo();
 	    if (access.mode === 'founder') return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b style="color:#37d57e;">Acceso fundador activo</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Tu cuenta conserva acceso completo a CLICK 360.</p></section>`;
-	    if (access.mode === 'trial') {
+	    if (access.mode === 'trial_active' || access.mode === 'trial') {
 	      const remaining = Math.max(0, Math.ceil((Number(access.trialEndsAtMs || 0) - Number(access.serverNowMs || 0)) / 86400000));
 	      return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(244,196,49,.45);"><b style="color:var(--gold);">Prueba gratuita: ${remaining} ${remaining === 1 ? 'dia' : 'dias'} restantes</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">La prueba se controla con la hora segura de Firestore.</p></section>`;
 	    }
 	    if (access.readOnly) return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(255,92,98,.6);"><b style="color:#ff8d92;">Tu prueba termino: tus datos estan protegidos en modo lectura.</b><a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn primary block" style="margin-top:10px;">Activar plan por WhatsApp</a></section>`;
-	    return `<section class="card sectionCard" style="margin:0 0 14px;"><b>Plan ${escapeHtml(access.plan || 'normal')}</b></section>`;
+	    return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b>Plan ${escapeHtml((access.plan || 'base').toUpperCase())} activo</b></section>`;
 	  }
 	  function accessView() {
 	    const access = accessInfo();
-	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', expired: 'Modo lectura', active: `Plan ${(access.plan || 'normal').toUpperCase()}` };
-	    return `<div class="pageHead"><div><h1>Mi acceso</h1><p>Estado de tu cuenta y plan.</p></div></div>
+	    const catalog = window.CLICK360_V16_DOMAIN?.PLAN_CATALOG || {};
+	    const requests = state.settings?.activationRequests || [];
+	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', trial_expired: 'Modo lectura', paid_base: 'Plan Base', paid_pro: 'Plan Pro', lifetime: 'Acceso de por vida', member: 'Trabajador' };
+	    const periodOptions = (code) => `<option value="month">1 mes</option><option value="quarter">3 meses</option><option value="semester">6 meses</option><option value="year">1 año</option>${code === 'base' ? '<option value="lifetime">De por vida</option>' : ''}`;
+	    return `<div class="pageHead"><div><h1>Mi plan</h1><p>Acceso, funciones y activacion.</p></div></div>
 	      ${accessBannerHtml()}
-	      <section class="card sectionCard"><h3>${escapeHtml(labels[access.mode] || 'Acceso')}</h3>
-	        <p class="cloudStatus">${access.mode === 'trial' ? 'Dispones de todas las funciones durante siete dias.' : access.readOnly ? 'Puedes consultar tu informacion; la edicion se habilita al activar un plan.' : 'Tu acceso esta activo.'}</p>
-	        ${access.mode !== 'founder' ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}
-	      </section>`;
+	      <section class="card sectionCard"><h3>${escapeHtml(labels[access.mode] || `Plan ${(access.plan || 'base').toUpperCase()}`)}</h3>
+	        <p class="cloudStatus">${access.mode === 'trial_active' ? 'Dispones de todas las funciones Base durante siete dias.' : access.readOnly ? 'Puedes consultar tu informacion; la edicion se habilita al activar un plan.' : 'Tu acceso esta activo.'}</p>
+	      </section>
+	      <section class="planGrid" style="margin-top:14px;">
+	        ${['base','pro'].map((code) => { const item = catalog[code] || {}; return `<article class="card planCard"><div><span class="badge gold">${escapeHtml(code.toUpperCase())}</span><h3>${escapeHtml(item.name || code)}</h3><strong>${fmt(item.prices?.month || 0)} <small>/ mes</small></strong></div><ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul><label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${code === 'pro' ? 'primary' : 'silver'} block" data-request-plan="${code}">Solicitar ${escapeHtml(item.name || code)}</button></article>`; }).join('')}
+	      </section>
+	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status || 'pending')}</span></div>`).join('')}</section>` : ''}
+	      ${access.mode !== 'founder' ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="margin-top:14px;border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}`;
+	  }
+	  function legalView() {
+	    const version = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
+	    return `<div class="pageHead"><div><h1>Terminos y privacidad</h1><p>Version ${escapeHtml(version)}</p></div></div><section class="legalDocument">
+	      <article><h2>Terminos y condiciones</h2><p>CLICK 360 proporciona herramientas para administrar inventario, ventas, caja, clientes y tareas del negocio. La persona titular de la cuenta es responsable de la exactitud de la informacion registrada y del uso que autorice a sus trabajadores.</p></article>
+	      <article><h2>Privacidad y datos</h2><p>La autenticacion se realiza con Google y los datos operativos se guardan en el tenant asignado a la cuenta. CLICK 360 no vende informacion personal. El negocio puede descargar respaldos y solicitar asistencia para exportacion o eliminacion.</p></article>
+	      <article><h2>Prueba y suscripciones</h2><p>La prueba gratuita dura siete dias desde la hora registrada por el servidor y se concede una sola vez por UID. Al terminar, los datos se conservan en modo lectura. La activacion es manual y no se realizan cobros automaticos dentro de la aplicacion.</p></article>
+	      <article><h2>Uso aceptable</h2><p>No se permite intentar acceder a otro tenant, elevar permisos, manipular invitaciones, introducir contenido malicioso ni usar CLICK 360 para actividades ilegales.</p></article>
+	      <article><h2>Operacion offline</h2><p>Cuando el dispositivo permite almacenamiento seguro, la aplicacion conserva una copia local aislada. Si el navegador bloquea ese almacenamiento, CLICK 360 entra en modo seguro solo en linea y pausa la edicion al perder conexion.</p></article>
+	      <article><h2>Politicas del comercio</h2><p>Las politicas configuradas por cada negocio deben revisarse conforme a la legislacion aplicable. CLICK 360 proporciona herramientas de gestion, no asesoria legal.</p></article>
+	      <article><h2>Responsabilidades</h2><p>Los comprobantes y reportes son registros operativos. No sustituyen documentos tributarios oficiales, asesoria contable ni asesoramiento legal. Antes de una accion destructiva se recomienda generar y verificar un respaldo.</p></article>
+	    </section>`;
 	  }
 	  function crmCustomers() {
 	    return (state.settings?.customers || []).filter((customer) => !customer.businessId || customer.businessId === currentBusiness()?.id);
@@ -1446,22 +1745,86 @@ function parseMoney(value) {
 	  function remindersForBusiness() {
 	    return (state.settings?.reminders || []).filter((reminder) => !reminder.businessId || reminder.businessId === currentBusiness()?.id);
 	  }
+	  function notificationItems() {
+	    const readById = new Map((state.notifications || []).map((item) => [item.id, item]));
+	    const now = Date.now();
+	    const reminders = remindersForBusiness().filter((reminder) => !reminder.done && !['completed','cancelled'].includes(reminder.status)).map((reminder) => {
+	      const dueMs = Date.parse(reminder.dueAt || '');
+	      return {
+	        id: `reminder:${reminder.id}`,
+	        type: reminder.type || 'task',
+	        title: reminder.title || 'Recordatorio',
+	        detail: Number.isFinite(dueMs) ? `${dueMs < now ? 'Vencido' : 'Proximo'} · ${window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || reminder.dueAt}` : 'Sin fecha',
+	        route: 'reminders',
+	        overdue: Number.isFinite(dueMs) && dueMs < now,
+	        read: !!readById.get(`reminder:${reminder.id}`)?.readAt
+	      };
+	    });
+	    const stock = productsForBiz().filter((product) => Number(product.qty || 0) <= Number(product.lowStockThreshold ?? 3)).map((product) => ({
+	      id: `stock:${product.id}`,
+	      type: 'low_stock',
+	      title: `Stock bajo: ${product.name}`,
+	      detail: `${product.qty} disponible${Number(product.qty) === 1 ? '' : 's'}`,
+	      route: 'inventory',
+	      overdue: Number(product.qty) <= 0,
+	      read: !!readById.get(`stock:${product.id}`)?.readAt
+	    }));
+	    return [...reminders, ...stock].sort((a, b) => Number(b.overdue) - Number(a.overdue));
+	  }
+	  function openNotificationCenter() {
+	    const items = notificationItems();
+	    showModal(`<div class="modalHeader"><h2>Notificaciones</h2><button class="closeBtn" data-close>×</button></div><div class="notificationList">${items.length ? items.map((item) => `<button type="button" class="notificationItem ${item.read ? 'read' : ''}" data-notification-route="${item.route}" data-notification-id="${actionId(item.id)}"><span><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.detail)}</small></span>${item.overdue ? '<em>Vencido</em>' : ''}</button>`).join('') : '<p class="empty">No tienes alertas pendientes.</p>'}</div>${items.some((item) => !item.read) ? '<button type="button" class="btn silver block" id="markNotificationsRead">Marcar todas como leidas</button>' : ''}`);
+	    $$('[data-notification-route]').forEach((button) => button.onclick = () => {
+	      const id = decodeActionId(button.dataset.notificationId);
+	      state.notifications ||= [];
+	      const existing = state.notifications.find((item) => item.id === id);
+	      if (existing) existing.readAt = new Date().toISOString();
+	      else state.notifications.push({ id, businessId: currentBusiness().id, readAt: new Date().toISOString() });
+	      save();
+	      closeModal();
+	      renderApp(button.dataset.notificationRoute);
+	    });
+	    $('#markNotificationsRead')?.addEventListener('click', () => {
+	      state.notifications ||= [];
+	      const now = new Date().toISOString();
+	      items.forEach((item) => {
+	        const existing = state.notifications.find((record) => record.id === item.id);
+	        if (existing) existing.readAt = now;
+	        else state.notifications.push({ id: item.id, businessId: currentBusiness().id, readAt: now });
+	      });
+	      if (!save()) return;
+	      closeModal();
+	      renderApp(route);
+	    });
+	  }
 	  function remindersView() {
 	    const reminders = remindersForBusiness().slice().sort((a, b) => String(a.dueAt || '').localeCompare(String(b.dueAt || '')));
 	    return `<div class="pageHead"><div><h1>Recordatorios</h1><p>Alertas de seguimiento para clientes y negocio.</p></div><div class="toolbar"><button class="btn primary" id="newReminderBtn">Nuevo recordatorio</button></div></div><section class="card sectionCard"><div id="reminderList">${reminderCards(reminders)}</div></section>`;
 	  }
 	  function reminderCards(reminders) {
 	    if (!reminders.length) return '<p class="empty">No hay recordatorios pendientes.</p>';
-	    return reminders.map((reminder) => `<article class="movement" style="align-items:flex-start;gap:10px;"><div style="flex:1;"><b>${escapeHtml(reminder.title || 'Recordatorio')}</b><br><small>${escapeHtml(reminder.dueAt ? new Date(reminder.dueAt).toLocaleString('es-EC') : 'Sin fecha')}${reminder.notes ? ` - ${escapeHtml(reminder.notes)}` : ''}</small></div><div style="display:flex;gap:6px;">${reminder.done ? '<span class="badge">Hecho</span>' : `<button class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" data-reminder-done="${actionId(reminder.id)}">Completar</button>`}<button class="btn danger" style="min-height:30px;padding:5px 9px;font-size:12px;" data-reminder-delete="${actionId(reminder.id)}">Eliminar</button></div></article>`).join('');
+	    return reminders.map((reminder) => {
+	      const customer = crmCustomers().find((item) => item.id === reminder.customerId);
+	      const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(reminder.phone || customer?.phone || '') || '';
+	      const message = `Hola ${customer?.name || reminder.customerName || ''}, te recordamos un saldo pendiente de ${fmt(reminder.amount || 0)} con ${currentBusiness()?.name || ''}. Fecha acordada: ${window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || reminder.dueAt}.`;
+	      return `<article class="movement reminderCard"><div style="flex:1;"><div><span class="badge">${escapeHtml(reminder.type || 'tarea')}</span> <b>${escapeHtml(reminder.title || 'Recordatorio')}</b></div><small>${escapeHtml(reminder.dueAt ? (window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || new Date(reminder.dueAt).toLocaleString('es-EC')) : 'Sin fecha')}${reminder.notes ? ` · ${escapeHtml(reminder.notes)}` : ''}</small>${customer ? `<small>${escapeHtml(customer.name)}${reminder.amount ? ` · ${fmt(reminder.amount)}` : ''}</small>` : ''}</div><div class="reminderActions">${phone ? `<a class="btn whatsapp" target="_blank" rel="noopener noreferrer" href="https://wa.me/${escapeHtml(phone)}?text=${encodeURIComponent(message)}">Cobrar por WhatsApp</a>` : ''}<button class="btn silver" data-reminder-edit="${actionId(reminder.id)}">Editar</button>${reminder.done || reminder.status === 'completed' ? '<span class="badge">Hecho</span>' : `<button class="btn silver" data-reminder-postpone="${actionId(reminder.id)}">Posponer</button><button class="btn primary" data-reminder-done="${actionId(reminder.id)}">Completar</button>`}<button class="iconBtn danger" title="Eliminar" aria-label="Eliminar recordatorio" data-reminder-delete="${actionId(reminder.id)}">&#128465;</button></div></article>`;
+	    }).join('');
 	  }
-	  function openReminderModal() {
-	    showModal(`<div class="modalHeader"><h2>Nuevo recordatorio</h2><button class="closeBtn" data-close>×</button></div><form id="reminderForm" class="formGrid"><div class="field"><label>Titulo</label><input id="reminderTitle" required placeholder="Ej. Llamar a cliente"></div><div class="field"><label>Fecha y hora</label><input id="reminderDue" type="datetime-local" required></div><div class="field full"><label>Notas</label><input id="reminderNotes"></div><button class="btn primary block" type="submit">Guardar recordatorio</button></form>`);
+	  function openReminderModal(reminderId = '') {
+	    const reminder = state.settings.reminders?.find((item) => item.id === reminderId) || {};
+	    const dueValue = reminder.dueAt ? new Date(new Date(reminder.dueAt).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+	    const customers = crmCustomers();
+	    showModal(`<div class="modalHeader"><h2>${reminder.id ? 'Editar' : 'Nuevo'} recordatorio</h2><button class="closeBtn" data-close>×</button></div><form id="reminderForm" class="formGrid"><div class="field"><label>Tipo</label><select id="reminderType"><option value="collection" ${reminder.type === 'collection' ? 'selected' : ''}>Cobrar cliente</option><option value="layaway" ${reminder.type === 'layaway' ? 'selected' : ''}>Apartado</option><option value="low_stock" ${reminder.type === 'low_stock' ? 'selected' : ''}>Inventario bajo</option><option value="supplier" ${reminder.type === 'supplier' ? 'selected' : ''}>Proveedor</option><option value="invoice" ${reminder.type === 'invoice' ? 'selected' : ''}>Factura</option><option value="task" ${!reminder.type || reminder.type === 'task' ? 'selected' : ''}>Tarea</option><option value="follow_up" ${reminder.type === 'follow_up' ? 'selected' : ''}>Seguimiento</option><option value="cash" ${reminder.type === 'cash' ? 'selected' : ''}>Caja</option></select></div><div class="field"><label>Titulo</label><input id="reminderTitle" required value="${escapeHtml(reminder.title || '')}" placeholder="Ej. Llamar a cliente"></div><div class="field"><label>Fecha y hora</label><input id="reminderDue" type="datetime-local" required value="${escapeHtml(dueValue)}"></div><div class="field"><label>Cliente</label><select id="reminderCustomer"><option value="">Sin cliente</option>${customers.map((customer) => `<option value="${escapeHtml(customer.id)}" ${customer.id === reminder.customerId ? 'selected' : ''}>${escapeHtml(customer.name)}</option>`).join('')}</select></div><div class="field"><label>Monto</label><input id="reminderAmount" inputmode="decimal" value="${numericInputValue(reminder.amount || 0)}"></div><div class="field full"><label>Notas</label><textarea id="reminderNotes">${escapeHtml(reminder.notes || '')}</textarea></div><button class="btn primary block" type="submit">Guardar recordatorio</button></form>`);
 	    $('#reminderForm').onsubmit = (event) => {
 	      event.preventDefault();
 	      const dueAt = new Date($('#reminderDue').value);
 	      if (!Number.isFinite(dueAt.getTime())) return toast('Fecha invalida.', 'err');
+	      const customer = crmCustomers().find((item) => item.id === $('#reminderCustomer').value);
+	      const next = { id: reminder.id || uid('reminder'), businessId: currentBusiness().id, type: $('#reminderType').value, title: $('#reminderTitle').value.trim(), dueAt: dueAt.toISOString(), notes: $('#reminderNotes').value.trim(), customerId: customer?.id || '', customerName: customer?.name || '', phone: customer?.phone || '', amount: Math.max(0, parseMoney($('#reminderAmount').value) || 0), status: reminder.status || 'pending', done: reminder.done === true, createdAt: reminder.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
 	      state.settings.reminders ||= [];
-	      state.settings.reminders.push({ id: uid('reminder'), businessId: currentBusiness().id, title: $('#reminderTitle').value.trim(), dueAt: dueAt.toISOString(), notes: $('#reminderNotes').value.trim(), done: false, createdAt: new Date().toISOString() });
+	      const index = state.settings.reminders.findIndex((item) => item.id === next.id);
+	      if (index >= 0) state.settings.reminders[index] = next;
+	      else state.settings.reminders.push(next);
 	      if (!save()) return;
 	      closeModal(); renderApp('reminders'); toast('Recordatorio guardado');
 	    };
@@ -1485,11 +1848,26 @@ function parseMoney(value) {
 	    });
 	  }
 	  function bindReminders() {
-	    $('#newReminderBtn')?.addEventListener('click', openReminderModal);
+	    $('#newReminderBtn')?.addEventListener('click', () => openReminderModal());
+	    $$('[data-reminder-edit]').forEach((button) => button.onclick = () => openReminderModal(decodeActionId(button.dataset.reminderEdit)));
+	    $$('[data-reminder-postpone]').forEach((button) => button.onclick = () => {
+	      const reminder = state.settings.reminders?.find((item) => item.id === decodeActionId(button.dataset.reminderPostpone));
+	      if (!reminder) return;
+	      const next = prompt('Nueva fecha y hora (AAAA-MM-DD HH:MM):', new Date(Date.parse(reminder.dueAt || '') + 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace('T', ' '));
+	      if (!next) return;
+	      const due = new Date(next.replace(' ', 'T'));
+	      if (!Number.isFinite(due.getTime())) return toast('Fecha y hora invalidas.', 'err');
+	      reminder.dueAt = due.toISOString();
+	      reminder.status = 'postponed';
+	      reminder.updatedAt = new Date().toISOString();
+	      if (!save()) return;
+	      renderApp('reminders');
+	      toast('Recordatorio pospuesto');
+	    });
 	    $$('[data-reminder-done]').forEach((button) => button.onclick = () => {
 	      const reminder = state.settings.reminders?.find((item) => item.id === decodeActionId(button.dataset.reminderDone));
 	      if (!reminder) return;
-	      reminder.done = true; reminder.completedAt = new Date().toISOString();
+	      reminder.done = true; reminder.status = 'completed'; reminder.completedAt = new Date().toISOString();
 	      if (!save()) return;
 	      renderApp('reminders');
 	    });
@@ -1498,6 +1876,32 @@ function parseMoney(value) {
 	      state.settings.reminders = (state.settings.reminders || []).filter((item) => item.id !== id);
 	      if (!save()) return;
 	      renderApp('reminders');
+	    });
+	  }
+	  function bindAccess() {
+	    $$('[data-request-plan]').forEach((button) => {
+	      button.onclick = async () => {
+	        const plan = button.dataset.requestPlan;
+	        const period = $(`[data-plan-period="${plan}"]`)?.value || 'month';
+	        button.disabled = true;
+	        button.textContent = 'Creando solicitud...';
+	        try {
+	          if (typeof window.click360CreateActivationRequest !== 'function') throw new Error('La solicitud en nube no esta disponible.');
+	          const request = await window.click360CreateActivationRequest({ plan, period, businessName: currentBusiness()?.name || '' });
+	          state.settings.activationRequests ||= [];
+	          state.settings.activationRequests.push({ ...request, status: 'pending', createdAt: new Date().toISOString() });
+	          if (!save()) throw new Error('La solicitud se creo en nube, pero no pudo guardarse en este dispositivo.');
+	          const planName = window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.[plan]?.name || plan;
+	          const message = `Hola, quiero activar CLICK 360.\nNegocio: ${currentBusiness()?.name || ''}\nCorreo: ${authUser()?.email || ''}\nPlan: ${planName}\nPeriodo: ${period}\nCodigo: ${request.requestCode}`;
+	          window.open(`https://wa.me/593969399562?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+	          renderApp('access');
+	          toast('Solicitud de activacion creada');
+	        } catch (error) {
+	          toast(error.message || 'No se pudo crear la solicitud.', 'err');
+	          button.disabled = false;
+	          button.textContent = `Solicitar ${plan}`;
+	        }
+	      };
 	    });
 	  }
 	  const alertedReminderIds = new Set();
@@ -1514,20 +1918,33 @@ function parseMoney(value) {
     if (onboardingPrompted || access.source !== 'accountAccess' || access.readOnly || !isOwnerUser() || state.settings?.onboarding?.completedAt) return;
     onboardingPrompted = true;
 	    const business = currentBusiness();
-	    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Tu nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><button class="btn primary block" type="submit">Comenzar prueba</button></form>`);
+	    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Apellido</label><input id="onboardingLastName" autocomplete="family-name"></div><div class="field"><label>Telefono</label><input id="onboardingPhone" type="tel" autocomplete="tel" required placeholder="0999999999"></div><div class="field"><label>Pais</label><select id="onboardingCountry"><option value="EC">Ecuador</option><option value="CO">Colombia</option><option value="PE">Peru</option><option value="MX">Mexico</option><option value="US">Estados Unidos</option><option value="other">Otro</option></select></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><div class="field"><label>Moneda</label><select id="onboardingCurrency"><option value="USD">USD</option></select></div><div class="field"><label>Zona horaria</label><select id="onboardingTimezone"><option value="America/Guayaquil">America/Guayaquil</option><option value="America/Bogota">America/Bogota</option><option value="America/Lima">America/Lima</option><option value="America/Mexico_City">America/Mexico_City</option></select></div><label class="consentCheck full"><input id="onboardingTerms" type="checkbox" required><span>Acepto los Terminos y la Politica de privacidad de CLICK 360, version ${escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13')}.</span></label><button class="btn primary block" type="submit">Comenzar prueba</button></form>`);
 	    $('#onboardingForm').onsubmit = async (event) => {
 	      event.preventDefault();
 	      const name = $('#onboardingName').value.trim();
+	      const lastName = $('#onboardingLastName').value.trim();
+	      const fullName = [name, lastName].filter(Boolean).join(' ');
 	      const businessName = $('#onboardingBusiness').value.trim();
-	      if (!name || !businessName) return toast('Completa tu nombre y empresa.', 'err');
+	      if (!name || !businessName || !$('#onboardingPhone').value.trim()) return toast('Completa tu nombre, telefono y empresa.', 'err');
+	      if (!$('#onboardingTerms').checked) return toast('Debes aceptar los terminos para continuar.', 'err');
 	      business.name = businessName; business.type = $('#onboardingType').value;
-	      state.settings.onboarding = { completedAt: new Date().toISOString(), version: 1 };
-	      window.click360User.name = name;
-	      cacheUserProfile({ uid: window.click360User.uid, name, email: window.click360User.email, photoURL: window.click360User.photoURL });
+	      business.settings ||= {};
+	      business.settings.phone = $('#onboardingPhone').value.trim();
+	      business.settings.country = $('#onboardingCountry').value;
+	      business.settings.currency = $('#onboardingCurrency').value;
+	      business.settings.timeZone = $('#onboardingTimezone').value;
+	      const termsVersion = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
+	      state.settings.onboarding = { completedAt: new Date().toISOString(), version: 16, checklist: { business: true, product: false, cash: false, sale: false, customer: false, reminder: false, label: false, report: false } };
+	      state.legalAcceptances ||= [];
+	      state.legalAcceptances.push({ id: uid('legal'), businessId: business.id, uid: window.click360User.uid, termsVersion, privacyVersion: termsVersion, acceptedAt: new Date().toISOString(), source: 'onboarding' });
+	      window.click360User.name = fullName;
+	      business.settings.ownerName = fullName;
+	      cacheUserProfile({ uid: window.click360User.uid, name: fullName, email: window.click360User.email, photoURL: window.click360User.photoURL });
 	      persistUserProfileCache(cachedUserProfile(window.click360User.uid));
 	      queuePendingProfile(cachedUserProfile(window.click360User.uid));
 	      if (!save()) return;
 	      await flushPendingProfile();
+	      await window.click360SaveLegalAcceptance?.({ termsVersion, privacyVersion: termsVersion, source: 'onboarding' }).catch((error) => console.warn('Aceptacion legal pendiente de nube:', error.message));
 	      closeModal(); renderApp('home'); toast('Tu negocio esta listo');
 	    };
 	  }
@@ -1551,6 +1968,7 @@ function parseMoney(value) {
 	    return `<div class="pageHead"><div><h1>M\u00e1s</h1></div></div><section class="moreList">
 	      ${ownerTools}
 	      <button class="card bigRow" data-more="access"><span>Mi plan y acceso</span><b>\u203A</b></button>
+	      <button class="card bigRow" data-more="legal"><span>Terminos y privacidad</span><b>\u203A</b></button>
 	      <button class="card bigRow" id="installAppBtn"><span>⬇ Instalar CLICK 360 como app</span><b>\u203A</b></button>
 	      <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
 	      <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
@@ -1596,7 +2014,8 @@ function parseMoney(value) {
          <form id="addWorkerForm" style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
             <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
-            <button class="btn primary block" type="submit">➕ Registrar y Pre-Aprobar</button>
+            <div class="field"><label>Rol inicial</label><select id="workerRole"><option value="worker">Operador</option><option value="cashier">Caja y ventas</option><option value="inventory">Inventario</option></select></div>
+            <button class="btn primary block" type="submit">Crear invitacion segura</button>
          </form>
 
          <div id="inviteLinkBox" style="display:none; margin-top:14px; background:rgba(55,213,126,0.1); border:1px solid rgba(55,213,126,0.3); padding:12px; border-radius:12px;">
@@ -1613,11 +2032,12 @@ function parseMoney(value) {
 	  function settingsView(){
 	    const b=currentBusiness();
 	    const bizSettings = currentBusiness().settings || {};
-    const iva = bizSettings.iva || 0;
+    const tax = businessTaxConfig(b);
     const ruc = bizSettings.ruc || '';
     const phone = bizSettings.phone || '';
     const address = bizSettings.address || '';
 	    const logoUrl = safeImageSrc(bizSettings.logoUrl);
+    const policies = businessPolicies(b);
     const bizOptions = state.businesses.map(x=>`<option value="${escapeHtml(x.id)}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
 	    const ownerOnlyStyle = isOwnerUser() ? '' : 'display:none;';
 
@@ -1639,7 +2059,11 @@ function parseMoney(value) {
         <div class="field"><label>Teléfono</label><input id="bizPhone" type="tel" value="${escapeHtml(phone)}" placeholder="+593 999999999"></div>
         <div class="field"><label>Dirección del Local</label><input id="bizAddress" value="${escapeHtml(address)}" placeholder="Ej. Av. de los Shyris y Naciones Unidas"></div>
         <div class="field"><label>¿Cuál es tu negocio?</label><select id="bizType">${typeOptions(b.type)}</select></div>
-        <div class="field"><label>IVA Global (%)</label><input type="number" inputmode="numeric" id="bizIva" value="${numericInputValue(iva)}" placeholder="0 para desactivar"></div>
+        <label class="consentCheck"><input type="checkbox" id="bizTaxEnabled" ${tax.enabled ? 'checked' : ''}><span>IVA activado</span></label>
+        <div class="field"><label>IVA global (%)</label><input type="number" min="0" max="100" step="0.01" inputmode="decimal" id="bizIva" value="${numericInputValue(tax.rate)}" placeholder="0"></div>
+        <div class="field"><label>Los precios del negocio</label><select id="bizTaxPriceMode"><option value="included" ${tax.priceMode === 'included' ? 'selected' : ''}>Incluyen IVA</option><option value="excluded" ${tax.priceMode === 'excluded' ? 'selected' : ''}>No incluyen IVA</option></select></div>
+        <label class="consentCheck"><input type="checkbox" id="bizTaxShowLabel" ${tax.showLabel ? 'checked' : ''}><span>Mostrar condicion de IVA</span></label>
+        <details class="settingsDisclosure"><summary>Politicas de apartados y retiros</summary><div class="formGrid"><div class="field full"><label>Politica de apartado</label><textarea id="policyLayaway">${escapeHtml(policies.layaway)}</textarea></div><div class="field full"><label>Politica de retiro</label><textarea id="policyPickup">${escapeHtml(policies.pickup)}</textarea></div><div class="field full"><label>Devoluciones y cambios</label><textarea id="policyReturns">${escapeHtml(policies.returns)}</textarea></div><div class="field full"><label>Daños y estado del producto</label><textarea id="policyDamages">${escapeHtml(policies.damages)}</textarea></div><div class="field full"><label>Condiciones adicionales</label><textarea id="policyAdditional">${escapeHtml(policies.additional)}</textarea></div><p class="fieldHint full">Revisa estas politicas conforme a la legislacion aplicable. CLICK 360 proporciona herramientas de gestion, no asesoria legal.</p></div></details>
         <button type="button" class="btn primary block" id="saveBiz">Guardar cambios</button>
       </section>
 
@@ -1703,6 +2127,7 @@ function parseMoney(value) {
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
     if(r==='reminders') bindReminders();
+    if(r==='access') bindAccess();
   }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
@@ -1718,12 +2143,46 @@ function parseMoney(value) {
     }
 
     // Bind template deletion
+    const labelSample = productsForBiz()[0] || { id: 'sample', businessId: currentBusiness().id, code: 'CLICK360', category: 'Ejemplo', name: 'Producto de ejemplo', qty: 1, price: 10, cardPrice: 10, taxMode: 'inherit', imageData: '' };
+    $$('[data-edit-tpl]').forEach((button) => button.onclick = () => openLabelModal(labelSample, button.dataset.editTpl));
+    $$('[data-rename-tpl]').forEach((button) => button.onclick = () => {
+      const template = state.settings.labelTemplates.find((item) => item.id === button.dataset.renameTpl);
+      if (!template) return;
+      const name = prompt('Nuevo nombre de la plantilla:', template.name);
+      if (!name?.trim()) return;
+      template.name = name.trim();
+      template.updatedAt = new Date().toISOString();
+      if (!save()) return;
+      renderApp('inventory');
+      toast('Plantilla renombrada');
+    });
+    $$('[data-duplicate-tpl]').forEach((button) => button.onclick = () => {
+      const template = state.settings.labelTemplates.find((item) => item.id === button.dataset.duplicateTpl);
+      if (!template) return;
+      const copy = JSON.parse(JSON.stringify(template));
+      copy.id = uid('tpl');
+      copy.name = `${template.name} copia`;
+      copy.isDefault = false;
+      copy.createdAt = new Date().toISOString();
+      copy.updatedAt = copy.createdAt;
+      state.settings.labelTemplates.push(copy);
+      if (!save()) return;
+      renderApp('inventory');
+      toast('Plantilla duplicada');
+    });
+    $$('[data-default-tpl]').forEach((button) => button.onclick = () => {
+      state.settings.labelTemplates.forEach((template) => { template.isDefault = template.id === button.dataset.defaultTpl; });
+      if (!save()) return;
+      renderApp('inventory');
+      toast('Plantilla predeterminada actualizada');
+    });
     $$('[data-del-tpl]').forEach(btn => {
        btn.onclick = () => {
           if (confirm('¿Estás seguro de eliminar esta plantilla de etiquetas?')) {
              const tplId = btn.dataset.delTpl;
              state.settings ||= {};
              state.settings.labelTemplates = (state.settings.labelTemplates || []).filter(t => t.id !== tplId);
+             if (state.settings.labelTemplates.length && !state.settings.labelTemplates.some((template) => template.isDefault)) state.settings.labelTemplates[0].isDefault = true;
              if(!save()) return;
              renderApp('inventory');
              toast('Plantilla eliminada');
@@ -1740,7 +2199,7 @@ function parseMoney(value) {
   }
   function openProductModal(product=null){
     const b=currentBusiness(), v=businessVocabulary(b.type);
-    const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,notes:'',imageData:''};
+    const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,taxMode:'inherit',notes:'',imageData:''};
     const productImage = safeImageSrc(p.imageData);
     showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
       <form id="productForm" class="formGrid">
@@ -1762,6 +2221,7 @@ function parseMoney(value) {
         <div class="field"><label>Costo</label><input id="pCost" inputmode="decimal" value="${numericInputValue(p.cost).replace('.',',')}"></div>
         <div class="field"><label>Precio (Efectivo)</label><input id="pPrice" inputmode="decimal" value="${numericInputValue(p.price).replace('.',',')}"></div>
         <div class="field"><label>Precio con Tarjeta</label><input id="pCardPrice" inputmode="decimal" value="${numericInputValue(p.cardPrice ?? p.price).replace('.',',')}"></div>
+        <div class="field full"><label>IVA del producto</label><select id="pTaxMode"><option value="inherit" ${!p.taxMode || p.taxMode === 'inherit' ? 'selected' : ''}>Heredar del negocio</option><option value="included" ${p.taxMode === 'included' ? 'selected' : ''}>Incluye IVA</option><option value="excluded" ${p.taxMode === 'excluded' ? 'selected' : ''}>No incluye IVA</option><option value="exempt" ${p.taxMode === 'exempt' ? 'selected' : ''}>Exento de IVA</option></select></div>
         <div class="field full"><label>Notas</label><textarea id="pNotes">${escapeHtml(p.notes||'')}</textarea></div>
         <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button>
       </form>`);
@@ -1801,8 +2261,9 @@ function parseMoney(value) {
       if(!Number.isFinite(cardPrice)||cardPrice<0) return toast('Precio con tarjeta inválido','err');
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
 	      const updatedAtMs = Date.now();
-	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
-	      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name});
+	      const taxMode = $('#pTaxMode').value;
+	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
+	      else state.products.push({id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name});
 	      if(!save()) return; closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
 	    };
 	  }
@@ -1821,33 +2282,36 @@ function parseMoney(value) {
   function bindSell(){
     if(!$('#payMethod')) return;
     let cart=[];
-    let currentIva = (currentBusiness().settings || {}).iva || 0;
+    const currentTax = businessTaxConfig();
+
+    const calculateCurrentCart = (method = $('#payMethod').value) => {
+      const isCard = method === 'Tarjeta';
+      const lines = cart.map((item) => ({ ...item, unitPrice: isCard ? item.cardPrice : item.price }));
+      const discount = parseMoney($('#discount')?.value || 0);
+      return window.CLICK360_V16_DOMAIN?.calculateCart(lines, Number.isFinite(discount) ? discount : 0, currentTax)
+        || { lines, gross: 0, discount: 0, subtotal: 0, tax: 0, total: 0, config: currentTax };
+    };
 
     const renderCart=()=>{
       const method = $('#payMethod').value;
       const isCard = method === 'Tarjeta';
-      const subtotal=cart.reduce((a,i)=>a+(isCard ? i.cardPrice : i.price)*i.qty,0), disc=parseMoney($('#discount')?.value||0);
-      let base = Math.max(0, subtotal - (Number.isFinite(disc)?disc:0));
-      let ivaAmount = 0;
-      if (currentIva > 0) {
-         ivaAmount = base * (currentIva / 100);
-      }
-      const total = base + ivaAmount;
+      const calculation = calculateCurrentCart(method);
+      const total = calculation.total;
 
       $('#cartTotal').textContent=fmt(total);
 
       const subView = $('#cartSubtotalView'), ivaView = $('#cartIvaView');
-      if (currentIva > 0) {
+      if (currentTax.enabled && currentTax.rate > 0) {
          subView.style.display = 'flex'; ivaView.style.display = 'flex';
-         subView.querySelector('b').textContent = fmt(base);
-         ivaView.querySelector('b').textContent = fmt(ivaAmount);
+         subView.querySelector('b').textContent = fmt(calculation.subtotal);
+         ivaView.querySelector('b').textContent = fmt(calculation.tax);
       } else {
          subView.style.display = 'none'; ivaView.style.display = 'none';
       }
 
       $('#cartItems').innerHTML=cart.length?cart.map(i=>{ const src=safeImageSrc(i.imageData); return `<div class="cartItem cartWithImage">${src ? `<img class="productImg small" src="${escapeHtml(src)}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(isCard ? i.cardPrice : i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button type="button" data-minus="${escapeHtml(i.id)}">−</button><b>${i.qty}</b><button type="button" data-plus="${escapeHtml(i.id)}">＋</button><button type="button" class="iconBtn danger" data-remove="${escapeHtml(i.id)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`; }).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
-      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); it.qty++; renderCart();});
+      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); if (!it || (!it.isCustom && (!p || it.qty >= p.qty))) return toast('No hay mas stock disponible', 'err'); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
 
       const recF = $('#receivedField'), chgF = $('#changeField'), lblCustomer = $('#lblCustomer');
@@ -1859,6 +2323,7 @@ function parseMoney(value) {
       }
 
       const dueField = $('#layawayDueDateField');
+      const termsField = $('#layawayTermsField');
       if (method === 'Apartado') {
          if (dueField) {
             dueField.style.display = 'grid';
@@ -1869,8 +2334,10 @@ function parseMoney(value) {
                dueInput.value = localDateKey(future);
             }
          }
+         if (termsField) termsField.style.display = 'grid';
       } else {
          if (dueField) dueField.style.display = 'none';
+         if (termsField) termsField.style.display = 'none';
       }
 
       if (method === 'Efectivo') {
@@ -1915,7 +2382,7 @@ function parseMoney(value) {
       if(p.qty<=0){ beep('err'); return toast('Sin stock disponible','err'); }
       const it=cart.find(x=>x.id===p.id);
       if(it){ if(it.qty>=p.qty){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
-      else cart.push({id:p.id,name:p.name,price:p.price,cardPrice:p.cardPrice||p.price,qty:1,code:p.code,imageData:p.imageData||''});
+      else cart.push({id:p.id,name:p.name,price:p.price,cardPrice:p.cardPrice||p.price,qty:1,code:p.code,imageData:p.imageData||'',taxMode:p.taxMode||'inherit'});
       renderCart(); beep(); toast(`${p.name} agregado`);
     };
 
@@ -1944,7 +2411,7 @@ function parseMoney(value) {
             const priceRaw = prompt("Precio ($):");
             const price = parseMoney(priceRaw);
             if (!Number.isFinite(price) || price < 0) return toast("Precio inválido", "err");
-            cart.push({ id: 'custom_'+Date.now(), name, price, cardPrice: price, qty: 1, isCustom: true, category: 'Venta Libre', code: 'MANUAL' });
+            cart.push({ id: 'custom_'+Date.now(), name, price, cardPrice: price, qty: 1, isCustom: true, category: 'Venta Libre', code: 'MANUAL', taxMode: 'inherit' });
             renderCart();
             toast('Producto manual agregado');
         }
@@ -1959,13 +2426,13 @@ function parseMoney(value) {
 
       const method = $('#payMethod').value;
       const isCard = method === 'Tarjeta';
-      const subtotal=cart.reduce((a,i)=>a+(isCard ? i.cardPrice : i.price)*i.qty,0);
-      if(disc>subtotal){ beep('err'); return toast('El descuento supera el subtotal','err'); }
+      const gross = cart.reduce((a,i)=>a+(isCard ? i.cardPrice : i.price)*i.qty,0);
+      if(disc>gross){ beep('err'); return toast('El descuento supera el subtotal','err'); }
 
-      let base = Math.max(0, subtotal - disc);
-      let ivaAmount = 0;
-      if (currentIva > 0) ivaAmount = base * (currentIva / 100);
-      const total = base + ivaAmount;
+      const calculation = calculateCurrentCart(method);
+      const base = calculation.subtotal;
+      const ivaAmount = calculation.tax;
+      const total = calculation.total;
 
       for(const i of cart){
         if(i.isCustom) continue;
@@ -1989,6 +2456,8 @@ function parseMoney(value) {
          if(!Number.isFinite(rec) || rec < total) { beep('err'); return toast('Efectivo recibido es menor al total','err'); }
 	         tendered = rec; received = total; change = rec - total;
       } else if (method === 'Apartado') {
+         if (!$('#layawayDueDate').value) { beep('err'); return toast('Selecciona la fecha limite de retiro.', 'err'); }
+         if (!$('#layawayTermsAccepted')?.checked) { beep('err'); return toast('Debes confirmar la aceptacion de los terminos del apartado.', 'err'); }
          if(!Number.isFinite(rec) || rec < 0) { beep('err'); return toast('Monto de abono inválido','err'); }
          if(rec > total) { beep('err'); return toast('El abono no puede superar el total','err'); }
          received = rec; balance = total - rec; status = 'layaway';
@@ -1999,21 +2468,28 @@ function parseMoney(value) {
       }
 
 	      const saleCreatedAtMs = Date.now();
+	      const policySnapshot = method === 'Apartado' ? businessPolicies() : null;
 	      const sale={
 	        id:uid('sale'),
 	        businessId:currentBusiness().id,
 	        date:today(),
 	        when:nowLabel(),
-        items:cart.map(i=>({
+        items:calculation.lines.map(i=>({
           id: i.id,
           name: i.name,
-          price: isCard ? i.cardPrice : i.price,
+          price: i.unitPrice,
           qty: i.qty,
           code: i.code,
-          category: i.category || 'General'
+          category: i.category || 'General',
+          taxMode: i.taxMode,
+          taxBase: i.base,
+          tax: i.tax,
+          total: i.total
         })),
         subtotal:base,
         iva:ivaAmount,
+        taxRate: currentTax.rate,
+        taxPriceMode: currentTax.priceMode,
         discount:disc,
         total,
         method,
@@ -2021,6 +2497,11 @@ function parseMoney(value) {
         customerCedula:customerCedulaVal,
         customerPhone:customerPhoneVal,
         dueDate: method === 'Apartado' ? $('#layawayDueDate').value : null,
+        inventoryDisposition: method === 'Apartado' ? 'reserved' : 'sold',
+        terms: policySnapshot ? layawayTermsText() : '',
+        termsVersion: policySnapshot?.version || null,
+        termsAccepted: method === 'Apartado' ? true : false,
+        termsAcceptedAt: method === 'Apartado' ? new Date(saleCreatedAtMs).toISOString() : null,
         user:authUser().name,
 	        status,
 	        received,
@@ -2035,6 +2516,32 @@ function parseMoney(value) {
 	        createdBy: authUser().name
 	      };
       state.sales.push(sale);
+	      if (method === 'Apartado') {
+	        state.layaways ||= [];
+	        state.layaways.push({
+	          id: uid('layaway'),
+	          saleId: sale.id,
+	          businessId: sale.businessId,
+	          customerId: '',
+	          customerSnapshot: { name: customerName, cedula: customerCedulaVal, phone: customerPhoneVal },
+	          phone: customerPhoneVal,
+	          items: sale.items.map((item) => ({ ...item, inventoryDisposition: 'reserved' })),
+	          total: sale.total,
+	          paid: sale.received,
+	          balance: sale.balance,
+	          methods: sale.payments.map((payment) => payment.method),
+	          createdAt: sale.createdAt,
+	          pickupDueAt: sale.dueDate,
+	          responsible: sale.createdBy,
+	          status: sale.balance > 0 ? (sale.received > 0 ? 'partially_paid' : 'active') : 'paid',
+	          terms: sale.terms,
+	          termsVersion: sale.termsVersion,
+	          accepted: true,
+	          acceptedAt: sale.termsAcceptedAt,
+	          payments: sale.payments.map((payment) => ({ ...payment })),
+	          notes: ''
+	        });
+	      }
 	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id); if(p) { p.qty-=i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
 
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
@@ -2374,8 +2881,25 @@ function parseMoney(value) {
                note: 'Apertura de caja diaria',
                createdBy: authUser().name
              });
-             if(!save()) return;
-             renderApp('cash');
+             state.cashSessions ||= [];
+             state.cashSessions.push({
+               id: uid('cash'),
+               businessId: currentBusiness().id,
+               registerName: 'Caja principal',
+               date: today(),
+               status: 'open',
+               openedByUid: window.click360User?.uid || '',
+               openedBy: authUser().name,
+               openedByRole: authUser().role || 'owner',
+               deviceId: window.click360DebugSyncIdentity?.().deviceId || '',
+               openedAt: new Date().toISOString(),
+               openingAmount: amt,
+               notes: ''
+             });
+	             addAudit('cash_opened', { amount: amt, businessId: currentBusiness().id });
+	             if(!save()) return;
+	             window.click360RecordTelemetry?.('cash_open', { mode: authUser().role || 'owner' }).catch?.(() => {});
+	             renderApp('cash');
              toast('Jornada iniciada exitosamente');
           };
        }
@@ -2503,9 +3027,38 @@ function parseMoney(value) {
 	            };
 
 	           const repId = uid('rep');
-	           state.dailyReports.push({ id: repId, businessId: currentBusiness().id, date: today(), closeCash: eFisico, html });
+	           const closeDetails = {
+	             id: repId,
+	             businessId: currentBusiness().id,
+	             date: today(),
+	             openedBy: state.cashSessions?.find((session) => session.businessId === currentBusiness().id && session.date === today() && session.status === 'open')?.openedBy || apertureMov?.createdBy || '',
+	             openedAt: state.cashSessions?.find((session) => session.businessId === currentBusiness().id && session.date === today() && session.status === 'open')?.openedAt || '',
+	             closedBy: authUser().name,
+	             closedByUid: window.click360User?.uid || '',
+	             closedAt: new Date().toISOString(),
+	             openingAmount: cInicial,
+	             productQuantity: totalItems,
+	             buyers: [...new Set(sales.map((sale) => sale.customer).filter(Boolean))],
+	             saleIds: sales.map((sale) => sale.id),
+	             paymentTotals: { cash: salesEfectivo, card: salesTarjeta, transfer: salesTransf, layawayPayments: abonosApartado },
+	             taxTotal: totalIva,
+	             income,
+	             expenses: out,
+	             expectedCash: balanceCalculado,
+	             countedCash: eFisico,
+	             difference: diferencia,
+	             observations: $('#cierreObs').value.trim(),
+	             closeCash: eFisico,
+	             status: 'closed',
+	             html
+	           };
+	           state.dailyReports.push(closeDetails);
+	           const openSession = state.cashSessions?.find((session) => session.businessId === currentBusiness().id && session.date === today() && session.status === 'open');
+	           if (openSession) Object.assign(openSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: balanceCalculado, difference: diferencia, reportId: repId, observations: closeDetails.observations });
+	           addAudit('cash_closed', { reportId: repId, expectedCash: balanceCalculado, countedCash: eFisico, difference: diferencia });
 	           currentBusiness().lastCashBalance = eFisico;
 	           if(!save()) return;
+	           window.click360RecordTelemetry?.('cash_close', { requestId: repId, mode: diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
 	           renderApp('cash');
 
            toast('Cierre del día generado');
@@ -2607,40 +3160,9 @@ function parseMoney(value) {
     let displayedWorkers = [];
     const loadWorkers = async () => {
       let workers = (state.settings?.workers || []).map(worker => ({ ...worker }));
-      const ownerUid = window.click360User?.uid || '';
-      if (ownerUid && window.click360Db) {
-        try {
-          const remoteSnapshot = await window.click360Db.collection('approvedUsers')
-            .where('ownerId', '==', ownerUid)
-            .where('role', '==', 'worker')
-            .get();
-          if (window.click360User?.uid !== ownerUid) return;
-          const remoteWorkers = remoteSnapshot.docs.map(snapshot => {
-            const data = snapshot.data() || {};
-            return {
-              uid: snapshot.id,
-              email: String(data.email || '').toLowerCase(),
-              name: String(data.name || data.email || 'Trabajador'),
-              status: data.status || 'pending',
-              approved: data.approved === true,
-              ownerId: data.ownerId || ownerUid
-            };
-          }).filter(worker => worker.email);
-          const remoteByEmail = new Map(remoteWorkers.map(worker => [worker.email, worker]));
-          const knownEmails = new Set();
-          workers = workers.map(worker => {
-            const email = String(worker.email || '').toLowerCase();
-            knownEmails.add(email);
-            const remote = remoteByEmail.get(email);
-            return remote ? { ...worker, ...remote, inviteToken: worker.inviteToken || '' } : worker;
-          });
-          remoteWorkers.forEach(worker => {
-            if (!knownEmails.has(worker.email)) workers.push(worker);
-          });
-        } catch (error) {
-          console.warn('No se pudo actualizar el directorio de trabajadores:', error.message);
-        }
-      }
+      try {
+        if (typeof window.click360ListWorkers === 'function') workers = await window.click360ListWorkers();
+      } catch (error) { console.warn('No se pudo actualizar el directorio de trabajadores:', error.message); }
       displayedWorkers = workers;
       if (workers.length === 0) {
         list.innerHTML = '<p class="empty">No hay trabajadores registrados.</p>';
@@ -2648,22 +3170,62 @@ function parseMoney(value) {
       }
 
       list.innerHTML = workers.map(w => {
-        const active = w.status === 'active' && w.approved !== false;
+        const active = ['active', 'accepted'].includes(w.status) && w.status !== 'revoked';
+        const statusLabel = active ? 'Activo' : w.status === 'pending' ? 'Invitacion pendiente' : w.status === 'revoked' ? 'Revocado' : 'Bloqueado';
         const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${escapeHtml(String(w.name || 'W').charAt(0).toUpperCase())}</div>`;
         return `
           <div class="movement" style="align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--line);">
              ${avatarHtml}
              <div style="flex:1;">
                <b>${escapeHtml(w.name)}</b>
-               <span class="badge ${active ? 'green' : 'danger'}" style="margin-left:6px; font-size:10px; padding:2px 6px;">${active ? 'Activo' : 'Bloqueado'}</span>
-               <br><small style="color:#aaa;">${escapeHtml(w.email)}</small>
+               <span class="badge ${active ? 'green' : 'danger'}" style="margin-left:6px;font-size:10px;padding:2px 6px;">${escapeHtml(statusLabel)}</span>
+               <br><small style="color:#aaa;">${escapeHtml(w.email)} · ${escapeHtml(w.role || 'worker')}</small>
              </div>
-             <div>
-                <button class="btn danger" style="padding:4px 8px; font-size:12px; min-height:28px;" data-del-worker="${escapeHtml(w.email)}">Eliminar</button>
+             <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+                <button class="btn silver" style="padding:4px 8px;font-size:12px;min-height:32px;" data-worker-details="${actionId(w.inviteHash || '')}">Permisos</button>
+                ${w.status === 'pending' ? `<button class="btn silver" style="padding:4px 8px;font-size:12px;min-height:32px;" data-worker-link="${actionId(w.inviteHash || '')}">Enlace</button>` : ''}
+                ${w.status !== 'revoked' ? `<button class="btn danger" style="padding:4px 8px;font-size:12px;min-height:32px;" data-del-worker="${escapeHtml(w.email)}">Revocar</button>` : ''}
              </div>
           </div>
         `;
       }).join('');
+
+      $$('[data-worker-link]').forEach((button) => {
+        button.onclick = async () => {
+          try {
+            const link = await window.click360GetInviteLink(decodeActionId(button.dataset.workerLink));
+            $('#inviteLinkBox').style.display = 'block';
+            $('#inviteLinkVal').value = link;
+            await navigator.clipboard?.writeText(link).catch(() => {});
+            toast('Enlace recuperado y listo para compartir');
+          } catch (error) { toast(error.message, 'err'); }
+        };
+      });
+
+      $$('[data-worker-details]').forEach((button) => {
+        button.onclick = () => {
+          const hash = decodeActionId(button.dataset.workerDetails);
+          const worker = displayedWorkers.find((item) => item.inviteHash === hash);
+          if (!worker) return toast('No se encontro la ficha del trabajador.', 'err');
+          const modules = [['inventory','Inventario'],['sales','Ventas'],['cash','Caja'],['customers','Clientes'],['reports','Reportes'],['reminders','Recordatorios'],['settings','Ajustes'],['suppliers','Proveedores'],['workers','Trabajadores']];
+          const actions = ['view','create','edit','delete','approve','export','manage'];
+          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(worker.status || 'pending')}</b></p><p>Aceptacion: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Ultimo acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label>Rol</label><select id="workerEditRole"><option value="worker" ${worker.role === 'worker' ? 'selected' : ''}>Operador</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Caja y ventas</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${action}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
+          $('#saveWorkerPermissions').onclick = async () => {
+            const permissions = {};
+            $$('[data-permission-module]').forEach((input) => {
+              permissions[input.dataset.permissionModule] ||= {};
+              permissions[input.dataset.permissionModule][input.dataset.permissionAction] = input.checked;
+            });
+            try {
+              await window.click360UpdateWorkerPermissions(worker.uid || '', worker.inviteHash, $('#workerEditRole').value, permissions);
+              addAudit('worker_permissions_updated', { workerUid: worker.uid || '', inviteHash: worker.inviteHash, role: $('#workerEditRole').value });
+              closeModal();
+              await loadWorkers();
+              toast('Permisos actualizados');
+            } catch (error) { toast(error.message, 'err'); }
+          };
+        };
+      });
 
       // Bind delete handlers
       $$('[data-del-worker]').forEach(btn => {
@@ -2678,7 +3240,7 @@ function parseMoney(value) {
           const match = displayedWorkers.find(w => String(w.email || '').toLowerCase() === email);
           try {
             if (!window.click360RevokeWorker) throw new Error('La revocación en nube no está disponible.');
-            await window.click360RevokeWorker(email, match?.uid || '');
+	          await window.click360RevokeWorker(email, match?.uid || '', match?.inviteHash || '');
             addAudit('worker_revoked', { email, uid: match?.uid || '' });
             state.settings.workers = (state.settings.workers || []).filter(w => String(w.email || '').toLowerCase() !== email);
             if(!save()) {
@@ -2704,8 +3266,9 @@ function parseMoney(value) {
       e.preventDefault();
       const name = $('#workerName').value.trim();
       const email = $('#workerEmail').value.trim().toLowerCase();
+      const role = $('#workerRole').value;
 
-      const workers = state.settings?.workers || [];
+      const workers = displayedWorkers;
       const activeCount = workers.filter(worker => worker.status !== 'revoked' && worker.status !== 'blocked').length;
       const workerLimit = Number(window.click360User?.workerLimit || 2);
       if (activeCount >= workerLimit) {
@@ -2723,23 +3286,23 @@ function parseMoney(value) {
       try {
          // 1. Write the cloud invitation before presenting it as active.
 	         if (!window.click360InviteWorkerEmail) throw new Error('La invitación en nube no está disponible.');
-	         const inviteMeta = await window.click360InviteWorkerEmail(email, name);
+	         const inviteMeta = await window.click360InviteWorkerEmail(email, name, { role });
 
          // 2. Add to local storage settings list
          state.settings ||= {};
          state.settings.workers ||= [];
-	         state.settings.workers.push({ email, name, status: 'pending', approved: false, inviteToken: inviteMeta?.inviteToken || '', ownerId: window.click360User.uid });
+	         state.settings.workers.push({ email, name, status: 'pending', role, inviteHash: inviteMeta?.inviteHash || '', permissions: inviteMeta?.permissions || {}, ownerId: window.click360User.uid, createdAt: new Date().toISOString() });
 	         if (!save()) {
-	           await window.click360CancelInviteEmail(email).catch(() => {});
+	           await window.click360CancelInviteEmail(email, inviteMeta?.inviteHash || '').catch(() => {});
 	           throw new Error('No se pudo guardar la invitación localmente; la invitación en nube fue cancelada.');
 	         }
 
          // 3. Display invite link PWA-compatible
          $('#inviteLinkBox').style.display = 'block';
-	         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + encodeURIComponent(window.click360User.uid) + (inviteMeta?.inviteToken ? "&token=" + encodeURIComponent(inviteMeta.inviteToken) : "");
+	         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + encodeURIComponent(window.click360User.uid) + "&inviteHash=" + encodeURIComponent(inviteMeta.inviteHash) + "&inviteToken=" + encodeURIComponent(inviteMeta.inviteToken);
          $('#inviteLinkVal').value = inviteLink;
 
-         toast('Trabajador registrado y pre-aprobado', 'ok');
+         toast('Invitacion segura creada', 'ok');
          await loadWorkers();
 
          // Reset fields
@@ -2748,15 +3311,15 @@ function parseMoney(value) {
       } catch(err) {
          toast('Error al registrar: ' + err.message, 'err');
       } finally {
-         submitBtn.textContent = '➕ Registrar y Pre-Aprobar';
+         submitBtn.textContent = 'Crear invitacion segura';
          submitBtn.disabled = false;
       }
     };
 
-    $('#copyInviteLinkBtn').onclick = () => {
+    $('#copyInviteLinkBtn').onclick = async () => {
        const el = $('#inviteLinkVal');
-       el.select();
-       document.execCommand('copy');
+       try { await navigator.clipboard.writeText(el.value); }
+       catch { el.select(); document.execCommand('copy'); }
        toast('Enlace copiado al portapapeles');
     };
   }
@@ -2843,7 +3406,25 @@ function parseMoney(value) {
        b.name=$('#bizName').value.trim()||b.name;
        b.type=$('#bizType').value;
        currentBusiness().settings = currentBusiness().settings || {};
-       currentBusiness().settings.iva = parseFloat($('#bizIva').value) || 0;
+       const taxRate = Math.max(0, Math.min(100, parseFloat($('#bizIva').value) || 0));
+       currentBusiness().settings.iva = taxRate;
+       currentBusiness().settings.tax = {
+         enabled: $('#bizTaxEnabled')?.checked === true && taxRate > 0,
+         rate: taxRate,
+         priceMode: $('#bizTaxPriceMode')?.value === 'excluded' ? 'excluded' : 'included',
+         showLabel: $('#bizTaxShowLabel')?.checked !== false,
+         rounding: 'line'
+       };
+       const previousPolicies = businessPolicies(currentBusiness());
+       const nextPolicies = {
+         layaway: $('#policyLayaway')?.value.trim() || previousPolicies.layaway,
+         pickup: $('#policyPickup')?.value.trim() || previousPolicies.pickup,
+         returns: $('#policyReturns')?.value.trim() || previousPolicies.returns,
+         damages: $('#policyDamages')?.value.trim() || previousPolicies.damages,
+         additional: $('#policyAdditional')?.value.trim() || ''
+       };
+       const policyChanged = ['layaway','pickup','returns','damages','additional'].some((key) => nextPolicies[key] !== previousPolicies[key]);
+       currentBusiness().settings.policies = { ...nextPolicies, version: policyChanged ? previousPolicies.version + 1 : previousPolicies.version, updatedAt: policyChanged ? new Date().toISOString() : currentBusiness().settings.policies?.updatedAt || null };
        currentBusiness().settings.ruc = $('#bizRuc') ? $('#bizRuc').value.trim() : '';
 	       currentBusiness().settings.phone = $('#bizPhone') ? $('#bizPhone').value.trim() : '';
 	       currentBusiness().settings.address = $('#bizAddress') ? $('#bizAddress').value.trim() : '';
@@ -2919,6 +3500,9 @@ function parseMoney(value) {
 	       state.dailyReports = state.dailyReports.filter(x => x.businessId !== bid);
 	       state.invoices = (state.invoices || []).filter(x => x.businessId !== bid);
 	       state.movements = state.movements.filter(x => x.businessId !== bid);
+	       state.layaways = (state.layaways || []).filter(x => x.businessId !== bid);
+	       state.cashSessions = (state.cashSessions || []).filter(x => x.businessId !== bid);
+	       state.notifications = (state.notifications || []).filter(x => x.businessId !== bid);
 	       state.movements.push({
 	         id: uid('mov'),
 	         businessId: bid,
@@ -2941,133 +3525,145 @@ function parseMoney(value) {
 
     $('#showTerms').onclick = (e) => {
        e.preventDefault();
-       showModal(`<div class="modalHeader"><h2>Términos y Condiciones</h2><button class="closeBtn" data-close>×</button></div>
-       <div style="padding:16px; font-size:13px; line-height:1.5; color:#ccc;">
-         <p>Al usar el sistema, aceptas los Términos y Condiciones. El usuario reconoce y acepta que el software está sujeto a cambios o a ediciones, y que ha sido entregado, revisado y aprobado por el cliente final.</p>
-       </div>`);
+       renderApp('legal');
     };
   }
 
   function showModal(html){ closeModal(); const root=document.createElement('div'); root.id='modalRoot'; root.innerHTML=`<div class="modalOverlay show"><div class="modal">${html}</div></div>`; document.body.appendChild(root); $$('[data-close]',root).forEach(b=>b.onclick=closeModal); }
   function closeModal(){ $('#modalRoot')?.remove(); }
 
-  async function drawLabelOnCanvas(canvas, product, options) {
+  function defaultLabelLayout() {
+    return {
+      business: { x: 130, y: 27, width: 235, size: 16, visible: true, locked: false, z: 2 },
+      address: { x: 130, y: 46, width: 235, size: 9, visible: true, locked: false, z: 2 },
+      logo: { x: 15, y: 14, width: 38, height: 38, visible: false, locked: false, z: 3 },
+      image: { x: 204, y: 14, width: 42, height: 42, visible: false, locked: false, z: 3 },
+      qr: { x: 45, y: 60, width: 170, height: 170, visible: true, locked: false, z: 1 },
+      code: { x: 130, y: 250, width: 230, size: 10, visible: true, locked: false, z: 2 },
+      name: { x: 130, y: 278, width: 235, size: 16, visible: true, locked: false, z: 2 },
+      variant: { x: 130, y: 300, width: 235, size: 10, visible: false, locked: false, z: 2 },
+      price: { x: 130, y: 326, width: 235, size: 18, visible: true, locked: false, z: 2 },
+      tax: { x: 130, y: 345, width: 235, size: 9, visible: true, locked: false, z: 2 },
+      social: { x: 130, y: 363, width: 235, size: 9, visible: true, locked: false, z: 2 },
+      phone: { x: 58, y: 363, width: 110, size: 8, visible: false, locked: false, z: 2 },
+      stock: { x: 202, y: 363, width: 90, size: 8, visible: false, locked: false, z: 2 },
+      customText: { x: 130, y: 235, width: 235, size: 8, visible: false, locked: false, z: 2 }
+    };
+  }
+  function normalizedLabelLayout(layout = {}) {
+    const defaults = defaultLabelLayout();
+    Object.keys(defaults).forEach((key) => { defaults[key] = { ...defaults[key], ...(layout[key] || {}) }; });
+    return defaults;
+  }
+  function drawFittedText(ctx, text, element, scale, weight = 700, family = 'Arial') {
+    if (!element.visible || !String(text || '').trim()) return;
+    let fontSize = Math.max(6, Number(element.size || 10)) * scale;
+    const maxWidth = Math.max(20, Number(element.width || 220)) * scale;
+    ctx.font = `${weight} ${fontSize}px ${family}`;
+    while (ctx.measureText(String(text)).width > maxWidth && fontSize > 6 * scale) {
+      fontSize -= scale;
+      ctx.font = `${weight} ${fontSize}px ${family}`;
+    }
+    ctx.fillText(String(text), Number(element.x || 0) * scale, Number(element.y || 0) * scale, maxWidth);
+  }
+  function loadCanvasImage(src) {
+    return new Promise((resolve) => {
+      const safe = safeImageSrc(src);
+      if (!safe) return resolve(null);
+      const image = new Image();
+      image.crossOrigin = 'anonymous';
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = safe;
+    });
+  }
+  function resolvedTaxLegend(product, options) {
+    const mode = options.taxDisplay || 'inherit';
+    if (mode === 'hidden') return '';
+    if (mode === 'included') return 'Incluye IVA';
+    if (mode === 'excluded') return 'No incluye IVA';
+    if (mode === 'exempt') return 'Exento de IVA';
+    return productTaxLegend(product);
+  }
+  async function drawLabelOnCanvas(canvas, product, options = {}) {
     const scale = options.scale || 3;
-    const w = 260 * scale;
-    const h = 380 * scale;
+    const widthMm = Math.max(25, Math.min(120, Number(options.widthMm || 60)));
+    const heightMm = Math.max(25, Math.min(180, Number(options.heightMm || 88)));
+	    const baseWidth = Math.round(widthMm * (260 / 60));
+	    const baseHeight = Math.round(heightMm * (380 / 88));
+	    const layout = normalizedLabelLayout(options.layout);
+	    const yOffset = Number(options.yOffsetAdj || 0);
+	    if (yOffset) Object.entries(layout).forEach(([key, element]) => {
+	      if (!['qr', 'logo', 'image'].includes(key)) element.y = Number(element.y || 0) + yOffset;
+	    });
+	    layout.name.size = Number(layout.name.size || 10) * Math.max(0.6, Math.min(1.4, Number(options.nameScale || 1)));
+	    layout.price.size = Number(layout.price.size || 10) * Math.max(0.6, Math.min(1.4, Number(options.priceScale || 1)));
+    const w = baseWidth * scale;
+    const h = baseHeight * scale;
     canvas.width = w;
     canvas.height = h;
+    canvas.dataset.baseWidth = String(baseWidth);
+    canvas.dataset.baseHeight = String(baseHeight);
     const ctx = canvas.getContext('2d');
-
-    // Save state
     ctx.save();
-
-    // Background color
     ctx.fillStyle = safeColor(options.bgColor, '#ffffff');
-    roundRect(ctx, 0, 0, w, h, 18 * scale, true, false);
-
-    // Text and QR color
+    roundRect(ctx, 0, 0, w, h, 12 * scale, true, false);
     const fg = safeColor(options.fgColor, '#000000');
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
 
-    // Apply Y offset adjustments
-    const yAdj = (options.yOffsetAdj || 0) * scale;
-    const nameScale = options.nameScale || 1.0;
-    const priceScale = options.priceScale || 1.0;
-
-    // Business name
-    ctx.font = `900 ${16 * scale}px Arial`;
-    ctx.fillText(currentBusiness().name.toUpperCase(), w / 2, 35 * scale + yAdj, w - 20 * scale);
-
-    // Local address (under name, small)
-    let yOffset = 52 * scale + yAdj;
-    if (options.address) {
-       ctx.font = `${9 * scale}px Arial`;
-       ctx.fillText(options.address, w / 2, yOffset, w - 20 * scale);
-       yOffset += 14 * scale;
-    }
-
-    // QR Code (centered)
-    const qrCanvas = document.createElement('canvas');
-    QR.draw(qrCanvas, productPayload(product), 170 * scale, 5, fg, safeColor(options.qrBgColor || options.bgColor, '#ffffff'));
-    ctx.drawImage(qrCanvas, (w - 170 * scale) / 2, yOffset);
-
-    // QR Footer text ("Sistema contable Click 360")
-    yOffset += 185 * scale;
-    ctx.font = `${8 * scale}px Arial`;
-    ctx.fillText("Sistema contable Click 360", w / 2, yOffset, w - 20 * scale);
-
-    // Barcode Code text
-    yOffset += 18 * scale;
-    ctx.font = `${10 * scale}px monospace`;
-    ctx.fillText(product.code, w / 2, yOffset, w - 20 * scale);
-
-    // Product Name (wrapped if too long)
-    yOffset += 24 * scale;
-    ctx.font = `900 ${Math.round(16 * scale * nameScale)}px Arial`;
-
-    const pName = product.name || '';
-    const maxTextWidth = w - 24 * scale;
-
-    // Simple wrapping logic
-    const words = pName.split(' ');
-    let line = '';
-    const lines = [];
-    for (let n = 0; n < words.length; n++) {
-      let testLine = line + words[n] + ' ';
-      let metrics = ctx.measureText(testLine);
-      let testWidth = metrics.width;
-      if (testWidth > maxTextWidth && n > 0) {
-        lines.push(line.trim());
-        line = words[n] + ' ';
+    const layers = Object.entries(layout).sort((a, b) => Number(a[1].z || 0) - Number(b[1].z || 0));
+    for (const [key, element] of layers) {
+      if (!element.visible) continue;
+      if (key === 'qr') {
+        const size = Math.max(90, Math.min(Number(element.width || 170), Number(element.height || element.width || 170)));
+        const x = Math.max(0, Math.min(baseWidth - size, Number(element.x || 0)));
+        const y = Math.max(0, Math.min(baseHeight - size, Number(element.y || 0)));
+        const qrCanvas = document.createElement('canvas');
+        QR.draw(qrCanvas, productPayload(product), size * scale, Math.max(2, Number(options.qrMargin || 5)), fg, safeColor(options.qrBgColor || options.bgColor, '#ffffff'));
+        ctx.drawImage(qrCanvas, x * scale, y * scale, size * scale, size * scale);
+      } else if (key === 'logo' || key === 'image') {
+        const source = key === 'logo' ? currentBusiness()?.settings?.logoUrl : product.imageData;
+        const image = await loadCanvasImage(source);
+        if (image) ctx.drawImage(image, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 40) * scale, Number(element.height || 40) * scale);
       } else {
-        line = testLine;
+        const values = {
+          business: currentBusiness().name.toUpperCase(),
+          address: options.address,
+          code: product.code,
+          name: product.name,
+          variant: product.variant || product.category,
+          price: product.cardPrice && product.cardPrice !== product.price ? `Efectivo ${fmt(product.price)} · Tarjeta ${fmt(product.cardPrice)}` : fmt(product.price),
+          tax: resolvedTaxLegend(product, options),
+          social: options.social,
+          phone: options.phone || currentBusiness()?.settings?.phone || '',
+          stock: `Stock ${product.qty}`,
+          customText: options.customText || ''
+        };
+        drawFittedText(ctx, values[key], element, scale, ['business','name','price'].includes(key) ? 900 : 600, key === 'code' ? 'monospace' : 'Arial');
       }
     }
-    lines.push(line.trim());
-
-    // Draw product name lines (maximum 2 lines to prevent layout break)
-    const maxLines = Math.min(2, lines.length);
-    for (let i = 0; i < maxLines; i++) {
-      ctx.fillText(lines[i], w / 2, yOffset, maxTextWidth);
-      if (i < maxLines - 1) {
-        yOffset += 16 * scale * nameScale;
-      }
-    }
-
-    // Prices with legend (incluye IVA)
-    yOffset += 28 * scale;
-    ctx.font = `900 ${Math.round(18 * scale * priceScale)}px Arial`;
-
-    const priceText = product.cardPrice && product.cardPrice !== product.price ?
-      `Efectivo: ${fmt(product.price)} / Tarjeta: ${fmt(product.cardPrice)}` :
-      fmt(product.price);
-
-    // Measure price text and auto-scale if too large
-    let priceFontSize = Math.round(18 * scale * priceScale);
-    ctx.font = `900 ${priceFontSize}px Arial`;
-    let priceWidth = ctx.measureText(priceText).width;
-    while (priceWidth > maxTextWidth && priceFontSize > 8 * scale) {
-      priceFontSize -= 1 * scale;
-      ctx.font = `900 ${priceFontSize}px Arial`;
-      priceWidth = ctx.measureText(priceText).width;
-    }
-
-    ctx.fillText(priceText, w / 2, yOffset, maxTextWidth);
-
-    yOffset += 14 * scale;
-    ctx.font = `900 ${9 * scale}px Arial`;
-    ctx.fillText("(incluye IVA)", w / 2, yOffset);
     ctx.restore();
+    return { widthMm, heightMm, baseWidth, baseHeight, layout };
   }
 
-  async function openLabelModal(product){
+  async function openLabelModal(product, initialTemplateId = ''){
     const bizSettings = currentBusiness().settings || {};
     const address = bizSettings.address || '';
 
     const templates = state.settings?.labelTemplates || [];
     const templateOptions = templates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+    const initialTemplate = templates.find((template) => template.id === initialTemplateId)
+      || templates.find((template) => template.isDefault) || null;
+    let activeTemplateId = initialTemplate?.id || '';
+    let editorLayout = normalizedLabelLayout(initialTemplate?.layout);
+    if (initialTemplate && !initialTemplate.layout) {
+      const legacyOffset = Number(initialTemplate.yOffsetAdj || 0);
+      Object.values(editorLayout).forEach((element) => { element.y = Number(element.y || 0) + legacyOffset; });
+      editorLayout.name.size *= Number(initialTemplate.nameScale || 1);
+      editorLayout.price.size *= Number(initialTemplate.priceScale || 1);
+    }
 
     showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div>
       <style>
@@ -3092,17 +3688,32 @@ function parseMoney(value) {
            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
               <div class="field">
                  <label style="font-size:11px;">Fondo Etiqueta</label>
-                 <input type="color" id="labelBgColor" value="#ffffff" style="width:100%; height:36px; padding:2px; cursor:pointer;">
+                 <input type="color" id="labelBgColor" value="${safeColor(initialTemplate?.bgColor, '#ffffff')}" style="width:100%; height:36px; padding:2px; cursor:pointer;">
               </div>
               <div class="field">
                  <label style="font-size:11px;">Fondo QR</label>
-                 <input type="color" id="qrBgColor" value="#ffffff" style="width:100%; height:36px; padding:2px; cursor:pointer;">
+                 <input type="color" id="qrBgColor" value="${safeColor(initialTemplate?.qrBgColor || initialTemplate?.bgColor, '#ffffff')}" style="width:100%; height:36px; padding:2px; cursor:pointer;">
               </div>
               <div class="field">
                  <label style="font-size:11px;">Texto / QR</label>
-                 <input type="color" id="labelFgColor" value="#000000" style="width:100%; height:36px; padding:2px; cursor:pointer;">
+                 <input type="color" id="labelFgColor" value="${safeColor(initialTemplate?.fgColor, '#000000')}" style="width:100%; height:36px; padding:2px; cursor:pointer;">
               </div>
            </div>
+
+           <div class="formGrid labelSizeGrid">
+             <div class="field"><label>Ancho (mm)</label><input type="number" min="25" max="120" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div>
+             <div class="field"><label>Alto (mm)</label><input type="number" min="25" max="180" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 88)}"></div>
+             <div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Heredar del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div>
+             <div class="field"><label>Margen QR</label><input type="number" min="2" max="12" id="labelQrMargin" value="${numericInputValue(initialTemplate?.qrMargin || 5)}"></div>
+           </div>
+
+           <section class="labelElementPanel">
+             <div class="field"><label>Elemento</label><select id="labelElementSelect"><option value="qr">QR</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="business">Negocio</option><option value="address">Direccion</option><option value="name">Nombre</option><option value="variant">Variante</option><option value="price">Precio</option><option value="code">Codigo</option><option value="tax">IVA</option><option value="social">Red social</option><option value="phone">Telefono</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
+             <div class="labelElementToggles"><label><input type="checkbox" id="labelElementVisible"> Visible</label><label><input type="checkbox" id="labelElementLocked"> Bloqueado</label><label><input type="checkbox" id="labelSnap" checked> Ajustar</label></div>
+             <div class="formGrid"><div class="field"><label>X</label><input id="labelElementX" type="number"></div><div class="field"><label>Y</label><input id="labelElementY" type="number"></div><div class="field"><label>Ancho</label><input id="labelElementWidth" type="number" min="8"></div><div class="field"><label>Alto / tamaño</label><input id="labelElementHeight" type="number" min="6"></div></div>
+             <div class="labelLayerButtons"><button type="button" class="btn silver" id="labelLayerDown">Enviar atras</button><button type="button" class="btn silver" id="labelLayerUp">Traer al frente</button></div>
+             <p id="labelQrWarning" class="fieldHint"></p>
+           </section>
 
            <!-- Layout Adjustments -->
            <div class="field">
@@ -3122,11 +3733,12 @@ function parseMoney(value) {
 
            <div class="field">
               <label>Red Social / Contacto (opcional)</label>
-              <input id="labelSocial" placeholder="Ej. @click360" value="">
+              <input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}">
            </div>
+           <div class="field"><label>Texto libre (opcional)</label><input id="labelCustomText" maxlength="80" value="${escapeHtml(initialTemplate?.customText || '')}"></div>
            <div class="field">
               <label>Dirección del Local (opcional)</label>
-              <input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(address)}">
+              <input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}">
            </div>
            <div class="field">
               <label>Cantidad de Copias</label>
@@ -3143,7 +3755,13 @@ function parseMoney(value) {
         </div>
       </div>`);
 
+    $('#modalRoot .modal')?.classList.add('labelEditorModal');
     const canvas = $('#labelPreviewCanvas');
+    $('#applyTemplateSelect').value = activeTemplateId;
+    $('#labelTaxDisplay').value = initialTemplate?.taxDisplay || 'inherit';
+	    $('#labelYOffset').value = initialTemplate?.layout ? (initialTemplate?.yOffsetAdj || 0) : 0;
+	    $('#labelNameScale').value = initialTemplate?.layout ? (initialTemplate?.nameScale || 1) : 1;
+	    $('#labelPriceScale').value = initialTemplate?.layout ? (initialTemplate?.priceScale || 1) : 1;
 
     const getOptions = (extraScale = null) => {
        return {
@@ -3153,14 +3771,39 @@ function parseMoney(value) {
           fgColor: safeColor($('#labelFgColor').value, '#000000'),
           social: $('#labelSocial').value.trim(),
           address: $('#labelAddress').value.trim(),
+          phone: currentBusiness()?.settings?.phone || '',
+          customText: $('#labelCustomText').value.trim(),
+          taxDisplay: $('#labelTaxDisplay').value,
+          qrMargin: Math.max(2, Math.min(12, Number($('#labelQrMargin').value || 5))),
+          widthMm: Math.max(25, Math.min(120, Number($('#labelWidthMm').value || 60))),
+          heightMm: Math.max(25, Math.min(180, Number($('#labelHeightMm').value || 88))),
+          layout: normalizedLabelLayout(editorLayout),
           yOffsetAdj: parseFloat($('#labelYOffset').value || '0'),
           nameScale: parseFloat($('#labelNameScale').value || '1.0'),
           priceScale: parseFloat($('#labelPriceScale').value || '1.0')
        };
     };
 
-    const updatePreview = () => {
-       drawLabelOnCanvas(canvas, product, getOptions(2));
+	    let previewGeneration = 0;
+	    const updatePreview = async () => {
+	       const generation = ++previewGeneration;
+	       const result = await drawLabelOnCanvas(canvas, product, getOptions(2));
+	       if (generation !== previewGeneration || !result) return;
+	       const selectedKey = $('#labelElementSelect').value;
+	       const selected = result.layout[selectedKey];
+	       if (selected?.visible !== false) {
+	         const bounds = hitBounds(selectedKey, selected);
+	         const context = canvas.getContext('2d');
+	         const previewScale = canvas.width / Number(canvas.dataset.baseWidth || result.baseWidth || 260);
+	         context.save();
+	         context.strokeStyle = '#d9a928';
+	         context.lineWidth = Math.max(2, previewScale);
+	         context.setLineDash([4 * previewScale, 3 * previewScale]);
+	         context.strokeRect(bounds.left * previewScale, bounds.top * previewScale, Math.max(1, bounds.right - bounds.left) * previewScale, Math.max(1, bounds.bottom - bounds.top) * previewScale);
+	         context.restore();
+	       }
+	       const qr = editorLayout.qr;
+       $('#labelQrWarning').textContent = Number(qr.width || 0) < 90 ? 'Aumenta el QR: por debajo de 90 px puede perder legibilidad.' : '';
     };
 
     // Auto sync qrBgColor to labelBgColor if they were matching
@@ -3179,61 +3822,198 @@ function parseMoney(value) {
     $('#labelFgColor').oninput = updatePreview;
     $('#labelSocial').oninput = updatePreview;
     $('#labelAddress').oninput = updatePreview;
+    $('#labelCustomText').oninput = updatePreview;
+    $('#labelTaxDisplay').onchange = updatePreview;
+    $('#labelQrMargin').oninput = updatePreview;
+    $('#labelWidthMm').oninput = updatePreview;
+    $('#labelHeightMm').oninput = updatePreview;
 
     // Wire range inputs
     $('#labelYOffset').oninput = (e) => { $('#yOffsetVal').textContent = e.target.value + 'px'; updatePreview(); };
     $('#labelNameScale').oninput = (e) => { $('#nameScaleVal').textContent = e.target.value + 'x'; updatePreview(); };
     $('#labelPriceScale').oninput = (e) => { $('#priceScaleVal').textContent = e.target.value + 'x'; updatePreview(); };
 
+    const elementSelect = $('#labelElementSelect');
+    const syncElementControls = () => {
+      const key = elementSelect.value;
+      const element = editorLayout[key];
+      if (!element) return;
+      $('#labelElementVisible').checked = element.visible !== false;
+      $('#labelElementLocked').checked = element.locked === true;
+      $('#labelElementX').value = Math.round(Number(element.x || 0));
+      $('#labelElementY').value = Math.round(Number(element.y || 0));
+      $('#labelElementWidth').value = Math.round(Number(element.width || 20));
+      $('#labelElementHeight').value = Math.round(Number(['qr','logo','image'].includes(key) ? (element.height || element.width || 20) : (element.size || 10)));
+    };
+    const updateSelectedElement = () => {
+      const key = elementSelect.value;
+      const element = editorLayout[key];
+      if (!element) return;
+      element.visible = $('#labelElementVisible').checked;
+      element.locked = $('#labelElementLocked').checked;
+      element.x = Number($('#labelElementX').value || 0);
+      element.y = Number($('#labelElementY').value || 0);
+      element.width = Math.max(8, Number($('#labelElementWidth').value || element.width || 20));
+      if (['qr','logo','image'].includes(key)) element.height = Math.max(key === 'qr' ? 90 : 8, Number($('#labelElementHeight').value || element.height || element.width));
+      else element.size = Math.max(6, Number($('#labelElementHeight').value || element.size || 10));
+      updatePreview();
+    };
+    elementSelect.onchange = () => { syncElementControls(); updatePreview(); };
+    ['labelElementVisible','labelElementLocked','labelElementX','labelElementY','labelElementWidth','labelElementHeight'].forEach((id) => {
+      const input = $('#' + id);
+      input.oninput = updateSelectedElement;
+      input.onchange = updateSelectedElement;
+    });
+    $('#labelLayerUp').onclick = () => { editorLayout[elementSelect.value].z = Math.max(...Object.values(editorLayout).map((item) => Number(item.z || 0))) + 1; updatePreview(); };
+    $('#labelLayerDown').onclick = () => { editorLayout[elementSelect.value].z = Math.min(...Object.values(editorLayout).map((item) => Number(item.z || 0))) - 1; updatePreview(); };
+
+    const hitBounds = (key, element) => {
+      if (['qr','logo','image'].includes(key)) return { left: element.x, top: element.y, right: element.x + element.width, bottom: element.y + (element.height || element.width) };
+      const half = Number(element.width || 100) / 2;
+      return { left: element.x - half, top: element.y - Number(element.size || 10) * 1.3, right: element.x + half, bottom: element.y + 5 };
+    };
+    let dragState = null;
+    canvas.style.touchAction = 'none';
+    canvas.addEventListener('pointerdown', (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const baseWidth = Number(canvas.dataset.baseWidth || 260);
+      const baseHeight = Number(canvas.dataset.baseHeight || 380);
+      const point = { x: (event.clientX - rect.left) * baseWidth / rect.width, y: (event.clientY - rect.top) * baseHeight / rect.height };
+      const hit = Object.entries(editorLayout).filter(([, element]) => element.visible !== false).sort((a, b) => Number(b[1].z || 0) - Number(a[1].z || 0)).find(([key, element]) => {
+        const bounds = hitBounds(key, element);
+        return point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom;
+      });
+      if (!hit) return;
+	      elementSelect.value = hit[0];
+	      syncElementControls();
+	      if (hit[1].locked) return toast('Este elemento esta bloqueado.', 'err');
+	      const bounds = hitBounds(hit[0], hit[1]);
+	      const resize = Math.abs(point.x - bounds.right) <= 14 && Math.abs(point.y - bounds.bottom) <= 14;
+	      dragState = {
+	        key: hit[0], mode: resize ? 'resize' : 'move', startX: point.x, startY: point.y,
+	        x: Number(hit[1].x || 0), y: Number(hit[1].y || 0), width: Number(hit[1].width || 20),
+	        height: Number(hit[1].height || hit[1].width || 20), size: Number(hit[1].size || 10)
+	      };
+      canvas.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (!dragState) return;
+      const rect = canvas.getBoundingClientRect();
+      const baseWidth = Number(canvas.dataset.baseWidth || 260);
+      const baseHeight = Number(canvas.dataset.baseHeight || 380);
+	      const point = { x: (event.clientX - rect.left) * baseWidth / rect.width, y: (event.clientY - rect.top) * baseHeight / rect.height };
+	      const element = editorLayout[dragState.key];
+	      const snap = $('#labelSnap').checked ? 5 : 1;
+	      if (dragState.mode === 'resize') {
+	        const dx = point.x - dragState.startX;
+	        const dy = point.y - dragState.startY;
+	        element.width = Math.max(dragState.key === 'qr' ? 90 : 20, Math.round((dragState.width + dx) / snap) * snap);
+	        if (['qr','logo','image'].includes(dragState.key)) {
+	          element.height = Math.max(dragState.key === 'qr' ? 90 : 20, Math.round((dragState.height + dy) / snap) * snap);
+	          if (dragState.key === 'qr') element.width = element.height = Math.max(element.width, element.height);
+	        } else {
+	          element.size = Math.max(6, Math.round((dragState.size + dy / 2) / snap) * snap);
+	        }
+	      } else {
+	        element.x = Math.round((dragState.x + point.x - dragState.startX) / snap) * snap;
+	        element.y = Math.round((dragState.y + point.y - dragState.startY) / snap) * snap;
+	      }
+      const bounds = hitBounds(dragState.key, element);
+      if (bounds.left < 0) element.x -= bounds.left;
+      if (bounds.top < 0) element.y -= bounds.top;
+      if (bounds.right > baseWidth) element.x -= bounds.right - baseWidth;
+      if (bounds.bottom > baseHeight) element.y -= bounds.bottom - baseHeight;
+      syncElementControls();
+      updatePreview();
+      event.preventDefault();
+    });
+    const stopDrag = () => { dragState = null; };
+    canvas.addEventListener('pointerup', stopDrag);
+    canvas.addEventListener('pointercancel', stopDrag);
+    syncElementControls();
+
     // Apply template logic
     $('#applyTemplateSelect').onchange = (e) => {
        const tplId = e.target.value;
        if (!tplId) return;
        const tpl = (state.settings.labelTemplates || []).find(t => t.id === tplId);
-       if (tpl) {
+	       if (tpl) {
+	          activeTemplateId = tpl.id;
+	          editorLayout = normalizedLabelLayout(tpl.layout);
+	          if (!tpl.layout) {
+	            const legacyOffset = Number(tpl.yOffsetAdj || 0);
+	            Object.values(editorLayout).forEach((element) => { element.y = Number(element.y || 0) + legacyOffset; });
+	            editorLayout.name.size *= Number(tpl.nameScale || 1);
+	            editorLayout.price.size *= Number(tpl.priceScale || 1);
+	          }
           $('#labelBgColor').value = safeColor(tpl.bgColor, '#ffffff');
           $('#qrBgColor').value = safeColor(tpl.qrBgColor || tpl.bgColor, '#ffffff');
           $('#labelFgColor').value = safeColor(tpl.fgColor, '#000000');
           $('#labelSocial').value = tpl.social || '';
           $('#labelAddress').value = tpl.address || '';
-          $('#labelYOffset').value = tpl.yOffsetAdj || 0;
-          $('#labelNameScale').value = tpl.nameScale || 1.0;
-          $('#labelPriceScale').value = tpl.priceScale || 1.0;
+	          $('#labelYOffset').value = tpl.layout ? (tpl.yOffsetAdj || 0) : 0;
+	          $('#labelNameScale').value = tpl.layout ? (tpl.nameScale || 1.0) : 1.0;
+	          $('#labelPriceScale').value = tpl.layout ? (tpl.priceScale || 1.0) : 1.0;
+          $('#labelWidthMm').value = tpl.widthMm || 60;
+          $('#labelHeightMm').value = tpl.heightMm || 88;
+          $('#labelTaxDisplay').value = tpl.taxDisplay || 'inherit';
+          $('#labelQrMargin').value = tpl.qrMargin || 5;
+          $('#labelCustomText').value = tpl.customText || '';
           $('#yOffsetVal').textContent = ($('#labelYOffset').value) + 'px';
           $('#nameScaleVal').textContent = ($('#labelNameScale').value) + 'x';
           $('#priceScaleVal').textContent = ($('#labelPriceScale').value) + 'x';
           lastBgColor = $('#labelBgColor').value;
+          syncElementControls();
           updatePreview();
        }
     };
 
     // Save template logic
     $('#saveTemplateBtn').onclick = () => {
-       const name = prompt("Nombre de la plantilla:", "Mi Plantilla QR");
+       const existing = state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
+       const name = prompt("Nombre de la plantilla:", existing?.name || "Mi Plantilla QR");
        if (!name) return;
        const currentOpts = getOptions();
        const tpl = {
-          id: uid('tpl'),
+          id: existing?.id || uid('tpl'),
           name: name.trim(),
           bgColor: currentOpts.bgColor,
           qrBgColor: currentOpts.qrBgColor,
           fgColor: currentOpts.fgColor,
           social: currentOpts.social,
           address: currentOpts.address,
+          customText: currentOpts.customText,
+          taxDisplay: currentOpts.taxDisplay,
+          qrMargin: currentOpts.qrMargin,
+          widthMm: currentOpts.widthMm,
+          heightMm: currentOpts.heightMm,
+          layout: currentOpts.layout,
           yOffsetAdj: currentOpts.yOffsetAdj,
           nameScale: currentOpts.nameScale,
-          priceScale: currentOpts.priceScale
+          priceScale: currentOpts.priceScale,
+          isDefault: existing?.isDefault === true,
+          createdAt: existing?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
        };
        state.settings ||= {};
        state.settings.labelTemplates ||= [];
-       state.settings.labelTemplates.push(tpl);
-       if(!save()) return;
-       toast('Plantilla guardada con éxito', 'ok');
+       const index = state.settings.labelTemplates.findIndex((template) => template.id === tpl.id);
+       if (index >= 0) state.settings.labelTemplates[index] = tpl;
+       else state.settings.labelTemplates.push(tpl);
+	       activeTemplateId = tpl.id;
+	       addAudit('label_template_saved', { templateId: tpl.id, name: tpl.name, updated: index >= 0 });
+	       if(!save()) {
+	          window.click360RecordTelemetry?.('template_save_failure', { requestId: tpl.id, errorCode: 'local_save_rejected' }).catch?.(() => {});
+	          return;
+	       }
+       toast('Plantilla guardada correctamente', 'ok');
 
        // Reload select dropdown options
        const updatedTemplates = state.settings.labelTemplates;
        $('#applyTemplateSelect').innerHTML = `<option value="">-- Seleccionar plantilla --</option>` +
           updatedTemplates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+       $('#applyTemplateSelect').value = tpl.id;
     };
 
     updatePreview();
@@ -3273,23 +4053,30 @@ function parseMoney(value) {
     const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
     root.innerHTML='<div class="printLabels"></div>';
     const wrap=$('.printLabels',root);
+    const widthMm = Math.max(25, Math.min(120, Number(options.widthMm || 60)));
+    const heightMm = Math.max(25, Math.min(180, Number(options.heightMm || 88)));
+    wrap.style.gridTemplateColumns = `repeat(auto-fill, ${widthMm}mm)`;
     for(const g of groups) for(let i=0;i<Math.max(1,g.copies);i++){
        const item=document.createElement('div');
        item.className='printLabel';
+       item.style.width = `${widthMm}mm`;
+       item.style.height = `${heightMm}mm`;
        const canvas=document.createElement('canvas');
+       canvas.style.width = `${widthMm}mm`;
+       canvas.style.height = `${heightMm}mm`;
        item.appendChild(canvas);
        wrap.appendChild(item);
 
        const opt = {
+          ...options,
           scale: 3,
           bgColor: safeColor(options.bgColor, '#ffffff'),
           qrBgColor: safeColor(options.qrBgColor || options.bgColor, '#ffffff'),
           fgColor: safeColor(options.fgColor, '#000000'),
           social: options.social || '',
           address: options.address || '',
-          yOffsetAdj: options.yOffsetAdj || 0,
-          nameScale: options.nameScale || 1.0,
-          priceScale: options.priceScale || 1.0
+          widthMm,
+          heightMm
        };
        await drawLabelOnCanvas(canvas, g.product, opt);
     }
@@ -3397,7 +4184,7 @@ function parseMoney(value) {
 
        // 1. Compile Sales
        const salesRows = [
-         ["FECHA y HORA", "ID VENTA", "METODO", "CATEGORIA", "PRODUCTO/DETALLE", "CANTIDAD", "PRECIO UNIT.", "SUBTOTAL VENTA", "DESCUENTO", "IVA", "TOTAL VENTA", "RECIBIDO", "SALDO", "CLIENTE", "CEDULA/RUC", "TELEFONO", "ATENDIDO POR", "ESTADO"]
+         ["FECHA y HORA", "ID VENTA", "METODO", "CATEGORIA", "PRODUCTO/DETALLE", "CANTIDAD", "PRECIO UNIT.", "BASE LINEA", "IVA LINEA", "TOTAL LINEA", "SUBTOTAL VENTA", "DESCUENTO", "IVA VENTA", "TOTAL VENTA", "RECIBIDO", "SALDO", "CLIENTE", "CEDULA/RUC", "TELEFONO", "ATENDIDO POR", "ESTADO"]
        ];
        let totalVentas = 0;
        let totalCobrado = 0;
@@ -3410,8 +4197,10 @@ function parseMoney(value) {
              totalCobrado += collectedAmount(s);
              totalPendiente += s.balance || 0;
           }
-	          (s.items || []).forEach(item => {
-             const rowTotal = item.price * item.qty;
+	          (s.items || []).forEach((item, itemIndex) => {
+             const rowTotal = Number(item.total ?? (item.price * item.qty));
+             const rowTax = Number(item.tax || 0);
+             const rowBase = Number(item.taxBase ?? (rowTotal - rowTax));
              salesRows.push([
                 s.when || s.date,
                 s.id,
@@ -3420,12 +4209,15 @@ function parseMoney(value) {
                 `${item.name} [${item.code}]`,
                 item.qty,
                 item.price,
-                s.subtotal || rowTotal,
-                s.discount || 0,
-                s.iva || 0,
-                s.total || rowTotal,
-                collectedAmount(s),
-                s.balance || 0,
+                rowBase,
+                rowTax,
+                rowTotal,
+                itemIndex === 0 ? (s.subtotal || rowBase) : '',
+                itemIndex === 0 ? (s.discount || 0) : '',
+                itemIndex === 0 ? (s.iva || 0) : '',
+                itemIndex === 0 ? (s.total || rowTotal) : '',
+                itemIndex === 0 ? collectedAmount(s) : '',
+                itemIndex === 0 ? (s.balance || 0) : '',
                 s.customer || '',
                 s.customerCedula || '',
                 s.customerPhone || '',
@@ -3654,6 +4446,12 @@ function parseMoney(value) {
 	    sale.cancelReason = reason.trim();
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
+	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id);
+	    if (linkedLayaway) {
+	      linkedLayaway.status = 'cancelled';
+	      linkedLayaway.cancelledAt = new Date().toISOString();
+	      linkedLayaway.cancelReason = reason.trim();
+	    }
 
     // Anular todos los movimientos ligados a la venta, incluyendo abonos.
     const linkedMovements = state.movements.filter(m => m.saleId === sale.id && m.status !== 'cancelled');
@@ -3716,6 +4514,14 @@ function parseMoney(value) {
 	    });
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
+	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id);
+	    if (linkedLayaway) {
+	      linkedLayaway.paid = sale.received;
+	      linkedLayaway.balance = sale.balance;
+	      linkedLayaway.payments = sale.payments.map((payment) => ({ ...payment }));
+	      linkedLayaway.status = sale.balance <= 0 ? 'paid' : 'partially_paid';
+	      linkedLayaway.updatedAt = sale.updatedAt;
+	    }
 
 	    if(sale.balance <= 0) {
 	       sale.status = 'paid';
@@ -3751,7 +4557,7 @@ function parseMoney(value) {
     const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
     const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
     const logoUrl = receiptLogoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
-    const currentIva = bizSettings.iva || 0;
+	    const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
 
     const receiptHtml = `
       <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:15px; width:80mm; background:white; line-height:1.4;">
@@ -3772,7 +4578,7 @@ function parseMoney(value) {
             <tr style="border-bottom:1px solid #000;"><th style="text-align:left;">Detalle</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Total</th></tr>
           </thead>
           <tbody>
-	            ${saleItems(s).map(i=>`<tr><td style="padding:4px 0;">${escapeHtml(i.name)}</td><td style="text-align:center;">${i.qty}</td><td style="text-align:right;">${fmt(i.price*i.qty)}</td></tr>`).join('')}
+	            ${saleItems(s).map(i=>`<tr><td style="padding:4px 0;">${escapeHtml(i.name)}</td><td style="text-align:center;">${i.qty}</td><td style="text-align:right;">${fmt(i.total ?? (i.price*i.qty))}</td></tr>`).join('')}
           </tbody>
         </table>
         <div style="border-top:1px dashed #000; margin:8px 0;"></div>
@@ -3783,7 +4589,8 @@ function parseMoney(value) {
 	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(collectedAmount(s))}</span></div>
 	        ${s.method === 'Efectivo' && Number(s.tendered || 0) > 0 ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo entregado:</span><span>${fmt(s.tendered)}</span></div>` : ''}
         ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#d9534f; font-weight:bold;"><span>Saldo Pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
-        ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha Retiro:</span><span>${escapeHtml(s.dueDate)}</span></div>` : ''}
+	        ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha de retiro:</span><span>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(`${s.dueDate}T12:00:00`, 'es-EC', businessTimeZone(), false) || s.dueDate)}</span></div>` : ''}
+	        ${s.termsAccepted ? `<div style="border-top:1px dashed #000;margin-top:8px;padding-top:6px;font-size:9px;"><b>Términos de apartado v${escapeHtml(s.termsVersion || '1')} aceptados:</b><br>${escapeHtml(s.terms || '')}</div>` : ''}
         <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
         <div style="text-align:center; font-size:10px;">¡Gracias por su compra!<br><small>CLICK 360 - Control de Negocios</small></div>
       </div>

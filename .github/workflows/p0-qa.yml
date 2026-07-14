@@ -1,12 +1,12 @@
-name: CLICK 360 P0 QA
+name: CLICK 360 V16 QA
 
 on:
   pull_request:
   push:
-    branches: [hotfix/p0-account-data-isolation]
+    branches: [main, feat/v16-commercial-beta]
 
 jobs:
-  p0-qa:
+  v16-qa:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
