@@ -6,7 +6,12 @@ assert(rules.includes('match /businesses/{businessId}/state/{stateId}'), 'tenant
 assert(rules.includes('stateId == "main"'), 'only main state document is client-accessible');
 assert(rules.includes('match /businesses/{businessId}/legacyBackups/{backupId}') && rules.includes('allow read, write: if false;'), 'legacy backups must be admin-only');
 assert(!rules.includes('match /businesses/{businessId}/{document=**}'), 'wildcard business writes are forbidden');
-assert(rules.includes('tenantMatches(businessId)'), 'cross-tenant access guard is required');
+assert(
+  rules.includes('allow read: if stateId == "main" && tenantReadable(businessId)')
+    && rules.includes('request.auth.uid == businessId && ownerUser() && writeMatchesTenant(businessId)')
+    && rules.includes('validWorkerStateUpdate(businessId)'),
+  'cross-tenant read, owner write, and scoped worker write guards are required'
+);
 assert(rules.includes('function workerUser(businessId)') && rules.includes('businessId != request.auth.uid'), 'misconfigured self-owned workers cannot become tenant owners');
 assert(rules.includes('validWorkerUserCreate') && rules.includes('ownerRevokesWorker'), 'worker invite and revocation guards are present');
 assert(rules.includes('request.resource.data.payload.identity.tenantKey'), 'state writes require the payload tenant key');
@@ -22,4 +27,4 @@ assert(rules.includes('businessId != "demo-click360"'), 'the suspect demo tenant
 assert(rules.includes('request.time < data.expiresAt'), 'paid subscriptions with an expiry become server-side read-only');
 assert(rules.includes('match /adminBackups/{backupId}') && rules.includes('match /adminAuditLogs/{eventId}'), 'administrative backups and audit logs have explicit client-deny routes');
 assert(rules.includes('match /telemetryEvents/{eventId}') && rules.includes('request.resource.data.uidHash.size() == 16'), 'non-sensitive telemetry is allowlisted, bounded, and write-only');
-console.log('PASS Firestore rules P0 contract (not deployed)');
+console.log('PASS Firestore rules P0 contract');
