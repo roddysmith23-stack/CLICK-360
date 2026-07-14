@@ -157,11 +157,6 @@ service cloud.firestore {
         && hasActiveMembership(businessId);
     }
 
-    function tenantMatches(businessId) {
-      return (ownerUser() && request.auth.uid == businessId)
-        || workerUser(businessId);
-    }
-
     function tenantReadable(businessId) {
       return (ownerReadUser() && request.auth.uid == businessId)
         || workerUser(businessId);
