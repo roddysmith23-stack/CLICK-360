@@ -1,4 +1,4 @@
-# CLICK 360 V16.1.1
+# CLICK 360 V16.1.2
 
 PWA comercial de inventario, ventas, caja, CRM, reportes, trabajadores, apartados y etiquetas QR para negocios.
 
@@ -36,6 +36,6 @@ python3 -m http.server 4173
 
 La consola es solo para una identidad IAM autorizada y está fijada al proyecto `click-360`. Primero se ejecuta en dry-run; `--apply` exige el hash recién leído y la frase exacta mostrada por la herramienta. Las colecciones `adminBackups` y `adminAuditLogs` están negadas al cliente.
 
-## Estado V16.1.1
+## Estado V16.1.2
 
-El hotfix incorpora aislamiento por cuenta, remoto V10 autoritativo, modo `ONLINE_ONLY_SAFE`, trial de siete días por tiempo de servidor, planes, CRM, recordatorios, PWA, IVA congelado por venta, apartados con términos, cierres auditables, trabajadores con permisos, flujos públicos independientes, editor QR táctil y protección temprana ante errores de código externo o caché obsoleta. La evidencia vigente está en `docs/CLICK360_V16_1_1_HOTFIX_REPORT.md`, `docs/CLICK360_V16_1_RELEASE_REPORT.md` y `docs/CLICK360_V16_1_PUBLIC_FLOWS_QA.md`.
+El hotfix incorpora aislamiento por cuenta, remoto V10 autoritativo, modo `ONLINE_ONLY_SAFE`, trial de siete días por tiempo de servidor, planes, CRM, recordatorios, PWA, IVA congelado por venta, apartados con términos, cierres auditables, trabajadores con permisos, estados de acceso explícitos, invitaciones que no secuestran el login y un centro de impresión con salidas del sistema/PDF. La compatibilidad directa con M02X permanece desactivada hasta validar el protocolo con hardware real. La evidencia vigente está en `docs/CLICK360_V16_1_2_AUTH_REPORT.md`, `docs/CLICK360_V16_1_2_RESPONSIVE_QA.md`, `docs/CLICK360_M02X_PROTOCOL_AND_PRINT_REPORT.md` y `docs/CLICK360_V16_1_2_RELEASE_REPORT.md`.

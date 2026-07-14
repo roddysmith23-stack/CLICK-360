@@ -1,5 +1,20 @@
 # Changelog
 
+## V16.1.2 - 2026-07-14
+
+- Resolución de acceso por Firebase Auth UID con `accountAccess` antes de compatibilidad legacy o invitaciones.
+- Estados de acceso explícitos y opciones públicas siempre recuperables; se eliminó la lógica basada en textos.
+- Invitaciones aceptadas solo después de una acción explícita de la sesión y limpieza completa de parámetros obsoletos.
+- Primer tenant V10 transaccional para cuentas pagadas, sin `STATE_DOC.set()` ciego ni sobrescritura concurrente.
+- `lastSeenAt` convertido en una operación secundaria que nunca decide si una cuenta existe.
+- Caché de acceso aislada por UID y fallback `ONLINE_ONLY_SAFE` cuando falla el almacenamiento del dispositivo.
+- Correcciones responsive de sidebar, nombres largos, selector de negocio, fecha/hora única y banner de Inicio.
+- Centro de impresión con proveedores desacoplados para sistema, PDF, M02X y futuro puente nativo.
+- M02X marcada como validación física pendiente; no se promete Bluetooth directo sin protocolo comprobado.
+- Comprobantes limitados al negocio activo y rotulados como internos, no como factura electrónica.
+- Build estático allowlist, Firebase Hosting, Service Worker y assets renovados con cache `mvp-launch-v16-1-2-r1`.
+- Harnesses de acceso, impresión, runtime, caché, primer tenant pagado y reglas Firestore.
+
 ## V16.1.1 - 2026-07-14
 
 - Guard de compatibilidad temprano para código externo que consulte `__firefox__`.
