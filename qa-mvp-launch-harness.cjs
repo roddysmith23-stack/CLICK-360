@@ -93,8 +93,8 @@ const activeTrial = guard.evaluateAccountAccess({ status: 'trial', plan: 'normal
 const expiredTrial = guard.evaluateAccountAccess({ status: 'trial', plan: 'normal', trialStartedAtMs: start }, start + 7 * 86400000, 7);
 const founder = guard.evaluateAccountAccess({ status: 'active', plan: 'founder' }, start, 7);
 const pro = guard.evaluateAccountAccess({ status: 'active', plan: 'pro' }, start, 7);
-assert(activeTrial.allowed && !activeTrial.readOnly && activeTrial.mode === 'trial', 'new trial writes before the server deadline');
-assert(expiredTrial.allowed && expiredTrial.readOnly && expiredTrial.mode === 'expired', 'expired trial becomes read-only at the server deadline');
+assert(activeTrial.allowed && !activeTrial.readOnly && activeTrial.mode === 'trial_active', 'new trial writes before the server deadline');
+assert(expiredTrial.allowed && expiredTrial.readOnly && expiredTrial.mode === 'trial_expired', 'expired trial becomes read-only at the server deadline');
 assert(founder.allowed && !founder.readOnly && founder.mode === 'founder', 'founder remains fully active');
 assert(pro.allowed && !pro.readOnly && pro.plan === 'pro', 'manual Pro activation remains active');
 

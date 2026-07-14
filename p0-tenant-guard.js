@@ -66,6 +66,10 @@
     if (!data.settings || !Array.isArray(data.settings.workers || []) || !Array.isArray(data.settings.labelTemplates || [])) return false;
     if (data.settings.customers != null && !Array.isArray(data.settings.customers)) return false;
     if (data.settings.reminders != null && !Array.isArray(data.settings.reminders)) return false;
+    if (data.layaways != null && !Array.isArray(data.layaways)) return false;
+    if (data.cashSessions != null && !Array.isArray(data.cashSessions)) return false;
+    if (data.notifications != null && !Array.isArray(data.notifications)) return false;
+    if (data.legalAcceptances != null && !Array.isArray(data.legalAcceptances)) return false;
     const businessIds = new Set(data.businesses.map((business) => business?.id).filter(Boolean));
     if (businessIds.size === 0 || businessIds.size !== data.businesses.length) return false;
     return !data.activeBusinessId || businessIds.has(data.activeBusinessId);
@@ -89,17 +93,22 @@
   // whether a trial can write data.
   function evaluateAccountAccess(data = {}, serverNowMs = 0, trialDays = 7) {
     const status = String(data.status || '').toLowerCase();
-    const plan = String(data.plan || 'normal').toLowerCase();
+    const rawPlan = String(data.planCode || data.plan || 'normal').toLowerCase();
+    const plan = ['normal', 'base', 'paid_base'].includes(rawPlan) ? 'base'
+      : ['pro', 'paid_pro'].includes(rawPlan) ? 'pro' : rawPlan;
     const startedAtMs = Number(data.trialStartedAtMs || 0);
     const now = Number(serverNowMs || 0);
     const trialEndsAtMs = startedAtMs ? startedAtMs + Number(trialDays || 7) * 24 * 60 * 60 * 1000 : 0;
-    if (status === 'trial') {
+    if (status === 'trial' || status === 'trial_active') {
       const readOnly = !now || !trialEndsAtMs || now >= trialEndsAtMs;
-      return { allowed: true, readOnly, mode: readOnly ? 'expired' : 'trial', plan: 'normal', trialEndsAtMs };
+      return { allowed: true, readOnly, mode: readOnly ? 'trial_expired' : 'trial_active', plan: 'base', trialEndsAtMs };
     }
-    if (status === 'expired') return { allowed: true, readOnly: true, mode: 'expired', plan: 'normal', trialEndsAtMs };
-    if (status === 'active' && ['normal', 'pro', 'founder'].includes(plan)) {
-      return { allowed: true, readOnly: false, mode: plan === 'founder' ? 'founder' : 'active', plan, trialEndsAtMs };
+    if (status === 'expired' || status === 'trial_expired') return { allowed: true, readOnly: true, mode: 'trial_expired', plan: 'base', trialEndsAtMs };
+    if (status === 'founder' || plan === 'founder') return { allowed: true, readOnly: false, mode: 'founder', plan: 'founder', trialEndsAtMs };
+    if (status === 'lifetime' || plan === 'lifetime') return { allowed: true, readOnly: false, mode: 'lifetime', plan: 'base', trialEndsAtMs };
+    if (['active', 'paid_base', 'paid_pro'].includes(status) && ['base', 'pro'].includes(plan)) {
+      const activePlan = status === 'paid_pro' ? 'pro' : status === 'paid_base' ? 'base' : plan;
+      return { allowed: true, readOnly: false, mode: `paid_${activePlan}`, plan: activePlan, trialEndsAtMs };
     }
     return { allowed: false, readOnly: true, mode: status || 'pending', plan, trialEndsAtMs };
   }

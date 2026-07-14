@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-launch-v15';
+const CACHE = 'click360-mvp-launch-v16-r2';
 const ASSETS = [
   './',
   './index.html',
@@ -6,6 +6,8 @@ const ASSETS = [
   './app.js',
   './firebase-config.js',
   './p0-tenant-guard.js',
+  './v16-domain.js',
+  './v16-storage.js',
   './firebase-service.js',
   './manifest.webmanifest',
   './vendor/qrcode-generator.js',

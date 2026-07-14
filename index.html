@@ -8,23 +8,35 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="CLICK 360" />
   <meta name="description" content="CLICK 360: inventario, ventas, caja, reportes y etiquetas QR para negocios." />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+  <meta property="og:type" content="website" />
+  <meta property="og:locale" content="es_EC" />
+  <meta property="og:title" content="CLICK 360 — Control total de tu negocio" />
+  <meta property="og:description" content="Inventario, ventas, caja, clientes, reportes y etiquetas QR en una aplicación segura para negocios." />
+  <meta property="og:image" content="https://roddysmith23-stack.github.io/CLICK-360/assets/banner-click360-home.png" />
+  <meta property="og:url" content="https://roddysmith23-stack.github.io/CLICK-360/" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <link rel="canonical" href="https://roddysmith23-stack.github.io/CLICK-360/" />
   <title>CLICK 360 — Control total de tu negocio</title>
-  <link rel="manifest" href="manifest.webmanifest?v=mvp-launch-v15" />
-  <link rel="icon" type="image/png" href="assets/favicon.png?v=mvp-launch-v15" />
-  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=mvp-launch-v15" />
-  <link rel="stylesheet" href="styles.css?v=mvp-launch-v15" />
+  <link rel="manifest" href="manifest.webmanifest?v=mvp-launch-v16-r2" />
+  <link rel="icon" type="image/png" href="assets/favicon.png?v=mvp-launch-v16-r2" />
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=mvp-launch-v16-r2" />
+  <link rel="stylesheet" href="styles.css?v=mvp-launch-v16-r2" />
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"CLICK 360","applicationCategory":"BusinessApplication","operatingSystem":"Web, iOS, Android","description":"Aplicación para inventario, ventas, caja, clientes, reportes y etiquetas QR de negocios.","url":"https://roddysmith23-stack.github.io/CLICK-360/","offers":[{"@type":"Offer","name":"Plan Base","price":"40","priceCurrency":"USD"},{"@type":"Offer","name":"Plan Pro","price":"59.99","priceCurrency":"USD"}]}</script>
 </head>
 <body>
   <div id="app"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="vendor/qrcode-generator.js"></script>
   <script src="vendor/jsQR.js"></script>
-  <script src="vendor/html2pdf.bundle.min.js?v=mvp-launch-v15"></script>
-  <script src="vendor/xlsx.full.min.js?v=mvp-launch-v15"></script>
+  <script src="vendor/html2pdf.bundle.min.js?v=mvp-launch-v16-r2"></script>
+  <script src="vendor/xlsx.full.min.js?v=mvp-launch-v16-r2"></script>
 
 <script>
   if ('serviceWorker' in navigator) {
+    const hadServiceWorkerController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadServiceWorkerController) return;
       const toast = document.getElementById('toast');
       if (!toast) return;
       toast.textContent = 'Actualización lista. Se aplicará al volver a abrir CLICK 360.';
@@ -32,13 +44,15 @@
     });
   }
 </script>
-<script src="vendor/firebase-app-compat.js?v=mvp-launch-v15"></script>
-<script src="vendor/firebase-auth-compat.js?v=mvp-launch-v15"></script>
-<script src="vendor/firebase-firestore-compat.js?v=mvp-launch-v15"></script>
-<script src="./firebase-config.js"></script>
-<script src="./p0-tenant-guard.js?v=mvp-launch-v15"></script>
-<script src="./firebase-service.js?v=mvp-launch-v15"></script>
+<script src="vendor/firebase-app-compat.js?v=mvp-launch-v16-r2"></script>
+<script src="vendor/firebase-auth-compat.js?v=mvp-launch-v16-r2"></script>
+<script src="vendor/firebase-firestore-compat.js?v=mvp-launch-v16-r2"></script>
+<script src="./firebase-config.js?v=mvp-launch-v16-r2"></script>
+<script src="./p0-tenant-guard.js?v=mvp-launch-v16-r2"></script>
+<script src="./v16-domain.js?v=mvp-launch-v16-r2"></script>
+<script src="./v16-storage.js?v=mvp-launch-v16-r2"></script>
+<script src="./firebase-service.js?v=mvp-launch-v16-r2"></script>
 <!-- Logic -->
-<script src="app.js?v=mvp-launch-v15"></script>
+<script src="app.js?v=mvp-launch-v16-r2"></script>
 </body>
 </html>

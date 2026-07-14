@@ -1,15 +1,15 @@
-# CLICK 360
+# CLICK 360 V16
 
-PWA de inventario, ventas, caja, reportes, facturas de proveedores y etiquetas QR para negocios.
+PWA comercial de inventario, ventas, caja, CRM, reportes, trabajadores, apartados y etiquetas QR para negocios.
 
 ## Acceso, prueba y datos
 
 - Inicio de sesión: Google Firebase Auth.
-- Fundadores y trabajadores: `approvedUsers/{uid}` y, para trabajadores, invitación activa en `approvedUsersByEmail/{email}`.
+- Fundadores: `approvedUsers/{uid}`. Trabajadores V16: invitación con token hash, membresía tenant y permisos por módulo/acción.
 - Usuarios nuevos: una sola prueba gratuita de 7 días en `accountAccess/{uid}`. El vencimiento usa tiempo de Firestore; al vencer los datos quedan disponibles en modo lectura.
-- Activación manual: un administrador puede cambiar `accountAccess/{uid}` a `status: "active"` y `plan: "normal"`, `"pro"` o `"founder"`. El cliente no puede concederse un plan.
+- Activación manual: la consola IAM `npm run admin:v16` crea respaldo, exige UID/email/hash/confirmación y registra antes/después. El cliente nunca puede concederse un plan.
 - Tenant remoto: `businesses/{ownerId}/state/main` con `schemaVersion: 10` e identidad canónica.
-- Caché local: `CLICK360_STATE:{tenantKey}`. La sesión de interfaz, el perfil y la aprobación offline están separadas por UID.
+- Caché V16: estado, sesión, perfil, aprobación e IndexedDB separados por aplicación + UID + tenant.
 - Al iniciar, un documento remoto V10 coherente prevalece sobre marcadores legacy locales del mismo tenant. Los marcadores ambiguos y los de otras cuentas nunca se borran ni desbloquean datos.
 - No existen usuarios ni contraseñas demo en el cliente.
 
@@ -32,8 +32,10 @@ Para abrir la PWA localmente:
 python3 -m http.server 4173
 ```
 
-## Estado de lanzamiento
+## Administración segura
 
-El candidato MVP incorpora aislamiento por cuenta, reconciliación V10, prueba gratuita controlada por servidor, modo lectura posterior al vencimiento, CRM, recordatorios, PWA, cierres de caja, trabajadores y sincronización multidispositivo. La guía operativa y la evidencia de QA están en `docs/CLICK360_MVP_LAUNCH_READINESS.md`.
+La consola es solo para una identidad IAM autorizada y está fijada al proyecto `click-360`. Primero se ejecuta en dry-run; `--apply` exige el hash recién leído y la frase exacta mostrada por la herramienta. Las colecciones `adminBackups` y `adminAuditLogs` están negadas al cliente.
 
-La arquitectura modular por entidades y un ledger financiero inmutable siguen como P1 para endurecer permisos de trabajadores. No bloquean la beta privada porque los accesos de trabajadores continúan restringidos por reglas y por interfaz, pero deben completarse antes de una expansión de alto riesgo.
+## Estado V16
+
+El candidato incorpora aislamiento por cuenta, remoto V10 autoritativo, modo `ONLINE_ONLY_SAFE`, trial de siete días por tiempo de servidor, planes, CRM, recordatorios, PWA, IVA congelado por venta, apartados con términos, cierres auditables, trabajadores con permisos y editor de etiquetas. La evidencia vigente está en `docs/CLICK360_V16_QA_REPORT.md` y `docs/CLICK360_V16_RELEASE_REPORT.md`.

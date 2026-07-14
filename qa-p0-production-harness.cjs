@@ -43,12 +43,12 @@ function payloadFor(context, code = 'SKU-001') {
 const storage = new Map();
 const tenants = Array.from({ length: 100 }, (_, index) => tenant(index + 1));
 for (const context of tenants) {
-  const key = `CLICK360_STATE:${context.tenantKey}`;
+  const key = `CLICK360:V16:STATE:${context.authUid}:${context.tenantKey}`;
   storage.set(key, JSON.stringify(payloadFor(context, `SKU-${context.ownerId}`)));
 }
 for (let cycle = 0; cycle < 1000; cycle += 1) {
   const context = tenants[(cycle * 37) % tenants.length];
-  const key = `CLICK360_STATE:${context.tenantKey}`;
+  const key = `CLICK360:V16:STATE:${context.authUid}:${context.tenantKey}`;
   const parsed = JSON.parse(storage.get(key));
   assert(runtime.sameTenantIdentity(parsed.identity, context), `tenant identity mismatch on cycle ${cycle}`);
   assert(parsed.data.products[0].code.endsWith(context.ownerId), `tenant product leaked on cycle ${cycle}`);
@@ -86,7 +86,9 @@ assert(!firebaseService.includes('STATE_DOC.set('), 'direct last-write-wins stat
 assert(firebaseService.includes('PUSH_SCHEDULERS') && firebaseService.includes('SYNC_CONFLICT_PENDING'), 'writes are serialized per auth epoch and conflicts block retries');
 assert(firebaseService.includes('isActiveSyncScope(context, stateDoc, expectedEpoch, user)'), 'async pull/listener/write work is bound to account epoch and tenant context');
 assert(firebaseService.includes("tenantStorageKeyFor(context, 'REMOTE_REVISION')"), 'async writes persist metadata only to their captured tenant');
-assert(firebaseService.includes("localCacheStatus.reason !== 'cache_missing'"), 'a missing remote cannot replace an existing or corrupt local cache with seed');
+assert(firebaseService.includes('if (!cleanEmptyDevice && !onlineOnlyEmptyDevice)'), 'a missing remote cannot replace an existing or corrupt local cache with seed');
+assert(firebaseService.includes("['cache_missing', 'localstorage_unavailable'].includes(localCacheStatus.reason)"), 'a verified new tenant can bootstrap directly to cloud when browser storage is unavailable');
+assert(firebaseService.includes('click360LoadIndexedTenantCache(context)'), 'IndexedDB is checked before a missing remote can receive a new seed');
 assert(firebaseService.includes('localCacheStatus.valid === true'), 'fresh in-memory seed is never treated as a verified local edit');
 assert(firebaseService.includes('OFFLINE_APPROVAL_MAX_AGE_MS'), 'offline approval cache expires');
 assert(firebaseService.includes("const allowedRoles = ['owner', 'worker', 'cashier', 'inventory']") && firebaseService.includes("role === 'owner' && ownerId !== user.uid"), 'missing or contradictory roles cannot become owner by default');
@@ -106,7 +108,7 @@ assert(firebaseService.includes('profileUpdatedAtMs') && firebaseService.include
 assert(serviceWorker.includes('cross-origin request must stay network-only'), 'service worker does not cache auth or Firestore network responses');
 assert(serviceWorker.includes("key.startsWith('click360-')"), 'service worker clears only CLICK 360 caches');
 assert(firebaseService.includes('reconcileLocalStateWithRemoteV10') && firebaseService.includes('remoteMustHydrate'), 'coherent V10 remote state reconciles stale local markers before unlock');
-assert(firebaseService.includes('CLICK360:V10:QUARANTINE:') && !firebaseService.includes('CLICK360_DEVICE_ID'), 'new quarantine and device identifiers are application-version namespaced');
+assert(firebaseService.includes('CLICK360:V16:QUARANTINE:') && !firebaseService.includes('CLICK360_DEVICE_ID'), 'new quarantine and device identifiers are application-version namespaced');
 
 console.log('PASS P0 production stress: 100 tenants, 1000 rapid switches, strict cache isolation');
 console.log('PASS P0 production stress: corrupt payload, image, revision, and stale-write guards');
