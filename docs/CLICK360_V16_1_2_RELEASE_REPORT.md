@@ -30,7 +30,13 @@ La prueba dinámica de impresión confirmó una sola entrega al diálogo, libera
 
 El build se genera mediante una allowlist para impedir que scripts administrativos, fixtures, informes privados o archivos de desarrollo entren a Hosting. `index.html` y Service Worker usan `no-cache`; assets versionados usan caché larga. Firebase Auth y Firestore continúan apuntando exclusivamente a `click-360`.
 
-Metadatos finales de PR, CI, merge, despliegue y smoke público se completan en este mismo documento antes del merge.
+- PR de release: `https://github.com/roddysmith23-stack/CLICK-360/pull/11`.
+- Commit de implementación: `30fb004`.
+- Commit de documentación/evidencia: `909ae9d`.
+- URL canónica: `https://roddysmith23-stack.github.io/CLICK-360/`.
+- URL Firebase Hosting: `https://click-360.web.app/`.
+
+El run de CI, merge, despliegue y smoke público se registran en el cierre operativo del PR; esos resultados ocurren después del contenido versionado de este informe.
 
 ## Decisión provisional
 
