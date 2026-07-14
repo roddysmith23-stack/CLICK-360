@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-  const APP_ASSET_VERSION = 'mvp-launch-v16-1-r1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-1-1-r1';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -1505,7 +1505,7 @@
 	      gate.innerHTML = `
 	        <div class="c360-gate-shell">
 	          <section class="c360-gate-hero" aria-label="CLICK 360">
-	            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>V16.1</small></div>
+	            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>V16.1.1</small></div>
 	            <h1>Todo tu negocio en una sola aplicación</h1>
 	            <p>Controla inventario, ventas, caja, clientes y productos desde tu celular, de forma sencilla.</p>
 	            <p class="c360-gate-promise">Menos papeles. Menos confusión. Más control.</p>
@@ -1767,7 +1767,7 @@
 
 	    return auth.signInWithPopup(providerGoogle()).catch(err => {
 	      console.warn("Popup falló:", err.message);
-	      console.warn('[CLICK360_TELEMETRY]', { eventType: 'login_failure', errorCode: String(err.code || 'unknown').slice(0, 80), appVersion: '16.1.0' });
+	      console.warn('[CLICK360_TELEMETRY]', { eventType: 'login_failure', errorCode: String(err.code || 'unknown').slice(0, 80), appVersion: '16.1.1' });
       if (err.code === 'auth/popup-blocked') {
         if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> o intenta desde Chrome/Safari normal.";
       } else if (err.code === 'auth/operation-not-supported-in-this-environment') {

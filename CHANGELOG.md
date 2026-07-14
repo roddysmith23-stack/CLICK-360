@@ -1,5 +1,14 @@
 # Changelog
 
+## V16.1.1 - 2026-07-14
+
+- Guard de compatibilidad temprano para código externo que consulte `__firefox__`.
+- Reportes de errores con archivo, stack, navegador, versión y URL sanitizada.
+- Mensaje amigable al cliente con código de reporte, sin detalles técnicos crudos.
+- Informes locales limitados y aislados por sesión pública o UID/tenant autenticado.
+- Service Worker, manifest y todos los scripts renovados con cache `mvp-launch-v16-1-1-r1`.
+- Regresiones para Firefox, Chrome Android, caché anterior y `ONLINE_ONLY_SAFE` de primer ingreso.
+
 ## V16.1 - 2026-07-14
 
 - Acceso de compradores y primer negocio con fallback `ONLINE_ONLY_SAFE` sin sobrescribir remotos.
