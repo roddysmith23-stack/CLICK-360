@@ -60,4 +60,35 @@ La sesión limpia de producción solicitó 19 recursos, todos desde el mismo ori
 
 ## Resultado operativo
 
-Los commits, PR, CI, URL, smoke y auditoría posterior al despliegue se completan al cerrar el release controlado.
+- Commit: `0183a76`.
+- PR: [#9](https://github.com/roddysmith23-stack/CLICK-360/pull/9).
+- CI del PR: PASS, run `29353206351`.
+- Merge a `main`: `68acecdb0e6fd1dfe9bc8322995a81e6c33e9007`.
+- CI de `main`: PASS, run `29353274165`.
+- GitHub Pages: PASS, run `29353272941`.
+- URL: <https://roddysmith23-stack.github.io/CLICK-360/?v=mvp-launch-v16-1-1-r1&release=68acecd>.
+- Firestore Rules: sin cambios y sin redeploy; el contrato vigente pasó emulador y CI.
+
+## Smoke de producción
+
+- HTTP 200 y versión visible `V16.1.1`.
+- Guard `16.1.1` cargado antes de las librerías.
+- 19 referencias al nuevo asset version y 0 a V16.1.
+- 0 constantes Firefox inseguras en assets públicos.
+- 0 errores inesperados de consola.
+- Sin overflow horizontal.
+- Service Worker activo y una única caché: `click360-mvp-launch-v16-1-1-r1`.
+- Carga offline y reconexión: PASS.
+
+## Auditoría posterior
+
+- Los tres tenants legítimos conservaron exactamente hash, revisión, clasificación y conteos.
+- `demo-click360` conservó exactamente hash, revisión, fecha y conteos; sigue `CROSS_TENANT_SUSPECT` y bloqueado.
+- Shary conserva Auth activo, `paid_base`, UID y `businessId` exactos.
+- Shary no tiene todavía un tenant remoto. La ausencia es un estado inicial protegido, no legacy ni contaminación; su primer ingreso puede crear exclusivamente su tenant V10 mediante la transacción segura.
+- El `lastSeenAt` de Shary avanzó a `2026-07-14T17:01:18.158Z` por una sesión cliente anterior al despliegue del hotfix. La inspección administrativa no realizó esa escritura.
+- La automatización no pudo conectarse al Chrome del usuario porque la extensión no expuso ese navegador al controlador. No se declara un login interactivo no observado.
+
+## Decisión
+
+`GO V16.1.1 PUBLICADO`. No apareció un criterio técnico de rollback. Shary ya puede intentar entrar con `shary10mmvv@gmail.com`; si el dispositivo no permite copia local, la aplicación usa `ONLINE_ONLY_SAFE` y conserva la nube como fuente principal.
