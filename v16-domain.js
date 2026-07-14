@@ -1,8 +1,8 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '16.0.0';
-  const TERMS_VERSION = '2026-07-13';
+  const APP_VERSION = '16.1.0';
+  const TERMS_VERSION = '2026-07-14';
   const TRIAL_DAYS = 7;
   const DAY_MS = 24 * 60 * 60 * 1000;
   const PLAN_CATALOG = Object.freeze({
@@ -77,6 +77,39 @@
     const normalized = normalizePlan(plan);
     if (normalized === 'founder' || normalized === 'lifetime') return { businesses: 10, workers: 25 };
     return { ...PLAN_CATALOG[normalized].limits };
+  }
+
+  function initialTenantBootstrapDecision({ localPersisted = false, onlineOnlySafe = false, online = false, readOnly = false } = {}) {
+    if (readOnly) return { allowed: false, reason: 'read_only' };
+    if (localPersisted) return { allowed: true, mode: 'local_and_cloud' };
+    if (onlineOnlySafe && online) return { allowed: true, mode: 'cloud_only' };
+    return { allowed: false, reason: online ? 'local_storage_required' : 'connection_required' };
+  }
+
+  function publicIntentAllowsTrialCreation(intent) {
+    return intent === 'trial' || intent === 'register';
+  }
+
+  function calculatorOperation(leftValue, rightValue, operator) {
+    const left = Number(leftValue);
+    const right = Number(rightValue);
+    if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+    if (operator === '+') return roundMoney(left + right);
+    if (operator === '-') return roundMoney(left - right);
+    if (operator === '*') return roundMoney(left * right);
+    if (operator === '/') return right === 0 ? null : roundMoney(left / right);
+    return roundMoney(right);
+  }
+
+  function formatBusinessClock(value = Date.now(), locale = 'es-EC', timeZone = 'America/Guayaquil', compact = false) {
+    const dateValue = new Date(value);
+    if (!Number.isFinite(dateValue.getTime())) return '';
+    const date = new Intl.DateTimeFormat(locale, compact
+      ? { day: 'numeric', month: 'long', timeZone }
+      : { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone }).format(dateValue);
+    const time = new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', timeZone }).format(dateValue);
+    const formattedDate = compact ? date : date.charAt(0).toUpperCase() + date.slice(1);
+    return `${formattedDate} · ${time}`;
   }
 
   function normalizeTaxConfig(value = {}) {
@@ -193,6 +226,10 @@
     timestampMs,
     evaluateEntitlement,
     planLimits,
+    initialTenantBootstrapDecision,
+    publicIntentAllowsTrialCreation,
+    calculatorOperation,
+    formatBusinessClock,
     normalizeTaxConfig,
     taxModeForProduct,
     calculateCart,

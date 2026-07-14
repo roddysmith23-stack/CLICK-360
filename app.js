@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-r2';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-1-r1';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:';
   const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
@@ -21,6 +21,13 @@
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
   const toastEl = $('#toast');
+
+  function icon(name, label = '') {
+    return `<i data-lucide="${escapeHtml(name)}"${label ? ` aria-label="${escapeHtml(label)}"` : ' aria-hidden="true"'}></i>`;
+  }
+  function refreshIcons(root = document) {
+    requestAnimationFrame(() => window.lucide?.createIcons({ root, attrs: { 'stroke-width': 2, width: 20, height: 20 } }));
+  }
 
   window.onerror = function(msg, url, line) {
     const m = String(msg);
@@ -100,9 +107,10 @@
   function businessTimeZone() {
     return currentBusiness?.()?.settings?.timeZone || 'America/Guayaquil';
   }
-  function liveClockLabel() {
+  function liveClockLabel(compact = false) {
     try {
-      return new Intl.DateTimeFormat('es-EC', { day: 'numeric', month: 'long', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZone: businessTimeZone() }).format(new Date());
+	      return window.CLICK360_V16_DOMAIN?.formatBusinessClock(Date.now(), 'es-EC', businessTimeZone(), compact)
+	        || new Date().toLocaleString('es-EC');
     } catch { return new Date().toLocaleString('es-EC'); }
   }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
@@ -1087,15 +1095,16 @@ function parseMoney(value) {
     const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
 
     const dateBadgeHtml = `<div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:14px;">
-        <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
-          📅 ${formattedTodaySpanish()}
+	        <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
+	          ${icon('calendar-days')} ${formattedTodaySpanish()}
           <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
         </label>
         ${clearDateBtn}
       </div>`;
 
     const b=currentBusiness();
-    const bizOptions=state.businesses.map(x=>`<option value="${escapeHtml(x.id)}" ${x.id===b?.id?'selected':''}>${escapeHtml(x.name)}</option>`).join('');
+	    const businessName = b?.name || 'Seleccionar negocio';
+	    const businessSwitcher = (id, className = '') => `<button type="button" id="${id}" class="businessSwitchButton ${className}" title="Cambiar negocio"><span>${escapeHtml(businessName)}</span>${icon('chevrons-up-down')}</button>`;
     const businessLogo = safeImageSrc(b?.settings?.logoUrl);
     const profilePhoto = safeImageSrc(authUser().photoURL);
     const logoIconSide = businessLogo
@@ -1114,16 +1123,16 @@ function parseMoney(value) {
 	    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
-	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>V16 · Control total de tu negocio</small></div></div>
-	          <div class="field"><label>Negocio activo</label><select id="businessPickerSide">${bizOptions}</select></div>
+	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>V16.1 · Control total de tu negocio</small></div></div>
+	          <div class="field"><label>Negocio activo</label>${businessSwitcher('businessPickerSide')}</div>
 	          <nav class="sideNav">${navButtons(active, true)}</nav>
 	        </div>
 	        <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:grid; gap:10px;">
-	          <div class="sidebarStatusRow"><div class="businessClock js-business-clock" aria-live="off">${escapeHtml(liveClockLabel())}</div><button type="button" id="notificationBellSide" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}"><span aria-hidden="true">&#128276;</span>${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button></div>
+	          <div class="sidebarStatusRow"><div class="businessClock js-business-clock" data-clock-format="full" aria-live="off">${escapeHtml(liveClockLabel())}</div><button type="button" id="notificationBellSide" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}">${icon('bell')}${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button></div>
 	          ${syncPillHtml(false)}
 	          <div style="display:flex; align-items:center; gap:10px;">
 	            <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
-	            <button class="logoutBtn" id="logoutSide" title="Cerrar sesión" style="flex:1;">Cerrar sesión ↗</button>
+	            <button class="logoutBtn logoutBtnWide" id="logoutSide" title="Cerrar sesión">${icon('log-out')}<span>Cerrar sesión</span></button>
 	          </div>
 	        </div>
 	      </aside>
@@ -1131,13 +1140,13 @@ function parseMoney(value) {
         <header class="topbar">
           <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconTop}<div class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
 	          <div style="flex:1; display:flex; justify-content:center; min-width:0; padding:0 8px;">
-	            <select class="businessSelect" id="businessPickerTop" style="font-size:13px; padding:8px; min-height:36px; max-width:140px; margin:0 auto;">${bizOptions}</select>
+	            ${businessSwitcher('businessPickerTop', 'businessSelect')}
 	          </div>
-	          <div id="businessClock" class="businessClock js-business-clock" aria-live="off">${escapeHtml(liveClockLabel())}</div>
-	          <button type="button" id="notificationBell" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}"><span aria-hidden="true">&#128276;</span>${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button>
+	          <div id="businessClock" class="businessClock js-business-clock" data-clock-format="compact" aria-live="off">${escapeHtml(liveClockLabel(true))}</div>
+	          <button type="button" id="notificationBell" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}">${icon('bell')}${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button>
 	          <div style="display:none;" class="syncTopWrap">${syncPillHtml(true)}</div>
 	          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
-	          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" style="width:36px; height:36px; border-radius:10px;">↗</button>
+	          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" aria-label="Cerrar sesión">${icon('log-out')}</button>
         </header>
         <div style="flex-shrink:0; padding:16px 16px 0; background:transparent;">
           ${dateBadgeHtml}
@@ -1165,18 +1174,33 @@ function parseMoney(value) {
     ].filter(x=>allowedRoutes().includes(x[0]));
     return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}">${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${label}</span></button>`).join('');
   }
-  function bottomNav(active){ return `<nav class="bottomNav">${navButtons(active)}</nav>`; }
-  function bindShell(){
+	  function bottomNav(active){ return `<nav class="bottomNav">${navButtons(active)}</nav>`; }
+	  function openBusinessSwitcher() {
+	    const active = currentBusiness()?.id;
+	    showModal(`<div class="modalHeader"><div><h2>Cambiar negocio</h2><p class="fieldHint">Selecciona dónde quieres trabajar.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div><div class="businessSwitchList">${state.businesses.map((business) => `<button type="button" class="businessSwitchOption ${business.id === active ? 'active' : ''}" data-business-switch="${actionId(business.id)}"><span>${icon(business.id === active ? 'circle-check-big' : 'store')}<b>${escapeHtml(business.name)}</b></span>${business.id === active ? '<small>Activo</small>' : icon('chevron-right')}</button>`).join('')}</div>`);
+	    $$('[data-business-switch]').forEach((button) => {
+	      button.onclick = () => {
+	        const nextId = decodeActionId(button.dataset.businessSwitch);
+	        if (!state.businesses.some((business) => business.id === nextId)) return;
+	        state.activeBusinessId = nextId;
+	        if (authUser().role === 'owner' && !save()) return;
+	        closeModal();
+	        renderApp(route);
+	      };
+	    });
+	  }
+	  function bindShell(){
     clearInterval(clockTimer);
-    const updateClock = () => { $$('.js-business-clock').forEach((element) => { element.textContent = liveClockLabel(); }); };
-    updateClock();
-    clockTimer = setInterval(updateClock, 1000);
+	    const updateClock = () => { $$('.js-business-clock').forEach((element) => { element.textContent = liveClockLabel(element.dataset.clockFormat === 'compact'); }); };
+	    updateClock();
+	    clockTimer = setInterval(updateClock, 60000);
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
-    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onchange=()=>{state.activeBusinessId=el.value;if(authUser().role === 'owner' && !save()) return;renderApp(route);}; });
+	    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onclick=openBusinessSwitcher; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
     $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
     $('#notificationBell')?.addEventListener('click', openNotificationCenter);
-    $('#notificationBellSide')?.addEventListener('click', openNotificationCenter);
+	    $('#notificationBellSide')?.addEventListener('click', openNotificationCenter);
+	    refreshIcons();
 
     const dateInput = $('#workingDateInput');
     if (dateInput) {
@@ -1192,11 +1216,11 @@ function parseMoney(value) {
        };
     }
   }
-  function renderApp(r='home') {
-    try {
-      if(!checkAuth('business')) return;
-      if(!can(r)) r='home';
-      stopScanner(); route=r;
+	  function renderApp(r='home') {
+	    try {
+	      if(!checkAuth('business')) return;
+	      if(!can(r)) r='home';
+	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
       const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView};
@@ -1267,7 +1291,7 @@ function parseMoney(value) {
     let templatesHtml = '';
     if (templates.length > 0) {
       templatesHtml = `
-        <div class="card sectionCard" style="margin-top:20px;">
+        <div class="card sectionCard" id="labelTemplatesSection" style="margin-top:20px;">
           <h3>Plantillas de Etiquetas QR</h3>
           <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap:12px; margin-top:10px;">
             ${templates.map(t => `
@@ -1291,7 +1315,7 @@ function parseMoney(value) {
       `;
     } else {
       templatesHtml = `
-        <div class="card sectionCard" style="margin-top:20px;">
+        <div class="card sectionCard" id="labelTemplatesSection" style="margin-top:20px;">
           <h3>Plantillas de Etiquetas QR</h3>
           <p class="empty" style="margin:0; padding:10px 0;">No has creado plantillas de etiquetas aún. Diseña una etiqueta en cualquier producto y guárdala como plantilla para verla aquí.</p>
         </div>
@@ -1309,12 +1333,22 @@ function parseMoney(value) {
       <section id="productList" class="productList" style="margin-top:14px">${productList(products,v)}</section>
       ${templatesHtml}`;
   }
+  function refreshInventoryTemplateSection(){
+    const currentSection = $('#labelTemplatesSection');
+    if (!currentSection || window.location.hash.replace('#', '') !== 'inventory') return;
+    const nextView = document.createElement('div');
+    nextView.innerHTML = inventoryView();
+    const nextSection = nextView.querySelector('#labelTemplatesSection');
+    if (!nextSection) return;
+    currentSection.replaceWith(nextSection);
+    bindInventory();
+  }
   function productList(products,v) {
     if(!products.length) return `<div class="card empty">Aún no hay ${escapeHtml(v.plural)}. Crea el primero con Nuevo.</div>`;
     return products.map(p=>`<article class="card productCard hasImage" data-pid="${escapeHtml(p.id)}">
       ${imageThumb(p)}
       <div class="productInfo"><h3>${escapeHtml(p.name)}</h3><div class="meta"><span>${escapeHtml(p.category||'General')}</span><span class="badge">${escapeHtml(p.code)}</span><span>Stock: <b>${p.qty}</b></span><span class="badge gold">${fmt(p.price)}${p.cardPrice && p.cardPrice !== p.price ? ' / ' + fmt(p.cardPrice) + ' tarjeta' : ''}${productTaxLegend(p) ? ` <span style="font-size:10px;opacity:.8;">(${escapeHtml(productTaxLegend(p))})</span>` : ''}</span></div></div>
-      <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Etiqueta QR">▦</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar">✎</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar">🗑</button></div>
+      <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Diseñar etiqueta QR" aria-label="Diseñar etiqueta QR">${icon('qr-code')}</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar producto" aria-label="Editar producto">${icon('pencil')}</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar producto" aria-label="Borrar producto">${icon('trash-2')}</button></div>
     </article>`).join('');
   }
 
@@ -1335,7 +1369,7 @@ function parseMoney(value) {
         <button class="btn primary" onclick="window.click360Route('home')">Ir al Inicio</button>
       </div>`;
     }
-    return `<div class="pageHead"><div><h1>Vender</h1><p>Escanea QR o ingresa el código.</p></div></div>
+	    return `<div class="pageHead"><div><h1>Vender</h1><p>Escanea QR o ingresa el código.</p></div><div class="toolbar"><button type="button" class="iconBtn" id="calculatorSellBtn" title="Calculadora" aria-label="Abrir calculadora">${icon('calculator')}</button></div></div>
       <section class="sellWrap">
         <div class="card scanBox">
           <div class="scanRows">
@@ -1433,11 +1467,11 @@ function parseMoney(value) {
 
     const showMovementsList = isDayStarted();
 
-    return `<div class="pageHead">
-        <div>
-          <h1>Caja diaria</h1>
-          <p>Ingresos, egresos y cierre del día.</p>
-        </div>
+	    return `<div class="pageHead">
+	        <div>
+	          <h1>Caja diaria</h1>
+	          <p>Ingresos, egresos y cierre del día.</p>
+	        </div><div class="toolbar"><button type="button" class="iconBtn" id="calculatorCashBtn" title="Calculadora" aria-label="Abrir calculadora">${icon('calculator')}</button></div>
       </div>
       ${topCard}
       ${showMovementsList ? `
@@ -1680,7 +1714,7 @@ function parseMoney(value) {
 	      return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(244,196,49,.45);"><b style="color:var(--gold);">Prueba gratuita: ${remaining} ${remaining === 1 ? 'dia' : 'dias'} restantes</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">La prueba se controla con la hora segura de Firestore.</p></section>`;
 	    }
 	    if (access.readOnly) return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(255,92,98,.6);"><b style="color:#ff8d92;">Tu prueba termino: tus datos estan protegidos en modo lectura.</b><a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn primary block" style="margin-top:10px;">Activar plan por WhatsApp</a></section>`;
-	    return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b>Plan ${escapeHtml((access.plan || 'base').toUpperCase())} activo</b></section>`;
+		    return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b style="color:#37d57e;">Plan CLICK 360 activo</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Plan ${escapeHtml((access.plan || 'base').toUpperCase())} con acceso completo.</p></section>`;
 	  }
 	  function accessView() {
 	    const access = accessInfo();
@@ -1703,9 +1737,9 @@ function parseMoney(value) {
 	    const version = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
 	    return `<div class="pageHead"><div><h1>Terminos y privacidad</h1><p>Version ${escapeHtml(version)}</p></div></div><section class="legalDocument">
 	      <article><h2>Terminos y condiciones</h2><p>CLICK 360 proporciona herramientas para administrar inventario, ventas, caja, clientes y tareas del negocio. La persona titular de la cuenta es responsable de la exactitud de la informacion registrada y del uso que autorice a sus trabajadores.</p></article>
-	      <article><h2>Privacidad y datos</h2><p>La autenticacion se realiza con Google y los datos operativos se guardan en el tenant asignado a la cuenta. CLICK 360 no vende informacion personal. El negocio puede descargar respaldos y solicitar asistencia para exportacion o eliminacion.</p></article>
+		      <article><h2>Privacidad y datos</h2><p>La autenticación se realiza con Google y los datos operativos se guardan de forma separada para cada cuenta. CLICK 360 no vende información personal. El negocio puede descargar respaldos y solicitar asistencia para exportación o eliminación.</p></article>
 	      <article><h2>Prueba y suscripciones</h2><p>La prueba gratuita dura siete dias desde la hora registrada por el servidor y se concede una sola vez por UID. Al terminar, los datos se conservan en modo lectura. La activacion es manual y no se realizan cobros automaticos dentro de la aplicacion.</p></article>
-	      <article><h2>Uso aceptable</h2><p>No se permite intentar acceder a otro tenant, elevar permisos, manipular invitaciones, introducir contenido malicioso ni usar CLICK 360 para actividades ilegales.</p></article>
+		      <article><h2>Uso aceptable</h2><p>No se permite intentar acceder a información de otra cuenta, elevar permisos, manipular invitaciones, introducir contenido malicioso ni usar CLICK 360 para actividades ilegales.</p></article>
 	      <article><h2>Operacion offline</h2><p>Cuando el dispositivo permite almacenamiento seguro, la aplicacion conserva una copia local aislada. Si el navegador bloquea ese almacenamiento, CLICK 360 entra en modo seguro solo en linea y pausa la edicion al perder conexion.</p></article>
 	      <article><h2>Politicas del comercio</h2><p>Las politicas configuradas por cada negocio deben revisarse conforme a la legislacion aplicable. CLICK 360 proporciona herramientas de gestion, no asesoria legal.</p></article>
 	      <article><h2>Responsabilidades</h2><p>Los comprobantes y reportes son registros operativos. No sustituyen documentos tributarios oficiales, asesoria contable ni asesoramiento legal. Antes de una accion destructiva se recomienda generar y verificar un respaldo.</p></article>
@@ -1754,9 +1788,12 @@ function parseMoney(value) {
 	        id: `reminder:${reminder.id}`,
 	        type: reminder.type || 'task',
 	        title: reminder.title || 'Recordatorio',
-	        detail: Number.isFinite(dueMs) ? `${dueMs < now ? 'Vencido' : 'Proximo'} · ${window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || reminder.dueAt}` : 'Sin fecha',
-	        route: 'reminders',
-	        overdue: Number.isFinite(dueMs) && dueMs < now,
+		        detail: Number.isFinite(dueMs) ? `${dueMs < now ? 'Vencido' : 'Proximo'} · ${window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || reminder.dueAt}` : 'Sin fecha',
+		        route: 'reminders',
+		        dueAt: reminder.dueAt || '',
+		        priority: Number.isFinite(dueMs) && dueMs < now ? 'Alta' : 'Media',
+		        status: Number.isFinite(dueMs) && dueMs < now ? 'Vencida' : 'Próxima',
+		        overdue: Number.isFinite(dueMs) && dueMs < now,
 	        read: !!readById.get(`reminder:${reminder.id}`)?.readAt
 	      };
 	    });
@@ -1764,16 +1801,19 @@ function parseMoney(value) {
 	      id: `stock:${product.id}`,
 	      type: 'low_stock',
 	      title: `Stock bajo: ${product.name}`,
-	      detail: `${product.qty} disponible${Number(product.qty) === 1 ? '' : 's'}`,
-	      route: 'inventory',
+		      detail: `${product.qty} disponible${Number(product.qty) === 1 ? '' : 's'}`,
+		      route: 'inventory',
+		      dueAt: product.updatedAt || '',
+		      priority: Number(product.qty) <= 0 ? 'Alta' : 'Media',
+		      status: Number(product.qty) <= 0 ? 'Agotado' : 'Stock bajo',
 	      overdue: Number(product.qty) <= 0,
 	      read: !!readById.get(`stock:${product.id}`)?.readAt
 	    }));
 	    return [...reminders, ...stock].sort((a, b) => Number(b.overdue) - Number(a.overdue));
 	  }
-	  function openNotificationCenter() {
-	    const items = notificationItems();
-	    showModal(`<div class="modalHeader"><h2>Notificaciones</h2><button class="closeBtn" data-close>×</button></div><div class="notificationList">${items.length ? items.map((item) => `<button type="button" class="notificationItem ${item.read ? 'read' : ''}" data-notification-route="${item.route}" data-notification-id="${actionId(item.id)}"><span><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.detail)}</small></span>${item.overdue ? '<em>Vencido</em>' : ''}</button>`).join('') : '<p class="empty">No tienes alertas pendientes.</p>'}</div>${items.some((item) => !item.read) ? '<button type="button" class="btn silver block" id="markNotificationsRead">Marcar todas como leidas</button>' : ''}`);
+		  function openNotificationCenter() {
+		    const items = notificationItems();
+		    showModal(`<div class="modalHeader"><div><h2>Notificaciones</h2><p class="fieldHint">${items.filter((item) => !item.read).length} sin leer</p></div><button class="closeBtn" data-close>×</button></div><div class="notificationList">${items.length ? items.map((item) => `<button type="button" class="notificationItem ${item.read ? 'read' : ''} ${item.overdue ? 'overdue' : ''}" data-notification-route="${item.route}" data-notification-id="${actionId(item.id)}"><span class="notificationGlyph">${icon(item.type === 'low_stock' ? 'package-minus' : item.type === 'collection' ? 'hand-coins' : 'alarm-clock')}</span><span class="notificationBody"><span><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.detail)}</small></span><span class="notificationMeta"><em>${escapeHtml(item.status)}</em><small>Prioridad ${escapeHtml(item.priority)}</small><small>${item.read ? 'Leída' : 'Nueva'}</small></span></span>${icon('chevron-right')}</button>`).join('') : `<div class="empty">${icon('bell-off')}<p>No tienes alertas pendientes.</p></div>`}</div>${items.some((item) => !item.read) ? `<button type="button" class="btn silver block" id="markNotificationsRead">${icon('check-check')} Marcar todas como leídas</button>` : ''}`);
 	    $$('[data-notification-route]').forEach((button) => button.onclick = () => {
 	      const id = decodeActionId(button.dataset.notificationId);
 	      state.notifications ||= [];
@@ -1918,7 +1958,8 @@ function parseMoney(value) {
     if (onboardingPrompted || access.source !== 'accountAccess' || access.readOnly || !isOwnerUser() || state.settings?.onboarding?.completedAt) return;
     onboardingPrompted = true;
 	    const business = currentBusiness();
-	    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Apellido</label><input id="onboardingLastName" autocomplete="family-name"></div><div class="field"><label>Telefono</label><input id="onboardingPhone" type="tel" autocomplete="tel" required placeholder="0999999999"></div><div class="field"><label>Pais</label><select id="onboardingCountry"><option value="EC">Ecuador</option><option value="CO">Colombia</option><option value="PE">Peru</option><option value="MX">Mexico</option><option value="US">Estados Unidos</option><option value="other">Otro</option></select></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><div class="field"><label>Moneda</label><select id="onboardingCurrency"><option value="USD">USD</option></select></div><div class="field"><label>Zona horaria</label><select id="onboardingTimezone"><option value="America/Guayaquil">America/Guayaquil</option><option value="America/Bogota">America/Bogota</option><option value="America/Lima">America/Lima</option><option value="America/Mexico_City">America/Mexico_City</option></select></div><label class="consentCheck full"><input id="onboardingTerms" type="checkbox" required><span>Acepto los Terminos y la Politica de privacidad de CLICK 360, version ${escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13')}.</span></label><button class="btn primary block" type="submit">Comenzar prueba</button></form>`);
+		    const onboardingAction = ['trial', 'trial_active'].includes(access.mode) ? 'Comenzar prueba' : 'Guardar y continuar';
+		    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Apellido</label><input id="onboardingLastName" autocomplete="family-name"></div><div class="field"><label>Teléfono</label><input id="onboardingPhone" type="tel" autocomplete="tel" required placeholder="0999999999"></div><div class="field"><label>País</label><select id="onboardingCountry"><option value="EC">Ecuador</option><option value="CO">Colombia</option><option value="PE">Perú</option><option value="MX">México</option><option value="US">Estados Unidos</option><option value="other">Otro</option></select></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><div class="field"><label>Moneda</label><select id="onboardingCurrency"><option value="USD">USD</option><option value="COP">COP</option><option value="PEN">PEN</option><option value="MXN">MXN</option><option value="EUR">EUR</option></select></div><div class="field"><label>Zona horaria</label><select id="onboardingTimezone"><option value="America/Guayaquil">America/Guayaquil</option><option value="America/Bogota">America/Bogota</option><option value="America/Lima">America/Lima</option><option value="America/Mexico_City">America/Mexico_City</option><option value="America/New_York">America/New_York</option><option value="Europe/Madrid">Europe/Madrid</option></select></div><label class="consentCheck full"><input id="onboardingTerms" type="checkbox" required><span>Acepto los Términos y la Política de privacidad de CLICK 360, versión ${escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14')}.</span></label><button class="btn primary block" type="submit">${onboardingAction}</button></form>`);
 	    $('#onboardingForm').onsubmit = async (event) => {
 	      event.preventDefault();
 	      const name = $('#onboardingName').value.trim();
@@ -1934,7 +1975,7 @@ function parseMoney(value) {
 	      business.settings.currency = $('#onboardingCurrency').value;
 	      business.settings.timeZone = $('#onboardingTimezone').value;
 	      const termsVersion = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
-	      state.settings.onboarding = { completedAt: new Date().toISOString(), version: 16, checklist: { business: true, product: false, cash: false, sale: false, customer: false, reminder: false, label: false, report: false } };
+		      state.settings.onboarding = { completedAt: new Date().toISOString(), version: 16.1, checklist: { business: true, product: false, cash: false, sale: false, customer: false, reminder: false, label: false, report: false } };
 	      state.legalAcceptances ||= [];
 	      state.legalAcceptances.push({ id: uid('legal'), businessId: business.id, uid: window.click360User.uid, termsVersion, privacyVersion: termsVersion, acceptedAt: new Date().toISOString(), source: 'onboarding' });
 	      window.click360User.name = fullName;
@@ -1949,31 +1990,26 @@ function parseMoney(value) {
 	    };
 	  }
 
-	  function moreView(){
-	    const ownerTools = isOwnerUser() ? `
-	      <button class="card bigRow" data-more="reports"><span>\u25A5 Reportes</span><b>\u203A</b></button>
-	      <button class="card bigRow" data-more="crm"><span>Clientes y WhatsApp</span><b>\u203A</b></button>
-	      <button class="card bigRow" data-more="reminders"><span>Recordatorios</span><b>\u203A</b></button>
-	      <button class="card bigRow" data-more="backup"><span>\u2601 Respaldo y nube</span><b>\u203A</b></button>
-	      <button class="card bigRow" data-more="workers">
-	        <span>\uD83D\uDC65 Trabajadores</span>
-	        <span style="display:flex; align-items:center; gap:6px;">
-	          <span id="pendingWorkersBadge" class="badge danger" style="display:none; padding:2px 6px; font-size:11px; border-radius:10px; background:#ff5c62; color:#fff;">0</span>
-	          <b>\u203A</b>
-	        </span>
-	      </button>
-	      <button class="card bigRow" data-more="invoices"><span>📄 Facturas de Proveedores</span><b>\u203A</b></button>
-	      <button class="card bigRow" data-more="settings"><span>\u2699 Ajustes</span><b>\u203A</b></button>
-	    ` : `<button class="card bigRow" data-more="settings"><span>\u2699 Mi perfil</span><b>\u203A</b></button>`;
-	    return `<div class="pageHead"><div><h1>M\u00e1s</h1></div></div><section class="moreList">
-	      ${ownerTools}
-	      <button class="card bigRow" data-more="access"><span>Mi plan y acceso</span><b>\u203A</b></button>
-	      <button class="card bigRow" data-more="legal"><span>Terminos y privacidad</span><b>\u203A</b></button>
-	      <button class="card bigRow" id="installAppBtn"><span>⬇ Instalar CLICK 360 como app</span><b>\u203A</b></button>
-	      <button class="card bigRow" id="helpBtn" style="border:1px solid rgba(244,196,49,0.2);"><span>\u2753 C\u00f3mo funciona CLICK 360</span><b>\u203A</b></button>
-	      <button class="btn block" id="logoutMore">Cerrar sesi\u00f3n</button>
-	    </section>`;
-	  }
+		  function moreView(){
+		    const ownerTools = isOwnerUser() ? `
+		      <button class="card bigRow" data-more="reports"><span>${icon('chart-no-axes-combined')} Reportes</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
+		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
+		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
+		    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
+		      ${ownerTools}
+		      <button class="card bigRow" data-more="access"><span>${icon('badge-dollar-sign')} Mi plan y acceso</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" data-more="legal"><span>${icon('shield-check')} Términos y privacidad</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" id="calculatorMoreBtn"><span>${icon('calculator')} Calculadora</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" id="installAppBtn"><span>${icon('smartphone')} Instalar CLICK 360 como app</span>${icon('chevron-right')}</button>
+		      <button class="card bigRow" id="helpBtn"><span>${icon('circle-help')} Cómo funciona CLICK 360</span>${icon('chevron-right')}</button>
+		      <button class="btn block" id="logoutMore">Cerrar sesión</button>
+		    </section>`;
+		  }
 	  function backupView(){
 	    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = localDateKey(yest);
 	    const firstDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
@@ -2279,10 +2315,11 @@ function parseMoney(value) {
 	    }
 	  }
 
-  function bindSell(){
-    if(!$('#payMethod')) return;
-    let cart=[];
-    const currentTax = businessTaxConfig();
+	  function bindSell(){
+	    if(!$('#payMethod')) return;
+	    let cart=[];
+	    const currentTax = businessTaxConfig();
+	    $('#calculatorSellBtn')?.addEventListener('click', () => openCalculator({ base: parseMoney($('#cartTotal')?.textContent || 0), preferredTarget: 'cashReceived' }));
 
     const calculateCurrentCart = (method = $('#payMethod').value) => {
       const isCard = method === 'Tarjeta';
@@ -2825,7 +2862,8 @@ function parseMoney(value) {
   }
   function stopScanner(hide=true){ if(scanTimer) clearInterval(scanTimer); scanTimer=null; if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } const p=$('#cameraPanel'); if(p&&hide)p.classList.remove('show'); }
 
-  function bindCash(){
+	  function bindCash(){
+	    $('#calculatorCashBtn')?.addEventListener('click', () => openCalculator({ preferredTarget: isDayStarted() ? '' : 'apertureAmountInput' }));
     const btnReopenCash = $('#reopenCashBtn');
 	    if (btnReopenCash) {
 	      btnReopenCash.onclick = () => {
@@ -2909,7 +2947,8 @@ function parseMoney(value) {
     const btnNewMove = $('#newMove');
     if (btnNewMove) {
       btnNewMove.onclick=()=>{
-        showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><input id="mAmount" inputmode="decimal" value="0"></div><div class="field"><label>Nota</label><input id="mNote" required></div><button type="submit" class="btn primary block">Guardar</button></form>`);
+	        showModal(`<div class="modalHeader"><h2>Nuevo movimiento</h2><button class="closeBtn" data-close>×</button></div><form id="moveForm"><div class="field"><label>Tipo</label><select id="mKind"><option value="egreso">Gasto</option><option value="compra">Compra</option><option value="retiro">Retiro</option><option value="ingreso">Ingreso</option></select></div><div class="field"><label>Monto</label><div class="inputWithAction"><input id="mAmount" inputmode="decimal" value="0"><button type="button" class="iconBtn" id="calculatorMoveBtn" title="Calcular monto" aria-label="Calcular monto">${icon('calculator')}</button></div></div><div class="field"><label>Nota</label><input id="mNote" required></div><button type="submit" class="btn primary block">Guardar</button></form>`);
+	        $('#calculatorMoveBtn').onclick = () => openCalculator({ preferredTarget: 'mAmount' });
 
         const mAmountInput = $('#mAmount');
         if (mAmountInput) {
@@ -3066,8 +3105,9 @@ function parseMoney(value) {
       };
     }
   }
-  function bindMore(){
-     $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more));
+	  function bindMore(){
+	     $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more));
+	     $('#calculatorMoreBtn')?.addEventListener('click', () => openCalculator());
      $('#logoutMore')?.addEventListener('click',()=>{
          if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
          else window.click360AppLogout();
@@ -3529,8 +3569,107 @@ function parseMoney(value) {
     };
   }
 
-  function showModal(html){ closeModal(); const root=document.createElement('div'); root.id='modalRoot'; root.innerHTML=`<div class="modalOverlay show"><div class="modal">${html}</div></div>`; document.body.appendChild(root); $$('[data-close]',root).forEach(b=>b.onclick=closeModal); }
-  function closeModal(){ $('#modalRoot')?.remove(); }
+	  function showModal(html){
+	    closeModal();
+	    let root = $('#modalRoot');
+	    if (!root) { root = document.createElement('div'); root.id = 'modalRoot'; document.body.appendChild(root); }
+	    root.innerHTML = `<div class="modalOverlay show"><div class="modal">${html}</div></div>`;
+	    $$('[data-close]',root).forEach((button) => { button.onclick = closeModal; });
+	    refreshIcons(root);
+	  }
+	  function closeModal(){
+	    $$('#modalRoot').forEach((root) => {
+	      if (root.closest('.app')) root.innerHTML = '';
+	      else root.remove();
+	    });
+	  }
+	  function closeCalculator(){ $('#calculatorRoot')?.remove(); }
+	  function calculatorOperation(left, right, operator) {
+	    const domainResult = window.CLICK360_V16_DOMAIN?.calculatorOperation(left, right, operator);
+	    if (domainResult !== undefined) return domainResult;
+	    if (operator === '+') return left + right;
+	    if (operator === '-') return left - right;
+	    if (operator === '*') return left * right;
+	    if (operator === '/') return right === 0 ? null : left / right;
+	    return right;
+	  }
+	  function openCalculator(options = {}) {
+	    closeCalculator();
+	    const targets = [
+	      ['cashReceived', 'Efectivo recibido'], ['discount', 'Descuento'], ['mAmount', 'Monto del movimiento'],
+	      ['apertureAmountInput', 'Apertura de caja'], ['emAmount', 'Monto editado'], ['reminderAmount', 'Monto del recordatorio'], ['iAmount', 'Factura de proveedor']
+	    ].filter(([id]) => document.getElementById(id));
+	    const preferredTarget = targets.some(([id]) => id === options.preferredTarget) ? options.preferredTarget : (targets[0]?.[0] || '');
+	    const initialBase = Math.max(0, Number(options.base || parseMoney(document.getElementById(preferredTarget)?.value || 0)) || 0);
+	    const root = document.createElement('div');
+	    root.id = 'calculatorRoot';
+	    root.innerHTML = `<div class="modalOverlay show calculatorOverlay"><section class="calculatorSheet" role="dialog" aria-modal="true" aria-labelledby="calculatorTitle"><div class="modalHeader"><div><h2 id="calculatorTitle">Calculadora</h2><p class="fieldHint">El resultado no se guarda en el historial.</p></div><button type="button" class="closeBtn" data-calculator-close aria-label="Cerrar">×</button></div>${targets.length ? `<label class="field"><span>Usar resultado en</span><select id="calculatorTarget">${targets.map(([id, label]) => `<option value="${id}" ${id === preferredTarget ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>` : ''}<output id="calculatorDisplay" class="calculatorDisplay">${initialBase || 0}</output><div class="calculatorKeys" aria-label="Teclado de calculadora"><button data-calc-action="clear">C</button><button data-calc-action="back" aria-label="Borrar último">${icon('delete')}</button><button data-calc-action="percent">%</button><button class="operator" data-calc-op="/">÷</button>${['7','8','9'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="*">×</button>${['4','5','6'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="-">−</button>${['1','2','3'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="+">+</button><button data-calc-action="sign">±</button><button data-calc-key="0">0</button><button data-calc-key=".">.</button><button class="equals" data-calc-action="equals">=</button></div><div class="calculatorHelpers"><label>Porcentaje<input id="calculatorRate" type="number" min="0" max="100" step="0.01" value="15" inputmode="decimal"></label><button type="button" data-calc-helper="discount">Descuento</button><button type="button" data-calc-helper="tax">Impuesto</button></div><div class="calculatorActions"><button type="button" class="btn" id="calculatorCopy">${icon('copy')} Copiar</button><button type="button" class="btn primary" id="calculatorUse">${icon('check')} Usar resultado</button></div></section></div>`;
+	    document.body.appendChild(root);
+	    refreshIcons(root);
+	    let display = String(initialBase || '0');
+	    let accumulator = null;
+	    let pendingOperator = null;
+	    let replaceDisplay = false;
+	    const output = $('#calculatorDisplay', root);
+	    const render = () => { output.textContent = display; };
+	    const normalizedResult = (value) => String(Math.round((Number(value) + Number.EPSILON) * 1000000) / 1000000);
+	    const calculate = () => {
+	      if (accumulator == null || !pendingOperator) return Number(display) || 0;
+	      const result = calculatorOperation(accumulator, Number(display) || 0, pendingOperator);
+	      if (result == null || !Number.isFinite(result)) { toast('No se puede dividir para cero.', 'err'); return null; }
+	      display = normalizedResult(result);
+	      accumulator = null;
+	      pendingOperator = null;
+	      replaceDisplay = true;
+	      render();
+	      return result;
+	    };
+	    $$('[data-calc-key]', root).forEach((button) => { button.onclick = () => {
+	      const key = button.dataset.calcKey;
+	      if (replaceDisplay) { display = '0'; replaceDisplay = false; }
+	      if (key === '.' && display.includes('.')) return;
+	      display = key === '.' ? `${display}.` : display === '0' ? key : `${display}${key}`;
+	      if (display.length > 16) display = display.slice(0, 16);
+	      render();
+	    }; });
+	    $$('[data-calc-op]', root).forEach((button) => { button.onclick = () => {
+	      if (pendingOperator && !replaceDisplay && calculate() == null) return;
+	      accumulator = Number(display) || 0;
+	      pendingOperator = button.dataset.calcOp;
+	      replaceDisplay = true;
+	    }; });
+	    $('[data-calc-action="clear"]', root).onclick = () => { display = '0'; accumulator = null; pendingOperator = null; replaceDisplay = false; render(); };
+	    $('[data-calc-action="back"]', root).onclick = () => { display = display.length > 1 ? display.slice(0, -1) : '0'; render(); };
+	    $('[data-calc-action="percent"]', root).onclick = () => { display = normalizedResult((Number(display) || 0) / 100); render(); };
+	    $('[data-calc-action="sign"]', root).onclick = () => { display = normalizedResult(-(Number(display) || 0)); render(); };
+	    $('[data-calc-action="equals"]', root).onclick = calculate;
+	    $$('[data-calc-helper]', root).forEach((button) => { button.onclick = () => {
+	      const rate = Math.max(0, Math.min(100, Number($('#calculatorRate', root).value || 0)));
+	      const base = initialBase || Number(display) || 0;
+	      display = normalizedResult(base * rate / 100);
+	      accumulator = null; pendingOperator = null; replaceDisplay = true; render();
+	      toast(button.dataset.calcHelper === 'discount' ? `Descuento de ${rate}% calculado` : `Impuesto de ${rate}% calculado`);
+	    }; });
+	    $('#calculatorCopy', root).onclick = async () => {
+	      await navigator.clipboard?.writeText(display).catch(() => null);
+	      toast('Resultado copiado');
+	    };
+	    $('#calculatorUse', root).onclick = () => {
+	      const targetId = $('#calculatorTarget', root)?.value || '';
+	      const target = targetId ? document.getElementById(targetId) : null;
+	      if (target) {
+	        target.value = normalizedResult(Number(display) || 0);
+	        target.dispatchEvent(new Event('input', { bubbles: true }));
+	        target.dispatchEvent(new Event('change', { bubbles: true }));
+	        toast('Resultado aplicado');
+	      } else {
+	        navigator.clipboard?.writeText(display).catch(() => null);
+	        toast('Resultado listo para pegar');
+	      }
+	      closeCalculator();
+	    };
+	    $$('[data-calculator-close]', root).forEach((button) => { button.onclick = closeCalculator; });
+	  }
 
   function defaultLabelLayout() {
     return {
@@ -3665,95 +3804,31 @@ function parseMoney(value) {
       editorLayout.price.size *= Number(initialTemplate.priceScale || 1);
     }
 
-    showModal(`<div class="modalHeader"><h2>Etiqueta imprimible</h2><button class="closeBtn" data-close>×</button></div>
-      <style>
-        @media(min-width:600px){
-          .labelCustomizerLayout {
-             grid-template-columns: 1fr 1fr !important;
-          }
-        }
-      </style>
-      <div class="labelCustomizerLayout" style="display:grid; grid-template-columns: 1fr; gap:16px; align-items:start; padding:10px;">
-        <div style="display:flex; justify-content:center; background:#111; padding:20px; border-radius:12px; border:1px solid #333;">
-           <canvas id="labelPreviewCanvas" style="max-width:100%; height:auto; box-shadow:0 8px 24px rgba(0,0,0,0.5); border-radius:10px;"></canvas>
-        </div>
-        <div class="labelControls" style="display:flex; flex-direction:column; gap:12px;">
-           <div class="field">
-              <label>Aplicar Plantilla</label>
-              <select id="applyTemplateSelect" style="width:100%; padding:8px; border-radius:8px; background:#222; color:#fff; border:1px solid #444;">
-                 <option value="">-- Seleccionar plantilla --</option>
-                 ${templateOptions}
-              </select>
-           </div>
-           <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
-              <div class="field">
-                 <label style="font-size:11px;">Fondo Etiqueta</label>
-                 <input type="color" id="labelBgColor" value="${safeColor(initialTemplate?.bgColor, '#ffffff')}" style="width:100%; height:36px; padding:2px; cursor:pointer;">
-              </div>
-              <div class="field">
-                 <label style="font-size:11px;">Fondo QR</label>
-                 <input type="color" id="qrBgColor" value="${safeColor(initialTemplate?.qrBgColor || initialTemplate?.bgColor, '#ffffff')}" style="width:100%; height:36px; padding:2px; cursor:pointer;">
-              </div>
-              <div class="field">
-                 <label style="font-size:11px;">Texto / QR</label>
-                 <input type="color" id="labelFgColor" value="${safeColor(initialTemplate?.fgColor, '#000000')}" style="width:100%; height:36px; padding:2px; cursor:pointer;">
-              </div>
-           </div>
-
-           <div class="formGrid labelSizeGrid">
-             <div class="field"><label>Ancho (mm)</label><input type="number" min="25" max="120" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div>
-             <div class="field"><label>Alto (mm)</label><input type="number" min="25" max="180" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 88)}"></div>
-             <div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Heredar del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div>
-             <div class="field"><label>Margen QR</label><input type="number" min="2" max="12" id="labelQrMargin" value="${numericInputValue(initialTemplate?.qrMargin || 5)}"></div>
-           </div>
-
-           <section class="labelElementPanel">
-             <div class="field"><label>Elemento</label><select id="labelElementSelect"><option value="qr">QR</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="business">Negocio</option><option value="address">Direccion</option><option value="name">Nombre</option><option value="variant">Variante</option><option value="price">Precio</option><option value="code">Codigo</option><option value="tax">IVA</option><option value="social">Red social</option><option value="phone">Telefono</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
-             <div class="labelElementToggles"><label><input type="checkbox" id="labelElementVisible"> Visible</label><label><input type="checkbox" id="labelElementLocked"> Bloqueado</label><label><input type="checkbox" id="labelSnap" checked> Ajustar</label></div>
-             <div class="formGrid"><div class="field"><label>X</label><input id="labelElementX" type="number"></div><div class="field"><label>Y</label><input id="labelElementY" type="number"></div><div class="field"><label>Ancho</label><input id="labelElementWidth" type="number" min="8"></div><div class="field"><label>Alto / tamaño</label><input id="labelElementHeight" type="number" min="6"></div></div>
-             <div class="labelLayerButtons"><button type="button" class="btn silver" id="labelLayerDown">Enviar atras</button><button type="button" class="btn silver" id="labelLayerUp">Traer al frente</button></div>
-             <p id="labelQrWarning" class="fieldHint"></p>
-           </section>
-
-           <!-- Layout Adjustments -->
-           <div class="field">
-              <label style="font-size:12px; display:flex; justify-content:space-between;">Mover Textos (Vertical) <span id="yOffsetVal" style="color:var(--gold);">0px</span></label>
-              <input type="range" id="labelYOffset" min="-50" max="50" value="0" style="width:100%; accent-color:var(--gold);">
-           </div>
-           <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-              <div class="field">
-                 <label style="font-size:11px; display:flex; justify-content:space-between;">Tamaño Nombre <span id="nameScaleVal" style="color:var(--gold);">1.0x</span></label>
-                 <input type="range" id="labelNameScale" min="0.6" max="1.4" step="0.1" value="1.0" style="width:100%; accent-color:var(--gold);">
-              </div>
-              <div class="field">
-                 <label style="font-size:11px; display:flex; justify-content:space-between;">Tamaño Precio <span id="priceScaleVal" style="color:var(--gold);">1.0x</span></label>
-                 <input type="range" id="labelPriceScale" min="0.6" max="1.4" step="0.1" value="1.0" style="width:100%; accent-color:var(--gold);">
-              </div>
-           </div>
-
-           <div class="field">
-              <label>Red Social / Contacto (opcional)</label>
-              <input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}">
-           </div>
-           <div class="field"><label>Texto libre (opcional)</label><input id="labelCustomText" maxlength="80" value="${escapeHtml(initialTemplate?.customText || '')}"></div>
-           <div class="field">
-              <label>Dirección del Local (opcional)</label>
-              <input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}">
-           </div>
-           <div class="field">
-              <label>Cantidad de Copias</label>
-              <input type="number" id="labelCopies" min="1" value="1" style="text-align:center;">
-           </div>
-           <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
-              <button class="btn primary block" id="printOne">🖨️ Imprimir Etiquetas</button>
-              <button class="btn silver block" id="saveTemplateBtn" style="border:1px solid var(--green); color:var(--green);">💾 Guardar Plantilla</button>
-              <button class="btn silver block" id="downloadLabelPng">🖼️ Descargar Imagen (PNG)</button>
-              <button class="btn block" id="printStock" style="border:1px solid var(--gold); color:var(--gold);">🖨️ Imprimir según Stock (${product.qty})</button>
-              <button class="btn block" id="printAll" style="border:1px solid var(--muted); color:var(--muted);">🖨️ Imprimir Catálogo Completo</button>
-              <button class="btn silver block" id="copyLabelCode">Copiar código: ${escapeHtml(product.code)}</button>
-           </div>
-        </div>
-      </div>`);
+	    showModal(`<div class="modalHeader"><div><h2>Diseñar etiqueta QR</h2><p class="fieldHint">Toca un elemento en la vista previa para moverlo o cambiar su tamaño.</p></div><button class="closeBtn" data-close>×</button></div>
+	      <div class="labelCustomizerLayout">
+	        <details class="labelPreviewDisclosure" open><summary>Vista previa</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas"></canvas><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
+	        <div class="labelControls">
+	          <div class="field"><label>Plantilla</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
+	          <section class="labelPresetPanel"><b>Diseños rápidos</b><div class="labelPresetGrid"><button type="button" data-label-preset="small">Pequeña</button><button type="button" data-label-preset="medium">Mediana</button><button type="button" data-label-preset="large">Grande</button><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-price">QR + precio</button><button type="button" data-label-preset="business">QR + negocio</button></div></section>
+	          <section class="labelElementPanel">
+	            <div class="field"><label>Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
+	            <div class="labelQuickControls"><button type="button" id="labelSizeDown" title="Reducir">${icon('minus')}</button><button type="button" id="labelSizeUp" title="Aumentar">${icon('plus')}</button><button type="button" id="labelCenter" title="Centrar">${icon('align-center')}<span>Centrar</span></button><button type="button" id="labelToggleVisibility" title="Mostrar u ocultar">${icon('eye')}<span>Ocultar</span></button><button type="button" id="labelToggleLock" title="Bloquear posición">${icon('lock-open')}<span>Bloquear</span></button><button type="button" id="labelResetElement" title="Restablecer elemento">${icon('rotate-ccw')}<span>Restablecer</span></button></div>
+	            <p id="labelQrWarning" class="fieldHint"></p>
+	          </section>
+	          <div class="formGrid"><div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Heredar del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div><div class="field"><label>Red social / contacto</label><input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}"></div><div class="field full"><label>Dirección del local</label><input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}"></div><div class="field full"><label>Texto libre</label><input id="labelCustomText" maxlength="80" value="${escapeHtml(initialTemplate?.customText || '')}"></div></div>
+	          <details class="settingsDisclosure labelAdvanced"><summary>Ajustes avanzados</summary><div class="labelAdvancedBody">
+	            <div class="labelColorGrid"><div class="field"><label>Fondo etiqueta</label><input type="color" id="labelBgColor" value="${safeColor(initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Fondo QR</label><input type="color" id="qrBgColor" value="${safeColor(initialTemplate?.qrBgColor || initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Texto / QR</label><input type="color" id="labelFgColor" value="${safeColor(initialTemplate?.fgColor, '#000000')}"></div></div>
+	            <div class="formGrid labelSizeGrid"><div class="field"><label>Ancho (mm)</label><input type="number" min="25" max="120" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div><div class="field"><label>Alto (mm)</label><input type="number" min="25" max="180" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 88)}"></div><div class="field"><label>Margen QR</label><input type="number" min="2" max="12" id="labelQrMargin" value="${numericInputValue(initialTemplate?.qrMargin || 5)}"></div><label class="consentCheck"><input type="checkbox" id="labelSnap" checked><span>Ajustar a cuadrícula</span></label></div>
+	            <div class="formGrid"><div class="field"><label>X</label><input id="labelElementX" type="number"></div><div class="field"><label>Y</label><input id="labelElementY" type="number"></div><div class="field"><label>Ancho</label><input id="labelElementWidth" type="number" min="8"></div><div class="field"><label>Alto / tamaño</label><input id="labelElementHeight" type="number" min="6"></div></div>
+	            <div class="labelElementToggles"><label><input type="checkbox" id="labelElementVisible"> Visible</label><label><input type="checkbox" id="labelElementLocked"> Bloqueado</label></div>
+	            <div class="labelLayerButtons"><button type="button" class="btn" id="labelLayerDown">Enviar atrás</button><button type="button" class="btn" id="labelLayerUp">Traer al frente</button></div>
+	            <div class="field"><label>Mover textos <span id="yOffsetVal">0px</span></label><input type="range" id="labelYOffset" min="-50" max="50" value="0"></div><div class="formGrid"><div class="field"><label>Tamaño nombre <span id="nameScaleVal">1.0x</span></label><input type="range" id="labelNameScale" min="0.6" max="1.4" step="0.1" value="1.0"></div><div class="field"><label>Tamaño precio <span id="priceScaleVal">1.0x</span></label><input type="range" id="labelPriceScale" min="0.6" max="1.4" step="0.1" value="1.0"></div></div>
+	          </div></details>
+	          <div class="field"><label>Cantidad de copias</label><input type="number" id="labelCopies" min="1" value="1"></div>
+	          <div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('printer')} Imprimir prueba</button><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar plantilla</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nueva</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
+	          <details class="settingsDisclosure"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printStock">${icon('printer')} Imprimir stock (${product.qty})</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
+	        </div>
+	      </div>`);
 
     $('#modalRoot .modal')?.classList.add('labelEditorModal');
     const canvas = $('#labelPreviewCanvas');
@@ -3797,9 +3872,12 @@ function parseMoney(value) {
 	         const previewScale = canvas.width / Number(canvas.dataset.baseWidth || result.baseWidth || 260);
 	         context.save();
 	         context.strokeStyle = '#d9a928';
-	         context.lineWidth = Math.max(2, previewScale);
-	         context.setLineDash([4 * previewScale, 3 * previewScale]);
-	         context.strokeRect(bounds.left * previewScale, bounds.top * previewScale, Math.max(1, bounds.right - bounds.left) * previewScale, Math.max(1, bounds.bottom - bounds.top) * previewScale);
+		         context.lineWidth = Math.max(2, previewScale);
+		         context.setLineDash([4 * previewScale, 3 * previewScale]);
+		         context.strokeRect(bounds.left * previewScale, bounds.top * previewScale, Math.max(1, bounds.right - bounds.left) * previewScale, Math.max(1, bounds.bottom - bounds.top) * previewScale);
+		         context.setLineDash([]);
+		         context.fillStyle = '#d9a928';
+		         context.fillRect(bounds.right * previewScale - 7, bounds.bottom * previewScale - 7, 14, 14);
 	         context.restore();
 	       }
 	       const qr = editorLayout.qr;
@@ -3842,9 +3920,11 @@ function parseMoney(value) {
       $('#labelElementLocked').checked = element.locked === true;
       $('#labelElementX').value = Math.round(Number(element.x || 0));
       $('#labelElementY').value = Math.round(Number(element.y || 0));
-      $('#labelElementWidth').value = Math.round(Number(element.width || 20));
-      $('#labelElementHeight').value = Math.round(Number(['qr','logo','image'].includes(key) ? (element.height || element.width || 20) : (element.size || 10)));
-    };
+	      $('#labelElementWidth').value = Math.round(Number(element.width || 20));
+	      $('#labelElementHeight').value = Math.round(Number(['qr','logo','image'].includes(key) ? (element.height || element.width || 20) : (element.size || 10)));
+	      $('#labelToggleVisibility span').textContent = element.visible === false ? 'Mostrar' : 'Ocultar';
+	      $('#labelToggleLock span').textContent = element.locked === true ? 'Desbloquear' : 'Bloquear';
+	    };
     const updateSelectedElement = () => {
       const key = elementSelect.value;
       const element = editorLayout[key];
@@ -3864,8 +3944,73 @@ function parseMoney(value) {
       input.oninput = updateSelectedElement;
       input.onchange = updateSelectedElement;
     });
-    $('#labelLayerUp').onclick = () => { editorLayout[elementSelect.value].z = Math.max(...Object.values(editorLayout).map((item) => Number(item.z || 0))) + 1; updatePreview(); };
-    $('#labelLayerDown').onclick = () => { editorLayout[elementSelect.value].z = Math.min(...Object.values(editorLayout).map((item) => Number(item.z || 0))) - 1; updatePreview(); };
+	    $('#labelLayerUp').onclick = () => { editorLayout[elementSelect.value].z = Math.max(...Object.values(editorLayout).map((item) => Number(item.z || 0))) + 1; updatePreview(); };
+	    $('#labelLayerDown').onclick = () => { editorLayout[elementSelect.value].z = Math.min(...Object.values(editorLayout).map((item) => Number(item.z || 0))) - 1; updatePreview(); };
+	    const resizeSelected = (delta) => {
+	      const key = elementSelect.value;
+	      const element = editorLayout[key];
+	      if (!element || element.locked) return toast('Desbloquea el elemento para cambiarlo.', 'err');
+	      if (['qr','logo','image'].includes(key)) {
+	        const minimum = key === 'qr' ? 90 : 20;
+	        element.width = Math.max(minimum, Number(element.width || minimum) + delta * 10);
+	        element.height = Math.max(minimum, Number(element.height || element.width) + delta * 10);
+	        if (key === 'qr') element.width = element.height = Math.max(element.width, element.height);
+	      } else element.size = Math.max(6, Number(element.size || 10) + delta);
+	      syncElementControls(); updatePreview();
+	    };
+	    $('#labelSizeDown').onclick = () => resizeSelected(-1);
+	    $('#labelSizeUp').onclick = () => resizeSelected(1);
+	    $('#labelCenter').onclick = () => {
+	      const key = elementSelect.value;
+	      const element = editorLayout[key];
+	      const baseWidth = Number(canvas.dataset.baseWidth || 260);
+	      if (['qr','logo','image'].includes(key)) element.x = Math.max(0, (baseWidth - Number(element.width || 0)) / 2);
+	      else element.x = baseWidth / 2;
+	      syncElementControls(); updatePreview();
+	    };
+	    $('#labelToggleVisibility').onclick = () => { const element = editorLayout[elementSelect.value]; element.visible = element.visible === false; syncElementControls(); updatePreview(); };
+	    $('#labelToggleLock').onclick = () => { const element = editorLayout[elementSelect.value]; element.locked = !element.locked; syncElementControls(); updatePreview(); };
+	    $('#labelResetElement').onclick = () => { const key = elementSelect.value; editorLayout[key] = { ...defaultLabelLayout()[key] }; syncElementControls(); updatePreview(); };
+	    const scaledDefaultLayout = (widthMm, heightMm) => {
+	      const scaleX = widthMm / 60;
+	      const scaleY = heightMm / 88;
+	      const fontScale = Math.min(scaleX, scaleY);
+	      const layout = defaultLabelLayout();
+	      Object.values(layout).forEach((element) => {
+	        element.x *= scaleX; element.y *= scaleY; element.width *= scaleX;
+	        if (element.height) element.height *= scaleY;
+	        if (element.size) element.size = Math.max(6, element.size * fontScale);
+	      });
+	      return layout;
+	    };
+	    const applyPreset = (preset) => {
+	      const sizes = { small: [40, 60], medium: [60, 88], large: [80, 110], qr: [45, 50], 'qr-price': [50, 65], business: [60, 88] };
+	      const [widthMm, heightMm] = sizes[preset] || sizes.medium;
+	      editorLayout = scaledDefaultLayout(widthMm, heightMm);
+	      if (preset === 'qr' || preset === 'qr-price') {
+	        Object.values(editorLayout).forEach((element) => { element.visible = false; });
+	        const baseWidth = widthMm * (260 / 60);
+	        const qrSize = Math.max(90, Math.min(baseWidth - 24, heightMm * (380 / 88) - (preset === 'qr-price' ? 65 : 24)));
+	        Object.assign(editorLayout.qr, { visible: true, x: (baseWidth - qrSize) / 2, y: 12, width: qrSize, height: qrSize });
+	        if (preset === 'qr-price') {
+	          Object.assign(editorLayout.price, { visible: true, x: baseWidth / 2, y: qrSize + 42, width: baseWidth - 20, size: 18 });
+	          Object.assign(editorLayout.code, { visible: true, x: baseWidth / 2, y: qrSize + 23, width: baseWidth - 20, size: 9 });
+	        }
+	      }
+	      if (preset === 'business') ['business','address','name','price','tax','social','phone','code','qr'].forEach((key) => { editorLayout[key].visible = true; });
+	      $('#labelWidthMm').value = widthMm; $('#labelHeightMm').value = heightMm;
+	      syncElementControls(); updatePreview(); toast('Diseño aplicado');
+	    };
+	    $$('[data-label-preset]').forEach((button) => { button.onclick = () => applyPreset(button.dataset.labelPreset); });
+	    $('#labelResetAll').onclick = () => { editorLayout = normalizedLabelLayout(); $('#labelWidthMm').value = 60; $('#labelHeightMm').value = 88; syncElementControls(); updatePreview(); };
+	    $('#labelPreviewLarge').onclick = async () => {
+	      await updatePreview();
+	      const previewRoot = document.createElement('div');
+	      previewRoot.id = 'labelLargePreview';
+	      previewRoot.innerHTML = `<div class="modalOverlay show labelLargeOverlay"><div class="labelLargeSheet"><button type="button" class="closeBtn" aria-label="Cerrar">×</button><img src="${canvas.toDataURL('image/png')}" alt="Vista previa grande de la etiqueta QR"></div></div>`;
+	      document.body.appendChild(previewRoot);
+	      $('.closeBtn', previewRoot).onclick = () => previewRoot.remove();
+	    };
 
     const hitBounds = (key, element) => {
       if (['qr','logo','image'].includes(key)) return { left: element.x, top: element.y, right: element.x + element.width, bottom: element.y + (element.height || element.width) };
@@ -3934,12 +4079,13 @@ function parseMoney(value) {
     syncElementControls();
 
     // Apply template logic
-    $('#applyTemplateSelect').onchange = (e) => {
-       const tplId = e.target.value;
-       if (!tplId) return;
+	    $('#applyTemplateSelect').onchange = (e) => {
+	       const tplId = e.target.value;
+	       if (!tplId) { activeTemplateId = ''; $('#deleteTemplateBtn').disabled = true; return; }
        const tpl = (state.settings.labelTemplates || []).find(t => t.id === tplId);
 	       if (tpl) {
 	          activeTemplateId = tpl.id;
+	          $('#deleteTemplateBtn').disabled = false;
 	          editorLayout = normalizedLabelLayout(tpl.layout);
 	          if (!tpl.layout) {
 	            const legacyOffset = Number(tpl.yOffsetAdj || 0);
@@ -3969,13 +4115,18 @@ function parseMoney(value) {
        }
     };
 
-    // Save template logic
-    $('#saveTemplateBtn').onclick = () => {
-       const existing = state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
-       const name = prompt("Nombre de la plantilla:", existing?.name || "Mi Plantilla QR");
-       if (!name) return;
-       const currentOpts = getOptions();
-       const tpl = {
+	    const refreshTemplateSelect = () => {
+	      const updatedTemplates = state.settings?.labelTemplates || [];
+	      $('#applyTemplateSelect').innerHTML = `<option value="">Nueva plantilla</option>` + updatedTemplates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('');
+	      $('#applyTemplateSelect').value = activeTemplateId;
+	      $('#deleteTemplateBtn').disabled = !activeTemplateId;
+	    };
+	    const persistTemplate = ({ forceNew = false, suggestedName = '' } = {}) => {
+	       const existing = forceNew ? null : state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
+	       const name = prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
+	       if (!name?.trim()) return null;
+	       const currentOpts = getOptions();
+	       const tpl = {
           id: existing?.id || uid('tpl'),
           name: name.trim(),
           bgColor: currentOpts.bgColor,
@@ -4007,14 +4158,28 @@ function parseMoney(value) {
 	          window.click360RecordTelemetry?.('template_save_failure', { requestId: tpl.id, errorCode: 'local_save_rejected' }).catch?.(() => {});
 	          return;
 	       }
-       toast('Plantilla guardada correctamente', 'ok');
-
-       // Reload select dropdown options
-       const updatedTemplates = state.settings.labelTemplates;
-       $('#applyTemplateSelect').innerHTML = `<option value="">-- Seleccionar plantilla --</option>` +
-          updatedTemplates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
-       $('#applyTemplateSelect').value = tpl.id;
-    };
+	       toast('Plantilla guardada correctamente', 'ok');
+	       refreshTemplateSelect();
+	       refreshInventoryTemplateSection();
+	       return tpl;
+	    };
+	    $('#saveTemplateBtn').onclick = () => persistTemplate();
+	    $('#saveTemplateAsNewBtn').onclick = () => persistTemplate({ forceNew: true });
+	    $('#duplicateTemplateBtn').onclick = () => {
+	      const current = state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
+	      persistTemplate({ forceNew: true, suggestedName: `${current?.name || 'Mi Plantilla QR'} - copia` });
+	    };
+	    $('#deleteTemplateBtn').onclick = () => {
+	      const current = state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
+	      if (!current || !confirm(`¿Eliminar la plantilla "${current.name}"?`)) return;
+	      state.settings.labelTemplates = state.settings.labelTemplates.filter((template) => template.id !== activeTemplateId);
+	      addAudit('label_template_deleted', { templateId: activeTemplateId, name: current.name });
+	      activeTemplateId = '';
+	      if (!save()) return;
+	      refreshTemplateSelect();
+	      refreshInventoryTemplateSection();
+	      toast('Plantilla eliminada');
+	    };
 
     updatePreview();
 
