@@ -9,6 +9,7 @@ const firebase = fs.readFileSync('firebase-service.js', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 const manifest = fs.readFileSync('manifest.webmanifest', 'utf8');
 const styles = fs.readFileSync('styles.css', 'utf8');
+const hosting = JSON.parse(fs.readFileSync('firebase.json', 'utf8'));
 const assetVersion = 'mvp-launch-v16-1-2-r1';
 
 class StorageMock {
@@ -134,6 +135,10 @@ for (const source of [html, app, firebase, worker, manifest, styles]) {
 assert(worker.includes(`const CACHE = 'click360-${assetVersion}'`));
 assert(worker.includes("'./runtime-guard.js'"));
 assert(worker.includes("key.startsWith('click360-') && key !== CACHE"), 'activation removes only old CLICK 360 caches');
+for (const route of ['/', '/index.html', '/service-worker.js']) {
+  const entry = hosting.hosting.headers.find((candidate) => candidate.source === route);
+  assert(entry?.headers?.some((header) => header.key === 'Cache-Control' && header.value.includes('no-cache')), `Firebase Hosting does not retain the release shell at ${route}`);
+}
 assert(firebase.includes("initialTenantBootstrapDecision({"));
 assert(firebase.includes("pushLocalToFirestore('initial_tenant_seed')"));
 assert(!firebase.includes('STATE_DOC.set('), 'ONLINE_ONLY_SAFE bootstrap cannot overwrite a remote document');
