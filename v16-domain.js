@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '16.1.0';
+  const APP_VERSION = '16.1.1';
   const TERMS_VERSION = '2026-07-14';
   const TRIAL_DAYS = 7;
   const DAY_MS = 24 * 60 * 60 * 1000;

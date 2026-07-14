@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-1-r1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-1-1-r1';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:';
   const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
@@ -28,17 +28,6 @@
   function refreshIcons(root = document) {
     requestAnimationFrame(() => window.lucide?.createIcons({ root, attrs: { 'stroke-width': 2, width: 20, height: 20 } }));
   }
-
-  window.onerror = function(msg, url, line) {
-    const m = String(msg);
-    if(m.includes('ResizeObserver')) return;
-    const link = `https://wa.me/593969399562?text=${encodeURIComponent("Error en CLICK 360:\\n" + m + "\\nLínea: " + line)}`;
-    if(toastEl) {
-      toastEl.innerHTML = `Algo falló. <a href="${link}" target="_blank" rel="noopener noreferrer" style="color:var(--gold);text-decoration:underline;pointer-events:auto;">Reportar a CLICK</a>`;
-      toastEl.className = 'toast show err';
-      clearTimeout(toastEl._t);
-    }
-  };
 
   // No business state is loaded until Firebase resolves an authenticated tenant.
   let activeTenantContext = null;
@@ -598,6 +587,7 @@ function parseMoney(value) {
       throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
     }
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
+    window.CLICK360_RUNTIME_GUARD?.setContext(activeTenantContext);
     onboardingPrompted = false;
     window.click360TenantContext = activeTenantContext;
     tenantStateDeferred = options.deferLocalLoad === true;
@@ -632,6 +622,7 @@ function parseMoney(value) {
   window.click360ClearTenantContext = function() {
     stopScanner();
     activeTenantContext = null;
+    window.CLICK360_RUNTIME_GUARD?.clearContext();
     onboardingPrompted = false;
     window.click360TenantContext = null;
     state = seed();
@@ -1123,7 +1114,7 @@ function parseMoney(value) {
 	    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
-	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>V16.1 · Control total de tu negocio</small></div></div>
+	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>V16.1.1 · Control total de tu negocio</small></div></div>
 	          <div class="field"><label>Negocio activo</label>${businessSwitcher('businessPickerSide')}</div>
 	          <nav class="sideNav">${navButtons(active, true)}</nav>
 	        </div>
