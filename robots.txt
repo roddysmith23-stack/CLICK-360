@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://roddysmith23-stack.github.io/CLICK-360/sitemap.xml

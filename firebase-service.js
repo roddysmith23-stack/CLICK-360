@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-  const APP_ASSET_VERSION = 'mvp-launch-v16-r2';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-1-r1';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -68,7 +68,11 @@
 	  const APPROVED_IDENTITY_PREFIX = "CLICK360:V16:APPROVED:";
 	  const LEGACY_APPROVED_IDENTITY_PREFIX = "CLICK360_APPROVED_IDENTITY:";
 	  const ACCOUNT_ACCESS_COLLECTION = 'accountAccess';
-	  const TRIAL_DAYS = 7;
+		  const TRIAL_DAYS = 7;
+		  const PUBLIC_INTENT_KEY = 'CLICK360:V16_1:PUBLIC_INTENT';
+		  const PUBLIC_INTENTS = new Set(['login', 'trial', 'register', 'invite']);
+		  let PUBLIC_AUTH_INTENT = null;
+		  let AUTH_REQUEST_IN_FLIGHT = false;
 	  const SCHEMA_VERSION = 10;
 	  const OFFLINE_APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 	  const MAX_CLOUD_PAYLOAD_BYTES = window.CLICK360_P0_TENANT_GUARD.MAX_CLOUD_PAYLOAD_BYTES;
@@ -81,7 +85,7 @@
 	  function tenantStorageKeyFor(context, suffix) {
 	    return context?.tenantKey ? `CLICK360_TENANT:${context.tenantKey}:${suffix}` : '';
 	  }
-	  function approvedIdentityStorageKey(uid) {
+		  function approvedIdentityStorageKey(uid) {
 	    return uid ? `${APPROVED_IDENTITY_PREFIX}${uid}` : '';
 	  }
 	  function safeStorageGet(key) {
@@ -275,6 +279,24 @@
 	      safeStorageSet(key, id);
 	    }
 		    return id;
+		  }
+		  function readPublicAuthIntent() {
+		    const fromUrl = new URLSearchParams(location.search).get('flow');
+		    if (PUBLIC_INTENTS.has(fromUrl)) return fromUrl;
+		    if (PUBLIC_INTENTS.has(PUBLIC_AUTH_INTENT)) return PUBLIC_AUTH_INTENT;
+		    try {
+		      const stored = sessionStorage.getItem(PUBLIC_INTENT_KEY);
+		      return PUBLIC_INTENTS.has(stored) ? stored : 'login';
+		    } catch { return 'login'; }
+		  }
+		  function setPublicAuthIntent(intent) {
+		    PUBLIC_AUTH_INTENT = PUBLIC_INTENTS.has(intent) ? intent : 'login';
+		    try { sessionStorage.setItem(PUBLIC_INTENT_KEY, PUBLIC_AUTH_INTENT); } catch {}
+		    return PUBLIC_AUTH_INTENT;
+		  }
+		  function clearPublicAuthIntent() {
+		    PUBLIC_AUTH_INTENT = null;
+		    try { sessionStorage.removeItem(PUBLIC_INTENT_KEY); } catch {}
 		  }
 		  const TELEMETRY_EVENTS = new Set([
 		    'login', 'bootstrap', 'cache_failure', 'online_only', 'sync', 'plan_request',
@@ -693,12 +715,13 @@
     };
   }
 
-	  async function acceptInvitationFromUrl(user, expectedEpoch = AUTH_EPOCH) {
-	    const inviteToken = initUrlParams.get('inviteToken') || initUrlParams.get('token') || '';
-	    const ownerId = initUrlParams.get('ownerId') || '';
+		  async function acceptInvitationFromUrl(user, expectedEpoch = AUTH_EPOCH) {
+		    const currentParams = new URLSearchParams(location.search);
+		    const inviteToken = currentParams.get('inviteToken') || currentParams.get('token') || '';
+		    const ownerId = currentParams.get('ownerId') || '';
 	    if (!inviteToken || !ownerId || !isCurrentAuthEpoch(user, expectedEpoch)) return false;
 	    const computedHash = await window.CLICK360_V16_DOMAIN?.sha256(inviteToken);
-	    const suppliedHash = initUrlParams.get('inviteHash') || computedHash;
+		    const suppliedHash = currentParams.get('inviteHash') || computedHash;
 	    if (!computedHash || suppliedHash !== computedHash) throw new Error('La invitacion no es valida.');
 	    const invite = invitationRef(ownerId, computedHash);
 	    const member = memberRef(ownerId, user.uid);
@@ -839,14 +862,15 @@
     return { ...evaluated, serverNowMs, source: 'accountAccess', revision: Number(data.revision || 0) };
   }
 
-  async function resolveAccountAccess(user, expectedEpoch = AUTH_EPOCH) {
+	  async function resolveAccountAccess(user, expectedEpoch = AUTH_EPOCH, options = {}) {
     if (!isCurrentAuthEpoch(user, expectedEpoch) || !navigator.onLine) return null;
     const ref = accountAccessRef(user.uid);
     if (!ref) return null;
     try {
       let snap = await ref.get({ source: 'server' });
       if (!isCurrentAuthEpoch(user, expectedEpoch)) return null;
-      if (!snap.exists) {
+	      if (!snap.exists && options.allowCreate !== true) return null;
+	      if (!snap.exists) {
         await db.runTransaction(async (transaction) => {
           const current = await transaction.get(ref);
           if (current.exists) return;
@@ -863,7 +887,7 @@
             trialStartedAt: firebase.firestore.FieldValue.serverTimestamp(),
             lastSeenAt: firebase.firestore.FieldValue.serverTimestamp(),
             createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            source: 'self_service',
+	            source: 'self_service',
             entitlementVersion: 16,
             revision: 1
           });
@@ -1470,7 +1494,7 @@
 	    });
 	  }
 
-  function showGate(message = "Inicia sesión con Google para continuar.") {
+	  function showGate(message = "Inicia sesión con Google para continuar.") {
     setAppBlocked(true);
 
     let gate = document.getElementById("click360-auth-gate");
@@ -1478,42 +1502,91 @@
       gate = document.createElement("div");
       gate.id = "click360-auth-gate";
       gate.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#050505;color:white;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;padding:clamp(14px,3vw,32px);box-sizing:border-box;overflow:auto;";
-      gate.innerHTML = `
-        <div class="c360-gate-shell">
-          <section class="c360-gate-hero" aria-label="CLICK 360">
-            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>V16</small></div>
-            <h1>Control total de tu negocio</h1>
-            <p>Inventario, ventas, caja y clientes sincronizados en una sola aplicación.</p>
-            <div class="c360-gate-actions">
-              <button id="c360-trial-login" class="c360-gate-primary">Probar gratis</button>
-              <button id="c360-register-login" class="c360-gate-secondary">Registrarse</button>
-              <button id="c360-invite-login" class="c360-gate-secondary">Tengo una invitación</button>
-              <button id="c360-show-plans" class="c360-gate-link">Ver planes</button>
-              <a class="c360-gate-link" href="https://wa.me/593969399562?text=Hola%2C%20quiero%20conocer%20CLICK%20360" target="_blank" rel="noopener noreferrer">Hablar con CLICK 360</a>
-            </div>
-            <div id="c360-public-plans" class="c360-public-plans" hidden>
-              <article><b>Base</b><strong>$40 / mes</strong><span>Operación esencial y sincronización.</span></article>
-              <article><b>Pro</b><strong>$59,99 / mes</strong><span>CRM, cobranzas y herramientas avanzadas.</span></article>
-            </div>
-          </section>
-          <section class="c360-auth-card" aria-label="Acceso seguro">
-            <div class="c360-auth-logo" aria-hidden="true"></div>
-            <h2>Bienvenido</h2>
-            <p>Continúa con tu cuenta de Google.</p>
-            <button id="c360-google-login" class="c360-google-button" style="display:none;">Iniciar sesión</button>
-            <button id="c360-change-google" class="c360-change-button" style="display:none;">Cambiar cuenta / Cerrar sesión</button>
-            <button id="c360-clear-cache" class="c360-cache-button" style="display:none;">Actualizar archivos de la app</button>
-            <p id="c360-auth-msg" role="status" aria-live="polite"></p>
-            <p class="c360-auth-legal">Al continuar aceptas los <button id="c360-public-terms">Términos</button> y la <button id="c360-public-privacy">Política de privacidad</button>.</p>
-          </section>
-        </div>
-      `;
-      document.body.appendChild(gate);
+	      gate.innerHTML = `
+	        <div class="c360-gate-shell">
+	          <section class="c360-gate-hero" aria-label="CLICK 360">
+	            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>V16.1</small></div>
+	            <h1>Todo tu negocio en una sola aplicación</h1>
+	            <p>Controla inventario, ventas, caja, clientes y productos desde tu celular, de forma sencilla.</p>
+	            <p class="c360-gate-promise">Menos papeles. Menos confusión. Más control.</p>
+	            <div class="c360-gate-actions" aria-label="Opciones de acceso">
+	              <button id="c360-google-login" class="c360-gate-primary">Iniciar sesión</button>
+	              <button id="c360-trial-login" class="c360-gate-secondary">Probar gratis</button>
+	              <button id="c360-register-login" class="c360-gate-secondary">Registrarse</button>
+	              <button id="c360-invite-login" class="c360-gate-secondary">Tengo una invitación</button>
+	              <button id="c360-show-plans" class="c360-gate-link">Ver planes</button>
+	              <a class="c360-gate-link" href="https://wa.me/593969399562?text=Hola%2C%20quiero%20conocer%20CLICK%20360" target="_blank" rel="noopener noreferrer">Hablar con CLICK 360</a>
+	            </div>
+	            <div id="c360-public-plans" class="c360-public-plans" hidden>
+	              <article><b>Prueba gratis</b><strong>7 días</strong><span>Todas las funciones Base, sin borrar tus datos al terminar.</span><button type="button" data-public-flow="trial">Empezar prueba</button></article>
+	              <article><b>Base</b><strong>$40 / mes</strong><span>Inventario, ventas, caja, clientes, reportes y etiquetas QR.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Base" target="_blank" rel="noopener noreferrer">Elegir Base</a></article>
+	              <article><b>Pro</b><strong>$59,99 / mes</strong><span>Todo Base, más trabajadores, recordatorios y herramientas avanzadas.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Pro" target="_blank" rel="noopener noreferrer">Elegir Pro</a></article>
+	            </div>
+	          </section>
+	          <section class="c360-auth-card" aria-label="Información y acceso seguro">
+	            <div class="c360-auth-logo" aria-hidden="true"></div>
+	            <h2>Tu negocio, siempre a mano</h2>
+	            <p>Usa la misma cuenta de Google en celular y computadora.</p>
+	            <form id="c360-invite-form" class="c360-invite-form" hidden>
+	              <strong>Entrar con invitación</strong>
+	              <label>Enlace o token<input id="c360-invite-value" autocomplete="off" placeholder="Pega aquí la invitación"></label>
+	              <label>Identificador del negocio<input id="c360-invite-owner" autocomplete="off" placeholder="Solo si pegaste un token"></label>
+	              <div><button type="button" id="c360-invite-cancel">Cancelar</button><button type="submit">Continuar con Google</button></div>
+	            </form>
+	            <p id="c360-auth-msg" role="status" aria-live="polite"></p>
+	            <div class="c360-public-faq" aria-label="Preguntas frecuentes">
+	              <h3>Preguntas frecuentes</h3>
+	              <details><summary>¿Qué es CLICK 360?</summary><p>Una aplicación para controlar productos, ventas, caja, clientes y reportes.</p></details>
+	              <details><summary>¿Para qué negocios sirve?</summary><p>Tiendas, restaurantes, servicios, ferreterías y otros negocios que necesitan orden y control.</p></details>
+	              <details><summary>¿Puedo usarlo desde el celular?</summary><p>Sí. Funciona en celular, tableta y computadora, y puede instalarse como aplicación.</p></details>
+	              <details><summary>¿Necesito computadora?</summary><p>No. Puedes trabajar directamente desde tu celular.</p></details>
+	              <details><summary>¿Puedo controlar inventario y caja?</summary><p>Sí. Registra productos, ventas, movimientos y cierres diarios.</p></details>
+	              <details><summary>¿Tiene prueba gratis?</summary><p>Sí. Cada cuenta nueva puede activar una prueba única de siete días.</p></details>
+	              <details><summary>¿Cómo inicio sesión?</summary><p>Selecciona Iniciar sesión y continúa con tu cuenta de Google.</p></details>
+	              <details><summary>¿Cómo agrego trabajadores?</summary><p>El propietario crea una invitación desde la sección Trabajadores.</p></details>
+	              <details><summary>¿Puedo imprimir etiquetas QR?</summary><p>Sí. Puedes diseñar, guardar e imprimir etiquetas para tus productos.</p></details>
+	            </div>
+	            <button id="c360-change-google" class="c360-change-button" style="display:none;">Cambiar cuenta / Cerrar sesión</button>
+	            <button id="c360-clear-cache" class="c360-cache-button" style="display:none;">Actualizar archivos de la app</button>
+	            <p class="c360-auth-legal">Al continuar aceptas los <button id="c360-public-terms">Términos</button> y la <button id="c360-public-privacy">Política de privacidad</button>.</p>
+	          </section>
+	        </div>
+	      `;
+	      document.body.appendChild(gate);
 
-      document.getElementById("c360-google-login").onclick = signInGoogle;
-      document.getElementById("c360-trial-login").onclick = signInGoogle;
-      document.getElementById("c360-register-login").onclick = signInGoogle;
-      document.getElementById("c360-invite-login").onclick = signInGoogle;
+	      document.getElementById("c360-google-login").onclick = () => beginPublicAuth('login');
+	      document.getElementById("c360-trial-login").onclick = () => beginPublicAuth('trial');
+	      document.getElementById("c360-register-login").onclick = () => beginPublicAuth('register');
+	      document.querySelectorAll('[data-public-flow="trial"]').forEach((button) => { button.onclick = () => beginPublicAuth('trial'); });
+	      document.getElementById("c360-invite-login").onclick = () => {
+	        const form = document.getElementById('c360-invite-form');
+	        form.hidden = false;
+	        document.getElementById('c360-invite-value').focus();
+	      };
+	      document.getElementById('c360-invite-cancel').onclick = () => { document.getElementById('c360-invite-form').hidden = true; };
+	      document.getElementById('c360-invite-form').onsubmit = (event) => {
+	        event.preventDefault();
+	        const raw = document.getElementById('c360-invite-value').value.trim();
+	        let ownerId = document.getElementById('c360-invite-owner').value.trim();
+	        let inviteToken = raw;
+	        try {
+	          const parsed = new URL(raw);
+	          const params = parsed.searchParams;
+	          inviteToken = params.get('inviteToken') || params.get('token') || '';
+	          ownerId = params.get('ownerId') || ownerId;
+	        } catch {}
+	        const msg = document.getElementById('c360-auth-msg');
+	        if (!inviteToken || !ownerId) {
+	          if (msg) msg.textContent = 'Pega el enlace completo o escribe el token y el identificador del negocio.';
+	          return;
+	        }
+	        const params = new URLSearchParams(location.search);
+	        params.set('flow', 'invite');
+	        params.set('ownerId', ownerId);
+	        params.set('inviteToken', inviteToken);
+	        history.replaceState({}, '', `${location.pathname}?${params.toString()}${location.hash}`);
+	        beginPublicAuth('invite');
+	      };
       document.getElementById("c360-show-plans").onclick = () => {
         const plans = document.getElementById('c360-public-plans');
         plans.hidden = !plans.hidden;
@@ -1560,19 +1633,19 @@
     const loginBtn = document.getElementById("c360-google-login");
     const changeBtn = document.getElementById("c360-change-google");
     const clearBtn = document.getElementById("c360-clear-cache");
-    const publicActions = ['c360-trial-login', 'c360-register-login', 'c360-invite-login', 'c360-show-plans']
-      .map((id) => document.getElementById(id)).filter(Boolean);
+	    const publicActions = ['c360-google-login', 'c360-trial-login', 'c360-register-login', 'c360-invite-login', 'c360-show-plans']
+	      .map((id) => document.getElementById(id)).filter(Boolean);
 
-    if (message.includes("Inicia sesión") || message.includes("pendiente") || message.includes("bloqueada") || message.includes("aprobaron")) {
-      const hasAuthenticatedUser = !!auth.currentUser;
-      const initialLogin = message.includes("Inicia sesión");
-      if (loginBtn) loginBtn.style.display = "block";
+	    if (message.includes("Inicia sesión") || message.includes("pendiente") || message.includes("bloqueada") || message.includes("aprobaron") || message.includes("No encontramos una cuenta")) {
+	      const hasAuthenticatedUser = !!auth.currentUser;
+	      const initialLogin = message.includes("Inicia sesión") || message.includes("No encontramos una cuenta");
+	      if (loginBtn) loginBtn.style.display = initialLogin ? "inline-flex" : "none";
       if (changeBtn) changeBtn.style.display = hasAuthenticatedUser ? "block" : "none";
       if (clearBtn) clearBtn.style.display = !initialLogin && hasAuthenticatedUser ? "block" : "none";
       if (message.includes("bloqueada")) {
         if (loginBtn) loginBtn.style.display = "none";
       }
-      publicActions.forEach((button) => { button.style.display = initialLogin ? '' : 'none'; });
+	      publicActions.forEach((button) => { button.style.display = initialLogin ? '' : 'none'; });
     } else {
       if (loginBtn) loginBtn.style.display = "none";
       if (changeBtn) changeBtn.style.display = "none";
@@ -1581,10 +1654,10 @@
     }
   }
 
-  function showPublicLegal(kind) {
+	  function showPublicLegal(kind) {
     const title = kind === 'privacy' ? 'Política de privacidad' : 'Términos y condiciones';
     const body = kind === 'privacy'
-      ? 'CLICK 360 usa los datos necesarios para autenticar, sincronizar y operar el negocio. Cada cuenta conserva un tenant independiente. No vendemos información personal.'
+	      ? 'CLICK 360 usa los datos necesarios para autenticar, sincronizar y operar el negocio. Cada cuenta conserva su información separada. No vendemos información personal.'
       : 'CLICK 360 es una herramienta de gestión. El comercio es responsable de revisar sus políticas y obligaciones legales. Los datos pueden exportarse y se conservan al terminar una prueba.';
     const message = document.getElementById('c360-auth-msg');
     if (message) message.innerHTML = `<b>${title}</b><br>${body}<br><small>Versión 2026-07-13</small>`;
@@ -1649,6 +1722,21 @@
     return provider;
   }
 
+  function beginPublicAuth(intent) {
+    if (AUTH_REQUEST_IN_FLIGHT) return;
+    setPublicAuthIntent(intent);
+    AUTH_REQUEST_IN_FLIGHT = true;
+    document.querySelectorAll('.c360-gate-actions button, .c360-public-plans button').forEach((button) => { button.disabled = true; });
+    const selectGoogleAccount = async () => {
+      if (auth.currentUser) await auth.signOut();
+      return signInGoogle();
+    };
+    Promise.resolve(selectGoogleAccount()).finally(() => {
+      AUTH_REQUEST_IN_FLIGHT = false;
+      document.querySelectorAll('.c360-gate-actions button, .c360-public-plans button').forEach((button) => { button.disabled = false; });
+    });
+  }
+
   function signInGoogle() {
     const msg = document.getElementById("c360-auth-msg");
     const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
@@ -1659,7 +1747,7 @@
       const directUrl = `${location.origin}${location.pathname}${location.search}${location.hash}`;
       const androidIntent = `intent://${location.host}${location.pathname}${location.search}${location.hash}#Intent;scheme=https;package=com.android.chrome;end`;
       if (msg) msg.innerHTML = `<b>Abre CLICK 360 en tu navegador.</b><br>Este navegador interno no permite un inicio de sesión Google seguro.<br><br><a class="c360-open-browser" href="${escapeHtml(browser.isAndroid ? androidIntent : directUrl)}" target="_blank" rel="noopener noreferrer">${browser.isAndroid ? 'Abrir en Chrome' : 'Abrir en Safari'}</a>`;
-      return;
+      return Promise.resolve(false);
     }
 
     if (isIOS && isStandalone) {
@@ -1672,14 +1760,14 @@
           3. Una vez iniciada sesión en Safari, vuelve a abrir esta app desde tu pantalla de inicio.
         </div>`;
       }
-      return;
+      return Promise.resolve(false);
     }
 
     if (msg) msg.textContent = "Abriendo Google...";
 
-	    auth.signInWithPopup(providerGoogle()).catch(err => {
+	    return auth.signInWithPopup(providerGoogle()).catch(err => {
 	      console.warn("Popup falló:", err.message);
-	      console.warn('[CLICK360_TELEMETRY]', { eventType: 'login_failure', errorCode: String(err.code || 'unknown').slice(0, 80), appVersion: '16.0.0' });
+	      console.warn('[CLICK360_TELEMETRY]', { eventType: 'login_failure', errorCode: String(err.code || 'unknown').slice(0, 80), appVersion: '16.1.0' });
       if (err.code === 'auth/popup-blocked') {
         if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> o intenta desde Chrome/Safari normal.";
       } else if (err.code === 'auth/operation-not-supported-in-this-environment') {
@@ -1835,25 +1923,34 @@
 	      return false;
 	    }
 	    if (INITIAL_TENANT_SEED_REQUIRED) {
-	      if (ACCESS_READ_ONLY) {
+	      const localPersisted = window.click360PersistTenantState?.() === true;
+	      const storageMode = window.click360GetStorageState?.()?.mode || '';
+	      ONLINE_ONLY_SAFE = ONLINE_ONLY_SAFE || ['online_only_safe', 'unavailable'].includes(storageMode);
+	      const bootstrapDecision = window.CLICK360_V16_DOMAIN?.initialTenantBootstrapDecision({
+	        localPersisted,
+	        onlineOnlySafe: ONLINE_ONLY_SAFE,
+	        online: navigator.onLine,
+	        readOnly: ACCESS_READ_ONLY
+	      }) || { allowed: localPersisted && !ACCESS_READ_ONLY };
+	      if (!bootstrapDecision.allowed) {
 	        tenantGuard.block();
 	        PULL_COMPLETE = false;
-	        showGate('La prueba terminó antes de crear este negocio. Contacta a CLICK 360 para activar tu plan.');
+	        const bootstrapMessage = bootstrapDecision.reason === 'read_only'
+	          ? 'Tu plan terminó antes de crear el negocio. Contacta a CLICK 360 para activarlo.'
+	          : bootstrapDecision.reason === 'connection_required'
+	            ? 'Conéctate a internet para preparar esta cuenta por primera vez.'
+	            : 'No pudimos preparar la aplicación en este dispositivo. Tus datos no fueron modificados.';
+	        showGate(bootstrapMessage);
 	        return false;
 	      }
-		      if (window.click360PersistTenantState?.() !== true) {
-	        tenantGuard.block();
-	        PULL_COMPLETE = false;
-	        showGate('No se pudo guardar la copia local inicial. La cuenta permanece bloqueada para proteger la información.');
-	        return false;
-	      }
+	      if (!localPersisted) setSyncStatus('online_only_safe', 'Este dispositivo trabajará directamente con la nube mientras tenga internet.');
 	      AUTH_APPROVED = true;
 	      const seeded = await pushLocalToFirestore('initial_tenant_seed');
-	      if (!seeded && navigator.onLine) {
+	      if (!seeded) {
 	        AUTH_APPROVED = false;
 	        PULL_COMPLETE = false;
 	        tenantGuard.block();
-	        showGate('No se pudo crear y verificar el documento inicial en Firestore. La cuenta permanece bloqueada.');
+	        showGate('No pudimos preparar el negocio de forma segura. No se modificó información existente.');
 	        return false;
 	      }
 	      INITIAL_TENANT_SEED_REQUIRED = false;
@@ -1863,6 +1960,7 @@
 		  const newSession = { username: userName, role: userRole };
 			  if(window.click360SetSession) window.click360SetSession(newSession);
 			  unlockApp();
+			  clearPublicAuthIntent();
 		  recordTelemetryOnce(`login:${expectedEpoch}:${user.uid}`, 'login', { mode: window.click360AccessState?.mode || userRole });
 		  recordTelemetryOnce(`bootstrap:${expectedEpoch}:${ACTIVE_CONTEXT.tenantKey}`, 'bootstrap', { mode: ONLINE_ONLY_SAFE ? 'online_only_safe' : 'ready' });
 		  if (ONLINE_ONLY_SAFE) setSyncStatus('online_only_safe', 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion, pero puedes continuar trabajando con internet.');
@@ -1896,7 +1994,8 @@
         return;
       }
 
-	      showGate("Verificando aprobación en CLICK360...");
+	      const publicIntent = readPublicAuthIntent();
+	      showGate("Verificando acceso en CLICK 360...");
 	      setSyncStatus(navigator.onLine ? "checking" : "offline", navigator.onLine ? "Verificando aprobación." : "Sin internet. Buscando aprobación guardada.");
 	      try { await acceptInvitationFromUrl(user, epoch); }
 	      catch (error) {
@@ -1937,13 +2036,22 @@
             };
 	          }
         } else {
-	          const account = await resolveAccountAccess(user, epoch);
+	          const account = await resolveAccountAccess(user, epoch, {
+		            allowCreate: window.CLICK360_V16_DOMAIN?.publicIntentAllowsTrialCreation(publicIntent) === true,
+	            intent: publicIntent
+	          });
 	          if (!isCurrentAuthEpoch(user, epoch)) return;
 	          if (account?.state?.allowed && applyAccountAccessIdentity(user, account, epoch)) {
 	            await enterApprovedApp(user, epoch);
 	            return;
 	          }
-	          showPending(user, account?.state?.mode || 'pending');
+	          if (publicIntent === 'login') {
+	            showGate('No encontramos una cuenta activa con este Google. Usa Probar gratis, Registrarse o cambia de cuenta.');
+	          } else if (publicIntent === 'invite') {
+	            showGate('No pudimos validar la invitación. Revisa el enlace o solicita uno nuevo al propietario del negocio.');
+	          } else {
+	            showPending(user, account?.state?.mode || 'pending');
+	          }
         }
         return;
       }

@@ -1,4 +1,4 @@
-# CLICK 360 V16
+# CLICK 360 V16.1
 
 PWA comercial de inventario, ventas, caja, CRM, reportes, trabajadores, apartados y etiquetas QR para negocios.
 
@@ -36,6 +36,6 @@ python3 -m http.server 4173
 
 La consola es solo para una identidad IAM autorizada y está fijada al proyecto `click-360`. Primero se ejecuta en dry-run; `--apply` exige el hash recién leído y la frase exacta mostrada por la herramienta. Las colecciones `adminBackups` y `adminAuditLogs` están negadas al cliente.
 
-## Estado V16
+## Estado V16.1
 
-El candidato incorpora aislamiento por cuenta, remoto V10 autoritativo, modo `ONLINE_ONLY_SAFE`, trial de siete días por tiempo de servidor, planes, CRM, recordatorios, PWA, IVA congelado por venta, apartados con términos, cierres auditables, trabajadores con permisos y editor de etiquetas. La evidencia vigente está en `docs/CLICK360_V16_QA_REPORT.md` y `docs/CLICK360_V16_RELEASE_REPORT.md`.
+El candidato incorpora aislamiento por cuenta, remoto V10 autoritativo, modo `ONLINE_ONLY_SAFE`, trial de siete días por tiempo de servidor, planes, CRM, recordatorios, PWA, IVA congelado por venta, apartados con términos, cierres auditables, trabajadores con permisos, flujos públicos independientes y editor QR táctil. La evidencia vigente está en `docs/CLICK360_V16_1_RELEASE_REPORT.md`, `docs/CLICK360_V16_1_PUBLIC_FLOWS_QA.md` y `docs/CLICK360_V16_1_QR_EDITOR_QA.md`.
