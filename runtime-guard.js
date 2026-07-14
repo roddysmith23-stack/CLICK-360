@@ -1,10 +1,10 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '16.1.1';
-  const ASSET_VERSION = 'mvp-launch-v16-1-1-r1';
-  const STORAGE_PREFIX = 'CLICK360:V16_1_1:RUNTIME_ERRORS:';
-  const SESSION_ID_KEY = 'CLICK360:V16_1_1:RUNTIME_SESSION_ID';
+  const APP_VERSION = '16.1.2';
+  const ASSET_VERSION = 'mvp-launch-v16-1-2-r1';
+  const STORAGE_PREFIX = 'CLICK360:V16_1_2:RUNTIME_ERRORS:';
+  const SESSION_ID_KEY = 'CLICK360:V16_1_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
   let activeContext = null;
   let lastFingerprint = '';
@@ -164,6 +164,10 @@
     if (fingerprint === lastFingerprint && now - lastFingerprintAt < 2000) return root.CLICK360_LAST_RUNTIME_ERROR || null;
     lastFingerprint = fingerprint;
     lastFingerprintAt = now;
+    let accessDiagnostics = {};
+    try { accessDiagnostics = root.click360GetPublicAuthDiagnostics?.() || {}; } catch {}
+    const syncState = root.click360GetSyncStatus?.() || {};
+    const storageState = root.click360GetStorageState?.() || {};
     const report = saveReport({
       reportId: createId('err'),
       createdAt: new Date(now).toISOString(),
@@ -177,7 +181,14 @@
       appVersion: APP_VERSION,
       assetVersion: ASSET_VERSION,
       pageUrl: safePageUrl(),
-      online: root.navigator?.onLine !== false
+      online: root.navigator?.onLine !== false,
+      authState: root.click360Auth?.currentUser ? 'authenticated' : 'unauthenticated',
+      accessUiState: String(root.click360AccessUiState?.state || '').slice(0, 40),
+      publicIntent: String(accessDiagnostics.intent || '').slice(0, 20),
+      invitationParametersPresent: accessDiagnostics.invitationParametersPresent === true,
+      explicitInvitationIntent: accessDiagnostics.explicitInvitationIntent === true,
+      syncMode: String(syncState.status || '').slice(0, 40),
+      storageMode: String(storageState.mode || '').slice(0, 40)
     });
     showFriendlyMessage(report);
     return report;
