@@ -46,4 +46,11 @@ Mensaje al cliente en modo solo en linea:
 
 ## Estado del smoke
 
-Los contratos de Auth, plan, bootstrap cloud-only, aislamiento y almacenamiento pasan en harness y emulador. El ingreso interactivo de Shary en produccion se registra en el reporte de release despues de publicar V16.1; no se crearan ventas ni datos comerciales reales durante ese smoke.
+Los contratos de Auth, plan, bootstrap cloud-only, aislamiento y almacenamiento pasan en harness y emulador. Despues de publicar V16.1, la inspeccion administrativa de solo lectura volvio a confirmar:
+
+- UID y correo exactos.
+- Estado `paid_base` y plan Base.
+- Hash de acceso `b68b78db0bc65254177a6c6ca8ca0c8083141a0782b6591a44b8b4e154b274b3`, sin cambios.
+- Tenant remoto inexistente, sin ventas ni datos comerciales creados por la validacion.
+
+El ingreso interactivo no pudo observarse: el controlador disponible en Codex no tenia acceso al Chrome del usuario ni a sus sesiones Google abiertas. No se revirtio el release por esta limitacion de automatizacion; el checklist manual conserva la comprobacion pendiente.

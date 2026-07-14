@@ -6,10 +6,11 @@ No crear ventas, productos ni clientes reales durante este smoke.
 
 ## Publico
 
-- [ ] Abrir la URL con cache busting en Safari y Chrome.
-- [ ] Confirmar H1, FAQ, planes y WhatsApp.
-- [ ] Confirmar que cada CTA abre su flujo independiente.
-- [ ] Confirmar manifest e instalacion PWA.
+- [x] Abrir la URL con cache busting en navegador automatizado de produccion.
+- [x] Confirmar H1, FAQ, planes y WhatsApp.
+- [x] Confirmar que cada CTA abre su flujo independiente.
+- [x] Confirmar manifest, Service Worker y capacidad PWA.
+- [ ] Repetir la comprobacion en Safari y Chrome reales del usuario.
 
 ## Shary
 
@@ -42,10 +43,10 @@ No crear ventas, productos ni clientes reales durante este smoke.
 
 ## Produccion
 
-- [ ] CI verde en el commit de merge.
-- [ ] GitHub Pages sirve `mvp-launch-v16-1-r1`.
-- [ ] Service Worker activo y cache anterior reemplazado.
-- [ ] Rules compiladas/desplegadas solo si el diff las requiere.
-- [ ] Auditoria final: 3 `CLEAN_V10`, 1 `CROSS_TENANT_SUSPECT`.
-- [ ] `demo-click360` conserva revision/fecha y sigue bloqueado.
-- [ ] Registrar GO o NO-GO con la causa exacta.
+- [x] CI verde en el commit de merge.
+- [x] GitHub Pages sirve `mvp-launch-v16-1-r1`.
+- [x] Service Worker activo y cache anterior reemplazado.
+- [x] Rules compiladas; no se redeplegaron porque V16.1 no contiene diff de Rules.
+- [x] Auditoria final: 3 `CLEAN_V10`, 1 `CROSS_TENANT_SUSPECT`.
+- [x] `demo-click360` conserva revision/fecha/hash y sigue bloqueado.
+- [x] Registrar `GO TECNICO PUBLICADO`; smoke autenticado de Shary pendiente por falta de acceso automatizado a Chrome.
