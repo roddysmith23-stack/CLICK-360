@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-1-1-r1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-1-2-r1';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:';
   const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
@@ -173,6 +173,30 @@
         toast('No se pudo generar la imagen. Usa Imprimir.', 'err');
       })
       .finally(() => wrapper.remove());
+  }
+
+  async function handoffPrint(job, providerId = '') {
+    try {
+      const preferences = printingPreferences();
+      const selectedProvider = providerId || preferences.provider || 'system';
+      const preparedJob = { ...job, copies: job.copiesHandled ? 1 : Math.max(1, Number(job.copies || preferences.copies || 1)) };
+      if (window.CLICK360_PRINTING?.print) {
+        const result = await window.CLICK360_PRINTING.print(selectedProvider, preparedJob);
+        if (result?.status === 'handed_off') toast('Documento enviado al diálogo de impresión.');
+        if (result?.status === 'exported') toast('PDF generado.');
+        return result;
+      }
+      const root = $('#printRoot') || document.createElement('div');
+      root.id = 'printRoot'; root.className = 'printSheet';
+      if (!root.isConnected) document.body.appendChild(root);
+      root.innerHTML = String(preparedJob.html || '');
+      window.print();
+      return { status: 'handed_off', provider: 'legacy-system' };
+    } catch (error) {
+      console.warn('Impresión no disponible:', error.code || error.message);
+      toast(error.message || 'No se pudo abrir la impresión. Usa PDF o PNG.', 'err');
+      return null;
+    }
   }
 
   function imageThumb(product){
@@ -959,7 +983,7 @@ function parseMoney(value) {
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-    if (['home','more','access','legal'].includes(section)) return ['worker','cashier','inventory'].includes(role);
+	    if (['home','more','access','legal','printing'].includes(section)) return ['worker','cashier','inventory'].includes(role);
     const permissions = window.click360User?.permissions || {};
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
     if (routeModule && Object.keys(permissions).length) return permissions[routeModule]?.view === true;
@@ -1085,13 +1109,14 @@ function parseMoney(value) {
     const badgeBorder = isWorkingDateActive ? 'border:2px solid var(--gold); background:rgba(244,196,49,0.25);' : 'border:1px solid rgba(244,196,49,0.25); background:rgba(244,196,49,0.12);';
     const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
 
-    const dateBadgeHtml = `<div style="display:inline-flex; align-items:center; gap:8px; margin-bottom:14px;">
-	        <label style="position:relative; display:inline-flex; align-items:center; gap:8px; ${badgeBorder} padding:6px 14px; border-radius:20px; font-size:13px; color:var(--gold); font-weight:600; cursor:pointer;" title="Cambiar fecha de trabajo">
-	          ${icon('calendar-days')} ${formattedTodaySpanish()}
-          <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
-        </label>
-        ${clearDateBtn}
-      </div>`;
+	    const dateBadgeHtml = `<div class="businessDateBar">
+		        <label class="businessDateClock" style="${badgeBorder}" title="Cambiar fecha de trabajo">
+		          ${icon('calendar-days')} <span class="js-business-clock" data-clock-format="full" aria-live="off">${escapeHtml(liveClockLabel())}</span>
+	          <input type="date" id="workingDateInput" value="${today()}" style="position:absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
+	        </label>
+	        ${isWorkingDateActive ? `<span class="workingDateNotice">Fecha de trabajo: ${escapeHtml(formattedTodaySpanish())}</span>` : ''}
+	        ${clearDateBtn}
+	      </div>`;
 
     const b=currentBusiness();
 	    const businessName = b?.name || 'Seleccionar negocio';
@@ -1114,12 +1139,12 @@ function parseMoney(value) {
 	    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
-	          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small>V16.1.1 · Control total de tu negocio</small></div></div>
+		          <div class="logoMark sidebarBrand" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">V16.1.2</small><small class="brandSlogan">Control total de tu negocio</small></div></div>
 	          <div class="field"><label>Negocio activo</label>${businessSwitcher('businessPickerSide')}</div>
 	          <nav class="sideNav">${navButtons(active, true)}</nav>
 	        </div>
 	        <div style="margin-top:auto; padding-top:20px; border-top:1px solid var(--line); display:grid; gap:10px;">
-	          <div class="sidebarStatusRow"><div class="businessClock js-business-clock" data-clock-format="full" aria-live="off">${escapeHtml(liveClockLabel())}</div><button type="button" id="notificationBellSide" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}">${icon('bell')}${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button></div>
+		          <div class="sidebarStatusRow"><span class="sidebarStatusLabel">Actividad</span><button type="button" id="notificationBellSide" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}">${icon('bell')}${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button></div>
 	          ${syncPillHtml(false)}
 	          <div style="display:flex; align-items:center; gap:10px;">
 	            <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
@@ -1133,12 +1158,8 @@ function parseMoney(value) {
 	          <div style="flex:1; display:flex; justify-content:center; min-width:0; padding:0 8px;">
 	            ${businessSwitcher('businessPickerTop', 'businessSelect')}
 	          </div>
-	          <div id="businessClock" class="businessClock js-business-clock" data-clock-format="compact" aria-live="off">${escapeHtml(liveClockLabel(true))}</div>
-	          <button type="button" id="notificationBell" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}">${icon('bell')}${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button>
-	          <div style="display:none;" class="syncTopWrap">${syncPillHtml(true)}</div>
-	          <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; margin-right:8px; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
-	          <button class="logoutBtn" id="logoutTop" title="Cerrar sesión" aria-label="Cerrar sesión">${icon('log-out')}</button>
-        </header>
+		          <button type="button" id="notificationBell" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}">${icon('bell')}${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button>
+	        </header>
         <div style="flex-shrink:0; padding:16px 16px 0; background:transparent;">
           ${dateBadgeHtml}
         </div>
@@ -1214,7 +1235,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView};
+	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -1253,7 +1274,7 @@ function parseMoney(value) {
     ];
     const todayPhrase = motivationalPhrases[new Date().getDate() % motivationalPhrases.length];
 
-    return `<div class="pageHead"><div><h1>Hola, ${escapeHtml(authUser().name || 'Usuario')} \uD83D\uDC4B</h1><p>${escapeHtml(b.name)}</p></div></div>
+	    return `<div class="pageHead homeGreeting"><div><h1>Hola, <span>${escapeHtml(authUser().name || 'Usuario')}</span></h1><p>${escapeHtml(b.name)}</p></div></div>
       ${accessBannerHtml()}
       <section class="grid kpis">
         <div class="card kpi gold"><div class="icon">\u2197</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
@@ -1605,8 +1626,9 @@ function parseMoney(value) {
 	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
     return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
         <div style="display:flex; gap:8px;">
-          <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
-          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
+	          <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
+	          <button class="btn silver" onclick="window.printReports('pdf')">Guardar PDF</button>
+	          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
         </div>
       </div>
       <div class="card sectionCard" style="display:flex; gap:10px; margin-bottom:14px; align-items:center;">
@@ -1991,15 +2013,58 @@ function parseMoney(value) {
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
 		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
-		    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
-		      ${ownerTools}
-		      <button class="card bigRow" data-more="access"><span>${icon('badge-dollar-sign')} Mi plan y acceso</span>${icon('chevron-right')}</button>
+			    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
+			      ${ownerTools}
+			      <button class="card bigRow" data-more="printing"><span>${icon('printer')} Centro de impresión</span>${icon('chevron-right')}</button>
+			      <button class="card bigRow" data-more="access"><span>${icon('badge-dollar-sign')} Mi plan y acceso</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="legal"><span>${icon('shield-check')} Términos y privacidad</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" id="calculatorMoreBtn"><span>${icon('calculator')} Calculadora</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" id="installAppBtn"><span>${icon('smartphone')} Instalar CLICK 360 como app</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" id="helpBtn"><span>${icon('circle-help')} Cómo funciona CLICK 360</span>${icon('chevron-right')}</button>
 		      <button class="btn block" id="logoutMore">Cerrar sesión</button>
-		    </section>`;
+			    </section>`;
+			  }
+
+		  function printingPreferencesKey() {
+		    return activeTenantContext?.authUid && activeTenantContext?.tenantKey
+		      ? `CLICK360:V16:PRINTING:${activeTenantContext.authUid}:${activeTenantContext.tenantKey}` : '';
+		  }
+		  function printingPreferences() {
+		    try {
+		      const parsed = JSON.parse(localStorage.getItem(printingPreferencesKey()) || '{}');
+		      return { provider: ['system', 'pdf', 'm02x-bluetooth', 'native-bridge'].includes(parsed.provider) ? parsed.provider : 'system', media: ['receipt-80', 'receipt-57', 'a4'].includes(parsed.media) ? parsed.media : 'receipt-80', copies: Math.max(1, Math.min(20, Number(parsed.copies || 1))) };
+		    } catch { return { provider: 'system', media: 'receipt-80', copies: 1 }; }
+		  }
+		  function savePrintingPreferences(next) {
+		    try { localStorage.setItem(printingPreferencesKey(), JSON.stringify(next)); } catch {}
+		  }
+		  function printerStateLabel(status = {}) {
+		    const labels = { ready: 'Listo', disconnected: 'Desconectado', handing_off: 'Enviando', unsupported: 'No disponible', validation_required: 'Validación física pendiente', error: 'Revisar' };
+		    return labels[status.state] || 'Sin comprobar';
+		  }
+		  function printingView() {
+		    const preferences = printingPreferences();
+		    const statuses = window.CLICK360_PRINTING?.providers?.() || [];
+		    const statusRows = statuses.map((status) => `<div class="printerStatusRow"><span><b>${escapeHtml(status.name)}</b><small>${escapeHtml(printerStateLabel(status))}</small></span><em class="${status.supported ? 'ready' : ''}">${status.supported ? 'Disponible' : 'Alternativa'}</em></div>`).join('');
+		    const latestSale = salesForBiz().filter((sale) => sale.status !== 'cancelled').slice(-1)[0];
+		    const firstProduct = productsForBiz()[0];
+		    return `<div class="pageHead"><div><h1>Centro de impresión</h1><p>${escapeHtml(currentBusiness().name)}</p></div></div>
+		      <section class="card sectionCard printingControlPanel">
+		        <div class="formGrid">
+		          <div class="field"><label>Salida</label><select id="printingProvider"><option value="system" ${preferences.provider === 'system' ? 'selected' : ''}>Impresión del sistema</option><option value="pdf" ${preferences.provider === 'pdf' ? 'selected' : ''}>Guardar PDF</option><option value="m02x-bluetooth" ${preferences.provider === 'm02x-bluetooth' ? 'selected' : ''}>M02X Bluetooth</option><option value="native-bridge" ${preferences.provider === 'native-bridge' ? 'selected' : ''}>Puente nativo</option></select></div>
+		          <div class="field"><label>Formato</label><select id="printingMedia"><option value="receipt-80" ${preferences.media === 'receipt-80' ? 'selected' : ''}>Ticket 80 mm</option><option value="receipt-57" ${preferences.media === 'receipt-57' ? 'selected' : ''}>Ticket 57 mm</option><option value="a4" ${preferences.media === 'a4' ? 'selected' : ''}>A4</option></select></div>
+		          <div class="field"><label>Copias</label><input id="printingCopies" type="number" min="1" max="20" value="${preferences.copies}"></div>
+		        </div>
+		        <div class="printerPrimaryActions"><button class="btn primary" id="printerConnect">${icon('search')} Buscar o preparar</button><button class="btn" id="printerTest">${icon('printer-check')} Imprimir prueba</button><button class="btn" id="printerDisconnect">${icon('unplug')} Desconectar</button><button class="btn" id="printerForget">${icon('trash-2')} Olvidar dispositivo</button></div>
+		        <p id="printerFeedback" class="fieldHint" role="status" aria-live="polite"></p>
+		      </section>
+		      <section class="printingStatusList" aria-label="Estado de salidas">${statusRows}</section>
+		      <section class="printingQuickActions">
+		        <button class="card bigRow" id="printingLabelAction" ${firstProduct ? '' : 'disabled'}><span>${icon('qr-code')} Etiqueta QR de producto</span><small>${firstProduct ? escapeHtml(firstProduct.name) : 'Agrega un producto primero'}</small></button>
+		        <button class="card bigRow" id="printingReceiptAction" ${latestSale ? '' : 'disabled'}><span>${icon('receipt')} Último comprobante</span><small>${latestSale ? escapeHtml(latestSale.id.slice(-6).toUpperCase()) : 'Aún no hay ventas'}</small></button>
+		        <button class="card bigRow" id="printingReportAction"><span>${icon('file-chart-column')} Reporte actual</span><small>Impresión o PDF</small></button>
+		      </section>
+		      <section class="card sectionCard m02xNotice"><h3>M02X</h3><p>El equipo usa Bluetooth y 203 dpi. La conexión directa permanece desactivada hasta validar el protocolo y una impresión física con la unidad real. Mientras tanto, usa la salida del sistema o PDF.</p></section>`;
 		  }
 	  function backupView(){
 	    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = localDateKey(yest);
@@ -2154,8 +2219,9 @@ function parseMoney(value) {
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
     if(r==='reminders') bindReminders();
-    if(r==='access') bindAccess();
-  }
+	    if(r==='access') bindAccess();
+	    if(r==='printing') bindPrinting();
+	  }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
     $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>x.name.toLowerCase().includes(q)||x.code.toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
@@ -2248,7 +2314,7 @@ function parseMoney(value) {
         <div class="field"><label>Costo</label><input id="pCost" inputmode="decimal" value="${numericInputValue(p.cost).replace('.',',')}"></div>
         <div class="field"><label>Precio (Efectivo)</label><input id="pPrice" inputmode="decimal" value="${numericInputValue(p.price).replace('.',',')}"></div>
         <div class="field"><label>Precio con Tarjeta</label><input id="pCardPrice" inputmode="decimal" value="${numericInputValue(p.cardPrice ?? p.price).replace('.',',')}"></div>
-        <div class="field full"><label>IVA del producto</label><select id="pTaxMode"><option value="inherit" ${!p.taxMode || p.taxMode === 'inherit' ? 'selected' : ''}>Heredar del negocio</option><option value="included" ${p.taxMode === 'included' ? 'selected' : ''}>Incluye IVA</option><option value="excluded" ${p.taxMode === 'excluded' ? 'selected' : ''}>No incluye IVA</option><option value="exempt" ${p.taxMode === 'exempt' ? 'selected' : ''}>Exento de IVA</option></select></div>
+	        <div class="field full"><label>IVA del producto</label><select id="pTaxMode"><option value="inherit" ${!p.taxMode || p.taxMode === 'inherit' ? 'selected' : ''}>Usar configuración de IVA del negocio</option><option value="included" ${p.taxMode === 'included' ? 'selected' : ''}>Incluye IVA</option><option value="excluded" ${p.taxMode === 'excluded' ? 'selected' : ''}>No incluye IVA</option><option value="exempt" ${p.taxMode === 'exempt' ? 'selected' : ''}>Exento de IVA</option></select></div>
         <div class="field full"><label>Notas</label><textarea id="pNotes">${escapeHtml(p.notes||'')}</textarea></div>
         <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button>
       </form>`);
@@ -3040,17 +3106,15 @@ function parseMoney(value) {
                  ${html}
                </div>
              </div>
-             <div style="display:flex; gap:10px;">
-                 <button class="btn silver block" id="printCierreBtn">Imprimir</button>
-                 <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
+	             <div style="display:flex; gap:10px;">
+	                 <button class="btn silver block" id="printCierreBtn">Imprimir</button>
+	                 <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
+	                 <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
              </div>
            `);
 
-           $('#printCierreBtn').onclick = () => {
-               const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-               root.innerHTML = html;
-               setTimeout(()=>window.print(), 250);
-           };
+	           $('#printCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'system');
+	           $('#downloadPdfCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'pdf');
 
 	           $('#downloadImgCierreBtn').onclick = () => {
 	                downloadHtmlAsPng(html, `Cierre_Caja_${today()}.png`);
@@ -3096,13 +3160,63 @@ function parseMoney(value) {
       };
     }
   }
-	  function bindMore(){
+		  function bindPrinting() {
+		    const provider = $('#printingProvider');
+		    const media = $('#printingMedia');
+		    const copies = $('#printingCopies');
+		    const feedback = $('#printerFeedback');
+		    const selected = () => provider?.value || 'system';
+		    const setFeedback = (message, error = false) => {
+		      if (!feedback) return;
+		      feedback.textContent = message;
+		      feedback.style.color = error ? 'var(--red)' : 'var(--gold2)';
+		    };
+		    const persist = () => savePrintingPreferences({ provider: selected(), media: media?.value || 'receipt-80', copies: Math.max(1, Math.min(20, Number(copies?.value || 1))) });
+		    provider?.addEventListener('change', persist);
+		    media?.addEventListener('change', persist);
+		    copies?.addEventListener('change', persist);
+		    $('#printerConnect')?.addEventListener('click', async () => {
+		      persist();
+		      try {
+		        await window.CLICK360_PRINTING?.discover(selected());
+		        const status = await window.CLICK360_PRINTING?.connect(selected());
+		        setFeedback(`${status?.name || 'Salida'}: ${printerStateLabel(status)}.`);
+		      } catch (error) { setFeedback(error.message || 'Esta salida todavía no está disponible.', true); }
+		    });
+		    $('#printerDisconnect')?.addEventListener('click', async () => {
+		      try {
+		        const status = await window.CLICK360_PRINTING?.disconnect(selected());
+		        setFeedback(`${status?.name || 'Salida'}: ${printerStateLabel(status)}.`);
+		      } catch (error) { setFeedback(error.message || 'No se pudo desconectar.', true); }
+		    });
+		    $('#printerForget')?.addEventListener('click', async () => {
+		      try {
+		        const status = await window.CLICK360_PRINTING?.forgetDevice(selected());
+		        setFeedback(`${status?.name || 'Salida'}: autorización eliminada.`);
+		      } catch (error) { setFeedback(error.message || 'No se pudo olvidar el dispositivo.', true); }
+		    });
+		    $('#printerTest')?.addEventListener('click', async () => {
+		      persist();
+		      try {
+		        await window.CLICK360_PRINTING?.testPrint(selected());
+		        setFeedback(selected() === 'pdf' ? 'PDF de prueba generado.' : 'Prueba enviada al diálogo del sistema.');
+		      } catch (error) { setFeedback(error.message || 'No se pudo imprimir la prueba.', true); }
+		    });
+		    $('#printingLabelAction')?.addEventListener('click', () => {
+		      const product = productsForBiz()[0];
+		      if (product) openLabelModal(product);
+		    });
+		    $('#printingReceiptAction')?.addEventListener('click', () => {
+		      const sale = salesForBiz().filter((item) => item.status !== 'cancelled').slice(-1)[0];
+		      if (sale) window.showSaleCompleteModal(actionId(sale.id));
+		    });
+		    $('#printingReportAction')?.addEventListener('click', () => renderApp('reports'));
+		  }
+
+		  function bindMore(){
 	     $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more));
 	     $('#calculatorMoreBtn')?.addEventListener('click', () => openCalculator());
-     $('#logoutMore')?.addEventListener('click',()=>{
-         if(window.click360Auth) window.click360Auth.signOut().then(()=>location.reload());
-         else window.click360AppLogout();
-     });
+	     $('#logoutMore')?.addEventListener('click',()=>window.click360AppLogout());
 	     $('#installAppBtn')?.addEventListener('click', async () => {
 	       const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
 	       const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -3806,7 +3920,7 @@ function parseMoney(value) {
 	            <div class="labelQuickControls"><button type="button" id="labelSizeDown" title="Reducir">${icon('minus')}</button><button type="button" id="labelSizeUp" title="Aumentar">${icon('plus')}</button><button type="button" id="labelCenter" title="Centrar">${icon('align-center')}<span>Centrar</span></button><button type="button" id="labelToggleVisibility" title="Mostrar u ocultar">${icon('eye')}<span>Ocultar</span></button><button type="button" id="labelToggleLock" title="Bloquear posición">${icon('lock-open')}<span>Bloquear</span></button><button type="button" id="labelResetElement" title="Restablecer elemento">${icon('rotate-ccw')}<span>Restablecer</span></button></div>
 	            <p id="labelQrWarning" class="fieldHint"></p>
 	          </section>
-	          <div class="formGrid"><div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Heredar del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div><div class="field"><label>Red social / contacto</label><input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}"></div><div class="field full"><label>Dirección del local</label><input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}"></div><div class="field full"><label>Texto libre</label><input id="labelCustomText" maxlength="80" value="${escapeHtml(initialTemplate?.customText || '')}"></div></div>
+	          <div class="formGrid"><div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Usar configuración de IVA del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div><div class="field"><label>Red social / contacto</label><input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}"></div><div class="field full"><label>Dirección del local</label><input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}"></div><div class="field full"><label>Texto libre</label><input id="labelCustomText" maxlength="80" value="${escapeHtml(initialTemplate?.customText || '')}"></div></div>
 	          <details class="settingsDisclosure labelAdvanced"><summary>Ajustes avanzados</summary><div class="labelAdvancedBody">
 	            <div class="labelColorGrid"><div class="field"><label>Fondo etiqueta</label><input type="color" id="labelBgColor" value="${safeColor(initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Fondo QR</label><input type="color" id="qrBgColor" value="${safeColor(initialTemplate?.qrBgColor || initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Texto / QR</label><input type="color" id="labelFgColor" value="${safeColor(initialTemplate?.fgColor, '#000000')}"></div></div>
 	            <div class="formGrid labelSizeGrid"><div class="field"><label>Ancho (mm)</label><input type="number" min="25" max="120" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div><div class="field"><label>Alto (mm)</label><input type="number" min="25" max="180" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 88)}"></div><div class="field"><label>Margen QR</label><input type="number" min="2" max="12" id="labelQrMargin" value="${numericInputValue(initialTemplate?.qrMargin || 5)}"></div><label class="consentCheck"><input type="checkbox" id="labelSnap" checked><span>Ajustar a cuadrícula</span></label></div>
@@ -4236,8 +4350,9 @@ function parseMoney(value) {
        };
        await drawLabelOnCanvas(canvas, g.product, opt);
     }
-    setTimeout(()=>window.print(),250);
-  }
+	    const printable = wrap.cloneNode(true);
+	    await handoffPrint({ node: printable, media: 'label', widthMm, heightMm, copiesHandled: true, filename: `CLICK360_etiquetas_${today()}.pdf` });
+	  }
 
   function createBackupSnapshot(reason='manual') {
     const backup = {
@@ -4704,13 +4819,16 @@ function parseMoney(value) {
     renderApp(route);
   };
 
-  window.showSaleCompleteModal = function(id) {
-	  id = decodeActionId(id);
-    const s = state.sales.find(x=>x.id===id);
-    if(!s) return;
-    const bizSettings = currentBusiness().settings || {};
-    const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
-    const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
+	  window.showSaleCompleteModal = function(id) {
+		  id = decodeActionId(id);
+	    const business = currentBusiness();
+	    const s = salesForBiz(business?.id).find(x=>x.id===id);
+	    if(!s) return;
+	    if (!business || s.businessId !== business.id) return toast('El comprobante pertenece a otro negocio y fue bloqueado.', 'err');
+	    const bizSettings = business.settings || {};
+	    const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
+	    const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
+	    const address = bizSettings.address ? `<div style="text-align:center; font-size:10px;">${escapeHtml(bizSettings.address)}</div>` : '';
     const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
     const logoUrl = receiptLogoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
 	    const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
@@ -4718,8 +4836,8 @@ function parseMoney(value) {
     const receiptHtml = `
       <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:15px; width:80mm; background:white; line-height:1.4;">
         ${logoUrl}
-        <h2 style="font-size:16px; margin:0 0 2px; text-align:center; font-weight:bold;">${escapeHtml(currentBusiness().name)}</h2>
-        ${ruc}${phone}
+	        <h2 style="font-size:16px; margin:0 0 2px; text-align:center; font-weight:bold;">${escapeHtml(business.name)}</h2>
+	        ${ruc}${phone}${address}
         <div style="text-align:center; margin:8px 0; font-weight:bold; font-size:13px; border-top:1px dashed #000; border-bottom:1px dashed #000; padding:4px 0;">COMPROBANTE DE VENTA</div>
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>No. Ticket:</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Fecha/Hora:</span><span>${escapeHtml(s.when)}</span></div>
@@ -4748,7 +4866,7 @@ function parseMoney(value) {
 	        ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha de retiro:</span><span>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(`${s.dueDate}T12:00:00`, 'es-EC', businessTimeZone(), false) || s.dueDate)}</span></div>` : ''}
 	        ${s.termsAccepted ? `<div style="border-top:1px dashed #000;margin-top:8px;padding-top:6px;font-size:9px;"><b>Términos de apartado v${escapeHtml(s.termsVersion || '1')} aceptados:</b><br>${escapeHtml(s.terms || '')}</div>` : ''}
         <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
-        <div style="text-align:center; font-size:10px;">¡Gracias por su compra!<br><small>CLICK 360 - Control de Negocios</small></div>
+	        <div style="text-align:center; font-size:10px;">¡Gracias por su compra!<br><small>CLICK 360 - Control de Negocios</small><br><small style="display:block;margin-top:5px;">Comprobante interno. No válido como factura electrónica.</small></div>
       </div>
     `;
 
@@ -4763,8 +4881,9 @@ function parseMoney(value) {
       </div>
 
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
-        <button class="btn primary" id="printReceiptBtn">🖨️ Imprimir Ticket</button>
-        <button class="btn silver" id="downloadImgBtn">🖼️ Descargar Imagen (PNG)</button>
+	        <button class="btn primary" id="printReceiptBtn">${icon('printer')} Imprimir ticket</button>
+	        <button class="btn silver" id="downloadPdfBtn">${icon('file-down')} Guardar PDF</button>
+	        <button class="btn silver" id="downloadImgBtn" style="grid-column:1/-1;">${icon('image-down')} Guardar PNG</button>
 	        ${s.customerPhone && Number(s.balance || 0) > 0 ? `<button class="btn" style="grid-column: 1 / -1; border:1px solid #25D366; color:#25D366; background:transparent;" id="whatsappReminderBtn">💬 Recordatorio WhatsApp</button>` : ''}
       </div>
       <button class="btn block" id="doneSaleBtn" style="border:1px solid var(--gold); color:var(--gold);">Listo / Nueva Venta</button>
@@ -4774,18 +4893,15 @@ function parseMoney(value) {
     if (waBtn) {
        waBtn.onclick = () => {
          const phone = s.customerPhone || '';
-         const bizName = currentBusiness().name;
+	         const bizName = business.name;
          const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
          const url = `https://wa.me/${phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(text)}`;
 	         window.open(url, '_blank', 'noopener,noreferrer');
        };
     }
 
-    $('#printReceiptBtn').onclick = () => {
-      const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-      root.innerHTML = receiptHtml;
-      setTimeout(()=>window.print(), 250);
-    };
+	    $('#printReceiptBtn').onclick = () => handoffPrint({ html: receiptHtml, media: 'receipt-80', filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'system');
+	    $('#downloadPdfBtn').onclick = () => handoffPrint({ html: receiptHtml, media: 'receipt-80', filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'pdf');
 
     $('#downloadImgBtn').onclick = () => {
       downloadHtmlAsPng(receiptHtml, `Recibo_${s.id.slice(-6).toUpperCase()}.png`);
@@ -4876,9 +4992,9 @@ function parseMoney(value) {
     window.showSaleCompleteModal(id);
   };
 
-  window.sendWhatsAppReminder = function(id) {
-	  id = decodeActionId(id);
-    const s = state.sales.find(x => x.id === id);
+	  window.sendWhatsAppReminder = function(id) {
+		  id = decodeActionId(id);
+	    const s = salesForBiz().find(x => x.id === id);
     if (!s) return;
     const phone = s.customerPhone || '';
     const bizName = currentBusiness().name;
@@ -4898,16 +5014,14 @@ function parseMoney(value) {
            ${reportHtml}
          </div>
        </div>
-       <div style="display:flex; gap:10px;">
-           <button class="btn silver block" id="printCierreBtn">Imprimir</button>
-           <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
-       </div>
-     `);
-     $('#printCierreBtn').onclick = () => {
-         const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-         root.innerHTML = reportHtml;
-         setTimeout(()=>window.print(), 250);
-     };
+	       <div style="display:flex; gap:10px;">
+	           <button class="btn silver block" id="printCierreBtn">Imprimir</button>
+	           <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
+	           <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
+	       </div>
+	     `);
+	     $('#printCierreBtn').onclick = () => handoffPrint({ html: reportHtml, media: 'a4', filename: `Cierre_Caja_${r.date}.pdf` }, 'system');
+	     $('#downloadPdfCierreBtn').onclick = () => handoffPrint({ html: reportHtml, media: 'a4', filename: `Cierre_Caja_${r.date}.pdf` }, 'pdf');
      $('#downloadImgCierreBtn').onclick = () => {
           downloadHtmlAsPng(reportHtml, `Cierre_Caja_${r.date}.png`);
       };
@@ -4970,10 +5084,10 @@ function parseMoney(value) {
 
       </div>`;
 
-    if (mode === 'print') {
-        const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-        root.innerHTML = html;
-        setTimeout(()=>window.print(), 250);
+	    if (mode === 'print') {
+	        handoffPrint({ html, media: 'a4', filename: `Reporte_Ventas_${state.reportsFrom}.pdf` }, 'system');
+	    } else if (mode === 'pdf') {
+	        handoffPrint({ html, media: 'a4', filename: `Reporte_Ventas_${state.reportsFrom}.pdf` }, 'pdf');
     } else if (mode === 'image') {
         downloadHtmlAsPng(html, `Reporte_Ventas_${state.reportsFrom}.png`, { width: '800px', useCORS: true });
     }
@@ -5230,7 +5344,7 @@ function parseMoney(value) {
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR};
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
-  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices'].includes(h)) renderApp(h); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();

@@ -171,6 +171,11 @@ async function main() {
         source: 'historical_buyer_recovery', entitlementVersion: 16, revision: 2
       });
       await setDoc(doc(db, 'businesses', 'historical-paid', 'state', 'main'), state('historical-paid'));
+      await setDoc(doc(db, 'accountAccess', 'paid-first-tenant'), {
+        uid: 'paid-first-tenant', businessId: 'paid-first-tenant', email: 'paid-first@example.test', name: 'Paid first tenant', photoURL: '',
+        status: 'paid_base', plan: 'base', planCode: 'base', lastSeenAt: Timestamp.now(), createdAt: expiredStart,
+        source: 'historical_buyer_recovery', entitlementVersion: 16, revision: 1
+      });
       await setDoc(doc(db, 'accountAccess', 'legacy-heartbeat'), {
         uid: 'legacy-heartbeat', email: 'legacy-heartbeat@example.test', status: 'paid_base', plan: 'base',
         lastSeenAt: Timestamp.now(), createdAt: expiredStart, source: 'historical_buyer_recovery'
@@ -189,12 +194,14 @@ async function main() {
     const expiredTrial = env.authenticatedContext('expired-trial', { email: 'expired@example.test' }).firestore();
     const expiredPaid = env.authenticatedContext('expired-paid', { email: 'expired-paid@example.test' }).firestore();
     const historicalPaid = env.authenticatedContext('historical-paid', { email: 'historical-paid@example.test' }).firestore();
+    const paidFirstTenant = env.authenticatedContext('paid-first-tenant', { email: 'paid-first@example.test' }).firestore();
     const legacyHeartbeat = env.authenticatedContext('legacy-heartbeat', { email: 'legacy-heartbeat@example.test' }).firestore();
     const unauthenticated = env.unauthenticatedContext().firestore();
     const stateA = doc(ownerA, 'businesses', 'owner-a', 'state', 'main');
     const stateB = doc(ownerB, 'businesses', 'owner-b', 'state', 'main');
     const trialAccess = doc(trial, 'accountAccess', 'trial-user');
     const trialState = doc(trial, 'businesses', 'trial-user', 'state', 'main');
+    const paidFirstState = doc(paidFirstTenant, 'businesses', 'paid-first-tenant', 'state', 'main');
 
     await assertSucceeds(setDoc(stateA, state('owner-a')));
     await assertSucceeds(getDoc(stateA));
@@ -246,6 +253,14 @@ async function main() {
     await assertSucceeds(getDoc(doc(expiredPaid, 'businesses', 'expired-paid', 'state', 'main')));
     await assertFails(setDoc(doc(expiredPaid, 'businesses', 'expired-paid', 'state', 'main'), state('expired-paid', 2)));
     await assertSucceeds(setDoc(doc(historicalPaid, 'businesses', 'historical-paid', 'state', 'main'), state('historical-paid', 2)));
+    await assertSucceeds(runTransaction(paidFirstTenant, async (transaction) => {
+      const current = await transaction.get(paidFirstState);
+      assert.equal(current.exists(), false, 'paid account starts without a tenant');
+      transaction.set(paidFirstState, state('paid-first-tenant'));
+    }));
+    await assertSucceeds(getDoc(paidFirstState));
+    await assertFails(getDoc(doc(ownerA, 'businesses', 'paid-first-tenant', 'state', 'main')));
+    await assertFails(setDoc(paidFirstState, state('owner-a', 2)));
     await assertFails(getDoc(doc(ownerA, 'adminBackups', 'private-backup')));
     await assertFails(getDoc(doc(ownerA, 'adminAuditLogs', 'private-audit')));
     await assertSucceeds(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-bootstrap'), telemetry('owner-a-bootstrap', 'owner-a')));
@@ -351,6 +366,7 @@ async function main() {
     console.log('PASS Firestore emulator: trial creation, server-time write window, expired read-only, and demo tenant denial');
     console.log('PASS Firestore emulator: active-but-unapproved and cross-tenant attempts are denied');
     console.log('PASS Firestore emulator: V16 one-use invitation, member permissions, activation, legal, and demo block');
+    console.log('PASS Firestore emulator: paid UID can transactionally create only its own first V10 tenant');
   } finally {
     await env.cleanup();
   }

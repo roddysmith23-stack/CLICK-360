@@ -2,6 +2,7 @@ node_modules/
 artifacts/
 .playwright-cli/
 output/
+dist/
 .env
 .env.*
 !*.example

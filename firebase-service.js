@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-  const APP_ASSET_VERSION = 'mvp-launch-v16-1-1-r1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-1-2-r1';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -58,7 +58,7 @@
 		  let SYNC_CONFLICT_PENDING = false;
 		  let ONLINE_ONLY_SAFE = false;
 
-	  const rawSetItem = localStorage.setItem.bind(localStorage);
+			  const rawSetItem = (key, value) => window.localStorage.setItem(key, value);
 	  const PROFILE_CACHE_PREFIX = "CLICK360:V16:PROFILE:";
 	  const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
 	  const LEGACY_PROFILE_CACHE_PREFIX = "CLICK360_USER_PROFILE_";
@@ -68,12 +68,28 @@
 	  const APPROVED_IDENTITY_PREFIX = "CLICK360:V16:APPROVED:";
 	  const LEGACY_APPROVED_IDENTITY_PREFIX = "CLICK360_APPROVED_IDENTITY:";
 	  const ACCOUNT_ACCESS_COLLECTION = 'accountAccess';
+	  const ACCOUNT_ACCESS_CACHE_PREFIX = 'CLICK360:V16:ACCOUNT_ACCESS:';
 		  const TRIAL_DAYS = 7;
-		  const PUBLIC_INTENT_KEY = 'CLICK360:V16_1:PUBLIC_INTENT';
-		  const PUBLIC_INTENTS = new Set(['login', 'trial', 'register', 'invite']);
-		  let PUBLIC_AUTH_INTENT = null;
-		  let AUTH_REQUEST_IN_FLIGHT = false;
-	  const SCHEMA_VERSION = 10;
+			  const PUBLIC_INTENT_KEY = 'CLICK360:V16_1_2:PUBLIC_INTENT';
+			  const EXPLICIT_INVITATION_KEY = 'CLICK360:V16_1_2:EXPLICIT_INVITATION';
+			  const PUBLIC_INTENTS = new Set(['login', 'trial', 'register', 'invite']);
+			  let PUBLIC_AUTH_INTENT = null;
+			  let AUTH_REQUEST_IN_FLIGHT = false;
+			  const ACCESS_UI_STATES = window.CLICK360_ACCESS_FLOW?.STATES || Object.freeze({
+			    LOADING: 'loading',
+			    UNAUTHENTICATED: 'unauthenticated',
+			    AUTHENTICATED_RESOLVING: 'authenticated_resolving',
+			    INVALID_INVITATION: 'invalid_invitation',
+			    RECOVERABLE_ERROR: 'recoverable_error',
+			    AUTHENTICATED_NO_ACCESS: 'authenticated_no_access',
+			    PENDING: 'pending',
+			    BLOCKED: 'blocked',
+			    ONLINE_ONLY_SAFE: 'online_only_safe',
+			    READY: 'ready'
+			  });
+			  const ACCESS_UI_STATE_VALUES = new Set(Object.values(ACCESS_UI_STATES));
+			  let ACCESS_UI_STATE = ACCESS_UI_STATES.LOADING;
+		  const SCHEMA_VERSION = 10;
 	  const OFFLINE_APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 	  const MAX_CLOUD_PAYLOAD_BYTES = window.CLICK360_P0_TENANT_GUARD.MAX_CLOUD_PAYLOAD_BYTES;
 	  function tenantKeyFor(ownerId, businessId) {
@@ -92,7 +108,7 @@
 	    if (!key) return null;
 	    try { return localStorage.getItem(key); } catch { return null; }
 	  }
-	  function safeStorageRemove(key) {
+		  function safeStorageRemove(key) {
 	    if (!key) return false;
 	    try { localStorage.removeItem(key); return true; } catch { return false; }
 	  }
@@ -101,6 +117,9 @@
 	  }
 	  function accountAccessRef(uid = auth.currentUser?.uid) {
 	    return uid ? db.collection(ACCOUNT_ACCESS_COLLECTION).doc(uid) : null;
+	  }
+	  function accountAccessCacheKey(uid) {
+	    return uid ? `${ACCOUNT_ACCESS_CACHE_PREFIX}${uid}` : '';
 	  }
 	  function memberRef(ownerId, uid) {
 	    return ownerId && uid ? db.collection('businesses').doc(ownerId).collection('members').doc(uid) : null;
@@ -164,7 +183,10 @@
 	      await ref.update({ lastSeenAt: firebase.firestore.FieldValue.serverTimestamp() });
 	      const snap = await ref.get({ source: 'server' });
 	      if (!isCurrentAuthEpoch(user, expectedEpoch) || !snap.exists) return false;
-	      const next = accessStateFromData(snap.data() || {});
+	      const data = snap.data() || {};
+	      if (!accountAccessIdentityValid(user, data)) return false;
+	      cacheAccountAccess(user, data);
+	      const next = accessStateFromData(data);
 	      if (!next.allowed) {
 	        enterEntitlementReadOnly(next);
 	        return false;
@@ -280,24 +302,83 @@
 	    }
 		    return id;
 		  }
-		  function readPublicAuthIntent() {
-		    const fromUrl = new URLSearchParams(location.search).get('flow');
-		    if (PUBLIC_INTENTS.has(fromUrl)) return fromUrl;
-		    if (PUBLIC_INTENTS.has(PUBLIC_AUTH_INTENT)) return PUBLIC_AUTH_INTENT;
-		    try {
-		      const stored = sessionStorage.getItem(PUBLIC_INTENT_KEY);
-		      return PUBLIC_INTENTS.has(stored) ? stored : 'login';
-		    } catch { return 'login'; }
+		  function publishAccessUiState(state, details = {}) {
+		    ACCESS_UI_STATE = ACCESS_UI_STATE_VALUES.has(state) ? state : ACCESS_UI_STATES.RECOVERABLE_ERROR;
+		    const value = Object.freeze({ state: ACCESS_UI_STATE, ...details });
+		    window.click360AccessUiState = value;
+		    window.dispatchEvent(new CustomEvent('click360-access-ui-state', { detail: value }));
+		    return value;
 		  }
+		  window.CLICK360_ACCESS_UI_STATES = ACCESS_UI_STATES;
+		  window.click360GetAccessUiState = () => ({ ...(window.click360AccessUiState || { state: ACCESS_UI_STATE }) });
+			  function currentInvitationParams() {
+			    const params = new URLSearchParams(location.search);
+			    return {
+			      flow: params.get('flow') || '',
+			      ownerId: params.get('ownerId') || '',
+			      inviteHash: params.get('inviteHash') || '',
+			      inviteToken: params.get('inviteToken') || params.get('token') || '',
+			      inviteSession: params.get('inviteSession') || ''
+			    };
+			  }
+			  function readExplicitInvitationIntent() {
+			    try {
+			      const stored = safeJsonParse(sessionStorage.getItem(EXPLICIT_INVITATION_KEY));
+			      const current = currentInvitationParams();
+			      return window.CLICK360_ACCESS_FLOW?.invitationIntentValid
+			        ? window.CLICK360_ACCESS_FLOW.invitationIntentValid(stored, current)
+			        : Number(stored?.createdAtMs || 0) > Date.now() - 30 * 60 * 1000
+			          && current.flow === 'invite' && !!current.ownerId && !!current.inviteToken && !!current.inviteSession
+			          && stored.ownerId === current.ownerId && stored.sessionId === current.inviteSession
+			          && Number(stored.tokenLength) === current.inviteToken.length;
+			    } catch { return false; }
+			  }
+			  function markExplicitInvitationIntent(ownerId, inviteToken) {
+			    try {
+			      const sessionId = window.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+			      sessionStorage.setItem(EXPLICIT_INVITATION_KEY, JSON.stringify({
+			        ownerId,
+			        tokenLength: String(inviteToken || '').length,
+			        sessionId,
+			        createdAtMs: Date.now()
+			      }));
+			      return sessionId;
+			    } catch { return ''; }
+			  }
+			  function clearInvitationIntent({ cleanUrl = false } = {}) {
+			    try { sessionStorage.removeItem(EXPLICIT_INVITATION_KEY); } catch {}
+			    if (!cleanUrl) return;
+			    const clean = new URL(location.href);
+			    ['flow', 'invite', 'ownerId', 'inviteHash', 'inviteToken', 'token', 'inviteSession'].forEach((key) => clean.searchParams.delete(key));
+			    history.replaceState({}, '', `${clean.pathname}${clean.search}${clean.hash}`);
+			  }
+			  function readPublicAuthIntent() {
+			    const fromUrl = new URLSearchParams(location.search).get('flow');
+			    if (fromUrl === 'invite') return readExplicitInvitationIntent() ? 'invite' : 'login';
+			    if (PUBLIC_INTENTS.has(fromUrl)) return fromUrl;
+			    if (PUBLIC_INTENTS.has(PUBLIC_AUTH_INTENT)) return PUBLIC_AUTH_INTENT;
+			    try {
+			      const stored = sessionStorage.getItem(PUBLIC_INTENT_KEY);
+			      return PUBLIC_INTENTS.has(stored) && stored !== 'invite' ? stored : 'login';
+			    } catch { return 'login'; }
+			  }
 		  function setPublicAuthIntent(intent) {
 		    PUBLIC_AUTH_INTENT = PUBLIC_INTENTS.has(intent) ? intent : 'login';
 		    try { sessionStorage.setItem(PUBLIC_INTENT_KEY, PUBLIC_AUTH_INTENT); } catch {}
 		    return PUBLIC_AUTH_INTENT;
 		  }
-		  function clearPublicAuthIntent() {
-		    PUBLIC_AUTH_INTENT = null;
-		    try { sessionStorage.removeItem(PUBLIC_INTENT_KEY); } catch {}
-		  }
+			  function clearPublicAuthIntent() {
+			    PUBLIC_AUTH_INTENT = null;
+			    try { sessionStorage.removeItem(PUBLIC_INTENT_KEY); } catch {}
+			  }
+			  window.click360GetPublicAuthDiagnostics = () => {
+			    const params = currentInvitationParams();
+			    return {
+			      intent: readPublicAuthIntent(),
+			      invitationParametersPresent: params.flow === 'invite' || !!params.ownerId || !!params.inviteHash || !!params.inviteToken,
+			      explicitInvitationIntent: readExplicitInvitationIntent()
+			    };
+			  };
 		  const TELEMETRY_EVENTS = new Set([
 		    'login', 'bootstrap', 'cache_failure', 'online_only', 'sync', 'plan_request',
 		    'invitation', 'cash_open', 'cash_close', 'template_save_failure'
@@ -682,8 +763,8 @@
 	    return 'Detectamos datos de una versión anterior. Están protegidos y la operación queda bloqueada hasta que un administrador complete una migración verificada.';
 	  }
 
-	  function showLegacyMigrationGate() {
-	    showGate(legacyMigrationMessage());
+		  function showLegacyMigrationGate() {
+		    showGate(legacyMigrationMessage(), ACCESS_UI_STATES.BLOCKED, { reason: 'legacy_migration_required' });
 	    setAppBlocked(true);
 	  }
 
@@ -715,11 +796,14 @@
     };
   }
 
-		  async function acceptInvitationFromUrl(user, expectedEpoch = AUTH_EPOCH) {
-		    const currentParams = new URLSearchParams(location.search);
-		    const inviteToken = currentParams.get('inviteToken') || currentParams.get('token') || '';
-		    const ownerId = currentParams.get('ownerId') || '';
-	    if (!inviteToken || !ownerId || !isCurrentAuthEpoch(user, expectedEpoch)) return false;
+			  async function acceptInvitationFromUrl(user, expectedEpoch = AUTH_EPOCH) {
+			    const currentParams = new URLSearchParams(location.search);
+			    const inviteToken = currentParams.get('inviteToken') || currentParams.get('token') || '';
+			    const ownerId = currentParams.get('ownerId') || '';
+			    const explicit = readExplicitInvitationIntent();
+		    if (!explicit || currentParams.get('flow') !== 'invite' || !inviteToken || !ownerId || !isCurrentAuthEpoch(user, expectedEpoch)) {
+		      return { attempted: false, accepted: false };
+		    }
 	    const computedHash = await window.CLICK360_V16_DOMAIN?.sha256(inviteToken);
 		    const suppliedHash = currentParams.get('inviteHash') || computedHash;
 	    if (!computedHash || suppliedHash !== computedHash) throw new Error('La invitacion no es valida.');
@@ -776,12 +860,11 @@
 	      });
 	      transaction.update(invite, { status: 'accepted', acceptedBy: user.uid, acceptedAt: firebase.firestore.FieldValue.serverTimestamp(), consumed: true });
 	    });
-	    const cleanUrl = new URL(location.href);
-		    ['invite', 'ownerId', 'inviteHash', 'inviteToken', 'token'].forEach((key) => cleanUrl.searchParams.delete(key));
-		    history.replaceState({}, '', `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`);
-		    recordTelemetryOnce(`invite-accept:${ownerId}:${computedHash}:${user.uid}`, 'invitation', { mode: 'accepted' });
-		    return true;
-	  }
+		    clearInvitationIntent({ cleanUrl: true });
+		    clearPublicAuthIntent();
+			    recordTelemetryOnce(`invite-accept:${ownerId}:${computedHash}:${user.uid}`, 'invitation', { mode: 'accepted' });
+			    return { attempted: true, accepted: true, ownerId, inviteHash: computedHash };
+		  }
 
   async function isApprovedUser(user, expectedEpoch = AUTH_EPOCH) {
     if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
@@ -848,8 +931,8 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
-  function accessStateFromData(data = {}) {
-    const serverNowMs = serverTimestampMs(data.lastSeenAt);
+	  function accessStateFromData(data = {}, trustedServerNowMs = 0) {
+    const serverNowMs = Number(trustedServerNowMs) || serverTimestampMs(data.lastSeenAt);
     const evaluator = window.CLICK360_V16_DOMAIN?.evaluateEntitlement;
     const evaluated = evaluator
       ? evaluator(data, serverNowMs)
@@ -859,19 +942,75 @@
           planCode: data.planCode,
           trialStartedAtMs: serverTimestampMs(data.trialStartedAt)
         }, serverNowMs, TRIAL_DAYS);
-    return { ...evaluated, serverNowMs, source: 'accountAccess', revision: Number(data.revision || 0) };
-  }
+	    return { ...evaluated, serverNowMs, source: 'accountAccess', revision: Number(data.revision || 0) };
+	  }
+
+	  function accountAccessIdentityValid(user, data = {}) {
+	    if (!user?.uid || !data || data.uid !== user.uid || data.businessId !== user.uid) return false;
+	    if (data.ownerId && data.ownerId !== user.uid) return false;
+	    if (data.tenantKey && data.tenantKey !== tenantKeyFor(user.uid, user.uid)) return false;
+	    return data.businessId !== 'demo-click360' && !String(data.tenantKey || '').includes('demo-click360');
+	  }
+
+	  function classifyAccountAccessError(error) {
+	    const code = String(error?.code || 'unknown');
+	    if (code === 'permission-denied') return 'permission_denied';
+	    if (['unavailable', 'deadline-exceeded', 'network-request-failed'].includes(code)) return 'network_error';
+	    return 'recoverable_error';
+	  }
+
+	  function requiresFreshEntitlementClock(data = {}) {
+	    const status = String(data.status || '').toLowerCase();
+	    return ['trial', 'trial_active'].includes(status) || !!serverTimestampMs(data.expiresAt);
+	  }
+
+	  async function trustedAuthServerNowMs(user) {
+	    try {
+	      const tokenResult = await user?.getIdTokenResult?.(true);
+	      const issuedAtMs = Date.parse(String(tokenResult?.issuedAtTime || ''));
+	      return Number.isFinite(issuedAtMs) ? issuedAtMs : 0;
+	    } catch (error) {
+	      console.warn('No se pudo confirmar la hora del servidor de acceso:', error.code || error.message);
+	      return 0;
+	    }
+	  }
+
+	  function cacheAccountAccess(user, data = {}) {
+	    if (!accountAccessIdentityValid(user, data)) return false;
+	    return safeStorageSet(accountAccessCacheKey(user.uid), JSON.stringify({
+	      uid: user.uid,
+	      cachedAtMs: Date.now(),
+	      data
+	    }));
+	  }
+
+	  function getCachedAccountAccess(user) {
+	    const cached = safeJsonParse(safeStorageGet(accountAccessCacheKey(user?.uid)));
+	    if (!cached || cached.uid !== user?.uid || !accountAccessIdentityValid(user, cached.data || {})) return null;
+	    if (!Number.isFinite(Number(cached.cachedAtMs)) || Date.now() - Number(cached.cachedAtMs) > OFFLINE_APPROVAL_MAX_AGE_MS) return null;
+	    const state = accessStateFromData(cached.data || {});
+	    if (!state.allowed) return null;
+	    return {
+	      status: 'ready',
+	      exists: true,
+	      data: cached.data,
+	      state: requiresFreshEntitlementClock(cached.data) ? { ...state, readOnly: true, clockVerificationRequired: true } : state,
+	      source: 'offline_cache'
+	    };
+	  }
 
 	  async function resolveAccountAccess(user, expectedEpoch = AUTH_EPOCH, options = {}) {
-    if (!isCurrentAuthEpoch(user, expectedEpoch) || !navigator.onLine) return null;
-    const ref = accountAccessRef(user.uid);
-    if (!ref) return null;
-    try {
-      let snap = await ref.get({ source: 'server' });
-      if (!isCurrentAuthEpoch(user, expectedEpoch)) return null;
-	      if (!snap.exists && options.allowCreate !== true) return null;
-	      if (!snap.exists) {
-        await db.runTransaction(async (transaction) => {
+	    if (!isCurrentAuthEpoch(user, expectedEpoch)) return { status: 'stale_auth' };
+	    if (!navigator.onLine) return getCachedAccountAccess(user) || { status: 'network_error', errorCode: 'offline' };
+	    const ref = accountAccessRef(user.uid);
+	    if (!ref) return { status: 'recoverable_error', errorCode: 'missing_ref' };
+	    try {
+	      let createdNow = false;
+	      let snap = await ref.get({ source: 'server' });
+	      if (!isCurrentAuthEpoch(user, expectedEpoch)) return { status: 'stale_auth' };
+		      if (!snap.exists && options.allowCreate !== true) return { status: 'not_found', exists: false };
+		      if (!snap.exists) {
+	        await db.runTransaction(async (transaction) => {
           const current = await transaction.get(ref);
           if (current.exists) return;
           transaction.set(ref, {
@@ -891,19 +1030,62 @@
             entitlementVersion: 16,
             revision: 1
           });
-        });
-        snap = await ref.get({ source: 'server' });
-	      } else {
-	        await ref.update({ lastSeenAt: firebase.firestore.FieldValue.serverTimestamp() });
+	          createdNow = true;
+	        });
 	        snap = await ref.get({ source: 'server' });
-      }
-      if (!isCurrentAuthEpoch(user, expectedEpoch) || !snap.exists) return null;
-      return { data: snap.data() || {}, state: accessStateFromData(snap.data() || {}) };
-    } catch (error) {
-      console.warn('No se pudo resolver el acceso de cuenta:', error.message);
-      return null;
-    }
-  }
+	      }
+	      if (!isCurrentAuthEpoch(user, expectedEpoch)) return { status: 'stale_auth' };
+	      if (!snap.exists) return { status: 'not_found', exists: false };
+	      const data = snap.data() || {};
+	      if (!accountAccessIdentityValid(user, data)) {
+	        return { status: 'identity_invalid', exists: true, errorCode: 'account_identity_mismatch' };
+	      }
+	      const trustedServerNowMs = requiresFreshEntitlementClock(data)
+	        ? (createdNow ? serverTimestampMs(data.lastSeenAt) : await trustedAuthServerNowMs(user))
+	        : 0;
+	      if (!isCurrentAuthEpoch(user, expectedEpoch)) return { status: 'stale_auth' };
+	      const clockVerified = !requiresFreshEntitlementClock(data) || trustedServerNowMs > 0;
+	      let state = accessStateFromData(data, trustedServerNowMs);
+	      if (!state.allowed) return { status: 'invalid_entitlement', exists: true, data, state };
+	      if (requiresFreshEntitlementClock(data) && !clockVerified) {
+	        state = { ...state, readOnly: true, clockVerificationRequired: true };
+	      }
+	      cacheAccountAccess(user, data);
+	      return { status: 'ready', exists: true, data, state, source: 'server' };
+	    } catch (error) {
+	      const status = classifyAccountAccessError(error);
+	      console.warn('No se pudo resolver el acceso de cuenta:', error.code || error.message);
+	      return { status, errorCode: String(error.code || 'unknown') };
+	    }
+	  }
+
+	  async function touchAccountAccessActivity(user, expectedEpoch = AUTH_EPOCH) {
+	    if (!isCurrentAuthEpoch(user, expectedEpoch) || window.click360AccessState?.source !== 'accountAccess') return false;
+	    const ref = accountAccessRef(user.uid);
+	    if (!ref || !navigator.onLine) return false;
+	    try {
+	      await ref.update({ lastSeenAt: firebase.firestore.FieldValue.serverTimestamp() });
+	      const snap = await ref.get({ source: 'server' });
+	      if (!isCurrentAuthEpoch(user, expectedEpoch) || !snap.exists) return false;
+	      const data = snap.data() || {};
+	      if (!accountAccessIdentityValid(user, data)) return false;
+	      cacheAccountAccess(user, data);
+	      const state = accessStateFromData(data);
+	      if (!state.allowed) {
+	        enterEntitlementReadOnly(state);
+	        return false;
+	      }
+	      const published = publishAccessState(state);
+	      if (window.click360User) window.click360User.access = published;
+	      scheduleAccessExpiry(user, published, expectedEpoch);
+	      if (published.readOnly) setSyncStatus('read_only', 'Tu acceso terminó. Tus datos permanecen disponibles en modo lectura.');
+	      return true;
+	    } catch (error) {
+	      console.warn('No se pudo registrar la actividad de acceso:', error.code || error.message);
+	      recordTelemetryOnce(`last-seen-failure:${expectedEpoch}:${user.uid}`, 'login', { mode: 'last_seen_failed', errorCode: error.code || 'unknown' });
+	      return false;
+	    }
+	  }
 
   function applyAccountAccessIdentity(user, account, expectedEpoch = AUTH_EPOCH) {
     if (!isCurrentAuthEpoch(user, expectedEpoch) || !account?.state?.allowed) return false;
@@ -1452,7 +1634,7 @@
 	        PULL_COMPLETE = false;
 	        quarantineIncident("blocked_listener_identity", { path: stateDoc.path });
 	        setSyncStatus("error", "Cambio remoto de otro tenant bloqueado.");
-	        showGate('Se detectó un cambio remoto de otra cuenta. La operación fue bloqueada para proteger los datos.');
+		        showGate('Se detectó un cambio remoto de otra cuenta. La operación fue bloqueada para proteger los datos.', ACCESS_UI_STATES.BLOCKED, { reason: 'remote_identity_mismatch' });
 	        return;
 	      }
 	      const remotePayload = remoteData.payload;
@@ -1494,8 +1676,9 @@
 	    });
 	  }
 
-	  function showGate(message = "Inicia sesión con Google para continuar.") {
-    setAppBlocked(true);
+		  function showGate(message = "Inicia sesión con Google para continuar.", state = ACCESS_UI_STATES.RECOVERABLE_ERROR, details = {}) {
+	    setAppBlocked(true);
+	    publishAccessUiState(state, details);
 
     let gate = document.getElementById("click360-auth-gate");
     if (!gate) {
@@ -1505,7 +1688,7 @@
 	      gate.innerHTML = `
 	        <div class="c360-gate-shell">
 	          <section class="c360-gate-hero" aria-label="CLICK 360">
-	            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>V16.1.1</small></div>
+		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>V16.1.2</small></div>
 	            <h1>Todo tu negocio en una sola aplicación</h1>
 	            <p>Controla inventario, ventas, caja, clientes y productos desde tu celular, de forma sencilla.</p>
 	            <p class="c360-gate-promise">Menos papeles. Menos confusión. Más control.</p>
@@ -1517,12 +1700,13 @@
 	              <button id="c360-show-plans" class="c360-gate-link">Ver planes</button>
 	              <a class="c360-gate-link" href="https://wa.me/593969399562?text=Hola%2C%20quiero%20conocer%20CLICK%20360" target="_blank" rel="noopener noreferrer">Hablar con CLICK 360</a>
 	            </div>
-	            <div id="c360-public-plans" class="c360-public-plans" hidden>
+		            <div id="c360-public-plans" class="c360-public-plans" hidden>
 	              <article><b>Prueba gratis</b><strong>7 días</strong><span>Todas las funciones Base, sin borrar tus datos al terminar.</span><button type="button" data-public-flow="trial">Empezar prueba</button></article>
 	              <article><b>Base</b><strong>$40 / mes</strong><span>Inventario, ventas, caja, clientes, reportes y etiquetas QR.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Base" target="_blank" rel="noopener noreferrer">Elegir Base</a></article>
-	              <article><b>Pro</b><strong>$59,99 / mes</strong><span>Todo Base, más trabajadores, recordatorios y herramientas avanzadas.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Pro" target="_blank" rel="noopener noreferrer">Elegir Pro</a></article>
-	            </div>
-	          </section>
+		              <article><b>Pro</b><strong>$59,99 / mes</strong><span>Todo Base, más trabajadores, recordatorios y herramientas avanzadas.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Pro" target="_blank" rel="noopener noreferrer">Elegir Pro</a></article>
+		            </div>
+		            <button id="c360-retry-access" class="c360-change-button" style="display:none;">Reintentar</button>
+		          </section>
 	          <section class="c360-auth-card" aria-label="Información y acceso seguro">
 	            <div class="c360-auth-logo" aria-hidden="true"></div>
 	            <h2>Tu negocio, siempre a mano</h2>
@@ -1558,12 +1742,19 @@
 	      document.getElementById("c360-trial-login").onclick = () => beginPublicAuth('trial');
 	      document.getElementById("c360-register-login").onclick = () => beginPublicAuth('register');
 	      document.querySelectorAll('[data-public-flow="trial"]').forEach((button) => { button.onclick = () => beginPublicAuth('trial'); });
-	      document.getElementById("c360-invite-login").onclick = () => {
-	        const form = document.getElementById('c360-invite-form');
-	        form.hidden = false;
-	        document.getElementById('c360-invite-value').focus();
-	      };
-	      document.getElementById('c360-invite-cancel').onclick = () => { document.getElementById('c360-invite-form').hidden = true; };
+		      document.getElementById("c360-invite-login").onclick = () => {
+		        const form = document.getElementById('c360-invite-form');
+		        form.hidden = false;
+		        const current = currentInvitationParams();
+		        if (current.inviteToken) document.getElementById('c360-invite-value').value = current.inviteToken;
+		        if (current.ownerId) document.getElementById('c360-invite-owner').value = current.ownerId;
+		        document.getElementById('c360-invite-value').focus();
+		      };
+		      document.getElementById('c360-invite-cancel').onclick = () => {
+		        document.getElementById('c360-invite-form').hidden = true;
+		        clearInvitationIntent({ cleanUrl: true });
+		        setPublicAuthIntent('login');
+		      };
 	      document.getElementById('c360-invite-form').onsubmit = (event) => {
 	        event.preventDefault();
 	        const raw = document.getElementById('c360-invite-value').value.trim();
@@ -1580,17 +1771,24 @@
 	          if (msg) msg.textContent = 'Pega el enlace completo o escribe el token y el identificador del negocio.';
 	          return;
 	        }
-	        const params = new URLSearchParams(location.search);
-	        params.set('flow', 'invite');
-	        params.set('ownerId', ownerId);
-	        params.set('inviteToken', inviteToken);
-	        history.replaceState({}, '', `${location.pathname}?${params.toString()}${location.hash}`);
-	        beginPublicAuth('invite');
-	      };
-      document.getElementById("c360-show-plans").onclick = () => {
+		        const params = new URLSearchParams(location.search);
+		        const inviteSession = markExplicitInvitationIntent(ownerId, inviteToken);
+		        if (!inviteSession) {
+		          if (msg) msg.textContent = 'Este navegador no pudo iniciar la invitación de forma segura. Actualiza la página e inténtalo otra vez.';
+		          return;
+		        }
+		        params.set('flow', 'invite');
+			        params.set('ownerId', ownerId);
+			        params.set('inviteToken', inviteToken);
+			        params.set('inviteSession', inviteSession);
+			        history.replaceState({}, '', `${location.pathname}?${params.toString()}${location.hash}`);
+			        beginPublicAuth('invite');
+		      };
+	      document.getElementById("c360-show-plans").onclick = () => {
         const plans = document.getElementById('c360-public-plans');
-        plans.hidden = !plans.hidden;
-      };
+	        plans.hidden = !plans.hidden;
+	      };
+	      document.getElementById('c360-retry-access').onclick = () => window.location.reload();
       document.getElementById('c360-public-terms').onclick = () => showPublicLegal('terms');
       document.getElementById('c360-public-privacy').onclick = () => showPublicLegal('privacy');
       document.getElementById("c360-change-google").onclick = async () => {
@@ -1629,30 +1827,37 @@
     const msg = document.getElementById("c360-auth-msg");
     if (msg) msg.innerHTML = message;
 
-    // Show/hide buttons dynamically based on verification vs waiting state
-    const loginBtn = document.getElementById("c360-google-login");
-    const changeBtn = document.getElementById("c360-change-google");
-    const clearBtn = document.getElementById("c360-clear-cache");
+	    // Access controls are driven only by the explicit state machine. User-facing
+	    // wording can change without accidentally hiding the login or registration paths.
+	    const loginBtn = document.getElementById("c360-google-login");
+	    const changeBtn = document.getElementById("c360-change-google");
+	    const clearBtn = document.getElementById("c360-clear-cache");
+	    const retryBtn = document.getElementById('c360-retry-access');
 	    const publicActions = ['c360-google-login', 'c360-trial-login', 'c360-register-login', 'c360-invite-login', 'c360-show-plans']
 	      .map((id) => document.getElementById(id)).filter(Boolean);
 
-	    if (message.includes("Inicia sesión") || message.includes("pendiente") || message.includes("bloqueada") || message.includes("aprobaron") || message.includes("No encontramos una cuenta")) {
-	      const hasAuthenticatedUser = !!auth.currentUser;
-	      const initialLogin = message.includes("Inicia sesión") || message.includes("No encontramos una cuenta");
-	      if (loginBtn) loginBtn.style.display = initialLogin ? "inline-flex" : "none";
-      if (changeBtn) changeBtn.style.display = hasAuthenticatedUser ? "block" : "none";
-      if (clearBtn) clearBtn.style.display = !initialLogin && hasAuthenticatedUser ? "block" : "none";
-      if (message.includes("bloqueada")) {
-        if (loginBtn) loginBtn.style.display = "none";
-      }
-	      publicActions.forEach((button) => { button.style.display = initialLogin ? '' : 'none'; });
-    } else {
-      if (loginBtn) loginBtn.style.display = "none";
-      if (changeBtn) changeBtn.style.display = "none";
-      if (clearBtn) clearBtn.style.display = "none";
-      publicActions.forEach((button) => { button.style.display = 'none'; });
-    }
-  }
+	    const hasAuthenticatedUser = !!auth.currentUser;
+	    const policy = window.CLICK360_ACCESS_FLOW?.gatePolicy?.(ACCESS_UI_STATE, hasAuthenticatedUser) || {
+	      showPublicActions: [ACCESS_UI_STATES.UNAUTHENTICATED, ACCESS_UI_STATES.INVALID_INVITATION, ACCESS_UI_STATES.RECOVERABLE_ERROR, ACCESS_UI_STATES.AUTHENTICATED_NO_ACCESS].includes(ACCESS_UI_STATE),
+		      showLogin: true,
+		      showRetry: [ACCESS_UI_STATES.INVALID_INVITATION, ACCESS_UI_STATES.RECOVERABLE_ERROR].includes(ACCESS_UI_STATE),
+		      showChangeAccount: hasAuthenticatedUser,
+	      showRefreshAssets: false
+	    };
+	    publicActions.forEach((button) => { button.style.display = policy.showPublicActions ? '' : 'none'; });
+		    if (loginBtn) {
+	      loginBtn.style.display = policy.showLogin ? 'inline-flex' : 'none';
+		      loginBtn.textContent = hasAuthenticatedUser ? 'Cambiar cuenta de Google' : 'Iniciar sesión';
+		    }
+		    if (retryBtn) {
+		      retryBtn.style.display = policy.showRetry ? 'flex' : 'none';
+		      retryBtn.textContent = ACCESS_UI_STATE === ACCESS_UI_STATES.INVALID_INVITATION
+		        ? 'Continuar con mi cuenta'
+		        : 'Reintentar';
+		    }
+	    if (changeBtn) changeBtn.style.display = policy.showChangeAccount ? 'block' : 'none';
+	    if (clearBtn) clearBtn.style.display = policy.showRefreshAssets ? 'block' : 'none';
+	  }
 
 	  function showPublicLegal(kind) {
     const title = kind === 'privacy' ? 'Política de privacidad' : 'Términos y condiciones';
@@ -1669,15 +1874,16 @@
     return { embedded, isAndroid: /Android/i.test(ua), isIOS: /iPhone|iPad|iPod/i.test(ua) };
   }
 
-  function showPending(user) {
-    showGate(`
+	  function showPending(user) {
+	    showGate(`
       Tu cuenta (<b>${escapeHtml(user.email || "sin email")}</b>) está pendiente de aprobación.<br><br>
       UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${escapeHtml(user.uid)}</code><br><br>
       Por favor, dile a tu administrador que apruebe tu acceso usando este UID en Firestore.
-    `);
+	    `, ACCESS_UI_STATES.PENDING);
 
     const loginBtn = document.getElementById("c360-google-login");
-    if(loginBtn) {
+	    if(loginBtn) {
+	      loginBtn.style.display = 'inline-flex';
       loginBtn.textContent = "Ya me aprobaron (Actualizar)";
       loginBtn.onclick = async () => {
          const epoch = AUTH_EPOCH;
@@ -1688,13 +1894,17 @@
     }
   }
 
-  function unlockApp() {
+	  function unlockApp() {
     if (!tenantGuard.canUnlock(ACTIVE_CONTEXT) || legacyMigrationRequired()) {
       showLegacyMigrationGate();
       return false;
     }
-    AUTH_APPROVED = true;
-    setAppBlocked(false);
+	    AUTH_APPROVED = true;
+	    setAppBlocked(false);
+	    publishAccessUiState(ONLINE_ONLY_SAFE ? ACCESS_UI_STATES.ONLINE_ONLY_SAFE : ACCESS_UI_STATES.READY, {
+	      uid: auth.currentUser?.uid || null,
+	      tenantKey: ACTIVE_CONTEXT?.tenantKey || null
+	    });
 
     const gate = document.getElementById("click360-auth-gate");
 
@@ -1702,18 +1912,19 @@
       if(window.click360Route) {
          const currentRoute = window.location.hash.replace('#','') || 'home';
          window.click360Route(currentRoute);
-      }
-      if (gate) gate.remove();
-    } catch(e) {
+	      }
+	      if (gate) gate.remove();
+	      return true;
+	    } catch(e) {
       console.error("Error durante unlockApp:", e);
-      const msg = document.getElementById("c360-auth-msg");
-      const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      if (msg) {
-        msg.innerHTML = `<span style="color:#ff4444; font-weight:bold;">Error de Inicio: ${esc(e.message)}</span><br><br><pre style="text-align:left; background:#111; padding:8px; border-radius:8px; font-size:11px; overflow-x:auto; max-height:200px; color:#ff8888; font-family:monospace; margin:0;">${esc(e.stack || '')}</pre>`;
-      } else {
-        alert("Error de Inicio: " + e.message);
-      }
-    }
+	      const msg = document.getElementById("c360-auth-msg");
+	      if (msg) {
+	        msg.textContent = 'No pudimos terminar de abrir CLICK 360. Actualiza la aplicación e inténtalo de nuevo.';
+	      } else {
+	        alert('No pudimos terminar de abrir CLICK 360. Actualiza la aplicación e inténtalo de nuevo.');
+	      }
+	      return false;
+	    }
   }
 
   function providerGoogle() {
@@ -1767,7 +1978,7 @@
 
 	    return auth.signInWithPopup(providerGoogle()).catch(err => {
 	      console.warn("Popup falló:", err.message);
-	      console.warn('[CLICK360_TELEMETRY]', { eventType: 'login_failure', errorCode: String(err.code || 'unknown').slice(0, 80), appVersion: '16.1.1' });
+	      console.warn('[CLICK360_TELEMETRY]', { eventType: 'login_failure', errorCode: String(err.code || 'unknown').slice(0, 80), appVersion: '16.1.2' });
       if (err.code === 'auth/popup-blocked') {
         if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> o intenta desde Chrome/Safari normal.";
       } else if (err.code === 'auth/operation-not-supported-in-this-environment') {
@@ -1787,14 +1998,17 @@
     };
   }
 
-  const debouncedSync = debounce(() => pushLocalToFirestore("local_change"), 1200);
+	  const debouncedSync = debounce((tenantKey, authUid, expectedEpoch) => {
+	    if (expectedEpoch !== AUTH_EPOCH || ACTIVE_CONTEXT?.tenantKey !== tenantKey || ACTIVE_CONTEXT?.authUid !== authUid) return;
+	    pushLocalToFirestore("local_change").catch(() => {});
+	  }, 1200);
 
 	  window.addEventListener('click360-local-state-saved', (event) => {
 	    if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE
 	      && event.detail?.tenantKey === ACTIVE_CONTEXT?.tenantKey) {
 	      LOCAL_WRITE_PENDING_UNTIL = Date.now() + 6000;
 	      setSyncStatus(navigator.onLine ? "pending" : "offline", navigator.onLine ? "Cambio local pendiente de nube." : "Cambio local guardado sin internet.");
-	      debouncedSync();
+		      debouncedSync(ACTIVE_CONTEXT.tenantKey, ACTIVE_CONTEXT.authUid, AUTH_EPOCH);
 	    }
 	  });
 
@@ -1833,7 +2047,8 @@
 	    if (USER_STATUS_UNSUBSCRIBE) { USER_STATUS_UNSUBSCRIBE(); USER_STATUS_UNSUBSCRIBE = null; }
 	    if (ACCESS_UNSUBSCRIBE) { ACCESS_UNSUBSCRIBE(); ACCESS_UNSUBSCRIBE = null; }
 	    clearAccessExpiryTimer();
-	    ACCESS_READ_ONLY = false;
+		    ACCESS_READ_ONLY = false;
+		    ONLINE_ONLY_SAFE = false;
 	    window.click360AccessState = null;
 	    BUSINESS_ID = null;
 	    STATE_DOC = null;
@@ -1847,7 +2062,9 @@
 	  window.click360Logout = async () => {
     deactivateActiveAccount();
     try { await auth.signOut(); } catch(e) { console.warn("No se pudo cerrar sesión:", e.message); }
-    showGate("Inicia sesión con Google para continuar.");
+	    clearInvitationIntent({ cleanUrl: true });
+	    clearPublicAuthIntent();
+	    showGate("Inicia sesión con Google para continuar.", ACCESS_UI_STATES.UNAUTHENTICATED);
   };
 
   function listenUserApproval(user, expectedEpoch = AUTH_EPOCH) {
@@ -1868,10 +2085,10 @@
           REMOTE_UNSUBSCRIBE();
           REMOTE_UNSUBSCRIBE = null;
         }
-	        showGate(`
+		        showGate(`
 	          ${identityChanged ? 'La configuración de tu acceso cambió y debe verificarse de nuevo.' : 'Tu acceso a CLICK 360 fue revocado o bloqueado.'}<br><br>
 	          UID de usuario: <code style="background:#222;padding:4px 8px;border-radius:4px;color:#ff9f43;font-family:monospace;font-size:13px;display:inline-block;margin:4px 0;user-select:all;">${escapeHtml(user.uid)}</code>
-	        `);
+		        `, ACCESS_UI_STATES.BLOCKED, { reason: identityChanged ? 'identity_changed' : 'access_revoked' });
 	      return;
 	    }
 	    const previousProfile = `${window.click360User.name || ''}\n${window.click360User.photoURL || ''}`;
@@ -1894,12 +2111,24 @@
     if (!ref) return;
     ACCESS_UNSUBSCRIBE = ref.onSnapshot((snap) => {
       if (!AUTH_APPROVED || !isCurrentAuthEpoch(user, expectedEpoch) || ACTIVE_CONTEXT !== context) return;
-      const next = snap.exists ? accessStateFromData(snap.data() || {}) : { allowed: false, mode: 'pending', readOnly: true };
+	      const data = snap.exists ? (snap.data() || {}) : null;
+	      if (data && !accountAccessIdentityValid(user, data)) {
+	        AUTH_APPROVED = false;
+	        PULL_COMPLETE = false;
+	        showGate('La identidad remota del acceso cambió. La aplicación quedó bloqueada sin modificar datos.', ACCESS_UI_STATES.BLOCKED, { reason: 'account_identity_changed' });
+	        return;
+	      }
+	      if (data) cacheAccountAccess(user, data);
+	      const trustedCurrentClock = Number(window.click360AccessState?.serverNowMs || 0);
+	      let next = data ? accessStateFromData(data, trustedCurrentClock) : { allowed: false, mode: 'pending', readOnly: true };
+	      if (data && snap.metadata?.fromCache && requiresFreshEntitlementClock(data)) {
+	        next = { ...next, readOnly: true, clockVerificationRequired: true };
+	      }
       if (!next.allowed) {
         AUTH_APPROVED = false;
         PULL_COMPLETE = false;
         if (REMOTE_UNSUBSCRIBE) { REMOTE_UNSUBSCRIBE(); REMOTE_UNSUBSCRIBE = null; }
-        showGate('Tu acceso de prueba o plan ya no está activo. Contacta a CLICK 360 para continuar.');
+	        showGate('Tu acceso de prueba o plan ya no está activo. Contacta a CLICK 360 para continuar.', ACCESS_UI_STATES.BLOCKED, { reason: 'entitlement_inactive' });
         return;
       }
 	      window.click360User.access = publishAccessState(next);
@@ -1919,7 +2148,7 @@
 	      return false;
 	    }
 	    if (!tenantGuard.canUnlock(ACTIVE_CONTEXT)) {
-	      showGate('No se pudo verificar de forma segura la identidad y los datos de esta cuenta. La operación permanece bloqueada para proteger la información.');
+	      showGate('No se pudo verificar de forma segura la identidad y los datos de esta cuenta. La operación permanece bloqueada para proteger la información.', ACCESS_UI_STATES.BLOCKED, { reason: 'tenant_identity_unverified' });
 	      return false;
 	    }
 	    if (INITIAL_TENANT_SEED_REQUIRED) {
@@ -1940,7 +2169,7 @@
 	          : bootstrapDecision.reason === 'connection_required'
 	            ? 'Conéctate a internet para preparar esta cuenta por primera vez.'
 	            : 'No pudimos preparar la aplicación en este dispositivo. Tus datos no fueron modificados.';
-	        showGate(bootstrapMessage);
+		        showGate(bootstrapMessage, ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: bootstrapDecision.reason || 'bootstrap_blocked' });
 	        return false;
 	      }
 	      if (!localPersisted) setSyncStatus('online_only_safe', 'Este dispositivo trabajará directamente con la nube mientras tenga internet.');
@@ -1950,7 +2179,7 @@
 	        AUTH_APPROVED = false;
 	        PULL_COMPLETE = false;
 	        tenantGuard.block();
-	        showGate('No pudimos preparar el negocio de forma segura. No se modificó información existente.');
+		        showGate('No pudimos preparar el negocio de forma segura. No se modificó información existente.', ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: 'bootstrap_failed' });
 	        return false;
 	      }
 	      INITIAL_TENANT_SEED_REQUIRED = false;
@@ -1959,16 +2188,19 @@
 	  const userName = (window.click360User && (window.click360User.name || window.click360User.email)) || 'Usuario';
 		  const newSession = { username: userName, role: userRole };
 			  if(window.click360SetSession) window.click360SetSession(newSession);
-			  unlockApp();
-			  clearPublicAuthIntent();
+				  if (!unlockApp()) return false;
+				  clearPublicAuthIntent();
 		  recordTelemetryOnce(`login:${expectedEpoch}:${user.uid}`, 'login', { mode: window.click360AccessState?.mode || userRole });
 		  recordTelemetryOnce(`bootstrap:${expectedEpoch}:${ACTIVE_CONTEXT.tenantKey}`, 'bootstrap', { mode: ONLINE_ONLY_SAFE ? 'online_only_safe' : 'ready' });
 		  if (ONLINE_ONLY_SAFE) setSyncStatus('online_only_safe', 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion, pero puedes continuar trabajando con internet.');
 	    window.click360FlushPendingProfile?.().catch(() => {});
-	    listenRemoteChanges();
-    if (window.click360User?.access?.source === 'accountAccess') listenAccountAccess(user, expectedEpoch);
-    else listenUserApproval(user, expectedEpoch);
-    return true;
+		    listenRemoteChanges();
+	    if (window.click360User?.access?.source === 'accountAccess') listenAccountAccess(user, expectedEpoch);
+	    else listenUserApproval(user, expectedEpoch);
+	    if (window.click360User?.access?.source === 'accountAccess') {
+	      touchAccountAccessActivity(user, expectedEpoch).catch(() => {});
+	    }
+	    return true;
   }
 
   let HAS_BOOTED = false;
@@ -1983,81 +2215,113 @@
       console.warn("Persistencia local no disponible:", e.message);
     }
 
-    showGate("Verificando acceso Google...");
+	    showGate("Verificando acceso Google...", ACCESS_UI_STATES.LOADING);
 
 
-    auth.onAuthStateChanged(async user => {
+	    auth.onAuthStateChanged(async user => {
 	      const epoch = AUTH_EPOCH + 1;
 	      deactivateActiveAccount();
-      if (!user) {
-        showGate("Inicia sesión con Google para continuar.");
-        return;
-      }
-
-	      const publicIntent = readPublicAuthIntent();
-	      showGate("Verificando acceso en CLICK 360...");
-	      setSyncStatus(navigator.onLine ? "checking" : "offline", navigator.onLine ? "Verificando aprobación." : "Sin internet. Buscando aprobación guardada.");
-	      try { await acceptInvitationFromUrl(user, epoch); }
-	      catch (error) {
-	        if (!isCurrentAuthEpoch(user, epoch)) return;
-	        showGate(`No se pudo aceptar la invitacion: ${escapeHtml(error.message)}`);
+	      if (!user) {
+	        showGate("Inicia sesión con Google para continuar.", ACCESS_UI_STATES.UNAUTHENTICATED);
 	        return;
 	      }
-	      const approved = await isApprovedUser(user, epoch);
-	      if (epoch !== AUTH_EPOCH || auth.currentUser?.uid !== user.uid) return;
 
-	      if (!approved) {
-	        if (window.click360User && ["blocked", "revoked"].includes(window.click360User.status)) {
-	          showGate(`
-	            Tu cuenta (<b>${escapeHtml(user.email || "sin email")}</b>) ha sido bloqueada o revocada.<br><br>
-	            Por favor, ponte en contacto con el administrador o soporte.
-	          `);
-	          const loginBtn = document.getElementById("c360-google-login");
-	          if (loginBtn) loginBtn.style.display = "none";
-	        } else if (window.click360User && window.click360User.status === "tenant_configuration_invalid") {
-	          showGate("La configuración de esta cuenta no coincide con el tenant seguro. La operación fue bloqueada para proteger los datos; requiere corrección administrativa.");
-	          const loginBtn = document.getElementById("c360-google-login");
-	          if (loginBtn) loginBtn.style.display = "none";
-        } else if (window.click360User?.hasApprovedRecord) {
-          showGate(`
-	            Tu solicitud de acceso (<b>${escapeHtml(user.email || "sin email")}</b>) está <b>pendiente de aprobación</b>.<br><br>
-	            UID de usuario: <code style="background: #222; padding: 4px 8px; border-radius: 4px; color: #ff9f43; font-family: monospace; font-size: 13px; display: inline-block; margin: 4px 0; user-select: all;">${escapeHtml(user.uid)}</code><br><br>
-            Por favor, pídele al administrador que apruebe tu acceso desde la sección "Trabajadores" en su sistema usando tu UID.
-          `);
-          const loginBtn = document.getElementById("c360-google-login");
-          if (loginBtn) {
-            loginBtn.textContent = "Ya me aprobaron (Actualizar)";
-            loginBtn.onclick = async () => {
-              showGate("Verificando aprobación en CLICK 360...");
-	              const activeEpoch = AUTH_EPOCH;
-	              const ok = await isApprovedUser(user, activeEpoch);
-	              if (ok) await enterApprovedApp(user, activeEpoch);
-              else showPending(user);
-            };
-	          }
-        } else {
-	          const account = await resolveAccountAccess(user, epoch, {
-		            allowCreate: window.CLICK360_V16_DOMAIN?.publicIntentAllowsTrialCreation(publicIntent) === true,
-	            intent: publicIntent
-	          });
+	      const publicIntent = readPublicAuthIntent();
+	      showGate("Verificando acceso en CLICK 360...", ACCESS_UI_STATES.AUTHENTICATED_RESOLVING);
+	      setSyncStatus(navigator.onLine ? "checking" : "offline", navigator.onLine ? "Verificando acceso." : "Sin internet. Buscando una aprobación propia y guardada.");
+
+	      // Primary path: an entitlement is resolved by immutable Firebase UID.
+	      const account = await resolveAccountAccess(user, epoch, { allowCreate: false, intent: publicIntent });
+	      if (!isCurrentAuthEpoch(user, epoch)) return;
+	      if (account.status === 'ready' && account.state?.allowed) {
+	        clearInvitationIntent({ cleanUrl: true });
+	        if (!applyAccountAccessIdentity(user, account, epoch)) {
+	          showGate('La identidad de esta cuenta no coincide con su negocio. No se cargó ni modificó información.', ACCESS_UI_STATES.BLOCKED, { reason: 'account_identity_invalid' });
+	          return;
+	        }
+	        await enterApprovedApp(user, epoch);
+	        return;
+	      }
+	      if (account.status === 'identity_invalid') {
+	        clearInvitationIntent({ cleanUrl: true });
+	        showGate('La identidad de esta cuenta no coincide con su negocio. No se cargó ni modificó información.', ACCESS_UI_STATES.BLOCKED, { reason: 'account_identity_invalid' });
+	        return;
+	      }
+	      if (account.status === 'invalid_entitlement') {
+	        clearInvitationIntent({ cleanUrl: true });
+	        showGate('Tu acceso todavía no está activo. Tus datos permanecen protegidos; contacta a CLICK 360 para revisar el plan.', ACCESS_UI_STATES.PENDING, { reason: 'invalid_entitlement' });
+	        return;
+	      }
+
+	      // Compatibility path for founders and existing workers.
+	      let approved = await isApprovedUser(user, epoch);
+	      if (!isCurrentAuthEpoch(user, epoch)) return;
+	      if (approved) {
+	        clearInvitationIntent({ cleanUrl: true });
+	        await enterApprovedApp(user, epoch);
+	        return;
+	      }
+	      if (window.click360User && ['blocked', 'revoked'].includes(window.click360User.status)) {
+	        clearInvitationIntent({ cleanUrl: true });
+	        showGate(`Tu cuenta (<b>${escapeHtml(user.email || 'sin email')}</b>) está bloqueada o revocada.<br><br>Contacta al administrador o a soporte.`, ACCESS_UI_STATES.BLOCKED, { reason: window.click360User.status });
+	        return;
+	      }
+	      if (window.click360User?.status === 'tenant_configuration_invalid') {
+	        clearInvitationIntent({ cleanUrl: true });
+	        showGate('La configuración de esta cuenta no coincide con el tenant seguro. No se cargó ni modificó información.', ACCESS_UI_STATES.BLOCKED, { reason: 'tenant_configuration_invalid' });
+	        return;
+	      }
+
+	      // An invitation is considered only when its form was explicitly submitted
+	      // in this browser session. Stale URL parameters can never pre-empt login.
+	      let invitationWarning = '';
+	      if (publicIntent === 'invite' && readExplicitInvitationIntent()) {
+	        try {
+	          const invitation = await acceptInvitationFromUrl(user, epoch);
 	          if (!isCurrentAuthEpoch(user, epoch)) return;
-	          if (account?.state?.allowed && applyAccountAccessIdentity(user, account, epoch)) {
-	            await enterApprovedApp(user, epoch);
-	            return;
+	          if (invitation.accepted) {
+	            approved = await isApprovedUser(user, epoch);
+	            if (approved && isCurrentAuthEpoch(user, epoch)) {
+	              await enterApprovedApp(user, epoch);
+	              return;
+	            }
+	            invitationWarning = 'La invitación se aceptó, pero no pudimos terminar de abrir el negocio. Intenta iniciar sesión nuevamente.';
 	          }
-	          if (publicIntent === 'login') {
-	            showGate('No encontramos una cuenta activa con este Google. Usa Probar gratis, Registrarse o cambia de cuenta.');
-	          } else if (publicIntent === 'invite') {
-	            showGate('No pudimos validar la invitación. Revisa el enlace o solicita uno nuevo al propietario del negocio.');
-	          } else {
-	            showPending(user, account?.state?.mode || 'pending');
-	          }
-        }
-        return;
-      }
+	        } catch (error) {
+	          console.warn('Invitación rechazada:', error.code || error.message);
+	          invitationWarning = 'La invitación no es válida o ya no está disponible. Puedes iniciar sesión normalmente, registrarte o solicitar una nueva.';
+	          clearInvitationIntent({ cleanUrl: true });
+	          setPublicAuthIntent('login');
+	        }
+	      } else if (currentInvitationParams().flow === 'invite') {
+	        clearInvitationIntent({ cleanUrl: true });
+	        setPublicAuthIntent('login');
+	      }
 
-      await enterApprovedApp(user, epoch);
-    });
+	      if (window.CLICK360_V16_DOMAIN?.publicIntentAllowsTrialCreation(publicIntent) === true) {
+	        const createdAccount = await resolveAccountAccess(user, epoch, { allowCreate: true, intent: publicIntent });
+	        if (!isCurrentAuthEpoch(user, epoch)) return;
+	        if (createdAccount.status === 'ready' && createdAccount.state?.allowed && applyAccountAccessIdentity(user, createdAccount, epoch)) {
+	          await enterApprovedApp(user, epoch);
+	          return;
+	        }
+	        showGate('No pudimos preparar la prueba en este momento. No se creó ni modificó ningún negocio; revisa tu conexión e inténtalo otra vez.', ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: createdAccount.status || 'trial_bootstrap_failed' });
+	        return;
+	      }
+
+	      if (invitationWarning) {
+	        showGate(invitationWarning, ACCESS_UI_STATES.INVALID_INVITATION, { reason: 'invalid_invitation' });
+	      } else if (window.click360User?.hasApprovedRecord) {
+	        showPending(user);
+	      } else if (['network_error', 'permission_denied', 'recoverable_error'].includes(account.status)) {
+	        const message = account.status === 'permission_denied'
+	          ? 'No pudimos verificar el permiso de esta cuenta. No se cargaron datos; vuelve a intentarlo o cambia de cuenta.'
+	          : 'No pudimos verificar la cuenta por un problema temporal de conexión. Vuelve a intentarlo sin crear datos nuevos.';
+	        showGate(message, ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: account.status, errorCode: account.errorCode || '' });
+	      } else {
+	        showGate('No encontramos una cuenta activa con este Google. Puedes probar gratis, registrarte o cambiar de cuenta.', ACCESS_UI_STATES.AUTHENTICATED_NO_ACCESS, { reason: 'account_not_found' });
+	      }
+	    });
   }
 
   boot();

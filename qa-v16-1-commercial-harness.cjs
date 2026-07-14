@@ -9,7 +9,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const css = fs.readFileSync('styles.css', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
-assert.equal(domain.APP_VERSION, '16.1.1');
+assert.equal(domain.APP_VERSION, '16.1.2');
 assert.deepEqual(domain.initialTenantBootstrapDecision({ localPersisted: true, online: true }), { allowed: true, mode: 'local_and_cloud' });
 assert.deepEqual(domain.initialTenantBootstrapDecision({ localPersisted: false, onlineOnlySafe: true, online: true }), { allowed: true, mode: 'cloud_only' });
 assert.equal(domain.initialTenantBootstrapDecision({ localPersisted: false, onlineOnlySafe: true, online: false }).allowed, false);
@@ -30,7 +30,8 @@ assert.match(domain.formatBusinessClock('2026-07-14T19:30:00Z', 'es-EC', 'Americ
 assert(firebase.includes("onclick = () => beginPublicAuth('login')"));
 assert(firebase.includes("onclick = () => beginPublicAuth('trial')"));
 assert(firebase.includes("onclick = () => beginPublicAuth('register')"));
-assert(firebase.includes("allowCreate: window.CLICK360_V16_DOMAIN?.publicIntentAllowsTrialCreation(publicIntent) === true"));
+assert(firebase.includes("publicIntentAllowsTrialCreation(publicIntent) === true"));
+assert(firebase.includes("resolveAccountAccess(user, epoch, { allowCreate: false") && firebase.includes("resolveAccountAccess(user, epoch, { allowCreate: true"));
 assert(firebase.includes("source: 'self_service'"));
 assert(!firebase.includes('self_service_register') && !firebase.includes('self_service_trial'));
 assert(firebase.includes('if (auth.currentUser) await auth.signOut()'));
@@ -53,9 +54,9 @@ assert(html.includes('<title>CLICK 360 | Inventario, ventas y caja para tu negoc
 assert(html.includes('FAQPage') && html.includes('SoftwareApplication'));
 assert.equal((html.match(/"@type": "Question"/g) || []).length, 9);
 assert(!html.includes('user-scalable=no'));
-assert(html.includes('vendor/lucide.min.js?v=mvp-launch-v16-1-1-r1'));
+assert(html.includes('vendor/lucide.min.js?v=mvp-launch-v16-1-2-r1'));
 assert(css.includes('@media(max-width:340px)') && css.includes('@media(max-width:430px)'));
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-1-1-r1'"));
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-1-2-r1'"));
 assert(worker.includes("'./vendor/lucide.min.js'"));
 assert(fs.existsSync('robots.txt') && fs.existsSync('sitemap.xml'));
 

@@ -123,7 +123,10 @@
       `CLICK360_TENANT:${context.tenantKey}:LEGACY_MIGRATION_REQUIRED`,
       `CLICK360_TENANT:${context.tenantKey}:CORRUPT`
     ]);
-    const namespacedPrefix = `CLICK360:V10:QUARANTINE:${context.authUid}:${context.tenantKey}:`;
+    const namespacedPrefixes = [
+      `CLICK360:V10:QUARANTINE:${context.authUid}:${context.tenantKey}:`,
+      `CLICK360:V16:QUARANTINE:${context.authUid}:${context.tenantKey}:`
+    ];
     const oldPrefixes = ['CLICK360_QUARANTINED:', 'CLICK360_QUARANTINE:', 'CLICK360_LEGACY_QUARANTINED:'];
     const keys = [];
     for (let index = 0; index < Number(storage.length || 0); index += 1) {
@@ -131,7 +134,7 @@
       if (key) keys.push(key);
     }
     keys.forEach((key) => {
-      if (key.startsWith(namespacedPrefix)) {
+      if (namespacedPrefixes.some((prefix) => key.startsWith(prefix))) {
         removable.add(key);
         return;
       }
