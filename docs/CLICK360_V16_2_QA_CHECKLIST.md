@@ -163,12 +163,13 @@ Usar exclusivamente tenant/fixtures de QA.
 
 ## 12. Cierre Git, CI y publicación
 
-- [ ] Revisar `git diff` y confirmar ausencia de archivos privados o cambios fuera de alcance.
-- [ ] Commit de implementación creado y firmado/identificado.
-- [ ] Commit de documentación creado.
-- [ ] Rama subida a GitHub.
-- [ ] PR creado y revisado.
-- [ ] CI verde sobre el SHA final, no sobre uno anterior.
+- [x] Revisar `git diff` y confirmar ausencia de archivos privados o cambios fuera de alcance.
+- [x] Commit de implementación creado e identificado: `b1df664`.
+- [x] Documentación base incluida en `b1df664`; evidencia operativa actualizada en la misma rama.
+- [x] Rama `release/v16-2-commercial-mvp` subida a GitHub.
+- [x] PR Draft creado: `https://github.com/roddysmith23-stack/CLICK-360/pull/13`.
+- [ ] PR revisado y aprobado.
+- [x] CI del commit de implementación verde: run `29405740605`.
 - [ ] Merge a `main` autorizado y completado.
 - [ ] Reglas Firestore desplegadas desde el mismo SHA aprobado.
 - [ ] Firebase Hosting publicado desde el build allowlist del mismo SHA.
@@ -181,10 +182,10 @@ Usar exclusivamente tenant/fixtures de QA.
 
 | Evidencia | Resultado |
 | --- | --- |
-| Commit implementación | `[PENDING: SHA]` |
-| Commit documentación | `[PENDING: SHA]` |
-| PR | `[PENDING: URL]` |
-| CI | `[PENDING: URL + SHA]` |
+| Commit implementación | `b1df664` |
+| Commit documentación | `b1df664` + cierre de evidencia en la misma rama |
+| PR | `https://github.com/roddysmith23-stack/CLICK-360/pull/13` (Draft) |
+| CI | `PASS: https://github.com/roddysmith23-stack/CLICK-360/actions/runs/29405740605 @ b1df664` |
 | QA local | `PASS 2026-07-15: npm run qa` |
 | Rules emulator | `PASS 2026-07-15: npm run qa:rules, sin límite de expresiones` |
 | Matriz navegadores | `PASS shell público: Chromium, Chrome Android, WebKit iPhone y Firefox; capturas en output/playwright (no publicadas)` |

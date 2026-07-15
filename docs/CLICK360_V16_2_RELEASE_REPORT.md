@@ -95,22 +95,22 @@ No cambiar `PENDING` a `PASS` sin enlace, log o evidencia reproducible.
 | A -> B -> A y dos pestañas | PASS HARNESS | 10 ciclos, dos pestañas, teléfono/reconexión y aislamiento cubiertos por harness; repetición autenticada real pendiente |
 | Smoke autenticado Shary/fundadores | PENDING | `[añadir fecha y resultado, sin operaciones reales]` |
 | `demo-click360` intacto y bloqueado | PASS READ-ONLY | `artifacts/firebase-audit-final-release/CLICK360_FIREBASE_AUDIT.md`: 3 CLEAN_V10, demo CROSS_TENANT_SUSPECT |
-| Revisión del PR | PENDING | `[añadir aprobación]` |
-| CI de la revisión final | PENDING | `[añadir URL del run]` |
+| Revisión del PR | OPEN DRAFT | [PR #13](https://github.com/roddysmith23-stack/CLICK-360/pull/13); requiere aprobación y smoke autenticado |
+| CI del commit de implementación | PASS | [run 29405740605](https://github.com/roddysmith23-stack/CLICK-360/actions/runs/29405740605), SHA `b1df664` |
 | Firestore Rules desplegadas | BLOCKED | No desplegar antes del GO final |
 | Firebase Hosting publicado | BLOCKED | No publicar antes del GO final |
 | Smoke público posterior | BLOCKED | Depende de publicación autorizada |
 
 ## Registro de publicación
 
-- Commit de implementación: `[PENDING: SHA]`
-- Commit de documentación: `[PENDING: SHA]`
-- Pull Request: `[PENDING: URL]`
-- CI: `[PENDING: URL]`
-- Commit de merge: `[PENDING: SHA]`
-- Firebase Rules release: `[PENDING: ID/HASH]`
-- Firebase Hosting release: `[PENDING: ID/HASH]`
-- URL principal con cache busting: `[PENDING: https://click-360.web.app/?v=mvp-launch-v16-2-r1]`
+- Commit de implementación: `b1df664`
+- Commit de documentación base: `b1df664` (la evidencia operativa se completa en un commit posterior de la misma rama)
+- Pull Request: `https://github.com/roddysmith23-stack/CLICK-360/pull/13` (Draft)
+- CI de implementación: `https://github.com/roddysmith23-stack/CLICK-360/actions/runs/29405740605` (PASS)
+- Commit de merge: `BLOCKED - no autorizado`
+- Firebase Rules release: `BLOCKED - no desplegado`
+- Firebase Hosting release: `BLOCKED - no publicado`
+- URL principal con cache busting: `PENDIENTE DE PUBLICACIÓN: https://click-360.web.app/?v=mvp-launch-v16-2-r1`
 - URL GitHub Pages de respaldo: `[PENDING: URL]`
 - Smoke público: `[PENDING: fecha, navegador y resultado]`
 
