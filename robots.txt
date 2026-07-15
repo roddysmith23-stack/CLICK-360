@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://roddysmith23-stack.github.io/CLICK-360/sitemap.xml
+Sitemap: https://click-360.web.app/sitemap.xml

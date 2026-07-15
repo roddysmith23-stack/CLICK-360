@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '16.1.2';
+  const APP_VERSION = '16.2';
   const TERMS_VERSION = '2026-07-14';
   const TRIAL_DAYS = 7;
   const DAY_MS = 24 * 60 * 60 * 1000;
@@ -34,10 +34,21 @@
     return 'base';
   }
 
+  function normalizeEpochMs(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return 0;
+    if (number < 100_000_000_000) return Math.round(number * 1000);
+    if (number > 100_000_000_000_000) return Math.round(number / 1000);
+    return Math.round(number);
+  }
+
   function timestampMs(value) {
-    if (typeof value?.toMillis === 'function') return value.toMillis();
-    if (Number.isFinite(Number(value?.seconds))) return Number(value.seconds) * 1000;
-    if (Number.isFinite(Number(value))) return Number(value);
+    if (typeof value?.toMillis === 'function') return normalizeEpochMs(value.toMillis());
+    if (Number.isFinite(Number(value?.seconds))) {
+      const nanoseconds = Number(value?.nanoseconds || 0);
+      return normalizeEpochMs(Number(value.seconds) * 1000 + nanoseconds / 1_000_000);
+    }
+    if (Number.isFinite(Number(value))) return normalizeEpochMs(value);
     const parsed = Date.parse(String(value || ''));
     return Number.isFinite(parsed) ? parsed : 0;
   }
@@ -47,8 +58,7 @@
     const plan = normalizePlan(data.planCode || data.plan);
     const serverNow = timestampMs(serverNowMs || data.lastSeenAt || data.serverNow);
     const trialStartedAtMs = timestampMs(data.trialStartedAt);
-    const trialDays = Math.max(1, Math.min(30, Number(data.trialDays || TRIAL_DAYS)));
-    const trialEndsAtMs = timestampMs(data.trialEndsAt) || (trialStartedAtMs ? trialStartedAtMs + trialDays * DAY_MS : 0);
+    const trialEndsAtMs = trialStartedAtMs ? trialStartedAtMs + TRIAL_DAYS * DAY_MS : 0;
     const expiresAtMs = timestampMs(data.expiresAt);
     const lifetime = data.lifetime === true || rawStatus === 'lifetime' || plan === 'lifetime';
     if (['founder'].includes(rawStatus) || plan === 'founder') {
@@ -71,6 +81,65 @@
     }
     if (rawStatus === 'member') return { allowed: true, readOnly: false, mode: 'member', plan, serverNowMs: serverNow, trialEndsAtMs, expiresAtMs };
     return { allowed: false, readOnly: true, mode: rawStatus || 'pending_activation', plan, serverNowMs: serverNow, trialEndsAtMs, expiresAtMs };
+  }
+
+  function accessClockNow(state = {}, clientNowMs = Date.now()) {
+    const validatedServerNowMs = timestampMs(state.serverNowMs);
+    const validatedAtClientMs = timestampMs(state.validatedAtClientMs);
+    const clientNow = timestampMs(clientNowMs);
+    if (!validatedServerNowMs) return 0;
+    if (!validatedAtClientMs || !clientNow) return validatedServerNowMs;
+    return validatedServerNowMs + Math.max(0, clientNow - validatedAtClientMs);
+  }
+
+  function reanchorTrustedClock(previous = {}, nextServerNowMs = 0, clientNowMs = Date.now()) {
+    const clientNow = timestampMs(clientNowMs);
+    const previousNow = accessClockNow(previous, clientNow);
+    const nextServerNow = timestampMs(nextServerNowMs);
+    return {
+      serverNowMs: Math.max(previousNow, nextServerNow),
+      validatedAtClientMs: clientNow
+    };
+  }
+
+  function createOperationGate() {
+    const inFlight = new Map();
+    return Object.freeze({
+      begin(key, snapshot = null) {
+        const normalizedKey = String(key || '');
+        if (!normalizedKey) return { acquired: false, snapshot: null, token: null };
+        const current = inFlight.get(normalizedKey);
+        if (current) return { acquired: false, snapshot: current.snapshot, token: null };
+        const token = Symbol(normalizedKey);
+        inFlight.set(normalizedKey, { token, snapshot });
+        return { acquired: true, snapshot, token };
+      },
+      end(key, token) {
+        const normalizedKey = String(key || '');
+        const current = inFlight.get(normalizedKey);
+        if (!current || current.token !== token) return false;
+        inFlight.delete(normalizedKey);
+        return true;
+      },
+      clear() { inFlight.clear(); },
+      size() { return inFlight.size; }
+    });
+  }
+
+  function offlineRecoveryDecision({ pendingRemoteSync = false, baseRevision = 0, remoteRevision = 0, localHash = '', remoteHash = '' } = {}) {
+    if (!pendingRemoteSync) return { action: 'apply_remote' };
+    if (localHash && remoteHash && localHash === remoteHash) return { action: 'already_synced' };
+    if (Number(baseRevision || 0) !== Number(remoteRevision || 0)) return { action: 'conflict' };
+    return { action: 'push_local' };
+  }
+
+  function trialRemaining(state = {}, clientNowMs = Date.now()) {
+    const endsAtMs = timestampMs(state.trialEndsAtMs);
+    const nowMs = accessClockNow(state, clientNowMs);
+    const totalMs = Math.max(0, endsAtMs - nowMs);
+    const days = Math.floor(totalMs / DAY_MS);
+    const hours = Math.floor((totalMs % DAY_MS) / (60 * 60 * 1000));
+    return { totalMs, days, hours, endsAtMs, expired: !endsAtMs || !nowMs || totalMs <= 0 };
   }
 
   function planLimits(plan) {
@@ -116,8 +185,9 @@
     const legacyRate = Number(value.iva || 0);
     const rate = Math.max(0, Math.min(100, Number(value.rate ?? legacyRate) || 0));
     const priceMode = ['included', 'excluded'].includes(value.priceMode) ? value.priceMode : 'included';
+    const hasExplicitEnabled = Object.prototype.hasOwnProperty.call(value, 'enabled');
     return {
-      enabled: value.enabled === true || rate > 0,
+      enabled: hasExplicitEnabled ? value.enabled === true : rate > 0,
       rate,
       priceMode,
       showLabel: value.showLabel !== false,
@@ -166,7 +236,8 @@
     const subtotal = roundMoney(linesWithTax.reduce((sum, line) => sum + line.base, 0));
     const tax = roundMoney(linesWithTax.reduce((sum, line) => sum + line.tax, 0));
     const total = roundMoney(linesWithTax.reduce((sum, line) => sum + line.total, 0));
-    return { lines: linesWithTax, gross, discount, subtotal, tax, total, config };
+    const displaySubtotal = roundMoney(subtotal + discount);
+    return { lines: linesWithTax, gross, discount, subtotal, displaySubtotal, tax, total, config };
   }
 
   function taxLegend(product = {}, configValue = {}) {
@@ -223,8 +294,14 @@
     PLAN_CATALOG,
     roundMoney,
     normalizePlan,
+    normalizeEpochMs,
     timestampMs,
     evaluateEntitlement,
+    accessClockNow,
+    reanchorTrustedClock,
+    createOperationGate,
+    offlineRecoveryDecision,
+    trialRemaining,
     planLimits,
     initialTenantBootstrapDecision,
     publicIntentAllowsTrialCreation,

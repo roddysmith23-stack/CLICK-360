@@ -10,6 +10,21 @@ const assert = require('assert');
   const plan = core.toV10Document(clear, { ownerId: 'owner-b', businessId: 'owner-b' });
   assert(core.equalCounts(plan.beforeCounts, plan.afterCounts), 'dry-run counts match');
   assert(plan.logicalHash, 'backup plan has logical hash');
+
+  const richState = JSON.parse(clear.localStorage.click360_mvp_qa_final_state_v1);
+  Object.assign(richState, {
+    layaways: [{ id: 'layaway-1' }], cashSessions: [{ id: 'cash-1' }], notifications: [{ id: 'notice-1' }],
+    legalAcceptances: [{ id: 'legal-1' }], deletedProducts: [{ id: 'deleted-1' }], auditLogs: [{ id: 'audit-1' }]
+  });
+  Object.assign(richState.settings, {
+    customers: [{ id: 'customer-1' }], reminders: [{ id: 'reminder-1' }], activationRequests: [{ id: 'request-1' }],
+    userProfiles: { 'owner-b': { name: 'Owner B' } }, onboarding: { completed: true }, policies: { returns: 'custom' }
+  });
+  const richLegacy = { ...clear, localStorage: { click360_mvp_qa_final_state_v1: JSON.stringify(richState) } };
+  const richPlan = core.toV10Document(richLegacy, { ownerId: 'owner-b', businessId: 'owner-b' });
+  assert(core.equalCounts(richPlan.beforeCounts, richPlan.afterCounts), 'all commercial module counts survive migration');
+  assert.deepStrictEqual(richPlan.payload.data.settings.userProfiles, richState.settings.userProfiles, 'profile metadata survives migration');
+  assert.deepStrictEqual(richPlan.payload.data.settings.policies, richState.settings.policies, 'business policies survive migration');
   assert.notStrictEqual(core.classifyTenant(ambiguous, fixture.approvedUsers, fixture.authUsers).category, 'LEGACY_CLEAR_OWNER', 'ambiguous tenant is blocked');
   const wrongPath = { ...clear, ownerId: 'owner-a' };
   assert.notStrictEqual(core.classifyTenant(wrongPath, fixture.approvedUsers, fixture.authUsers).category, 'LEGACY_CLEAR_OWNER', 'legacy owner/path mismatch is blocked');

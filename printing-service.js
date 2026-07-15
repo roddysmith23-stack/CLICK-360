@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
 
-  const VERSION = '16.1.2';
+  const VERSION = '16.2';
   const STATUS = Object.freeze({
     DISCONNECTED: 'disconnected',
     READY: 'ready',

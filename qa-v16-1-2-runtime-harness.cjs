@@ -10,7 +10,7 @@ const worker = fs.readFileSync('service-worker.js', 'utf8');
 const manifest = fs.readFileSync('manifest.webmanifest', 'utf8');
 const styles = fs.readFileSync('styles.css', 'utf8');
 const hosting = JSON.parse(fs.readFileSync('firebase.json', 'utf8'));
-const assetVersion = 'mvp-launch-v16-1-2-r1';
+const assetVersion = 'mvp-launch-v16-2-r1';
 
 class StorageMock {
   constructor() { this.values = new Map(); this.failWrites = false; }
@@ -74,7 +74,7 @@ function runtimeContext(userAgent) {
 
 const firefoxQa = runtimeContext('Mozilla/5.0 Firefox/128.0');
 assert.equal(firefoxQa.context.__firefox__, true, 'Firefox is detected without reading an undeclared global');
-assert.equal(firefoxQa.context.CLICK360_RUNTIME_GUARD.APP_VERSION, '16.1.2');
+assert.equal(firefoxQa.context.CLICK360_RUNTIME_GUARD.APP_VERSION, '16.2');
 assert.equal(firefoxQa.context.CLICK360_RUNTIME_GUARD.browser.name, 'Firefox');
 
 const errorListener = firefoxQa.listeners.get('error')[0];
@@ -91,7 +91,7 @@ assert.equal(reports[0].filename, 'safari-web-extension://extension/content.js')
 assert.equal(reports[0].sourceKind, 'external_or_injected');
 assert.equal(reports[0].line, 1);
 assert.equal(reports[0].browser.name, 'Firefox');
-assert.equal(reports[0].appVersion, '16.1.2');
+assert.equal(reports[0].appVersion, '16.2');
 assert(!reports[0].pageUrl.includes('secret') && !reports[0].stack.includes('secret'), 'tokens are removed from saved reports');
 assert(!firefoxQa.toast.children.map((node) => node.textContent || '').join(' ').includes('__firefox__'), 'the customer never sees raw technical errors');
 
@@ -121,8 +121,8 @@ for (const file of ['app.js', 'firebase-service.js', 'p0-tenant-guard.js', 'v16-
 }
 
 assert(!app.includes('window.onerror'), 'legacy raw-error handler was removed');
-assert(app.includes('class="versionBadge">V16.1.2</small>') && app.includes('class="brandSlogan">Control total de tu negocio</small>'));
-assert(firebase.includes('<small>V16.1.2</small>'));
+assert(app.includes('class="versionBadge">V16.2</small>') && app.includes('class="brandSlogan">Control total de tu negocio</small>'));
+assert(firebase.includes('<small>V16.2</small>'));
 assert(app.includes('CLICK360_RUNTIME_GUARD?.setContext(activeTenantContext)'));
 assert(app.includes('CLICK360_RUNTIME_GUARD?.clearContext()'));
 assert(html.indexOf(`runtime-guard.js?v=${assetVersion}`) < html.indexOf('vendor/qrcode-generator.js'), 'runtime guard loads before all application libraries');
@@ -143,6 +143,6 @@ assert(firebase.includes("initialTenantBootstrapDecision({"));
 assert(firebase.includes("pushLocalToFirestore('initial_tenant_seed')"));
 assert(!firebase.includes('STATE_DOC.set('), 'ONLINE_ONLY_SAFE bootstrap cannot overwrite a remote document');
 
-console.log('PASS V16.1.2 runtime: safe Firefox detection, sanitized reports, tenant namespaces and friendly UX');
-console.log('PASS V16.1.2 cache: all scripts versioned, old cache removed and no unresolved first-party build constant');
-console.log('PASS V16.1.2 Shary contract: ONLINE_ONLY_SAFE uses transactional V10 bootstrap without STATE_DOC.set');
+console.log('PASS V16.2 runtime: safe Firefox detection, sanitized reports, tenant namespaces and friendly UX');
+console.log('PASS V16.2 cache: all scripts versioned, old cache removed and no unresolved first-party build constant');
+console.log('PASS V16.2 Shary contract: ONLINE_ONLY_SAFE uses transactional V10 bootstrap without STATE_DOC.set');

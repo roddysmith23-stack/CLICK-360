@@ -25,7 +25,16 @@ export function domainCounts(state = {}) {
     workers: Array.isArray(settings.workers) ? settings.workers.length : 0,
     labelTemplates: Array.isArray(settings.labelTemplates) ? settings.labelTemplates.length : 0,
     deletedProducts: Array.isArray(state.deletedProducts) ? state.deletedProducts.length : 0,
-    auditLogs: Array.isArray(state.auditLogs) ? state.auditLogs.length : 0
+    auditLogs: Array.isArray(state.auditLogs) ? state.auditLogs.length : 0,
+    layaways: Array.isArray(state.layaways) ? state.layaways.length : 0,
+    cashSessions: Array.isArray(state.cashSessions) ? state.cashSessions.length : 0,
+    notifications: Array.isArray(state.notifications) ? state.notifications.length : 0,
+    legalAcceptances: Array.isArray(state.legalAcceptances) ? state.legalAcceptances.length : 0,
+    customers: Array.isArray(settings.customers) ? settings.customers.length : 0,
+    reminders: Array.isArray(settings.reminders) ? settings.reminders.length : 0,
+    activationRequests: Array.isArray(settings.activationRequests) ? settings.activationRequests.length : 0,
+    userProfiles: settings.userProfiles && typeof settings.userProfiles === 'object' && !Array.isArray(settings.userProfiles)
+      ? Object.keys(settings.userProfiles).length : 0
   };
 }
 
@@ -43,12 +52,17 @@ export function validLegacyStateShape(state) {
   if (!state || typeof state !== 'object' || Array.isArray(state)) return false;
   if (!Array.isArray(state.businesses) || state.businesses.length === 0) return false;
   if (!Array.isArray(state.products) || !Array.isArray(state.sales) || !Array.isArray(state.movements)) return false;
-  for (const key of ['invoices', 'dailyReports', 'deletedProducts', 'auditLogs']) {
+  for (const key of ['invoices', 'dailyReports', 'deletedProducts', 'auditLogs', 'layaways', 'cashSessions', 'notifications', 'legalAcceptances']) {
     if (state[key] != null && !Array.isArray(state[key])) return false;
   }
   if (state.settings != null && (typeof state.settings !== 'object' || Array.isArray(state.settings))) return false;
   if (state.settings?.workers != null && !Array.isArray(state.settings.workers)) return false;
   if (state.settings?.labelTemplates != null && !Array.isArray(state.settings.labelTemplates)) return false;
+  for (const key of ['customers', 'reminders', 'activationRequests']) {
+    if (state.settings?.[key] != null && !Array.isArray(state.settings[key])) return false;
+  }
+  if (state.settings?.userProfiles != null
+    && (typeof state.settings.userProfiles !== 'object' || Array.isArray(state.settings.userProfiles))) return false;
   return true;
 }
 
@@ -138,8 +152,20 @@ export function toV10Document(legacyDocument, context) {
       businesses: state.businesses || [], activeBusinessId: state.activeBusinessId || null,
       products: state.products || [], sales: state.sales || [], movements: state.movements || [],
       invoices: state.invoices || [], dailyReports: state.dailyReports || [], deletedProducts: state.deletedProducts || [],
-      auditLogs: state.auditLogs || [],
-      settings: { workers: state.settings?.workers || [], labelTemplates: state.settings?.labelTemplates || [] },
+      auditLogs: state.auditLogs || [], layaways: state.layaways || [], cashSessions: state.cashSessions || [],
+      notifications: state.notifications || [], legalAcceptances: state.legalAcceptances || [],
+      settings: {
+        ...(state.settings || {}),
+        workers: state.settings?.workers || [],
+        labelTemplates: state.settings?.labelTemplates || [],
+        customers: state.settings?.customers || [],
+        reminders: state.settings?.reminders || [],
+        activationRequests: state.settings?.activationRequests || [],
+        userProfiles: state.settings?.userProfiles || {},
+        onboarding: state.settings?.onboarding || {},
+        policies: state.settings?.policies || {},
+        legal: state.settings?.legal || {}
+      },
       // Do not invent a clock value during dry-run: the logical migration hash
       // must remain stable until the administrative transaction writes it.
       updatedAtMs: Number(state.updatedAtMs || 0), updatedAt: state.updatedAt || null

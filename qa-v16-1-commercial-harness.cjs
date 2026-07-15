@@ -9,7 +9,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const css = fs.readFileSync('styles.css', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
-assert.equal(domain.APP_VERSION, '16.1.2');
+assert.equal(domain.APP_VERSION, '16.2');
 assert.deepEqual(domain.initialTenantBootstrapDecision({ localPersisted: true, online: true }), { allowed: true, mode: 'local_and_cloud' });
 assert.deepEqual(domain.initialTenantBootstrapDecision({ localPersisted: false, onlineOnlySafe: true, online: true }), { allowed: true, mode: 'cloud_only' });
 assert.equal(domain.initialTenantBootstrapDecision({ localPersisted: false, onlineOnlySafe: true, online: false }).allowed, false);
@@ -54,9 +54,9 @@ assert(html.includes('<title>CLICK 360 | Inventario, ventas y caja para tu negoc
 assert(html.includes('FAQPage') && html.includes('SoftwareApplication'));
 assert.equal((html.match(/"@type": "Question"/g) || []).length, 9);
 assert(!html.includes('user-scalable=no'));
-assert(html.includes('vendor/lucide.min.js?v=mvp-launch-v16-1-2-r1'));
+assert(html.includes('vendor/lucide.min.js?v=mvp-launch-v16-2-r1'));
 assert(css.includes('@media(max-width:340px)') && css.includes('@media(max-width:430px)'));
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-1-2-r1'"));
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-r1'"));
 assert(worker.includes("'./vendor/lucide.min.js'"));
 assert(fs.existsSync('robots.txt') && fs.existsSync('sitemap.xml'));
 

@@ -7,16 +7,18 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-1-2-r1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-r1';
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:';
   const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
   const LEGACY_PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const LEGACY_PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
   const tenantRuntime = window.CLICK360_P0_TENANT_GUARD;
+  const criticalActionGate = window.CLICK360_V16_DOMAIN?.createOperationGate?.();
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
+  const WORKER_TENANT_ACCESS_ENABLED = false;
   const $ = (sel, root=document) => root.querySelector(sel);
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
@@ -43,7 +45,12 @@
   let tenantStateDeferred = false;
   let onboardingPrompted = false;
   let clockTimer = null;
+  let modalReturnFocus = null;
+  let modalKeyHandler = null;
   let storageState = Object.freeze({ mode: 'checking', indexedDbReady: false, localReady: true, tenantKey: null, message: '' });
+  let indexedTenantCacheMeta = null;
+  let lastSavePersistence = null;
+  const onlineOnlyCommitCheckpoints = new Map();
 
   function publishStorageState(next = {}) {
     storageState = Object.freeze({ ...storageState, ...next, tenantKey: activeTenantContext?.tenantKey || next.tenantKey || null });
@@ -52,6 +59,18 @@
     return storageState;
   }
   window.click360GetStorageState = () => ({ ...storageState });
+
+  function localStorageReady(context = activeTenantContext) {
+    if (!context?.authUid || !context?.tenantKey) return false;
+    const key = `CLICK360:V16:STORAGE_PROBE:${context.authUid}:${context.tenantKey}`;
+    try {
+      localStorage.setItem(key, '1');
+      localStorage.removeItem(key);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
@@ -320,81 +339,78 @@ function parseMoney(value) {
       localStorage.setItem(key, JSON.stringify({ source, bytes: Number(bytes || 0), updatedAtMs: Number(state.updatedAtMs || Date.now()), tenantKey: activeTenantContext.tenantKey, ...extra }));
     } catch {}
   }
+  function contextScope(context = activeTenantContext) {
+    return context?.authUid && context?.tenantKey ? `${context.authUid}:${context.tenantKey}` : '';
+  }
+  function commitCheckpointKey(detail = {}) {
+    const scope = detail.authUid && detail.tenantKey ? `${detail.authUid}:${detail.tenantKey}` : '';
+    return scope && detail.operationId ? `${scope}:${detail.operationId}` : '';
+  }
+  function dispatchLocalStateSaved(detail = {}) {
+    if (!activeTenantContext) return;
+    window.dispatchEvent(new CustomEvent('click360-local-state-saved', {
+      detail: {
+        authUid: activeTenantContext.authUid,
+        tenantKey: activeTenantContext.tenantKey,
+        updatedAtMs: Number(state.updatedAtMs || 0),
+        storageMode: storageState.mode,
+        ...detail
+      }
+    }));
+  }
+  function acquireCriticalAction(reason) {
+    const scope = contextScope();
+    const key = scope && reason ? `${scope}:${reason}` : '';
+    if (!key || !criticalActionGate) return { acquired: false, snapshot: null, release() {} };
+    const entry = criticalActionGate.begin(key, cloneState(state));
+    return {
+      acquired: entry.acquired,
+      snapshot: cloneState(entry.snapshot),
+      release() { if (entry.acquired) criticalActionGate.end(key, entry.token); }
+    };
+  }
   function queueIndexedSnapshot(snapshot, metadata = {}) {
     if (!activeTenantContext || !window.CLICK360_V16_STORAGE) return Promise.resolve(false);
     const context = activeTenantContext;
     return window.CLICK360_V16_STORAGE.putSnapshot(context, cloneState(snapshot), metadata).then(() => {
       if (activeTenantContext !== context) return false;
+      indexedTenantCacheMeta = {
+        pendingRemoteSync: metadata.pendingRemoteSync === true,
+        baseRevision: Number(metadata.baseRevision || 0),
+        operationId: String(metadata.operationId || ''),
+        payloadHash: String(metadata.payloadHash || ''),
+        updatedAtMs: Number(snapshot?.updatedAtMs || 0),
+        source: String(metadata.source || 'local_snapshot')
+      };
       publishStorageState({ mode: 'indexeddb_cache', indexedDbReady: true, message: 'Copia sin conexion disponible en este dispositivo.' });
-      writeCacheMeta('indexeddb', stateSizeBytes(snapshot));
+      writeCacheMeta('indexeddb', stateSizeBytes(snapshot), indexedTenantCacheMeta);
       return true;
     }).catch((error) => {
-      if (activeTenantContext === context && navigator.onLine) {
-        publishStorageState({ mode: 'online_only_safe', indexedDbReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
+      if (activeTenantContext === context) {
+        const localFallbackReady = typeof metadata.localPersisted === 'boolean'
+          ? metadata.localPersisted
+          : localStorageReady(context);
+        if (localFallbackReady) {
+          publishStorageState({
+            mode: 'localstorage_cache',
+            indexedDbReady: false,
+            localReady: true,
+            message: 'Copia sin conexión disponible en este dispositivo.'
+          });
+        } else {
+          publishStorageState({
+            mode: navigator.onLine ? 'online_only_safe' : 'unavailable',
+            indexedDbReady: false,
+            localReady: false,
+            message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.'
+          });
+        }
       }
       console.warn('No se pudo guardar snapshot IndexedDB:', error.message);
       return false;
     });
   }
-  function sameValue(left, right) {
-    try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
-  }
-  function listMutationAction(before, after) {
-    const previous = Array.isArray(before) ? before : [];
-    const next = Array.isArray(after) ? after : [];
-    if (sameValue(previous, next)) return 'none';
-    if (next.length > previous.length) return 'create';
-    if (next.length < previous.length) return 'delete';
-    return 'edit';
-  }
-  function workerHasPermission(module, action) {
-    return window.click360User?.permissions?.[module]?.[action] === true
-      || window.click360User?.permissions?.[module]?.manage === true;
-  }
-  function workerMutationAllowed(previous, next) {
-    if (authUser().role === 'owner') return true;
-    if (!previous || !next || !window.click360User?.permissions) return false;
-    if (!sameValue(previous.businesses, next.businesses) || previous.activeBusinessId !== next.activeBusinessId) return false;
-
-    const requireList = (module, key) => {
-      const action = listMutationAction(previous[key], next[key]);
-      return action === 'none' || workerHasPermission(module, action);
-    };
-    if (!requireList('inventory', 'products')) return false;
-    if (listMutationAction(previous.deletedProducts, next.deletedProducts) !== 'none'
-      && !workerHasPermission('inventory', 'delete')) return false;
-    if (!requireList('sales', 'sales') || !requireList('sales', 'layaways')) return false;
-    if (!requireList('suppliers', 'invoices')) return false;
-    const salesChanged = listMutationAction(previous.sales, next.sales) !== 'none'
-      || listMutationAction(previous.layaways, next.layaways) !== 'none';
-    const invoicesChanged = listMutationAction(previous.invoices, next.invoices) !== 'none';
-    if (listMutationAction(previous.movements, next.movements) !== 'none'
-      && !salesChanged && !invoicesChanged && !requireList('cash', 'movements')) return false;
-    if (!requireList('cash', 'dailyReports') || !requireList('cash', 'cashSessions')) return false;
-    if (!requireList('reminders', 'notifications')) return false;
-    if (!sameValue(previous.legalAcceptances, next.legalAcceptances)) return false;
-
-    const beforeSettings = previous.settings || {};
-    const nextSettings = next.settings || {};
-    if (listMutationAction(beforeSettings.labelTemplates, nextSettings.labelTemplates) !== 'none'
-      && !workerHasPermission('inventory', listMutationAction(beforeSettings.labelTemplates, nextSettings.labelTemplates))) return false;
-    if (listMutationAction(beforeSettings.customers, nextSettings.customers) !== 'none'
-      && !workerHasPermission('customers', listMutationAction(beforeSettings.customers, nextSettings.customers))) return false;
-    if (listMutationAction(beforeSettings.reminders, nextSettings.reminders) !== 'none'
-      && !workerHasPermission('reminders', listMutationAction(beforeSettings.reminders, nextSettings.reminders))) return false;
-    for (const ownerOnly of ['workers', 'onboarding', 'activationRequests', 'policies', 'legal']) {
-      if (!sameValue(beforeSettings[ownerOnly], nextSettings[ownerOnly])) return false;
-    }
-
-    const beforeAudit = Array.isArray(previous.auditLogs) ? previous.auditLogs : [];
-    const nextAudit = Array.isArray(next.auditLogs) ? next.auditLogs : [];
-    if (!sameValue(beforeAudit, nextAudit)) {
-      if (nextAudit.length < beforeAudit.length || !sameValue(nextAudit.slice(0, beforeAudit.length), beforeAudit)) return false;
-      if (nextAudit.slice(beforeAudit.length).some((entry) => entry?.userId !== window.click360User?.uid)) return false;
-    }
-    return true;
-  }
-  function save() {
+  function save(options = {}) {
     if (!activeTenantContext || !stateStorageKey()) {
       console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
       return false;
@@ -405,9 +421,10 @@ function parseMoney(value) {
       return false;
     }
     const previousState = cloneState(lastPersistedState);
+    lastSavePersistence = null;
     try {
-      if (!workerMutationAllowed(previousState, state)) {
-        const error = new Error('Tu rol no permite realizar este cambio.');
+      if (!isOwnerUser()) {
+        const error = new Error('El acceso operativo para trabajadores está temporalmente pausado.');
         error.code = 'click360/permission-denied';
         throw error;
       }
@@ -421,20 +438,69 @@ function parseMoney(value) {
         throw error;
       }
       let localPersisted = false;
+      let storageError = null;
       try {
         localStorage.setItem(stateStorageKey(), serialized);
         localPersisted = true;
         writeCacheMeta('localstorage', stateSizeBytes(serialized));
-      } catch (storageError) {
-        if (!navigator.onLine && !storageState.indexedDbReady) throw storageError;
-        publishStorageState({ mode: 'online_only_safe', localReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
+      } catch (error) {
+        storageError = error;
+        if (!navigator.onLine && (!options.allowIndexedDbOffline || !storageState.indexedDbReady)) throw error;
+        publishStorageState(storageState.indexedDbReady
+          ? { mode: 'indexeddb_cache', localReady: false, message: 'La copia sin conexión se guardará en el almacenamiento seguro del dispositivo.' }
+          : { mode: navigator.onLine ? 'online_only_safe' : 'unavailable', localReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
       }
-      rememberPersistedState();
-      queueIndexedSnapshot(state);
-      window.dispatchEvent(new CustomEvent('click360-local-state-saved', {
-        detail: { tenantKey: activeTenantContext.tenantKey, updatedAtMs: state.updatedAtMs, localPersisted, storageMode: storageState.mode }
-      }));
-      if (!localPersisted) toast('Cambio guardado en la nube. El modo sin conexion no esta disponible en este dispositivo.', 'ok');
+      const context = activeTenantContext;
+      const snapshot = cloneState(state);
+      const operationId = String(options.operationId || uid('persist'));
+      const baseRevision = Number(window.click360DebugSyncIdentity?.().revision || 0);
+      const indexedPromise = queueIndexedSnapshot(snapshot, {
+        source: navigator.onLine ? 'local_change' : 'offline_pending',
+        pendingRemoteSync: true,
+        baseRevision,
+        operationId,
+        localPersisted
+      });
+      lastSavePersistence = {
+        context,
+        operationId,
+        updatedAtMs: Number(state.updatedAtMs || 0),
+        previousState,
+        snapshot,
+        localPersisted,
+        indexedPromise,
+        storageError
+      };
+      if (localPersisted) {
+        writeCacheMeta('localstorage', stateSizeBytes(serialized), {
+          pendingRemoteSync: true,
+          baseRevision,
+          operationId,
+          updatedAtMs: Number(state.updatedAtMs || 0)
+        });
+        rememberPersistedState();
+      }
+      if (options.deferSync !== true && localPersisted) {
+        dispatchLocalStateSaved({ operationId, localPersisted, indexedPersisted: false });
+      } else if (options.deferSync !== true && navigator.onLine) {
+        indexedPromise.then((indexedPersisted) => {
+          if (activeTenantContext !== context) return;
+          if (!indexedPersisted) {
+            const checkpoint = {
+              authUid: context.authUid,
+              tenantKey: context.tenantKey,
+              operationId,
+              context,
+              previousState,
+              nextState: snapshot,
+              updatedAtMs: Number(snapshot.updatedAtMs || 0)
+            };
+            onlineOnlyCommitCheckpoints.set(commitCheckpointKey(checkpoint), checkpoint);
+          }
+          dispatchLocalStateSaved({ operationId, localPersisted: false, indexedPersisted });
+        });
+      }
+      if (!localPersisted) toast('Guardando el cambio de forma segura...', 'ok');
       return true;
     } catch(e) {
       console.error(e);
@@ -453,6 +519,78 @@ function parseMoney(value) {
         toast('Error al guardar. Los datos anteriores siguen intactos.', 'err');
       }
       return false;
+    }
+  }
+  function restoreCriticalSnapshot(snapshot, metadata = {}) {
+    if (!snapshot || !activeTenantContext) return false;
+    const restored = normalizeState(cloneState(snapshot));
+    restored.identity = tenantIdentity();
+    state = restored;
+    lastAutoSaveHash = JSON.stringify(state);
+    try {
+      localStorage.setItem(stateStorageKey(), lastAutoSaveHash);
+      writeCacheMeta('localstorage', stateSizeBytes(lastAutoSaveHash));
+    } catch {}
+    rememberPersistedState();
+    queueIndexedSnapshot(state, {
+      source: metadata.source || 'critical_rollback',
+      pendingRemoteSync: metadata.pendingRemoteSync === true,
+      baseRevision: Number(window.click360DebugSyncIdentity?.().revision || 0),
+      operationId: String(metadata.operationId || '')
+    });
+    return true;
+  }
+  async function commitCriticalMutation(previousState, reason, remoteApplied) {
+    const context = activeTenantContext;
+    const actionLock = acquireCriticalAction(reason);
+    if (!actionLock.acquired) {
+      restoreCriticalSnapshot(actionLock.snapshot || previousState, {
+        source: 'duplicate_operation_restore',
+        pendingRemoteSync: true
+      });
+      toast('La operación ya se está procesando. Espera su confirmación.', 'err');
+      return { ok: false, pending: false, duplicate: true };
+    }
+    const operationId = uid('persist');
+    try {
+      if (!save({ allowIndexedDbOffline: true, operationId, deferSync: true })) return { ok: false, pending: false };
+      const persistence = lastSavePersistence?.operationId === operationId ? lastSavePersistence : null;
+      if (!navigator.onLine && !persistence?.localPersisted) {
+        const indexedPersisted = await persistence?.indexedPromise;
+        if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
+        if (!indexedPersisted) {
+          restoreCriticalSnapshot(previousState);
+          toast('No se pudo guardar el cambio sin conexión. La información anterior sigue intacta.', 'err');
+          return { ok: false, pending: false };
+        }
+        rememberPersistedState();
+        lastAutoSaveHash = JSON.stringify(state);
+        dispatchLocalStateSaved({ operationId, localPersisted: false, indexedPersisted: true });
+      }
+    if (!navigator.onLine) {
+      toast('Cambio guardado en este dispositivo. Se confirmará al recuperar internet.', 'ok');
+      return { ok: true, pending: true };
+    }
+    if (typeof window.click360SyncNow !== 'function') {
+      restoreCriticalSnapshot(previousState);
+      toast('No se pudo confirmar el cambio en la nube. Inténtalo nuevamente.', 'err');
+      return { ok: false, pending: false };
+    }
+    const synced = await window.click360SyncNow();
+    if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
+    if (synced) return { ok: true, pending: false };
+
+    let refreshed = false;
+    try { refreshed = await window.click360RefreshNow?.() === true; } catch {}
+    if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
+    if (typeof remoteApplied === 'function' && remoteApplied(state)) {
+      return { ok: true, pending: false, recovered: true };
+    }
+    if (!refreshed) restoreCriticalSnapshot(previousState);
+    toast('El cambio no fue confirmado y no se registró como completado.', 'err');
+    return { ok: false, pending: false };
+    } finally {
+      actionLock.release();
     }
   }
   function stateStorageKey() {
@@ -558,7 +696,8 @@ function parseMoney(value) {
       name: profile.name || '',
       photoURL: profile.photoURL || '',
       email: profile.email || window.click360User?.email || '',
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      pendingSync: profile.pendingSync === true
     };
     state.settings ||= {};
     state.settings.userProfiles ||= {};
@@ -581,7 +720,9 @@ function parseMoney(value) {
     if (!uid || !key || !navigator.onLine || !window.click360Db || uid !== activeTenantContext?.authUid) return false;
     try {
       const legacyKey = `${LEGACY_PROFILE_PENDING_PREFIX}${uid}`;
-      const profile = JSON.parse(localStorage.getItem(key) || localStorage.getItem(legacyKey) || 'null') || cachedUserProfile(uid);
+      const pendingRaw = localStorage.getItem(key) || localStorage.getItem(legacyKey) || '';
+      const cachedProfile = cachedUserProfile(uid);
+      const profile = pendingRaw ? JSON.parse(pendingRaw) : (cachedProfile?.pendingSync === true ? cachedProfile : null);
       if (!profile || profile.uid !== uid) return false;
       if (window.click360User?.access?.source === 'accountAccess' && typeof window.click360UpdateAccessProfile === 'function') {
         await window.click360UpdateAccessProfile(profile);
@@ -594,6 +735,9 @@ function parseMoney(value) {
       }
       localStorage.removeItem(key);
       localStorage.removeItem(legacyKey);
+      const syncedProfile = cacheUserProfile({ ...profile, pendingSync: false });
+      persistUserProfileCache(syncedProfile);
+      save();
       return true;
     } catch (error) {
       console.warn('Perfil local pendiente de nube:', error.message);
@@ -611,6 +755,10 @@ function parseMoney(value) {
       throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
     }
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
+    indexedTenantCacheMeta = null;
+    lastSavePersistence = null;
+    onlineOnlyCommitCheckpoints.clear();
+    criticalActionGate?.clear();
     window.CLICK360_RUNTIME_GUARD?.setContext(activeTenantContext);
     onboardingPrompted = false;
     window.click360TenantContext = activeTenantContext;
@@ -629,16 +777,23 @@ function parseMoney(value) {
     publishStorageState({ mode: 'checking', tenantKey: activeTenantContext.tenantKey, message: 'Comprobando almacenamiento seguro.' });
     return { ...activeTenantContext };
   };
-  window.click360PrepareTenantStorage = async function(context = activeTenantContext) {
+	  window.click360PrepareTenantStorage = async function(context = activeTenantContext) {
     if (!context || context.tenantKey !== activeTenantContext?.tenantKey || !window.CLICK360_V16_STORAGE) {
       publishStorageState({ mode: navigator.onLine ? 'online_only_safe' : 'unavailable', indexedDbReady: false, message: 'Almacenamiento sin conexion no disponible.' });
       return false;
-    }
-    try {
-      await window.CLICK360_V16_STORAGE.probe();
-      publishStorageState({ mode: 'indexeddb_ready', indexedDbReady: true, localReady: true, message: 'Almacenamiento seguro listo.' });
-      return true;
+	    }
+	    const localReady = localStorageReady(context);
+	    try {
+	      await window.CLICK360_V16_STORAGE.probe();
+	      publishStorageState(localReady
+	        ? { mode: 'indexeddb_ready', indexedDbReady: true, localReady: true, message: 'Almacenamiento seguro listo.' }
+	        : { mode: 'indexeddb_ready', indexedDbReady: true, localReady: false, message: 'La copia sin conexión usará el almacenamiento seguro del dispositivo.' });
+	      return true;
     } catch (error) {
+      if (localReady) {
+        publishStorageState({ mode: 'localstorage_cache', indexedDbReady: false, localReady: true, message: 'Copia sin conexión disponible en este dispositivo.' });
+        return true;
+      }
       publishStorageState({ mode: navigator.onLine ? 'online_only_safe' : 'unavailable', indexedDbReady: false, localReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
       return false;
     }
@@ -651,6 +806,10 @@ function parseMoney(value) {
     window.click360TenantContext = null;
     state = seed();
     lastPersistedState = null;
+    indexedTenantCacheMeta = null;
+    lastSavePersistence = null;
+    onlineOnlyCommitCheckpoints.clear();
+    criticalActionGate?.clear();
     lastAutoSaveHash = '';
     session = null;
     route = 'home';
@@ -677,6 +836,14 @@ function parseMoney(value) {
         || !tenantRuntime?.validBusinessPayload({ identity: candidate.identity, data: candidate }, context)) return false;
       state = normalizeState(candidate);
       state.identity = tenantIdentity();
+      indexedTenantCacheMeta = {
+        pendingRemoteSync: record.pendingRemoteSync === true,
+        baseRevision: Number(record.baseRevision || record.revision || 0),
+        operationId: String(record.operationId || ''),
+        payloadHash: String(record.payloadHash || ''),
+        updatedAtMs: Number(record.updatedAtMs || candidate.updatedAtMs || 0),
+        source: String(record.source || 'indexeddb_cache')
+      };
       tenantStateDeferred = false;
       rememberPersistedState();
       lastAutoSaveHash = JSON.stringify(state);
@@ -702,25 +869,54 @@ function parseMoney(value) {
   window.click360PersistTenantState = function() {
     return save();
   };
+  window.click360GetIndexedTenantCacheMeta = function() {
+    return indexedTenantCacheMeta ? { ...indexedTenantCacheMeta } : null;
+  };
+  window.click360MarkTenantCacheSynced = function(metadata = {}) {
+    if (!activeTenantContext) return Promise.resolve(false);
+    writeCacheMeta('cloud_confirmed', stateSizeBytes(state), {
+      pendingRemoteSync: false,
+      baseRevision: Number(metadata.revision || 0),
+      revision: Number(metadata.revision || 0),
+      operationId: String(metadata.operationId || ''),
+      payloadHash: String(metadata.payloadHash || '')
+    });
+    return queueIndexedSnapshot(state, {
+      source: 'cloud_confirmed',
+      pendingRemoteSync: false,
+      baseRevision: Number(metadata.revision || 0),
+      revision: Number(metadata.revision || 0),
+      operationId: String(metadata.operationId || ''),
+      payloadHash: String(metadata.payloadHash || '')
+    });
+  };
   window.click360GetTenantCacheStatus = function(context) {
     if (!context?.tenantKey || !context?.ownerId || !context?.businessId || !context?.authUid) {
       return { valid: false, reason: 'context_incomplete' };
     }
     const key = `${STATE_PREFIX}${context.authUid}:${context.tenantKey}`;
     const corruptKey = `CLICK360_TENANT:${context.tenantKey}:CORRUPT`;
+    if (storageState.localReady === false && storageState.indexedDbReady
+      && storageState.mode === 'indexeddb_cache' && storageState.tenantKey === context.tenantKey
+      && indexedTenantCacheMeta) {
+      return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0), ...indexedTenantCacheMeta };
+    }
+    let cacheMetadata = {};
     let raw = '';
     try {
+      const parsedMeta = JSON.parse(localStorage.getItem(cacheMetaKey(context)) || 'null');
+      if (parsedMeta?.tenantKey === context.tenantKey) cacheMetadata = parsedMeta;
       if (localStorage.getItem(corruptKey)) return { valid: false, reason: 'cache_marked_corrupt', key };
       raw = localStorage.getItem(key) || localStorage.getItem(`${LEGACY_STATE_PREFIX}${context.tenantKey}`) || '';
     } catch (error) {
       if (storageState.indexedDbReady && storageState.mode === 'indexeddb_cache' && storageState.tenantKey === context.tenantKey) {
-        return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0) };
+        return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0), ...indexedTenantCacheMeta };
       }
       return { valid: false, reason: 'localstorage_unavailable', key };
     }
     if (!raw) {
       if (storageState.indexedDbReady && storageState.mode === 'indexeddb_cache' && storageState.tenantKey === context.tenantKey) {
-        return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0) };
+        return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0), ...indexedTenantCacheMeta };
       }
       return { valid: false, reason: 'cache_missing', key };
     }
@@ -732,7 +928,7 @@ function parseMoney(value) {
       if (!tenantRuntime?.validBusinessPayload({ identity: parsed.identity, data: parsed }, context)) {
         return { valid: false, reason: 'cache_payload_invalid', key };
       }
-      return { valid: true, key, updatedAtMs: Number(parsed.updatedAtMs || 0) };
+      return { valid: true, source: 'localstorage', key, updatedAtMs: Number(parsed.updatedAtMs || 0), ...cacheMetadata };
     } catch {
       return { valid: false, reason: 'cache_corrupt', key };
     }
@@ -758,7 +954,7 @@ function parseMoney(value) {
     tenantStateDeferred = false;
     rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
-    queueIndexedSnapshot(state);
+    queueIndexedSnapshot(state, { source: 'remote_applied', pendingRemoteSync: false, localPersisted });
     try { localStorage.removeItem(`CLICK360_TENANT:${activeTenantContext.tenantKey}:CORRUPT`); } catch {}
     return { applied: true, localPersisted, storageMode: storageState.mode };
   };
@@ -784,10 +980,15 @@ function parseMoney(value) {
     out.settings.activationRequests ||= [];
     out.settings.policies ||= {};
     out.settings.legal ||= {};
+    const businessIds = new Set(out.businesses.map((business) => business?.id).filter(Boolean));
+    if (!businessIds.has(out.settings.legacyDataBusinessId)) {
+      out.settings.legacyDataBusinessId = businessIds.has(out.activeBusinessId)
+        ? out.activeBusinessId : (out.businesses[0]?.id || '');
+    }
 
     out.products.forEach(p => {
       p.code = String(p.code || '').trim().toUpperCase();
-      p.updatedAtMs = Number(p.updatedAtMs || p.createdAtMs || out.updatedAtMs || Date.now());
+      p.updatedAtMs = Number(p.updatedAtMs || p.createdAtMs || 0);
     });
     out.deletedProducts.forEach(t => {
       t.code = String(t.code || '').trim().toUpperCase();
@@ -796,14 +997,46 @@ function parseMoney(value) {
     const deletedById = new Map();
     const deletedByCode = new Map();
     out.deletedProducts.forEach(t => {
-      if (t.id) deletedById.set(t.id, Math.max(deletedById.get(t.id) || 0, t.deletedAtMs || 0));
-      if (t.code) deletedByCode.set(t.code, Math.max(deletedByCode.get(t.code) || 0, t.deletedAtMs || 0));
+      const businessId = t.businessId || '';
+      if (t.id) {
+        const key = `${businessId}:${t.id}`;
+        deletedById.set(key, Math.max(deletedById.get(key) || 0, t.deletedAtMs || 0));
+      }
+      if (t.code) {
+        const key = `${businessId}:${t.code}`;
+        deletedByCode.set(key, Math.max(deletedByCode.get(key) || 0, t.deletedAtMs || 0));
+      }
     });
     out.products = out.products.filter(p => {
       const pMs = Number(p.updatedAtMs || p.createdAtMs || 0);
-      const tombstoneMs = Math.max(deletedById.get(p.id) || 0, deletedByCode.get(p.code) || 0);
+      const businessId = p.businessId || '';
+      const tombstoneMs = Math.max(deletedById.get(`${businessId}:${p.id}`) || 0, deletedByCode.get(`${businessId}:${p.code}`) || 0);
       return !tombstoneMs || pMs > tombstoneMs;
     });
+
+    const normalizedPhone = (value) => window.CLICK360_V16_DOMAIN?.normalizePhone?.(value || '') || String(value || '').replace(/\D/g, '');
+    out.settings.customers.forEach((customer) => {
+      if (customer.businessId || !customer.id) return;
+      const phone = normalizedPhone(customer.phone);
+      const name = String(customer.name || '').trim().toLowerCase();
+      const candidates = new Set(out.sales.filter((sale) => {
+        const samePhone = phone && normalizedPhone(sale.customerPhone) === phone;
+        const sameName = name && String(sale.customer || '').trim().toLowerCase() === name;
+        return sale.businessId && (samePhone || sameName);
+      }).map((sale) => sale.businessId));
+      if (candidates.size === 1) customer.businessId = [...candidates][0];
+    });
+    const customersById = new Map(out.settings.customers.map((customer) => [customer.id, customer]));
+    out.settings.reminders.forEach((reminder) => {
+      if (reminder.businessId) return;
+      const customerBusinessId = customersById.get(reminder.customerId)?.businessId;
+      if (customerBusinessId) reminder.businessId = customerBusinessId;
+    });
+    if (out.businesses.length === 1) {
+      const onlyBusinessId = out.businesses[0]?.id || '';
+      out.settings.customers.forEach((customer) => { if (!customer.businessId) customer.businessId = onlyBusinessId; });
+      out.settings.reminders.forEach((reminder) => { if (!reminder.businessId) reminder.businessId = onlyBusinessId; });
+    }
 
     // Migración para limpiar "sale_..." de movimientos antiguos
     out.movements.forEach(m => {
@@ -833,7 +1066,7 @@ function parseMoney(value) {
       cashSessions:[],
       notifications:[],
       legalAcceptances:[],
-      settings:{ workers: [], labelTemplates: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.0.0' }
+      settings:{ workers: [], labelTemplates: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.2.0' }
     };
   }
 
@@ -913,8 +1146,8 @@ function parseMoney(value) {
       : { status: 'offline', title: 'Sin internet', detail: 'Puedes trabajar localmente; se sincroniza cuando vuelva la conexión.' };
     const s = typeof window.click360GetSyncStatus === 'function' ? window.click360GetSyncStatus() : fallback;
     const map = {
-      synced: ['Nube sincronizada', 'Tus datos están guardados en este dispositivo y en Firestore.'],
-      syncing: ['Sincronizando', 'Guardando cambios en Firestore.'],
+	      synced: ['Nube sincronizada', 'Tus datos están guardados en este dispositivo y en la nube.'],
+	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
       pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando conexión o confirmación de nube.'],
       offline: ['Sin internet', 'La app sigue funcionando localmente y subirá cambios al reconectar.'],
       error: ['Revisar nube', s.message || 'No se pudo confirmar la sincronización. Tus datos locales se mantienen.'],
@@ -966,6 +1199,14 @@ function parseMoney(value) {
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
+  function latestCashSession(businessId = currentBusiness()?.id, date = today()) {
+    return (state.cashSessions || []).slice().reverse().find((session) =>
+      session.businessId === businessId && session.date === date) || null;
+  }
+  function currentOpenCashSession(businessId = currentBusiness()?.id, date = today()) {
+    const session = latestCashSession(businessId, date);
+    return session?.status === 'open' ? session : null;
+  }
   function isCashIncomeMovement(m) {
     if (!m || m.kind !== 'ingreso' || m.status === 'cancelled') return false;
     return !['Tarjeta', 'Transferencia'].includes(m.paymentMethod || '');
@@ -975,11 +1216,15 @@ function parseMoney(value) {
     if (!bid) return true;
     return state.movements.some(m => m.businessId === bid && m.date === today() && m.kind === 'apertura');
   }
-	  function isDayClosed() {
+  function isDayClosed() {
 	    const bid = currentBusiness()?.id;
 	    if (!bid) return false;
-	    return (state.dailyReports || []).some(r => r.businessId === bid && r.date === today() && r.status !== 'reopened');
+	    return isBusinessDateClosed(today(), bid);
 	  }
+  function isBusinessDateClosed(date, businessId = currentBusiness()?.id) {
+    return !!businessId && (state.dailyReports || []).some((report) =>
+      report.businessId === businessId && report.date === date && report.status !== 'reopened');
+  }
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
@@ -1139,7 +1384,7 @@ function parseMoney(value) {
 	    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
-		          <div class="logoMark sidebarBrand" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">V16.1.2</small><small class="brandSlogan">Control total de tu negocio</small></div></div>
+		          <div class="logoMark sidebarBrand" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">V16.2</small><small class="brandSlogan">Control total de tu negocio</small></div></div>
 	          <div class="field"><label>Negocio activo</label>${businessSwitcher('businessPickerSide')}</div>
 	          <nav class="sideNav">${navButtons(active, true)}</nav>
 	        </div>
@@ -1202,8 +1447,11 @@ function parseMoney(value) {
 	    });
 	  }
 	  function bindShell(){
-    clearInterval(clockTimer);
-	    const updateClock = () => { $$('.js-business-clock').forEach((element) => { element.textContent = liveClockLabel(element.dataset.clockFormat === 'compact'); }); };
+	    clearInterval(clockTimer);
+		    const updateClock = () => {
+		      $$('.js-business-clock').forEach((element) => { element.textContent = liveClockLabel(element.dataset.clockFormat === 'compact'); });
+		      updateTrialCountdown();
+		    };
 	    updateClock();
 	    clockTimer = setInterval(updateClock, 60000);
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
@@ -1240,16 +1488,16 @@ function parseMoney(value) {
       bindShell(); bindView(r);
       checkDueReminders();
       if (r === 'home') setTimeout(showOnboardingForNewAccount, 0);
-    } catch(e) {
-      console.error("Error al renderizar la app:", e);
-      app.innerHTML = `<div style="padding:24px; color:#ff4444; background:#110000; border:1px solid #ff4444; border-radius:16px; margin:20px; font-family:sans-serif;">
-        <h2 style="margin-top:0;">⚠️ Error de Renderizado</h2>
-        <p>Ocurrió un error al cargar la vista principal:</p>
-        <pre style="background:#000; padding:12px; border-radius:8px; overflow-x:auto; color:#ff8888; font-size:13px;">${escapeHtml(e.stack || e.message)}</pre>
-        <button class="btn primary" onclick="location.reload()" style="margin-top:12px;">Reintentar / Recargar</button>
-      </div>`;
-      throw e;
-    }
+	    } catch(e) {
+	      console.error("Error al renderizar la app:", e);
+	      const report = window.CLICK360_RUNTIME_GUARD?.record?.({
+	        message: e?.message || 'No se pudo abrir una vista.',
+	        filename: 'app.js',
+	        stack: e?.stack || ''
+	      });
+	      app.innerHTML = `<main class="friendlyError" role="alert"><div>${icon('refresh-cw')}<h2>No pudimos abrir esta sección</h2><p>Tu información sigue protegida. Actualiza CLICK 360 e inténtalo nuevamente.</p>${report?.reportId ? `<small>Código de ayuda: ${escapeHtml(report.reportId)}</small>` : ''}<button class="btn primary" onclick="location.reload()">Actualizar aplicación</button></div></main>`;
+	      refreshIcons();
+	    }
   }
 
   function homeView() {
@@ -1429,8 +1677,15 @@ function parseMoney(value) {
   }
 
   function cashView() {
-    const mov=movementsForBiz().filter(m=>m.date===today());
-    const aperture=mov.find(m=>m.kind==='apertura')?.amount || 0;
+    const openSession = currentOpenCashSession();
+    const latestSession = latestCashSession();
+    const allMov = movementsForBiz().filter(m=>m.date===today());
+    const hasSessionTaggedMovements = !!latestSession
+      && allMov.some((movement) => movement.cashSessionId === latestSession.id);
+    const mov = hasSessionTaggedMovements
+      ? allMov.filter((movement) => movement.cashSessionId === latestSession.id)
+      : allMov;
+    const aperture=mov.slice().reverse().find(m=>m.kind==='apertura')?.amount || 0;
     const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
     const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
     const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
@@ -1715,16 +1970,32 @@ function parseMoney(value) {
 	  function accessInfo() {
 	    return window.click360AccessState || { mode: 'founder', plan: 'founder', readOnly: false, source: 'approvedUsers' };
 	  }
-	  function purchaseWhatsAppUrl() {
+		  function purchaseWhatsAppUrl() {
 	    const plan = accessInfo().plan || 'base';
 	    return `https://wa.me/593969399562?text=${encodeURIComponent(`Hola CLICK 360, quiero activar mi plan ${plan}. Negocio: ${currentBusiness()?.name || ''}. Correo: ${authUser()?.email || ''}.`)}`;
-	  }
-	  function accessBannerHtml() {
+		  }
+		  function trialCountdown() {
+		    return window.CLICK360_V16_DOMAIN?.trialRemaining?.(accessInfo(), Date.now())
+		      || { days: 0, hours: 0, endsAtMs: 0, expired: true };
+		  }
+		  function trialCountdownText(remaining = trialCountdown()) {
+		    return `${remaining.days} ${remaining.days === 1 ? 'día' : 'días'} y ${remaining.hours} ${remaining.hours === 1 ? 'hora' : 'horas'}`;
+		  }
+		  function trialEndText(remaining = trialCountdown()) {
+		    if (!remaining.endsAtMs) return '';
+		    return window.CLICK360_V16_DOMAIN?.formatBusinessDate?.(remaining.endsAtMs, 'es-EC', businessTimeZone(), true) || '';
+		  }
+		  function updateTrialCountdown() {
+		    const remaining = trialCountdown();
+		    $$('[data-trial-countdown]').forEach((element) => { element.textContent = trialCountdownText(remaining); });
+		    $$('[data-trial-end]').forEach((element) => { element.textContent = trialEndText(remaining); });
+		  }
+		  function accessBannerHtml() {
 	    const access = accessInfo();
 	    if (access.mode === 'founder') return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b style="color:#37d57e;">Acceso fundador activo</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Tu cuenta conserva acceso completo a CLICK 360.</p></section>`;
-	    if (access.mode === 'trial_active' || access.mode === 'trial') {
-	      const remaining = Math.max(0, Math.ceil((Number(access.trialEndsAtMs || 0) - Number(access.serverNowMs || 0)) / 86400000));
-	      return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(244,196,49,.45);"><b style="color:var(--gold);">Prueba gratuita: ${remaining} ${remaining === 1 ? 'dia' : 'dias'} restantes</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">La prueba se controla con la hora segura de Firestore.</p></section>`;
+		    if (access.mode === 'trial_active' || access.mode === 'trial') {
+		      const remaining = trialCountdown();
+		      return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(244,196,49,.45);"><b style="color:var(--gold);">Prueba gratuita: <span data-trial-countdown>${escapeHtml(trialCountdownText(remaining))}</span> restantes</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Finaliza el <span data-trial-end>${escapeHtml(trialEndText(remaining))}</span>. Tus datos se conservarán al terminar.</p></section>`;
 	    }
 	    if (access.readOnly) return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(255,92,98,.6);"><b style="color:#ff8d92;">Tu prueba termino: tus datos estan protegidos en modo lectura.</b><a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn primary block" style="margin-top:10px;">Activar plan por WhatsApp</a></section>`;
 		    return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b style="color:#37d57e;">Plan CLICK 360 activo</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Plan ${escapeHtml((access.plan || 'base').toUpperCase())} con acceso completo.</p></section>`;
@@ -1743,7 +2014,7 @@ function parseMoney(value) {
 	      <section class="planGrid" style="margin-top:14px;">
 	        ${['base','pro'].map((code) => { const item = catalog[code] || {}; return `<article class="card planCard"><div><span class="badge gold">${escapeHtml(code.toUpperCase())}</span><h3>${escapeHtml(item.name || code)}</h3><strong>${fmt(item.prices?.month || 0)} <small>/ mes</small></strong></div><ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul><label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${code === 'pro' ? 'primary' : 'silver'} block" data-request-plan="${code}">Solicitar ${escapeHtml(item.name || code)}</button></article>`; }).join('')}
 	      </section>
-	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status || 'pending')}</span></div>`).join('')}</section>` : ''}
+	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
 	      ${access.mode !== 'founder' ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="margin-top:14px;border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}`;
 	  }
 	  function legalView() {
@@ -1751,26 +2022,29 @@ function parseMoney(value) {
 	    return `<div class="pageHead"><div><h1>Terminos y privacidad</h1><p>Version ${escapeHtml(version)}</p></div></div><section class="legalDocument">
 	      <article><h2>Terminos y condiciones</h2><p>CLICK 360 proporciona herramientas para administrar inventario, ventas, caja, clientes y tareas del negocio. La persona titular de la cuenta es responsable de la exactitud de la informacion registrada y del uso que autorice a sus trabajadores.</p></article>
 		      <article><h2>Privacidad y datos</h2><p>La autenticación se realiza con Google y los datos operativos se guardan de forma separada para cada cuenta. CLICK 360 no vende información personal. El negocio puede descargar respaldos y solicitar asistencia para exportación o eliminación.</p></article>
-	      <article><h2>Prueba y suscripciones</h2><p>La prueba gratuita dura siete dias desde la hora registrada por el servidor y se concede una sola vez por UID. Al terminar, los datos se conservan en modo lectura. La activacion es manual y no se realizan cobros automaticos dentro de la aplicacion.</p></article>
+	      <article><h2>Prueba y suscripciones</h2><p>La prueba gratuita dura siete días desde la hora registrada de forma segura y se concede una sola vez por cuenta. Al terminar, los datos se conservan en modo lectura. La activación es manual y no se realizan cobros automáticos dentro de la aplicación.</p></article>
 		      <article><h2>Uso aceptable</h2><p>No se permite intentar acceder a información de otra cuenta, elevar permisos, manipular invitaciones, introducir contenido malicioso ni usar CLICK 360 para actividades ilegales.</p></article>
-	      <article><h2>Operacion offline</h2><p>Cuando el dispositivo permite almacenamiento seguro, la aplicacion conserva una copia local aislada. Si el navegador bloquea ese almacenamiento, CLICK 360 entra en modo seguro solo en linea y pausa la edicion al perder conexion.</p></article>
+	      <article><h2>Uso sin conexión</h2><p>Cuando el dispositivo permite almacenamiento seguro, la aplicación conserva una copia local aislada. Si el navegador bloquea ese almacenamiento, CLICK 360 trabaja solo en línea y pausa la edición cuando se pierde la conexión.</p></article>
 	      <article><h2>Politicas del comercio</h2><p>Las politicas configuradas por cada negocio deben revisarse conforme a la legislacion aplicable. CLICK 360 proporciona herramientas de gestion, no asesoria legal.</p></article>
 	      <article><h2>Responsabilidades</h2><p>Los comprobantes y reportes son registros operativos. No sustituyen documentos tributarios oficiales, asesoria contable ni asesoramiento legal. Antes de una accion destructiva se recomienda generar y verificar un respaldo.</p></article>
 	    </section>`;
 	  }
 	  function crmCustomers() {
-	    return (state.settings?.customers || []).filter((customer) => !customer.businessId || customer.businessId === currentBusiness()?.id);
+	    const businessId = currentBusiness()?.id;
+      const legacyBusinessId = state.settings?.legacyDataBusinessId;
+	    return (state.settings?.customers || []).filter((customer) => customer.businessId === businessId
+        || (!customer.businessId && legacyBusinessId === businessId));
 	  }
 	  function crmView() {
 	    const customers = crmCustomers();
-	    return `<div class="pageHead"><div><h1>Clientes</h1><p>CRM simple para seguimiento y WhatsApp.</p></div><div class="toolbar"><button class="btn primary" id="newCustomerBtn">Nuevo cliente</button></div></div>
+	    return `<div class="pageHead"><div><h1>Clientes</h1><p>Seguimiento de clientes y contacto por WhatsApp.</p></div><div class="toolbar"><button class="btn primary" id="newCustomerBtn">Nuevo cliente</button></div></div>
 	      <section class="card sectionCard"><div class="field"><label>Buscar</label><input id="customerSearch" placeholder="Nombre o telefono"></div><div id="customerList">${customerCards(customers)}</div></section>`;
 	  }
 	  function customerCards(customers) {
 	    if (!customers.length) return '<p class="empty">Todavia no hay clientes registrados.</p>';
 	    return customers.map((customer) => {
-	      const phone = String(customer.phone || '').replace(/\D/g, '');
-	      return `<article class="movement" style="align-items:flex-start;gap:10px;"><div style="flex:1;"><b>${escapeHtml(customer.name || 'Cliente')}</b><br><small>${escapeHtml(customer.phone || 'Sin telefono')}${customer.notes ? ` - ${escapeHtml(customer.notes)}` : ''}</small></div><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">${phone ? `<a class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" target="_blank" rel="noopener noreferrer" href="https://wa.me/${escapeHtml(phone)}">WhatsApp</a>` : ''}<button class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" data-customer-edit="${actionId(customer.id)}">Editar</button><button class="btn danger" style="min-height:30px;padding:5px 9px;font-size:12px;" data-customer-delete="${actionId(customer.id)}">Eliminar</button></div></article>`;
+	      const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(customer.phone || '') || '';
+	      return `<article class="movement" style="align-items:flex-start;gap:10px;"><div style="flex:1;"><b>${escapeHtml(customer.name || 'Cliente')}</b>${customer.businessId ? '' : ' <span class="badge gold">Histórico por confirmar</span>'}<br><small>${escapeHtml(customer.phone || 'Sin telefono')}${customer.notes ? ` - ${escapeHtml(customer.notes)}` : ''}</small></div><div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">${phone ? `<a class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" target="_blank" rel="noopener noreferrer" href="https://wa.me/${escapeHtml(phone)}">WhatsApp</a>` : ''}<button class="btn silver" style="min-height:30px;padding:5px 9px;font-size:12px;" data-customer-edit="${actionId(customer.id)}">Editar</button><button class="btn danger" style="min-height:30px;padding:5px 9px;font-size:12px;" data-customer-delete="${actionId(customer.id)}">Eliminar</button></div></article>`;
 	    }).join('');
 	  }
 	  function openCustomerModal(customerId = '') {
@@ -1790,7 +2064,10 @@ function parseMoney(value) {
 	    };
 	  }
 	  function remindersForBusiness() {
-	    return (state.settings?.reminders || []).filter((reminder) => !reminder.businessId || reminder.businessId === currentBusiness()?.id);
+	    const businessId = currentBusiness()?.id;
+      const legacyBusinessId = state.settings?.legacyDataBusinessId;
+	    return (state.settings?.reminders || []).filter((reminder) => reminder.businessId === businessId
+        || (!reminder.businessId && legacyBusinessId === businessId));
 	  }
 	  function notificationItems() {
 	    const readById = new Map((state.notifications || []).map((item) => [item.id, item]));
@@ -1981,6 +2258,8 @@ function parseMoney(value) {
 	      const businessName = $('#onboardingBusiness').value.trim();
 	      if (!name || !businessName || !$('#onboardingPhone').value.trim()) return toast('Completa tu nombre, telefono y empresa.', 'err');
 	      if (!$('#onboardingTerms').checked) return toast('Debes aceptar los terminos para continuar.', 'err');
+	      const previousState = cloneState(state);
+	      const operationId = uid('onboarding');
 	      business.name = businessName; business.type = $('#onboardingType').value;
 	      business.settings ||= {};
 	      business.settings.phone = $('#onboardingPhone').value.trim();
@@ -1988,7 +2267,7 @@ function parseMoney(value) {
 	      business.settings.currency = $('#onboardingCurrency').value;
 	      business.settings.timeZone = $('#onboardingTimezone').value;
 	      const termsVersion = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
-		      state.settings.onboarding = { completedAt: new Date().toISOString(), version: 16.1, checklist: { business: true, product: false, cash: false, sale: false, customer: false, reminder: false, label: false, report: false } };
+		      state.settings.onboarding = { completedAt: new Date().toISOString(), operationId, version: 16.2, checklist: { business: true, product: false, cash: false, sale: false, customer: false, reminder: false, label: false, report: false } };
 	      state.legalAcceptances ||= [];
 	      state.legalAcceptances.push({ id: uid('legal'), businessId: business.id, uid: window.click360User.uid, termsVersion, privacyVersion: termsVersion, acceptedAt: new Date().toISOString(), source: 'onboarding' });
 	      window.click360User.name = fullName;
@@ -1996,10 +2275,12 @@ function parseMoney(value) {
 	      cacheUserProfile({ uid: window.click360User.uid, name: fullName, email: window.click360User.email, photoURL: window.click360User.photoURL });
 	      persistUserProfileCache(cachedUserProfile(window.click360User.uid));
 	      queuePendingProfile(cachedUserProfile(window.click360User.uid));
-	      if (!save()) return;
-	      await flushPendingProfile();
+	      const committed = await commitCriticalMutation(previousState, 'onboarding_completed', (next) =>
+	        next.settings?.onboarding?.operationId === operationId);
+	      if (!committed.ok) { closeModal(); renderApp('home'); return; }
+	      const profileSynced = await flushPendingProfile();
 	      await window.click360SaveLegalAcceptance?.({ termsVersion, privacyVersion: termsVersion, source: 'onboarding' }).catch((error) => console.warn('Aceptacion legal pendiente de nube:', error.message));
-	      closeModal(); renderApp('home'); toast('Tu negocio esta listo');
+	      closeModal(); renderApp('home'); toast(committed.pending || !profileSynced ? 'Tu negocio está listo; queda una sincronización pendiente.' : 'Tu negocio está listo');
 	    };
 	  }
 
@@ -2101,9 +2382,10 @@ function parseMoney(value) {
   }
   function workersView(){
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
+	  ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<section class="card sectionCard"><h3>Acceso protegido</h3><p class="cloudStatus">Las cuentas de trabajadores están temporalmente pausadas mientras terminamos su acceso por módulos. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>'}
       <section class="card sectionCard">
          <h3>Registrar Trabajador</h3>
-         <form id="addWorkerForm" style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
+	         <form id="addWorkerForm" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:flex' : 'display:none'}; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
             <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
             <div class="field"><label>Rol inicial</label><select id="workerRole"><option value="worker">Operador</option><option value="cashier">Caja y ventas</option><option value="inventory">Inventario</option></select></div>
@@ -2286,9 +2568,9 @@ function parseMoney(value) {
     bindInventoryActions();
   }
   function bindInventoryActions(){
-    $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit)));
+    $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit && p.businessId===currentBusiness()?.id)));
     $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
-    $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label)));
+    $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
   }
   function openProductModal(product=null){
     const b=currentBusiness(), v=businessVocabulary(b.type);
@@ -2360,15 +2642,22 @@ function parseMoney(value) {
 	      if(!save()) return; closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
 	    };
 	  }
-	  function deleteProduct(id){
+	  async function deleteProduct(id){
 	    if(confirm('¿Borrar este producto? Se guardará una huella para que no reaparezca desde otro dispositivo.')){
-	      const p=state.products.find(x=>x.id===id);
+	      const businessId = currentBusiness()?.id;
+	      const p=state.products.find(x=>x.id===id && x.businessId===businessId);
+	      if (!p) return toast('Producto no encontrado en este negocio.', 'err');
+	      const previousState = cloneState(state);
 	      if(p) {
 	        tombstoneProduct(p, 'manual_delete');
-	        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`, createdBy: authUser().name});
+	        state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
 	      }
-	      state.products=state.products.filter(x=>x.id!==id);
-	      if(!save()) return; renderApp('inventory'); toast('Producto eliminado');
+	      state.products=state.products.filter(x=>x.id!==id || x.businessId!==businessId);
+	      const committed = await commitCriticalMutation(previousState, 'product_deleted', (next) =>
+	        !next.products.some((item) => item.id === id && item.businessId === businessId)
+	        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId));
+	      renderApp('inventory');
+	      if (committed.ok) toast(committed.pending ? 'Producto eliminado; sincronización pendiente.' : 'Producto eliminado');
 	    }
 	  }
 
@@ -2405,7 +2694,7 @@ function parseMoney(value) {
 
       $('#cartItems').innerHTML=cart.length?cart.map(i=>{ const src=safeImageSrc(i.imageData); return `<div class="cartItem cartWithImage">${src ? `<img class="productImg small" src="${escapeHtml(src)}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(isCard ? i.cardPrice : i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button type="button" data-minus="${escapeHtml(i.id)}">−</button><b>${i.qty}</b><button type="button" data-plus="${escapeHtml(i.id)}">＋</button><button type="button" class="iconBtn danger" data-remove="${escapeHtml(i.id)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`; }).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
-      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=state.products.find(p=>p.id===it.id); if (!it || (!it.isCustom && (!p || it.qty >= p.qty))) return toast('No hay mas stock disponible', 'err'); it.qty++; renderCart();});
+      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=it && state.products.find(p=>p.id===it.id && p.businessId===currentBusiness()?.id); if (!it || (!it.isCustom && (!p || it.qty >= p.qty))) return toast('No hay mas stock disponible', 'err'); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
 
       const recF = $('#receivedField'), chgF = $('#changeField'), lblCustomer = $('#lblCustomer');
@@ -2513,7 +2802,7 @@ function parseMoney(value) {
     $('#manualCode').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();$('#addCode').click();}});
     $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>String(p.name || '').toLowerCase().includes(q)||String(p.code || '').toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${escapeHtml(p.code)}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
     $('#openCamera').onclick=()=>startScanner(addProduct);
-    $('#chargeBtn').onclick=()=>{
+    $('#chargeBtn').onclick=async()=>{
       if(!cart.length){ beep('err'); return toast('El carrito está vacío','err'); }
       const disc=parseMoney($('#discount').value);
       if(!Number.isFinite(disc)||disc<0){ beep('err'); return toast('Descuento inválido','err'); }
@@ -2530,7 +2819,7 @@ function parseMoney(value) {
 
       for(const i of cart){
         if(i.isCustom) continue;
-        const p=state.products.find(p=>p.id===i.id);
+        const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id);
         if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); }
       }
 
@@ -2561,10 +2850,13 @@ function parseMoney(value) {
          received = total;
       }
 
+	      const previousState = cloneState(state);
 	      const saleCreatedAtMs = Date.now();
 	      const policySnapshot = method === 'Apartado' ? businessPolicies() : null;
 	      const sale={
 	        id:uid('sale'),
+	        operationId: uid('saleop'),
+	        cashSessionId: currentOpenCashSession()?.id || '',
 	        businessId:currentBusiness().id,
 	        date:today(),
 	        when:nowLabel(),
@@ -2580,7 +2872,8 @@ function parseMoney(value) {
           tax: i.tax,
           total: i.total
         })),
-        subtotal:base,
+	        subtotal:base,
+	        receiptSubtotal:calculation.displaySubtotal,
         iva:ivaAmount,
         taxRate: currentTax.rate,
         taxPriceMode: currentTax.priceMode,
@@ -2636,15 +2929,17 @@ function parseMoney(value) {
 	          notes: ''
 	        });
 	      }
-	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id); if(p) { p.qty-=i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
+	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id); if(p) { p.qty-=i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
 
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
-        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:authUser().name, saleId: sale.id, paymentMethod: sale.method, createdBy: authUser().name});
+	        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:authUser().name,saleId:sale.id,paymentMethod:sale.method,cashSessionId:sale.cashSessionId,createdAtMs:Date.now(),createdBy:authUser().name});
       }
 
       addAudit('sale_created', { saleId: sale.id, total: sale.total, method: sale.method, status: sale.status });
-      if(!save()) return;
+      const committed = await commitCriticalMutation(previousState, 'sale_created', (next) =>
+        next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId));
+      if(!committed.ok) { renderApp('sell'); return; }
       cart=[];
       $('#cashReceived').value='';
       $('#discount').value='0';
@@ -2652,7 +2947,7 @@ function parseMoney(value) {
       $('#customerCedula').value = '';
       $('#customerPhone').value = '';
       renderCart();
-      beep('sale'); toast(`Venta registrada · ${fmt(total)}`);
+      beep('sale'); toast(committed.pending ? `Venta guardada sin conexión · ${fmt(total)}` : `Venta registrada · ${fmt(total)}`);
 
       setTimeout(() => {
         if(window.printReceipt) window.printReceipt(actionId(sale.id));
@@ -2923,13 +3218,15 @@ function parseMoney(value) {
 	    $('#calculatorCashBtn')?.addEventListener('click', () => openCalculator({ preferredTarget: isDayStarted() ? '' : 'apertureAmountInput' }));
     const btnReopenCash = $('#reopenCashBtn');
 	    if (btnReopenCash) {
-	      btnReopenCash.onclick = () => {
+	      btnReopenCash.onclick = async () => {
 	        if (!isOwnerUser()) return toast('Solo el dueño puede reabrir una caja cerrada.', 'err');
 	        if (!confirm('¿Deseas reabrir la caja de hoy?\nEl cierre anterior NO se borrará; quedará guardado como historial y se registrará la reapertura.')) return;
 	        const reason = prompt('Escribe el motivo de reapertura de caja:');
 	        if (!reason || reason.trim().length < 4) return toast('Motivo requerido para reabrir caja', 'err');
 	        const bid = currentBusiness()?.id;
 	        if (bid) {
+	          const previousState = cloneState(state);
+	          const operationId = uid('cashreopen');
 	          const closedReports = (state.dailyReports || []).filter(r => r.businessId === bid && r.date === today() && r.status !== 'reopened');
 	          closedReports.forEach(r => {
 	            r.status = 'reopened';
@@ -2939,6 +3236,7 @@ function parseMoney(value) {
 	          });
 	          state.movements.push({
 	            id: uid('mov'),
+	            operationId,
 	            businessId: bid,
 	            date: today(),
 	            when: nowLabel(),
@@ -2946,12 +3244,22 @@ function parseMoney(value) {
 	            amount: currentBusiness().lastCashBalance || 0,
 	            note: `Reapertura de caja: ${reason.trim()}`,
 	            createdBy: authUser().name,
-	            reopened: true
+	            reopened: true,
+	            cashSessionId: operationId,
+	            createdAtMs: Date.now()
+	          });
+	          state.cashSessions ||= [];
+	          state.cashSessions.push({
+	            id: operationId, operationId, businessId: bid, registerName: 'Caja principal', date: today(), status: 'open',
+	            openedByUid: window.click360User?.uid || '', openedBy: authUser().name, openedByRole: authUser().role || 'owner',
+	            openedAt: new Date().toISOString(), openingAmount: currentBusiness().lastCashBalance || 0,
+	            reopened: true, reopenReason: reason.trim(), notes: ''
 	          });
 	          addAudit('cash_reopened', { businessId: bid, date: today(), reason: reason.trim(), reports: closedReports.map(r => r.id) });
-	          if(!save()) return;
+	          const committed = await commitCriticalMutation(previousState, 'cash_reopened', (next) =>
+	            next.movements.some((movement) => movement.operationId === operationId && movement.businessId === bid));
 	          renderApp('cash');
-	          toast('Caja reabierta con auditoría');
+	          if (committed.ok) toast(committed.pending ? 'Reapertura guardada; sincronización pendiente.' : 'Caja reabierta con auditoría');
 	        }
 	      };
 	    }
@@ -2963,11 +3271,17 @@ function parseMoney(value) {
          inputEl.oninput = () => { inputEl.value = inputEl.value.replace(/[^0-9.,]/g, ''); };
        }
        if (startBtn) {
-          startBtn.onclick = () => {
+          startBtn.onclick = async () => {
              const amt = parseMoney(inputEl.value);
              if (!Number.isFinite(amt) || amt < 0) return toast('Monto de apertura inválido', 'err');
+	             const previousState = cloneState(state);
+	             const cashSessionId = uid('cash');
+	             const operationId = uid('cashopen');
              state.movements.push({
                id: uid('mov'),
+	               operationId,
+	               cashSessionId,
+	               createdAtMs: Date.now(),
                businessId: currentBusiness().id,
                date: today(),
                when: nowLabel(),
@@ -2978,7 +3292,8 @@ function parseMoney(value) {
              });
              state.cashSessions ||= [];
              state.cashSessions.push({
-               id: uid('cash'),
+	               id: cashSessionId,
+	               operationId,
                businessId: currentBusiness().id,
                registerName: 'Caja principal',
                date: today(),
@@ -2990,12 +3305,15 @@ function parseMoney(value) {
                openedAt: new Date().toISOString(),
                openingAmount: amt,
                notes: ''
-             });
+	             });
 	             addAudit('cash_opened', { amount: amt, businessId: currentBusiness().id });
-	             if(!save()) return;
+	             const businessId = currentBusiness().id;
+	             const committed = await commitCriticalMutation(previousState, 'cash_opened', (next) =>
+	               next.cashSessions.some((session) => session.id === cashSessionId && session.businessId === businessId));
+	             if (!committed.ok) { renderApp('cash'); return; }
 	             window.click360RecordTelemetry?.('cash_open', { mode: authUser().role || 'owner' }).catch?.(() => {});
 	             renderApp('cash');
-             toast('Jornada iniciada exitosamente');
+	             toast(committed.pending ? 'Apertura guardada; sincronización pendiente.' : 'Jornada iniciada exitosamente');
           };
        }
        return;
@@ -3012,14 +3330,19 @@ function parseMoney(value) {
           mAmountInput.oninput = () => { mAmountInput.value = mAmountInput.value.replace(/[^0-9.,]/g, ''); };
         }
 
-        $('#moveForm').onsubmit = (e) => {
+        $('#moveForm').onsubmit = async (e) => {
           e.preventDefault();
           const k=$('#mKind').value, a=parseMoney($('#mAmount').value), n=$('#mNote').value.trim();
           if(!Number.isFinite(a)||a<=0) return toast('Monto inválido','err');
-          state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:k,amount:a,note:n, paymentMethod:k==='ingreso'?'Efectivo':null, createdBy: authUser().name});
+	          const previousState = cloneState(state);
+	          const movementId = uid('mov');
+	          const businessId = currentBusiness().id;
+	          state.movements.push({id:movementId,operationId:movementId,businessId,date:today(),when:nowLabel(),kind:k,amount:a,note:n,paymentMethod:k==='ingreso'?'Efectivo':null,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy:authUser().name});
           addAudit('cash_movement_created', { kind:k, amount:a, note:n });
-          if(!save()) return;
-          closeModal(); renderApp('cash'); toast('Guardado');
+	          const committed = await commitCriticalMutation(previousState, 'cash_movement_created', (next) =>
+	            next.movements.some((movement) => movement.id === movementId && movement.businessId === businessId));
+	          if (!committed.ok) { closeModal(); renderApp('cash'); return; }
+	          closeModal(); renderApp('cash'); toast(committed.pending ? 'Movimiento guardado; sincronización pendiente.' : 'Movimiento guardado');
         };
       };
     }
@@ -3027,7 +3350,13 @@ function parseMoney(value) {
     const btnCloseDay = $('#closeDayBtn');
     if (btnCloseDay) {
       btnCloseDay.onclick=()=>{
-        const apertureMov = movementsForBiz().find(m => m.date === today() && m.kind === 'apertura');
+        const activeSession = currentOpenCashSession();
+        const dayMovements = movementsForBiz().filter((movement) => movement.date === today());
+        const closeMovements = activeSession
+          && dayMovements.some((movement) => movement.cashSessionId === activeSession.id)
+          ? dayMovements.filter((movement) => movement.cashSessionId === activeSession.id)
+          : dayMovements;
+        const apertureMov = closeMovements.slice().reverse().find((movement) => movement.kind === 'apertura');
         const lastCash = apertureMov ? apertureMov.amount : (currentBusiness().lastCashBalance || 0);
         showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
           <form id="closeDayForm" class="formGrid">
@@ -3042,23 +3371,27 @@ function parseMoney(value) {
         if (cInicialInput) cInicialInput.oninput = () => { cInicialInput.value = cInicialInput.value.replace(/[^0-9.,]/g, ''); };
         if (eFisicoInput) eFisicoInput.oninput = () => { eFisicoInput.value = eFisicoInput.value.replace(/[^0-9.,]/g, ''); };
 
-        $('#closeDayForm').onsubmit = (e) => {
+        $('#closeDayForm').onsubmit = async (e) => {
            e.preventDefault();
            const cInicial = parseMoney($('#cajaInicial').value);
            const eFisico = parseMoney($('#efectivoFisico').value);
            if(!Number.isFinite(cInicial) || !Number.isFinite(eFisico)){ return toast('Montos inválidos', 'err'); }
 
-           const mov=movementsForBiz().filter(m=>m.date===today());
-           const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
-           const out=mov.filter(m=>m.kind!=='ingreso' && m.kind!=='apertura').reduce((a,m)=>a+m.amount,0);
+           const income=closeMovements.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
+           const out=closeMovements.filter(m=>m.kind!=='ingreso' && m.kind!=='apertura').reduce((a,m)=>a+m.amount,0);
            const balanceCalculado = cInicial + income - out;
            const diferencia = eFisico - balanceCalculado;
 
-           const sales = salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled');
+           const allSales = salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled');
+           const sales = activeSession && allSales.some((sale) => sale.cashSessionId === activeSession.id)
+             ? allSales.filter((sale) => sale.cashSessionId === activeSession.id)
+             : allSales;
            const salesEfectivo = sales.filter(s=>s.method==='Efectivo').reduce((a,s)=>a+s.total,0);
            const salesTarjeta = sales.filter(s=>s.method==='Tarjeta').reduce((a,s)=>a+s.total,0);
            const salesTransf = sales.filter(s=>s.method==='Transferencia').reduce((a,s)=>a+s.total,0);
-           const abonosApartado = sales.filter(s=>s.method==='Apartado').reduce((a,s)=>a+s.received,0);
+           const abonosApartado = closeMovements.filter((movement) => movement.status !== 'cancelled'
+             && (movement.paymentMethod === 'Apartado' || movement.paymentType === 'receivable_payment'))
+             .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
 
            const totalIva = sales.reduce((a,s)=>a+(s.iva||0),0);
            let totalItems = 0;
@@ -3120,13 +3453,16 @@ function parseMoney(value) {
 	                downloadHtmlAsPng(html, `Cierre_Caja_${today()}.png`);
 	            };
 
+	           const previousState = cloneState(state);
 	           const repId = uid('rep');
 	           const closeDetails = {
 	             id: repId,
+	             operationId: repId,
 	             businessId: currentBusiness().id,
 	             date: today(),
-	             openedBy: state.cashSessions?.find((session) => session.businessId === currentBusiness().id && session.date === today() && session.status === 'open')?.openedBy || apertureMov?.createdBy || '',
-	             openedAt: state.cashSessions?.find((session) => session.businessId === currentBusiness().id && session.date === today() && session.status === 'open')?.openedAt || '',
+	             cashSessionId: activeSession?.id || '',
+	             openedBy: activeSession?.openedBy || apertureMov?.createdBy || '',
+	             openedAt: activeSession?.openedAt || '',
 	             closedBy: authUser().name,
 	             closedByUid: window.click360User?.uid || '',
 	             closedAt: new Date().toISOString(),
@@ -3147,15 +3483,17 @@ function parseMoney(value) {
 	             html
 	           };
 	           state.dailyReports.push(closeDetails);
-	           const openSession = state.cashSessions?.find((session) => session.businessId === currentBusiness().id && session.date === today() && session.status === 'open');
-	           if (openSession) Object.assign(openSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: balanceCalculado, difference: diferencia, reportId: repId, observations: closeDetails.observations });
+	           if (activeSession) Object.assign(activeSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: balanceCalculado, difference: diferencia, reportId: repId, observations: closeDetails.observations });
 	           addAudit('cash_closed', { reportId: repId, expectedCash: balanceCalculado, countedCash: eFisico, difference: diferencia });
 	           currentBusiness().lastCashBalance = eFisico;
-	           if(!save()) return;
+	           const businessId = currentBusiness().id;
+	           const committed = await commitCriticalMutation(previousState, 'cash_closed', (next) =>
+	             next.dailyReports.some((report) => report.id === repId && report.businessId === businessId && report.status === 'closed'));
+	           if (!committed.ok) { renderApp('cash'); return; }
 	           window.click360RecordTelemetry?.('cash_close', { requestId: repId, mode: diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
 	           renderApp('cash');
 
-           toast('Cierre del día generado');
+	           toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
         };
       };
     }
@@ -3270,7 +3608,7 @@ function parseMoney(value) {
            </div>
            <div style="margin-bottom:16px;">
              <h3 style="color:var(--gold);margin-bottom:8px;">\uD83D\uDC65 Trabajadores</h3>
-             <p>Registra trabajadores por correo. Envía enlaces de invitación. Controla el acceso de cada persona a tu negocio.</p>
+	             <p>Revisa y revoca invitaciones existentes. Los accesos nuevos se habilitarán cuando cada módulo tenga permisos independientes.</p>
            </div>
            <div style="margin-bottom:16px;">
              <h3 style="color:var(--gold);margin-bottom:8px;">⚙️ Ajustes</h3>
@@ -3354,7 +3692,9 @@ function parseMoney(value) {
           if (!worker) return toast('No se encontro la ficha del trabajador.', 'err');
           const modules = [['inventory','Inventario'],['sales','Ventas'],['cash','Caja'],['customers','Clientes'],['reports','Reportes'],['reminders','Recordatorios'],['settings','Ajustes'],['suppliers','Proveedores'],['workers','Trabajadores']];
           const actions = ['view','create','edit','delete','approve','export','manage'];
-          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(worker.status || 'pending')}</b></p><p>Aceptacion: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Ultimo acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label>Rol</label><select id="workerEditRole"><option value="worker" ${worker.role === 'worker' ? 'selected' : ''}>Operador</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Caja y ventas</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${action}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
+	          const workerStatus = worker.status === 'pending' ? 'Pendiente' : worker.status === 'active' ? 'Activo' : worker.status === 'revoked' ? 'Revocado' : 'Bloqueado';
+	          const actionLabels = { view: 'Ver', create: 'Crear', edit: 'Editar', delete: 'Eliminar', approve: 'Aprobar', export: 'Exportar', manage: 'Administrar' };
+	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="worker" ${worker.role === 'worker' ? 'selected' : ''}>Operador</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Caja y ventas</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
           $('#saveWorkerPermissions').onclick = async () => {
             const permissions = {};
             $$('[data-permission-module]').forEach((input) => {
@@ -3406,6 +3746,7 @@ function parseMoney(value) {
     };
 
     await loadWorkers();
+	    if (!WORKER_TENANT_ACCESS_ENABLED) return;
 
     $('#addWorkerForm').onsubmit = async (e) => {
       e.preventDefault();
@@ -3511,9 +3852,12 @@ function parseMoney(value) {
          const uid = window.click360User?.uid || window.click360Auth?.currentUser?.uid || '';
          const role = window.click360User?.role || 'guest';
          const email = window.click360User?.email || window.click360Auth?.currentUser?.email || '';
-         const profile = { uid, name: newName, photoURL: pendingUserPhotoUrl || '', email };
+         const previousState = cloneState(state);
+         const profile = { uid, name: newName, photoURL: pendingUserPhotoUrl || '', email, pendingSync: true };
          const safeProfile = cacheUserProfile(profile);
-         if(!save()) throw new Error('No se pudo guardar localmente');
+         const committed = await commitCriticalMutation(previousState, 'profile_updated', (next) =>
+           next.settings?.userProfiles?.[uid]?.name === newName);
+         if(!committed.ok) throw new Error('No se pudo guardar el perfil de forma segura');
          if (window.click360User) {
            window.click360User.name = newName;
            window.click360User.photoURL = safeProfile.photoURL;
@@ -3528,12 +3872,12 @@ function parseMoney(value) {
            }).catch(err => console.warn('No se pudo actualizar Firebase Auth:', err.message));
          }
 
-         if (window.click360Db && uid) {
+         if (window.click360Db && uid && navigator.onLine) {
            queuePendingProfile(safeProfile);
            const profileSynced = await flushPendingProfile();
            toast(profileSynced ? 'Perfil actualizado y sincronizado' : 'Perfil actualizado localmente; la nube sigue pendiente', profileSynced ? 'ok' : 'err');
          } else {
-           toast('Perfil guardado en este dispositivo');
+           toast(committed.pending ? 'Perfil guardado sin conexión; se sincronizará al volver.' : 'Perfil guardado en este dispositivo');
          }
        } catch(e) {
          console.error("Error actualizando perfil:", e);
@@ -3615,15 +3959,17 @@ function parseMoney(value) {
        if (confirmWord !== 'REINICIAR') {
           return toast('Acción cancelada', 'err');
        }
-	       state.products.filter(p => p.businessId === currentBusiness().id).forEach(p => tombstoneProduct(p, 'inventory_reset'));
-	       state.products = state.products.filter(p => p.businessId !== currentBusiness().id);
-	       addAudit('inventory_reset', { businessId: currentBusiness().id });
-       if(!save()) return;
-       if (window.click360SyncNow) {
-         toast('Sincronizando...');
-         await window.click360SyncNow();
-       }
-       toast('Inventario reiniciado.');
+	       const previousState = cloneState(state);
+	       const businessId = currentBusiness().id;
+	       const operationId = uid('inventoryreset');
+	       state.products.filter(p => p.businessId === businessId).forEach(p => tombstoneProduct(p, 'inventory_reset'));
+	       state.products = state.products.filter(p => p.businessId !== businessId);
+	       addAudit('inventory_reset', { businessId, operationId });
+	       const committed = await commitCriticalMutation(previousState, 'inventory_reset', (next) =>
+	         !next.products.some((product) => product.businessId === businessId)
+	         && next.auditLogs.some((entry) => entry.details?.operationId === operationId));
+	       if (!committed.ok) { renderApp('settings'); return; }
+	       toast(committed.pending ? 'Inventario reiniciado; sincronización pendiente.' : 'Inventario reiniciado.');
        renderApp('settings');
     };
 
@@ -3638,7 +3984,9 @@ function parseMoney(value) {
        if (confirmWord !== 'BORRAR TODO') {
           return toast('Acción cancelada', 'err');
        }
+		       const previousState = cloneState(state);
 		       const bid = currentBusiness().id;
+		       const operationId = uid('systemreset');
 		       state.products.filter(x => x.businessId === bid).forEach(p => tombstoneProduct(p, 'system_reset'));
 		       state.products = state.products.filter(x => x.businessId !== bid);
 	       state.sales = state.sales.filter(x => x.businessId !== bid);
@@ -3656,16 +4004,19 @@ function parseMoney(value) {
          kind: 'retiro',
 	         amount: 0,
 	         note: `Sistema reiniciado por: ${authUser().name}`,
+	         cashSessionId: currentOpenCashSession(bid)?.id || '',
+	         createdAtMs: Date.now(),
 	         createdBy: authUser().name
 	       });
-	       addAudit('system_deleted', { businessId: bid, scope: 'active_business_only' });
-       if(!save()) return;
-       if (window.click360SyncNow) {
-         toast('Sincronizando...');
-         await window.click360SyncNow();
-       }
-       toast('Sistema reiniciado.');
-       window.location.reload();
+	       addAudit('system_deleted', { businessId: bid, scope: 'active_business_only', operationId });
+	       const committed = await commitCriticalMutation(previousState, 'system_deleted', (next) =>
+	         !next.products.some((item) => item.businessId === bid)
+	         && !next.sales.some((item) => item.businessId === bid)
+	         && !next.invoices.some((item) => item.businessId === bid)
+	         && next.auditLogs.some((entry) => entry.details?.operationId === operationId));
+	       if (!committed.ok) { renderApp('settings'); return; }
+	       toast(committed.pending ? 'Reinicio guardado; sincronización pendiente.' : 'Sistema reiniciado.');
+	       setTimeout(() => window.location.reload(), 900);
     };
 
     $('#showTerms').onclick = (e) => {
@@ -3675,18 +4026,69 @@ function parseMoney(value) {
   }
 
 	  function showModal(html){
-	    closeModal();
+	    const returnFocus = document.activeElement;
+	    closeModal(false);
 	    let root = $('#modalRoot');
 	    if (!root) { root = document.createElement('div'); root.id = 'modalRoot'; document.body.appendChild(root); }
-	    root.innerHTML = `<div class="modalOverlay show"><div class="modal">${html}</div></div>`;
-	    $$('[data-close]',root).forEach((button) => { button.onclick = closeModal; });
+	    modalReturnFocus = returnFocus;
+	    root.innerHTML = `<div class="modalOverlay show"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
+	    const dialog = $('.modal', root);
+	    $$('.field label:not([for])', dialog).forEach((label) => {
+	      const control = $('input,select,textarea', label.parentElement);
+	      if (control?.id) label.htmlFor = control.id;
+	    });
+	    const heading = $('h1,h2,h3', dialog);
+	    if (heading) {
+	      heading.id ||= `click360-dialog-${uid('title')}`;
+	      heading.tabIndex = -1;
+	      dialog.setAttribute('aria-labelledby', heading.id);
+	    } else {
+	      dialog.setAttribute('aria-label', 'Ventana de CLICK 360');
+	    }
+	    $$('[data-close]', root).forEach((button) => {
+	      button.setAttribute('aria-label', button.getAttribute('aria-label') || 'Cerrar');
+	      button.onclick = closeModal;
+	    });
+	    $$('.desktopLayout,.bottomNav').forEach((element) => {
+	      if (element.contains(root)) return;
+	      element.inert = true;
+	      element.setAttribute('aria-hidden', 'true');
+	    });
+	    const focusable = () => $$('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])', dialog)
+	      .filter((element) => element.getClientRects().length > 0);
+	    modalKeyHandler = (event) => {
+	      if (event.key === 'Escape') {
+	        event.preventDefault();
+	        closeModal();
+	        return;
+	      }
+	      if (event.key !== 'Tab') return;
+	      const items = focusable();
+	      if (!items.length) { event.preventDefault(); dialog.focus(); return; }
+	      const first = items[0];
+	      const last = items[items.length - 1];
+	      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+	      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+	    };
+	    document.addEventListener('keydown', modalKeyHandler);
+	    $('.modalOverlay', root).addEventListener('pointerdown', (event) => { if (event.target === event.currentTarget) closeModal(); });
 	    refreshIcons(root);
+	    requestAnimationFrame(() => (heading || focusable()[0] || dialog).focus());
 	  }
-	  function closeModal(){
+	  function closeModal(restoreFocus = true){
+	    if (modalKeyHandler) document.removeEventListener('keydown', modalKeyHandler);
+	    modalKeyHandler = null;
 	    $$('#modalRoot').forEach((root) => {
 	      if (root.closest('.app')) root.innerHTML = '';
 	      else root.remove();
 	    });
+	    $$('.desktopLayout,.bottomNav').forEach((element) => {
+	      element.inert = false;
+	      element.removeAttribute('aria-hidden');
+	    });
+	    const returnFocus = modalReturnFocus;
+	    modalReturnFocus = null;
+	    if (restoreFocus && returnFocus?.isConnected) requestAnimationFrame(() => returnFocus.focus());
 	  }
 	  function closeCalculator(){ $('#calculatorRoot')?.remove(); }
 	  function calculatorOperation(left, right, operator) {
@@ -3911,12 +4313,12 @@ function parseMoney(value) {
 
 	    showModal(`<div class="modalHeader"><div><h2>Diseñar etiqueta QR</h2><p class="fieldHint">Toca un elemento en la vista previa para moverlo o cambiar su tamaño.</p></div><button class="closeBtn" data-close>×</button></div>
 	      <div class="labelCustomizerLayout">
-	        <details class="labelPreviewDisclosure" open><summary>Vista previa</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas"></canvas><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
+		        <details class="labelPreviewDisclosure" open><summary>Vista previa</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Editor visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
-	          <div class="field"><label>Plantilla</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
+		          <div class="field"><label for="applyTemplateSelect">Plantilla</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
 	          <section class="labelPresetPanel"><b>Diseños rápidos</b><div class="labelPresetGrid"><button type="button" data-label-preset="small">Pequeña</button><button type="button" data-label-preset="medium">Mediana</button><button type="button" data-label-preset="large">Grande</button><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-price">QR + precio</button><button type="button" data-label-preset="business">QR + negocio</button></div></section>
 	          <section class="labelElementPanel">
-	            <div class="field"><label>Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
+		            <div class="field"><label for="labelElementSelect">Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
 	            <div class="labelQuickControls"><button type="button" id="labelSizeDown" title="Reducir">${icon('minus')}</button><button type="button" id="labelSizeUp" title="Aumentar">${icon('plus')}</button><button type="button" id="labelCenter" title="Centrar">${icon('align-center')}<span>Centrar</span></button><button type="button" id="labelToggleVisibility" title="Mostrar u ocultar">${icon('eye')}<span>Ocultar</span></button><button type="button" id="labelToggleLock" title="Bloquear posición">${icon('lock-open')}<span>Bloquear</span></button><button type="button" id="labelResetElement" title="Restablecer elemento">${icon('rotate-ccw')}<span>Restablecer</span></button></div>
 	            <p id="labelQrWarning" class="fieldHint"></p>
 	          </section>
@@ -4122,9 +4524,32 @@ function parseMoney(value) {
       const half = Number(element.width || 100) / 2;
       return { left: element.x - half, top: element.y - Number(element.size || 10) * 1.3, right: element.x + half, bottom: element.y + 5 };
     };
-    let dragState = null;
-    canvas.style.touchAction = 'none';
-    canvas.addEventListener('pointerdown', (event) => {
+	    let dragState = null;
+	    canvas.style.touchAction = 'none';
+	    canvas.addEventListener('keydown', (event) => {
+	      const key = elementSelect.value;
+	      const element = editorLayout[key];
+	      if (!element || element.locked) return;
+	      if (event.key === '+' || event.key === '=') {
+	        event.preventDefault();
+	        resizeSelected(1);
+	        return;
+	      }
+	      if (event.key === '-') {
+	        event.preventDefault();
+	        resizeSelected(-1);
+	        return;
+	      }
+	      const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+	      if (!direction) return;
+	      event.preventDefault();
+	      const step = event.shiftKey ? 10 : 2;
+	      element.x = Number(element.x || 0) + direction[0] * step;
+	      element.y = Number(element.y || 0) + direction[1] * step;
+	      syncElementControls();
+	      updatePreview();
+	    });
+	    canvas.addEventListener('pointerdown', (event) => {
       const rect = canvas.getBoundingClientRect();
       const baseWidth = Number(canvas.dataset.baseWidth || 260);
       const baseHeight = Number(canvas.dataset.baseHeight || 380);
@@ -4432,15 +4857,16 @@ function parseMoney(value) {
 	                return;
 	             }
 	             downloadBackup('antes-de-restaurar');
+	             const previousState = cloneState(state);
+	             const operationId = uid('restore');
 	             state = normalizeState(data);
 	             state.identity = tenantIdentity();
-             addAudit('backup_restored', { summary });
-             if(!save()) return;
-             if (window.click360SyncNow) {
-                await window.click360SyncNow();
-             }
-             toast('Respaldo restaurado exitosamente');
-             setTimeout(() => location.reload(), 1200);
+	             addAudit('backup_restored', { summary, operationId });
+	             const committed = await commitCriticalMutation(previousState, 'backup_restored', (next) =>
+	               next.auditLogs.some((entry) => entry.details?.operationId === operationId));
+	             if (!committed.ok) { renderApp('reports'); return; }
+	             toast(committed.pending ? 'Respaldo restaurado; sincronización pendiente.' : 'Respaldo restaurado exitosamente');
+	             setTimeout(() => location.reload(), 1200);
           }
           catch(err) {
              toast('Error leyendo archivo de respaldo', 'err');
@@ -4694,30 +5120,35 @@ function parseMoney(value) {
     }
   }
 
-  window.cancelSale = function(saleId) {
+  window.cancelSale = async function(saleId) {
 	  saleId = decodeActionId(saleId);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede anular ventas', 'err');
     }
     if(!confirm('\u00bfSeguro que deseas anular esta venta? Esto no se puede deshacer y devolver\u00e1 el stock.')) return;
-    const sale = state.sales.find(s=>s.id === saleId);
+    const businessId = currentBusiness()?.id;
+    const sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
+    if(sale.status === 'cancelled') return toast('Esta venta ya fue anulada.', 'err');
+    if(isBusinessDateClosed(sale.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular la venta.', 'err');
     const reason = prompt('Motivo de anulación:');
     if(!reason || !reason.trim()) return toast('Debes indicar el motivo de anulación', 'err');
+    const previousState = cloneState(state);
 
     // Devolver stock
 	    saleItems(sale).forEach(i => {
-	       const p = state.products.find(prod=>prod.id === i.id);
+	       const p = state.products.find(prod=>prod.id === i.id && prod.businessId === businessId);
 	       if(p) { p.qty += i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; }
 	    });
 
 	    sale.status = 'cancelled';
 	    sale.cancelledBy = authUser().name || 'Usuario';
 	    sale.cancelledAt = nowLabel();
+	    sale.cancelledAtMs = Date.now();
 	    sale.cancelReason = reason.trim();
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
-	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id);
+	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
 	    if (linkedLayaway) {
 	      linkedLayaway.status = 'cancelled';
 	      linkedLayaway.cancelledAt = new Date().toISOString();
@@ -4725,7 +5156,7 @@ function parseMoney(value) {
 	    }
 
     // Anular todos los movimientos ligados a la venta, incluyendo abonos.
-    const linkedMovements = state.movements.filter(m => m.saleId === sale.id && m.status !== 'cancelled');
+    const linkedMovements = state.movements.filter(m => m.businessId === businessId && m.saleId === sale.id && m.status !== 'cancelled');
     linkedMovements.forEach(mov => {
        mov.status = 'cancelled';
        mov.cancelledBy = authUser().name || 'Usuario';
@@ -4737,7 +5168,8 @@ function parseMoney(value) {
 
     state.movements.push({
        id:uid('mov'),
-       businessId:currentBusiness().id,
+	       operationId:`cancel:${sale.id}`,
+	       businessId,
        date:today(),
        when:nowLabel(),
        kind:'retiro',
@@ -4749,20 +5181,24 @@ function parseMoney(value) {
        createdBy:authUser().name,
        status:'cancelled',
        cancelledBy:authUser().name || 'Usuario',
-       cancelledAt:nowLabel()
+       cancelledAt:nowLabel(),
+       cashSessionId:currentOpenCashSession(businessId)?.id||'',
+       createdAtMs:Date.now()
     });
 
     addAudit('sale_cancelled', { saleId: sale.id, total: sale.total, reason: reason.trim(), linkedMovements: linkedMovements.length });
-    if(!save()) return;
+    const committed = await commitCriticalMutation(previousState, 'sale_cancelled', (next) =>
+      next.sales.some((item) => item.id === sale.id && item.businessId === businessId && item.status === 'cancelled'));
     renderApp('reports');
-    toast('Venta anulada y stock devuelto');
+    if (committed.ok) toast(committed.pending ? 'Anulación guardada; sincronización pendiente.' : 'Venta anulada y stock devuelto');
   };
 
-  window.payLayaway = function(saleId) {
+  window.payLayaway = async function(saleId) {
 	  saleId = decodeActionId(saleId);
     if (!isDayStarted()) return toast('Debes iniciar caja diaria antes de registrar abonos', 'err');
     if (isDayClosed()) return toast('La caja de hoy ya está cerrada', 'err');
-    const sale = state.sales.find(s=>s.id === saleId);
+    const businessId = currentBusiness()?.id;
+    const sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(!['layaway','pending_payment'].includes(sale.status)) return toast('Esta cuenta no tiene saldo pendiente', 'err');
 
@@ -4771,12 +5207,15 @@ function parseMoney(value) {
     const amount = parseMoney(amountStr);
     if(!Number.isFinite(amount) || amount <= 0) return toast('Monto inválido', 'err');
     if(amount > sale.balance) return toast('El abono no puede superar el saldo pendiente', 'err');
+	    const previousState = cloneState(state);
+	    const paymentId = uid('pay');
 
 	    sale.received = (sale.received || 0) + amount;
 	    sale.balance -= amount;
 	    sale.payments ||= [];
 	    sale.payments.push({
-	      id: uid('pay'),
+	      id: paymentId,
+	      operationId: paymentId,
 	      date: today(),
 	      when: nowLabel(),
 	      amount,
@@ -4785,7 +5224,7 @@ function parseMoney(value) {
 	    });
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
-	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id);
+	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
 	    if (linkedLayaway) {
 	      linkedLayaway.paid = sale.received;
 	      linkedLayaway.balance = sale.balance;
@@ -4794,16 +5233,12 @@ function parseMoney(value) {
 	      linkedLayaway.updatedAt = sale.updatedAt;
 	    }
 
-	    if(sale.balance <= 0) {
-	       sale.status = 'paid';
-       toast('Cuenta saldada en su totalidad');
-    } else {
-       toast(`Abono registrado. Nuevo saldo: ${fmt(sale.balance)}`);
-    }
+	    if(sale.balance <= 0) sale.status = 'paid';
 
     state.movements.push({
       id: uid('mov'),
-      businessId: currentBusiness().id,
+      operationId: paymentId,
+      businessId,
       date: today(),
       when: nowLabel(),
       kind: 'ingreso',
@@ -4812,11 +5247,22 @@ function parseMoney(value) {
       user: authUser().name,
       saleId: sale.id,
       paymentMethod: 'Efectivo',
+      paymentType: 'receivable_payment',
+	      cashSessionId: currentOpenCashSession(businessId)?.id || '',
+	      createdAtMs: Date.now(),
       createdBy: authUser().name
     });
     addAudit('sale_payment_received', { saleId: sale.id, amount, balance: sale.balance });
-    if(!save()) return;
+    const committed = await commitCriticalMutation(previousState, 'sale_payment_received', (next) =>
+      next.sales.some((item) => item.id === sale.id && item.businessId === businessId
+        && item.payments?.some((payment) => payment.id === paymentId)));
     renderApp(route);
+    if (committed.ok) {
+      const remoteSale = salesForBiz(businessId).find((item) => item.id === sale.id);
+      toast(committed.pending
+        ? 'Abono guardado; sincronización pendiente.'
+        : remoteSale?.balance <= 0 ? 'Cuenta saldada en su totalidad' : `Abono registrado. Nuevo saldo: ${fmt(remoteSale?.balance || 0)}`);
+    }
   };
 
 	  window.showSaleCompleteModal = function(id) {
@@ -4856,7 +5302,7 @@ function parseMoney(value) {
           </tbody>
         </table>
         <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>
+	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.receiptSubtotal ?? (Number(s.subtotal || 0) + Number(s.discount || 0)))}</span></div>
         ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA (${currentIva}%):</span><span>${fmt(s.iva)}</span></div>` : ''}
         ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
         <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px; font-weight:bold; border-top:1px solid #000; padding-top:4px;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
@@ -4892,10 +5338,10 @@ function parseMoney(value) {
     const waBtn = $('#whatsappReminderBtn');
     if (waBtn) {
        waBtn.onclick = () => {
-         const phone = s.customerPhone || '';
+	         const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(s.customerPhone || '') || '';
 	         const bizName = business.name;
          const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
-         const url = `https://wa.me/${phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(text)}`;
+	         const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
 	         window.open(url, '_blank', 'noopener,noreferrer');
        };
     }
@@ -4912,13 +5358,15 @@ function parseMoney(value) {
     };
   };
 
-  window.editMovement = function(id) {
+	window.editMovement = function(id) {
 	  id = decodeActionId(id);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede editar transacciones', 'err');
     }
-    const m = state.movements.find(x => x.id === id);
+	    const businessId = currentBusiness()?.id;
+	    const m = movementsForBiz(businessId).find(x => x.id === id);
     if (!m) return toast('Movimiento no encontrado', 'err');
+	    if (isBusinessDateClosed(m.date, businessId)) return toast('Reabre la caja de esa fecha antes de editar el movimiento.', 'err');
 
     showModal(`<div class="modalHeader"><h2>Editar movimiento</h2><button class="closeBtn" data-close>×</button></div>
       <form id="editMoveForm">
@@ -4948,33 +5396,44 @@ function parseMoney(value) {
        emAmountInput.oninput = () => { emAmountInput.value = emAmountInput.value.replace(/[^0-9.,]/g, ''); };
     }
 
-    $('#editMoveForm').onsubmit = (e) => {
+    $('#editMoveForm').onsubmit = async (e) => {
        e.preventDefault();
        const k = $('#emKind').value;
        const a = parseMoney($('#emAmount').value);
        const n = $('#emNote').value.trim();
        if (!Number.isFinite(a) || a < 0) return toast('Monto inválido', 'err');
+	       const previousState = cloneState(state);
+	       const operationId = uid('movementedit');
 
        m.kind = k;
        m.amount = a;
        m.note = n;
        m.updatedBy = authUser().name;
-       if(!save()) return;
+	       m.updatedAt = new Date().toISOString();
+	       m.operationId = operationId;
+	       addAudit('cash_movement_updated', { movementId: m.id, businessId, operationId });
+	       const committed = await commitCriticalMutation(previousState, 'cash_movement_updated', (next) =>
+	         next.movements.some((movement) => movement.id === m.id && movement.businessId === businessId && movement.operationId === operationId));
        closeModal();
        renderApp('cash');
-       toast('Movimiento actualizado');
+	       if (committed.ok) toast(committed.pending ? 'Movimiento actualizado; sincronización pendiente.' : 'Movimiento actualizado');
     };
   };
 
-  window.deleteMovement = function(id) {
+	window.deleteMovement = async function(id) {
 	  id = decodeActionId(id);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede anular transacciones', 'err');
     }
     if (!confirm('\u00bfSeguro que deseas anular este movimiento? Se conservar\u00e1 el registro.')) return;
 
-    const mov = state.movements.find(x => x.id === id);
+	    const businessId = currentBusiness()?.id;
+	    const mov = movementsForBiz(businessId).find(x => x.id === id);
     if (!mov) return toast('Movimiento no encontrado', 'err');
+	    if (mov.status === 'cancelled') return toast('Este movimiento ya fue anulado.', 'err');
+	    if (isBusinessDateClosed(mov.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular el movimiento.', 'err');
+	    const previousState = cloneState(state);
+	    const operationId = uid('movementcancel');
 
     // Soft delete: mark as cancelled with audit trail
     mov.status = 'cancelled';
@@ -4982,10 +5441,14 @@ function parseMoney(value) {
     mov.cancelledAt = nowLabel();
     mov.originalAmount = mov.amount;
     mov.amount = 0;
+	    mov.operationId = operationId;
+	    addAudit('cash_movement_cancelled', { movementId: mov.id, businessId, operationId });
 
-    if(!save()) return;
+	    const committed = await commitCriticalMutation(previousState, 'cash_movement_cancelled', (next) =>
+	      next.movements.some((movement) => movement.id === mov.id && movement.businessId === businessId
+	        && movement.status === 'cancelled' && movement.operationId === operationId));
     renderApp('cash');
-    toast(`Movimiento anulado por ${mov.cancelledBy} a las ${mov.cancelledAt}`);
+	    if (committed.ok) toast(committed.pending ? 'Movimiento anulado; sincronización pendiente.' : `Movimiento anulado por ${mov.cancelledBy} a las ${mov.cancelledAt}`);
   };
 
   window.printReceipt = function(id) {
@@ -4996,10 +5459,10 @@ function parseMoney(value) {
 		  id = decodeActionId(id);
 	    const s = salesForBiz().find(x => x.id === id);
     if (!s) return;
-    const phone = s.customerPhone || '';
+	    const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(s.customerPhone || '') || '';
     const bizName = currentBusiness().name;
     const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
-    const url = `https://wa.me/${phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(text)}`;
+	    const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
   };
 
@@ -5106,9 +5569,32 @@ function parseMoney(value) {
 	    const detail = $('#cloudStatusDetail');
 	    if (detail) detail.textContent = info.detail;
 	  });
-	  window.addEventListener('click360-access-changed', () => {
-	    if (currentUser()) renderApp(route);
-	  });
+		  window.addEventListener('click360-access-changed', () => {
+		    if (currentUser()) renderApp(route);
+		  });
+		  window.addEventListener('click360-online-only-commit', (event) => {
+        const key = commitCheckpointKey(event.detail || {});
+        const checkpoint = key ? onlineOnlyCommitCheckpoints.get(key) : null;
+        if (!checkpoint || checkpoint.context !== activeTenantContext
+          || Number(event.detail?.updatedAtMs || 0) !== checkpoint.updatedAtMs) return;
+        onlineOnlyCommitCheckpoints.delete(key);
+        const exactCurrentState = Number(state.updatedAtMs || 0) === checkpoint.updatedAtMs;
+        if (event.detail?.success === true) {
+          if (exactCurrentState) rememberPersistedState();
+          toast('Cambio guardado en la nube.', 'ok');
+          return;
+        }
+        const scope = contextScope(checkpoint.context);
+        const hasNewerCheckpoint = [...onlineOnlyCommitCheckpoints.values()].some((item) =>
+          contextScope(item.context) === scope && item.updatedAtMs > checkpoint.updatedAtMs);
+        if (exactCurrentState && !hasNewerCheckpoint) {
+          restoreCriticalSnapshot(checkpoint.previousState, { source: 'online_only_failed', pendingRemoteSync: false });
+          renderApp(route);
+          toast('No pudimos guardar el cambio. La información anterior sigue intacta.', 'err');
+          return;
+        }
+        toast('Una operación anterior no se confirmó; el cambio más reciente permanece protegido.', 'err');
+		  });
 
 	  // Safety net for mutations that have not yet persisted through their action handler.
   setInterval(() => {
@@ -5215,7 +5701,7 @@ function parseMoney(value) {
     // Expose helpers globally so they work in inline onclick
     window.viewInvoiceImage = (id) => {
 	   id = decodeActionId(id);
-       const inv = (state.invoices || []).find(x => x.id === id);
+	       const inv = (state.invoices || []).find(x => x.id === id && x.businessId === biz.id);
        const imageSrc = safeImageSrc(inv?.imageData);
        if (inv && imageSrc) {
           showModal(`<div class="modalHeader"><h2>Factura de ${escapeHtml(inv.provider)}</h2><button class="closeBtn" data-close>×</button></div>
@@ -5226,18 +5712,22 @@ function parseMoney(value) {
        }
     };
 
-    window.deleteInvoice = (id) => {
+	    window.deleteInvoice = async (id) => {
 	   id = decodeActionId(id);
        if (!isOwnerUser()) return toast('Solo el dueño puede anular facturas.', 'err');
-       const invoice = (state.invoices || []).find(x => x.id === id);
+	       const invoice = (state.invoices || []).find(x => x.id === id && x.businessId === biz.id);
        if (!invoice || invoice.status === 'cancelled') return;
+	       if (isBusinessDateClosed(invoice.date, biz.id)) return toast('Reabre la caja de esa fecha antes de anular la factura.', 'err');
        if (confirm('¿Anular esta factura? Se conservará el registro y también se anulará su movimiento de caja.')) {
+	          const previousState = cloneState(state);
+	          const operationId = uid('invoicecancel');
           invoice.status = 'cancelled';
+	          invoice.operationId = operationId;
           invoice.originalAmount = invoice.amount;
           invoice.amount = 0;
           invoice.cancelledBy = authUser().name || 'Propietario';
           invoice.cancelledAt = nowLabel();
-          const linked = state.movements.filter(m => m.invoiceId === id && m.status !== 'cancelled');
+	          const linked = state.movements.filter(m => m.businessId === biz.id && m.invoiceId === id && m.status !== 'cancelled');
           linked.forEach(movement => {
             movement.status = 'cancelled';
             movement.originalAmount = movement.amount;
@@ -5245,11 +5735,12 @@ function parseMoney(value) {
             movement.cancelledBy = invoice.cancelledBy;
             movement.cancelledAt = invoice.cancelledAt;
           });
-          addAudit('supplier_invoice_cancelled', { invoiceId: id, linkedMovements: linked.length });
-          if(!save()) return;
-          if (window.click360SyncNow) window.click360SyncNow().catch(()=>{});
+	          addAudit('supplier_invoice_cancelled', { invoiceId: id, linkedMovements: linked.length, operationId });
+	          const committed = await commitCriticalMutation(previousState, 'supplier_invoice_cancelled', (next) =>
+	            next.invoices.some((item) => item.id === id && item.businessId === biz.id
+	              && item.status === 'cancelled' && item.operationId === operationId));
           filterAndRender();
-          toast('Factura y movimiento anulados');
+	          if (committed.ok) toast(committed.pending ? 'Factura anulada; sincronización pendiente.' : 'Factura y movimiento anulados');
        }
     };
 
@@ -5291,7 +5782,7 @@ function parseMoney(value) {
     const amountIn = $('#iAmount');
     if (amountIn) amountIn.oninput = () => { amountIn.value = amountIn.value.replace(/[^0-9.,]/g, ''); };
 
-    $('#invoiceForm').onsubmit = e => {
+	    $('#invoiceForm').onsubmit = async e => {
        e.preventDefault();
        const provider = $('#iProvider').value.trim();
        const number = $('#iNumber').value.trim();
@@ -5303,10 +5794,15 @@ function parseMoney(value) {
           toast('Por favor completa todos los campos requeridos', 'err');
           return;
        }
+	       const businessId = currentBusiness().id;
+	       if (isBusinessDateClosed(date, businessId)) return toast('Reabre la caja de esa fecha antes de registrar la factura.', 'err');
+	       const previousState = cloneState(state);
+	       const operationId = uid('invoiceop');
 
        const newInv = {
           id: uid('inv'),
-          businessId: currentBusiness().id,
+	          operationId,
+	          businessId,
           provider,
           number,
           date,
@@ -5321,22 +5817,25 @@ function parseMoney(value) {
        state.invoices.push(newInv);
        state.movements.push({
           id: uid('mov'),
-          businessId: currentBusiness().id,
+	          operationId,
+	          businessId,
           date,
           when: nowLabel(),
           kind: 'compra',
           amount,
           note: `Factura proveedor ${provider} #${number}`,
           invoiceId: newInv.id,
+	          cashSessionId: currentOpenCashSession(businessId, date)?.id || '',
+	          createdAtMs: Date.now(),
           createdBy: authUser().name || 'Usuario'
        });
-       addAudit('supplier_invoice_created', { invoiceId: newInv.id, provider, number, amount });
-       if(!save()) return;
-
-       if (window.click360SyncNow) window.click360SyncNow().catch(()=>{});
+	       addAudit('supplier_invoice_created', { invoiceId: newInv.id, provider, number, amount, operationId });
+	       const committed = await commitCriticalMutation(previousState, 'supplier_invoice_created', (next) =>
+	         next.invoices.some((item) => item.id === newInv.id && item.businessId === businessId && item.operationId === operationId));
+	       if (!committed.ok) { closeModal(); if (onSaved) onSaved(); return; }
 
        closeModal();
-       toast('Factura guardada con éxito', 'ok');
+	       toast(committed.pending ? 'Factura guardada; sincronización pendiente.' : 'Factura guardada con éxito', 'ok');
        if (onSaved) onSaved();
     };
   }

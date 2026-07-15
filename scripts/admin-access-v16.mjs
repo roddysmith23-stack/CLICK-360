@@ -135,7 +135,7 @@ await backupRef.create({
   beforeAccess: account,
   tenantIdentity: stateSummary,
   createdAt: FieldValue.serverTimestamp(),
-  appVersion: '16.0.0'
+  appVersion: '16.2.0'
 });
 const verifiedBackup = await backupRef.get();
 if (!verifiedBackup.exists || verifiedBackup.data()?.beforeHash !== beforeHash
@@ -199,7 +199,7 @@ await db.runTransaction(async (transaction) => {
     requestedAfter: plainFirestoreValue(patch),
     confirmation: expectedConfirmation,
     createdAt: FieldValue.serverTimestamp(),
-    appVersion: '16.0.0'
+    appVersion: '16.2.0'
   });
 });
 

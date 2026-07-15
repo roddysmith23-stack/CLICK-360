@@ -91,11 +91,21 @@ service cloud.firestore {
       return accessDoc().data;
     }
 
+    function hasAccountAccess() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid));
+    }
+
     function accountAccessReadable() {
       let data = accessData();
       return signedIn()
-        && exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid))
+        && hasAccountAccess()
         && data.uid == request.auth.uid
+        && data.businessId == request.auth.uid
+        && (!data.keys().hasAny(["ownerId"]) || data.ownerId == request.auth.uid)
+        && (!data.keys().hasAny(["tenantKey"])
+          || data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid)
+        && data.businessId != "demo-click360"
         && (data.status == "trial" || data.status == "trial_active"
           || data.status == "expired" || data.status == "trial_expired"
           || data.status == "active" || data.status == "paid_base"
@@ -121,79 +131,18 @@ service cloud.firestore {
     }
 
     function ownerUser() {
-      return legacyOwnerUser() || activeAccountOwnerUser();
+      return hasAccountAccess() ? activeAccountOwnerUser() : legacyOwnerUser();
     }
 
     function ownerReadUser() {
-      return legacyOwnerUser() || accountAccessReadable();
-    }
-
-    function workerUser(businessId) {
-      let data = userData();
-      return signedIn()
-        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
-        && businessId != "demo-click360"
-        && data.approved == true
-        && data.status == "active"
-        && data.ownerId == businessId
-        && businessId != request.auth.uid
-        && (data.role == "worker" || data.role == "cashier" || data.role == "inventory")
-        && (
-          hasActiveMembership(businessId)
-          || (request.auth.token.email != null
-            && hasActiveInvite(request.auth.token.email)
-            && inviteData(request.auth.token.email).ownerId == businessId)
-        );
-    }
-
-    function permissionWorkerUser(businessId) {
-      let data = userData();
-      return signedIn()
-        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
-        && data.approved == true
-        && data.status == "active"
-        && data.ownerId == businessId
-        && businessId != request.auth.uid
-        && hasActiveMembership(businessId);
+      return hasAccountAccess() ? accountAccessReadable() : legacyOwnerUser();
     }
 
     function tenantReadable(businessId) {
-      return (ownerReadUser() && request.auth.uid == businessId)
-        || workerUser(businessId);
-    }
-
-    function workerCan(businessId, module, action) {
-      let permissions = membershipData(businessId).permissions;
-      return permissions is map
-        && permissions[module] is map
-        && permissions[module][action] == true;
-    }
-
-    function workerCanAny(businessId, module) {
-      return workerCan(businessId, module, "create")
-        || workerCan(businessId, module, "edit")
-        || workerCan(businessId, module, "delete")
-        || workerCan(businessId, module, "manage");
-    }
-
-    function workerListMutationAllowed(businessId, module, previous, next) {
-      return previous is list
-        && next is list
-        && (
-          (next.size() > previous.size() && workerCan(businessId, module, "create"))
-          || (next.size() < previous.size() && workerCan(businessId, module, "delete"))
-          || (next.size() == previous.size() && workerCan(businessId, module, "edit"))
-          || workerCan(businessId, module, "manage")
-        );
-    }
-
-    function validWorkerAuditAppend() {
-      let previous = resource.data.payload.data.auditLogs;
-      let next = request.resource.data.payload.data.auditLogs;
-      return next.size() == previous.size() + 1
-        && next[previous.size()].userId == request.auth.uid
-        && next[previous.size()].action is string
-        && next[previous.size()].createdAt is string;
+      // V16.2 keeps the monolithic tenant snapshot owner-only. Worker access
+      // returns after business modules move to per-record collections in P1;
+      // exposing this document would reveal every module regardless of role.
+      return ownerReadUser() && request.auth.uid == businessId;
     }
 
     function validStatePayload() {
@@ -235,36 +184,6 @@ service cloud.firestore {
         && request.resource.data.payload.identity.businessId == businessId
         && request.resource.data.payload.identity.tenantKey == "owner:" + businessId + ":business:" + businessId
         && validStatePayload();
-    }
-
-    function validWorkerStateUpdate(businessId) {
-      let dataChanges = request.resource.data.payload.data.diff(resource.data.payload.data).affectedKeys();
-      let settingsChanges = request.resource.data.payload.data.settings.diff(resource.data.payload.data.settings).affectedKeys();
-      return permissionWorkerUser(businessId)
-        && writeMatchesTenant(businessId)
-        && request.resource.data.ownerUid == resource.data.ownerUid
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.businessId == resource.data.businessId
-        && request.resource.data.tenantKey == resource.data.tenantKey
-        && request.resource.data.schemaVersion == resource.data.schemaVersion
-        && request.resource.data.payload.identity == resource.data.payload.identity
-        && dataChanges.hasOnly([
-          "products", "deletedProducts", "sales", "movements", "dailyReports", "invoices",
-          "layaways", "cashSessions", "notifications", "auditLogs", "settings", "updatedAtMs", "updatedAt"
-        ])
-        && !dataChanges.hasAny(["businesses", "activeBusinessId", "legalAcceptances"])
-        && (!dataChanges.hasAny(["products"]) || workerListMutationAllowed(businessId, "inventory", resource.data.payload.data.products, request.resource.data.payload.data.products))
-        && (!dataChanges.hasAny(["deletedProducts"]) || workerCan(businessId, "inventory", "delete") || workerCan(businessId, "inventory", "manage"))
-        && (!dataChanges.hasAny(["sales"]) || workerListMutationAllowed(businessId, "sales", resource.data.payload.data.sales, request.resource.data.payload.data.sales))
-        && (!dataChanges.hasAny(["layaways"]) || workerListMutationAllowed(businessId, "sales", resource.data.payload.data.layaways, request.resource.data.payload.data.layaways))
-        && (!dataChanges.hasAny(["movements", "dailyReports", "cashSessions"]) || workerCanAny(businessId, "cash") || workerCanAny(businessId, "sales") || workerCanAny(businessId, "suppliers"))
-        && (!dataChanges.hasAny(["invoices"]) || workerListMutationAllowed(businessId, "suppliers", resource.data.payload.data.invoices, request.resource.data.payload.data.invoices))
-        && (!dataChanges.hasAny(["notifications"]) || workerListMutationAllowed(businessId, "reminders", resource.data.payload.data.notifications, request.resource.data.payload.data.notifications))
-        && (!dataChanges.hasAny(["auditLogs"]) || validWorkerAuditAppend())
-        && settingsChanges.hasOnly(["labelTemplates", "customers", "reminders"])
-        && (!settingsChanges.hasAny(["labelTemplates"]) || workerListMutationAllowed(businessId, "inventory", resource.data.payload.data.settings.labelTemplates, request.resource.data.payload.data.settings.labelTemplates))
-        && (!settingsChanges.hasAny(["customers"]) || workerListMutationAllowed(businessId, "customers", resource.data.payload.data.settings.customers, request.resource.data.payload.data.settings.customers))
-        && (!settingsChanges.hasAny(["reminders"]) || workerListMutationAllowed(businessId, "reminders", resource.data.payload.data.settings.reminders, request.resource.data.payload.data.settings.reminders));
     }
 
     function validWorkerUserCreate(uid) {
@@ -419,16 +338,21 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.keys().hasAll([
-          "uid", "businessId", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
+          "uid", "ownerId", "businessId", "tenantKey", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
           "trialStartedAt", "lastSeenAt", "createdAt", "source", "entitlementVersion", "revision"
         ])
         && request.resource.data.keys().hasOnly([
-          "uid", "businessId", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
-          "trialStartedAt", "lastSeenAt", "createdAt", "source", "entitlementVersion", "revision"
+          "uid", "ownerId", "businessId", "tenantKey", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
+          "trialStartedAt", "profileUpdatedAt", "lastSeenAt", "createdAt", "source", "entitlementVersion", "revision"
         ])
         && request.resource.data.uid == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
         && request.resource.data.businessId == request.auth.uid
+        && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
+        && request.resource.data.businessId != "demo-click360"
         && request.resource.data.email == request.auth.token.email
+        && !exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && !exists(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email))
         && request.resource.data.name is string
         && request.resource.data.name.size() <= 120
         && (!request.resource.data.keys().hasAny(["photoURL"])
@@ -441,6 +365,8 @@ service cloud.firestore {
         && request.resource.data.entitlementVersion == 16
         && request.resource.data.revision == 1
         && request.resource.data.trialStartedAt == request.time
+        && (!request.resource.data.keys().hasAny(["profileUpdatedAt"])
+          || request.resource.data.profileUpdatedAt == request.time)
         && request.resource.data.lastSeenAt == request.time
         && request.resource.data.createdAt == request.time;
       allow update: if signedIn()
@@ -448,11 +374,12 @@ service cloud.firestore {
         && resource.data.uid == request.auth.uid
         && request.resource.data.uid == resource.data.uid
         && request.resource.data.email == resource.data.email
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "photoURL", "lastSeenAt"])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "photoURL", "profileUpdatedAt", "lastSeenAt"])
         && request.resource.data.lastSeenAt == request.time
         && (
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(["lastSeenAt"])
-          || (request.resource.data.name is string
+          || (request.resource.data.profileUpdatedAt == request.time
+            && request.resource.data.name is string
             && request.resource.data.name.size() <= 120
             && (!request.resource.data.keys().hasAny(["photoURL"])
               || (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 100000)))
@@ -489,7 +416,7 @@ service cloud.firestore {
         && request.resource.data.expiresAfterDays == 7
         && request.resource.data.singleUse == true
         && request.resource.data.createdAt == request.time
-        && request.resource.data.appVersion == "16.0.0";
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0");
       allow update: if businessId != "demo-click360" && (
         (ownerUser()
           && request.auth.uid == businessId
@@ -596,7 +523,7 @@ service cloud.firestore {
         && request.resource.data.price >= 0
         && request.resource.data.status == "pending"
         && request.resource.data.currency == "USD"
-        && request.resource.data.appVersion == "16.0.0"
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
         && request.resource.data.createdAt == request.time;
       allow update, delete: if false;
     }
@@ -618,7 +545,7 @@ service cloud.firestore {
         && request.resource.data.acceptanceId == acceptanceId
         && request.resource.data.termsVersion is string
         && request.resource.data.privacyVersion is string
-        && request.resource.data.appVersion == "16.0.0"
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
         && request.resource.data.acceptedAt == request.time;
       allow update, delete: if false;
     }
@@ -652,7 +579,7 @@ service cloud.firestore {
         && request.resource.data.mode.size() <= 40
         && request.resource.data.errorCode is string
         && request.resource.data.errorCode.size() <= 80
-        && request.resource.data.appVersion == "16.0.0"
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
         && request.resource.data.createdAt == request.time;
       allow read, update, delete: if false;
     }
@@ -672,10 +599,10 @@ service cloud.firestore {
     match /businesses/{businessId}/state/{stateId} {
       allow read: if stateId == "main" && tenantReadable(businessId);
       allow create: if stateId == "main" && request.auth.uid == businessId && ownerUser() && writeMatchesTenant(businessId);
-      allow update: if stateId == "main" && (
-        (ownerUser() && request.auth.uid == businessId && writeMatchesTenant(businessId))
-        || validWorkerStateUpdate(businessId)
-      );
+      allow update: if stateId == "main"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && writeMatchesTenant(businessId);
       allow delete: if false;
     }
 
