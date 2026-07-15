@@ -1,5 +1,20 @@
 # Changelog
 
+## V16.2 - 2026-07-15
+
+- Resolución de identidad UID-first con precedencia explícita: `accountAccess`, aprobación histórica validada, invitación intencional y trial solo para una identidad realmente nueva.
+- Estados de acceso tipados para fundador, planes pagados, trial activo/expirado, reconciliación de identidad, migración legacy y `ONLINE_ONLY_SAFE`.
+- Trial único de 7 x 24 horas basado en tiempo confiable del servidor y normalización defensiva de Timestamp, segundos, milisegundos y microsegundos.
+- Primer tenant V10 transaccional y fallback `ONLINE_ONLY_SAFE` para cuentas pagadas como Shary cuando no queda ninguna persistencia local disponible, sin crear seed ni sobrescribir un remoto concurrente.
+- Migración V9 -> V10 ampliada para conservar todos los módulos comerciales, perfiles y políticas, con dry-run, backup administrativo, hash de origen, conteos completos y verificación posterior.
+- Confirmación remota y rollback para operaciones críticas de inventario, ventas, caja, cierres, anulaciones, restauraciones y facturas; la interfaz no anuncia éxito en línea antes de confirmar la nube.
+- Tombstones y búsquedas comerciales aislados por negocio; comprobantes corrigen el subtotal previo al descuento y respetan la configuración explícita de IVA desactivado.
+- Snapshot monolítico V10 restringido temporalmente al propietario. El acceso operativo de trabajadores queda pausado hasta la arquitectura modular P1 para evitar exposición del negocio completo.
+- Reglas reforzadas para identidad canónica, precedencia de `accountAccess`, trial propio inmutable desde el cliente y bloqueo permanente de `demo-click360`.
+- PWA, manifest, assets, runtime guard y Service Worker actualizados a `mvp-launch-v16-2-r1`; Firebase Hosting se mantiene como origen canónico.
+- Harness V16.2 para trial, acceso, migración integral, operaciones críticas, owner-only, aislamiento y caché.
+- Estado operativo: **pendiente de completar PR, CI, smoke autenticado y publicación**. Véanse `docs/CLICK360_V16_2_RELEASE_REPORT.md` y `docs/CLICK360_V16_2_QA_CHECKLIST.md`; esta entrada no afirma despliegue.
+
 ## V16.1.2 - 2026-07-14
 
 - Resolución de acceso por Firebase Auth UID con `accountAccess` antes de compatibilidad legacy o invitaciones.

@@ -15,7 +15,9 @@ const flow = accessRoot.CLICK360_ACCESS_FLOW;
 assert(flow, 'access state machine loads');
 assert.deepEqual(Array.from(Object.values(flow.STATES)), [
   'loading', 'unauthenticated', 'authenticated_resolving', 'invalid_invitation', 'recoverable_error',
-  'authenticated_no_access', 'pending', 'blocked', 'online_only_safe', 'ready'
+  'authenticated_no_access', 'identity_reconciliation_required', 'pending', 'blocked',
+  'legacy_migration_required', 'online_only_safe', 'founder', 'paid_base', 'paid_pro',
+  'lifetime', 'trial_active', 'trial_expired', 'member', 'ready'
 ]);
 for (const state of ['unauthenticated', 'invalid_invitation', 'recoverable_error', 'authenticated_no_access']) {
   assert.equal(flow.gatePolicy(state, true).showPublicActions, true, `${state} keeps public actions`);
@@ -23,6 +25,12 @@ for (const state of ['unauthenticated', 'invalid_invitation', 'recoverable_error
 assert.equal(flow.gatePolicy('invalid_invitation', true).showRetry, true);
 assert.equal(flow.gatePolicy('recoverable_error', true).showRetry, true);
 assert.equal(flow.gatePolicy('blocked', true).showPublicActions, false);
+assert.equal(flow.gatePolicy('identity_reconciliation_required', true).showRetry, true);
+assert.equal(flow.stateForAccess({ mode: 'founder' }), 'founder');
+assert.equal(flow.stateForAccess({ mode: 'paid_base' }), 'paid_base');
+assert.equal(flow.stateForAccess({ mode: 'trial_active' }), 'trial_active');
+assert.equal(flow.stateForAccess({ mode: 'member' }), 'member');
+assert.equal(flow.stateForAccess({ mode: 'founder' }, true), 'online_only_safe');
 
 const now = Date.now();
 const explicit = { ownerId: 'owner-a', tokenLength: 12, sessionId: 'session-a', createdAtMs: now - 1000 };
@@ -68,7 +76,7 @@ vm.runInNewContext(printingSource, {
   Node: function Node() {}
 }, { filename: 'printing-service.js' });
 const printing = printRoot.CLICK360_PRINTING;
-assert.equal(printing.VERSION, '16.1.2');
+assert.equal(printing.VERSION, '16.2');
 for (const method of ['providers', 'status', 'discover', 'connect', 'disconnect', 'forgetDevice', 'print', 'printLabel', 'printReceipt', 'testPrint']) {
   assert.equal(typeof printing[method], 'function', `printing provider API exposes ${method}`);
 }
@@ -90,5 +98,5 @@ assert(html.indexOf('access-flow.js') < html.indexOf('firebase-service.js'));
 assert(html.indexOf('printing-service.js') < html.indexOf('app.js'));
 assert(worker.includes("'./access-flow.js'") && worker.includes("'./printing-service.js'"));
 
-console.log('PASS V16.1.2 auth: explicit states, UID-first resolution, stale-invite defense, server clock and secondary lastSeen');
-console.log('PASS V16.1.2 printing: provider contract, safe M02X status, system/PDF fallback and current-business receipts');
+console.log('PASS V16.2 auth: explicit states, UID-first resolution, stale-invite defense, server clock and secondary lastSeen');
+console.log('PASS V16.2 printing: provider contract, safe M02X status, system/PDF fallback and current-business receipts');

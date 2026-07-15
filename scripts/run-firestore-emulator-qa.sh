@@ -19,4 +19,15 @@ if ! has_java; then
   exit 1
 fi
 
-exec ./node_modules/.bin/firebase emulators:exec --only firestore --project demo-click360-p0-rules "node qa-firestore-emulator.cjs"
+rm -f firestore-debug.log
+./node_modules/.bin/firebase emulators:exec --only firestore --project demo-click360-p0-rules "node qa-firestore-emulator.cjs"
+
+if [ ! -f firestore-debug.log ]; then
+  echo "Firestore emulator did not produce firestore-debug.log; expression-limit verification is incomplete." >&2
+  exit 1
+fi
+
+if grep -q "maximum of 1000 expressions" firestore-debug.log; then
+  echo "Firestore rules exceeded the 1000-expression evaluation limit." >&2
+  exit 1
+fi

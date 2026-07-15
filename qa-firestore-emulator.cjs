@@ -119,7 +119,7 @@ function telemetry(eventId, businessId, eventType = 'bootstrap') {
     uidHash: 'a'.repeat(16),
     businessId,
     tenantKey: `owner:${businessId}:business:${businessId}`,
-    appVersion: '16.0.0',
+    appVersion: '16.2.0',
     requestId: `request-${eventId}`,
     mode: 'ready',
     errorCode: '',
@@ -155,7 +155,8 @@ async function main() {
       await setDoc(doc(db, 'businesses', 'owner-a', 'members', 'worker-a'), membership('worker-a', 'worker-a@example.test', 'owner-a'));
       const expiredStart = Timestamp.fromMillis(Date.now() - 8 * 24 * 60 * 60 * 1000);
       await setDoc(doc(db, 'accountAccess', 'expired-trial'), {
-        uid: 'expired-trial', email: 'expired@example.test', name: 'Expired', status: 'trial', plan: 'normal', trialDays: 7,
+        uid: 'expired-trial', ownerId: 'expired-trial', businessId: 'expired-trial',
+        tenantKey: 'owner:expired-trial:business:expired-trial', email: 'expired@example.test', name: 'Expired', status: 'trial', plan: 'normal', trialDays: 7,
         trialStartedAt: expiredStart, lastSeenAt: Timestamp.now(), createdAt: expiredStart, source: 'self_service'
       });
       await setDoc(doc(db, 'businesses', 'expired-trial', 'state', 'main'), state('expired-trial'));
@@ -191,6 +192,7 @@ async function main() {
     const attacker = env.authenticatedContext('attacker', { email: 'attacker@example.test' }).firestore();
     const selfWorker = env.authenticatedContext('self-worker', { email: 'self-worker@example.test' }).firestore();
     const trial = env.authenticatedContext('trial-user', { email: 'trial@example.test' }).firestore();
+    const legacyTrial = env.authenticatedContext('legacy-trial-user', { email: 'legacy-trial@example.test' }).firestore();
     const expiredTrial = env.authenticatedContext('expired-trial', { email: 'expired@example.test' }).firestore();
     const expiredPaid = env.authenticatedContext('expired-paid', { email: 'expired-paid@example.test' }).firestore();
     const historicalPaid = env.authenticatedContext('historical-paid', { email: 'historical-paid@example.test' }).firestore();
@@ -200,6 +202,7 @@ async function main() {
     const stateA = doc(ownerA, 'businesses', 'owner-a', 'state', 'main');
     const stateB = doc(ownerB, 'businesses', 'owner-b', 'state', 'main');
     const trialAccess = doc(trial, 'accountAccess', 'trial-user');
+    const legacyTrialAccess = doc(legacyTrial, 'accountAccess', 'legacy-trial-user');
     const trialState = doc(trial, 'businesses', 'trial-user', 'state', 'main');
     const paidFirstState = doc(paidFirstTenant, 'businesses', 'paid-first-tenant', 'state', 'main');
 
@@ -235,13 +238,26 @@ async function main() {
     await assertFails(setDoc(doc(ownerA, 'businesses', 'owner-a', 'legacyBackups', 'test'), { original: true }));
 
     await assertSucceeds(setDoc(trialAccess, {
-      uid: 'trial-user', businessId: 'trial-user', email: 'trial@example.test', name: 'Trial user', photoURL: '',
+      uid: 'trial-user', ownerId: 'trial-user', businessId: 'trial-user', tenantKey: 'owner:trial-user:business:trial-user', email: 'trial@example.test', name: 'Trial user', photoURL: '',
       status: 'trial', plan: 'normal', planCode: 'base', trialDays: 7,
-      trialStartedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), createdAt: serverTimestamp(),
+      trialStartedAt: serverTimestamp(), profileUpdatedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), createdAt: serverTimestamp(),
       source: 'self_service', entitlementVersion: 16, revision: 1
     }));
     await assertSucceeds(getDoc(trialAccess));
-    await assertSucceeds(updateDoc(trialAccess, { name: 'Trial user renamed', photoURL: 'https://example.test/profile.jpg', lastSeenAt: serverTimestamp() }));
+    await assertSucceeds(setDoc(legacyTrialAccess, {
+      uid: 'legacy-trial-user', ownerId: 'legacy-trial-user', businessId: 'legacy-trial-user', tenantKey: 'owner:legacy-trial-user:business:legacy-trial-user',
+      email: 'legacy-trial@example.test', name: 'Legacy trial user', photoURL: '', status: 'trial', plan: 'normal', planCode: 'base', trialDays: 7,
+      trialStartedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), createdAt: serverTimestamp(),
+      source: 'self_service', entitlementVersion: 16, revision: 1
+    }));
+    await assertSucceeds(getDoc(legacyTrialAccess));
+    await assertFails(setDoc(doc(ownerA, 'accountAccess', 'owner-a'), {
+      uid: 'owner-a', ownerId: 'owner-a', businessId: 'owner-a', tenantKey: 'owner:owner-a:business:owner-a',
+      email: 'owner-a@example.test', name: 'Owner A', photoURL: '', status: 'trial', plan: 'normal', planCode: 'base', trialDays: 7,
+      trialStartedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), createdAt: serverTimestamp(),
+      source: 'self_service', entitlementVersion: 16, revision: 1
+    }));
+    await assertSucceeds(updateDoc(trialAccess, { name: 'Trial user renamed', photoURL: 'https://example.test/profile.jpg', profileUpdatedAt: serverTimestamp(), lastSeenAt: serverTimestamp() }));
     await assertSucceeds(updateDoc(trialAccess, { lastSeenAt: serverTimestamp() }));
     await assertFails(updateDoc(trialAccess, { status: 'active', lastSeenAt: serverTimestamp() }));
     await assertSucceeds(updateDoc(doc(legacyHeartbeat, 'accountAccess', 'legacy-heartbeat'), { lastSeenAt: serverTimestamp() }));
@@ -268,8 +284,8 @@ async function main() {
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'invalid-event'), telemetry('invalid-event', 'owner-a', 'document_dump')));
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'demo-event'), telemetry('demo-event', 'demo-click360')));
 
-    await assertSucceeds(getDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main')));
-    await assertSucceeds(setDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main'), state('owner-a', 2)));
+    await assertFails(getDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main')));
+    await assertFails(setDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main'), state('owner-a', 2)));
     await assertFails(setDoc(doc(attacker, 'approvedUsers', 'attacker'), ownerProfile('attacker', 'attacker@example.test')));
 
     const v16Email = 'v16-worker@example.test';
@@ -280,7 +296,7 @@ async function main() {
     inviteBatch.set(v16InviteRef, {
       inviteHash: v16Hash, email: v16Email, name: 'V16 Worker', role: 'worker', permissions: workerPermissions(),
       ownerId: 'owner-a', businessId: 'owner-a', tenantKey: 'owner:owner-a:business:owner-a', status: 'pending',
-      expiresAfterDays: 7, singleUse: true, createdAt: serverTimestamp(), createdBy: 'owner-a', appVersion: '16.0.0'
+      expiresAfterDays: 7, singleUse: true, createdAt: serverTimestamp(), createdBy: 'owner-a', appVersion: '16.2.0'
     });
     inviteBatch.set(doc(ownerA, 'businesses', 'owner-a', 'ownerInviteSecrets', v16Hash), {
       inviteHash: v16Hash, token: 'raw-token-owner-only', email: v16Email, ownerId: 'owner-a', createdAt: serverTimestamp()
@@ -301,12 +317,12 @@ async function main() {
       transaction.set(doc(v16Worker, 'approvedUsers', v16Uid), v16ApprovedWorker(v16Uid, v16Email, 'owner-a', v16Hash));
       transaction.update(inviteRef, { status: 'accepted', acceptedBy: v16Uid, acceptedAt: serverTimestamp(), consumed: true });
     }));
-    await assertSucceeds(getDoc(doc(v16Worker, 'businesses', 'owner-a', 'state', 'main')));
+    await assertFails(getDoc(doc(v16Worker, 'businesses', 'owner-a', 'state', 'main')));
 
     const workerProductState = state('owner-a', 3);
     workerProductState.payload.data.products.push({ id: 'product-v16', businessId: 'biz_main', code: 'V16-001' });
     workerProductState.payload.data.auditLogs.push({ id: 'audit-v16', userId: v16Uid, action: 'product_created', createdAt: new Date().toISOString() });
-    await assertSucceeds(setDoc(doc(v16Worker, 'businesses', 'owner-a', 'state', 'main'), workerProductState));
+    await assertFails(setDoc(doc(v16Worker, 'businesses', 'owner-a', 'state', 'main'), workerProductState));
 
     const replay = env.authenticatedContext('v16-replay', { email: v16Email }).firestore();
     await assertFails(setDoc(doc(replay, 'approvedUsers', 'v16-replay'), v16ApprovedWorker('v16-replay', v16Email, 'owner-a', v16Hash)));
@@ -331,12 +347,12 @@ async function main() {
     await assertSucceeds(setDoc(doc(ownerA, 'activationRequests', 'request-owner-a'), {
       requestId: 'request-owner-a', uid: 'owner-a', businessId: 'owner-a', tenantKey: 'owner:owner-a:business:owner-a',
       email: 'owner-a@example.test', businessName: 'Owner A', plan: 'base', period: 'month', price: 40,
-      currency: 'USD', requestCode: 'C360-OWNERA', status: 'pending', notes: '', createdAt: serverTimestamp(), appVersion: '16.0.0'
+      currency: 'USD', requestCode: 'C360-OWNERA', status: 'pending', notes: '', createdAt: serverTimestamp(), appVersion: '16.2.0'
     }));
     await assertSucceeds(setDoc(doc(ownerA, 'legalAcceptances', 'owner-a_2026-07-13'), {
       acceptanceId: 'owner-a_2026-07-13', uid: 'owner-a', businessId: 'owner-a', tenantKey: 'owner:owner-a:business:owner-a',
       termsVersion: '2026-07-13', privacyVersion: '2026-07-13', locale: 'es-EC', source: 'qa',
-      acceptedAt: serverTimestamp(), appVersion: '16.0.0'
+      acceptedAt: serverTimestamp(), appVersion: '16.2.0'
     }));
     await assertFails(setDoc(doc(ownerA, 'businesses', 'demo-click360', 'state', 'main'), state('demo-click360')));
 
@@ -361,11 +377,11 @@ async function main() {
     await assertFails(getDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main')));
 
     const stored = await getDoc(doc(ownerA, 'businesses', 'owner-a', 'state', 'main'));
-    assert.strictEqual(stored.data().revision, 3, 'the authorized V16 worker write reaches only owner-a state');
+    assert.strictEqual(stored.data().revision, 1, 'worker attempts never change the owner-only tenant snapshot');
     console.log('PASS Firestore emulator: tenant reads/writes, approval, invite, revocation boundaries, and legacy backups');
     console.log('PASS Firestore emulator: trial creation, server-time write window, expired read-only, and demo tenant denial');
     console.log('PASS Firestore emulator: active-but-unapproved and cross-tenant attempts are denied');
-    console.log('PASS Firestore emulator: V16 one-use invitation, member permissions, activation, legal, and demo block');
+    console.log('PASS Firestore emulator: V16 invitations remain isolated and worker access to the monolithic snapshot is denied');
     console.log('PASS Firestore emulator: paid UID can transactionally create only its own first V10 tenant');
   } finally {
     await env.cleanup();

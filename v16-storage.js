@@ -62,6 +62,11 @@
       schemaVersion: 10,
       snapshot,
       revision: Number(metadata.revision || 0),
+      baseRevision: Number(metadata.baseRevision || 0),
+      pendingRemoteSync: metadata.pendingRemoteSync === true,
+      operationId: String(metadata.operationId || '').slice(0, 96),
+      payloadHash: String(metadata.payloadHash || '').slice(0, 128),
+      source: String(metadata.source || 'local_snapshot').slice(0, 48),
       updatedAtMs: Number(snapshot?.updatedAtMs || Date.now()),
       savedAtMs: Date.now()
     };
