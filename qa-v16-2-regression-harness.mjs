@@ -10,6 +10,7 @@ const rules = fs.readFileSync('firestore.rules', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 const storage = fs.readFileSync('v16-storage.js', 'utf8');
+const config = fs.readFileSync('firebase-config.js', 'utf8');
 const robots = fs.readFileSync('robots.txt', 'utf8');
 const sitemap = fs.readFileSync('sitemap.xml', 'utf8');
 
@@ -52,6 +53,23 @@ assert(!app.includes('Error de Renderizado') && !app.includes('e.stack || e.mess
 assert(!firebase.includes('UID de usuario:') && !firebase.includes('usando este UID en Firestore'));
 assert(firebase.includes('profileUpdatedAt: firebase.firestore.FieldValue.serverTimestamp()') && rules.includes('"profileUpdatedAt"'), 'profile freshness uses a server timestamp');
 assert(firebase.includes('reanchorTrustedClock') && firebase.includes('accessClockNow?.(previousAccess'), 'account listeners preserve a monotonic trusted clock');
+assert(config.includes('window.location.hostname === "click-360.web.app" ? "click-360.web.app" : "click-360.firebaseapp.com"'), 'official Hosting uses same-origin Firebase Auth redirect helper for iOS/Brave');
+assert(firebase.includes("AUTH_REDIRECT_PENDING_KEY = 'CLICK360:V16_2:AUTH_REDIRECT_PENDING'"));
+assert(firebase.includes('await auth.getRedirectResult()'), 'redirect result is explicitly resolved before treating the user as unauthenticated');
+assert(firebase.includes('AUTH_USER_NULL_AFTER_REDIRECT') && firebase.includes('AUTH_REDIRECT_NO_RESULT') && firebase.includes('AUTH_PERSISTENCE_FAILED'), 'redirect/persistence login loop codes are visible');
+assert(!firebase.includes('if (auth.currentUser) await auth.signOut();'), 'login no longer signs out an existing user before Google can resolve redirect state');
+for (const code of [
+  'AUTH_ACCOUNT_NOT_FOUND',
+  'AUTH_ACCESS_REJECTED',
+  'AUTH_APPROVED_USERS_REJECTED',
+  'AUTH_ACCOUNT_ACCESS_REJECTED',
+  'FIRESTORE_PERMISSION_DENIED',
+  'BOOTSTRAP_PREPARE_FAILED',
+  'BOOTSTRAP_CREATE_FAILED',
+  'UNKNOWN_LOGIN_GATE_FAILURE'
+]) {
+  assert(firebase.includes(code), `login gate exposes ${code}`);
+}
 
 assert(rules.includes('return hasAccountAccess() ? activeAccountOwnerUser() : legacyOwnerUser();'));
 assert(rules.includes('!exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))'));
@@ -73,7 +91,7 @@ assert(app.includes('event.target.value =') && app.includes('galleryInput.click(
 for (const source of [app, firebase, html, worker]) {
   assert(!source.includes('mvp-launch-v16-1-2-r1'));
 }
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p0-r1'"));
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p0-r2'"));
 assert(html.includes('<link rel="canonical" href="https://click-360.web.app/"'));
 assert(robots.includes('https://click-360.web.app/sitemap.xml'));
 assert(sitemap.includes('<loc>https://click-360.web.app/</loc>'));

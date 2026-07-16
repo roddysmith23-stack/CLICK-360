@@ -1,6 +1,6 @@
 window.CLICK360_FIREBASE_CONFIG = {
     apiKey: "AIzaSyC0d-U6fvcYz7ohhMZXch69mf3j2TzwcSE",
-    authDomain: "click-360.firebaseapp.com",
+    authDomain: window.location.hostname === "click-360.web.app" ? "click-360.web.app" : "click-360.firebaseapp.com",
     projectId: "click-360",
     storageBucket: "click-360.firebasestorage.app",
     messagingSenderId: "7620168025",

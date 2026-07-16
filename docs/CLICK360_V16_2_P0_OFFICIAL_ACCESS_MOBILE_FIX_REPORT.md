@@ -1,47 +1,49 @@
-# CLICK 360 V16.2 P0 - Official Access and Mobile Fix Report
+# CLICK 360 V16.2 P0 - Official Access and Login Loop Report
 
 Date: 2026-07-16
 
-Branch: `hotfix/p0-official-access-and-mobile-fixes`
+Branch: `hotfix/p0-login-loop-official`
 
-Release label: `1.0.1-p0`
+Release label: `1.0.2-p0`
 
-Build cache: `mvp-launch-v16-2-p0-r1`
+Build cache: `mvp-launch-v16-2-p0-r2`
 
 Canonical URL: `https://click-360.web.app/`
 
+## Current Verdict
+
+`1.0.1-p0` is **NOT_READY_LOGIN_LOOP**.
+
+Observed production behavior: after selecting a Google account on iPhone, CLICK 360 returns from Google, briefly shows "Validando seguridad..." and falls back to the public landing instead of crossing to the dashboard.
+
+`1.0.2-p0` is the corrective candidate and must not be marked READY until a real authenticated login crosses to the dashboard.
+
 ## Scope
 
-This hotfix intentionally contains only:
+This corrective hotfix intentionally contains only:
 
-- first-tenant bootstrap recovery for valid online accounts whose `businesses/{uid}/state/main` does not exist;
-- PRO Lifetime compatibility in source Firestore Rules, matching the limited live hotfix and rejecting malformed `pro_lifetime` records from the generic active paid branch;
-- mobile layout correction for "Nuevo recordatorio";
-- separated Galeria and Tomar foto image inputs for products and supplier invoices;
+- same-origin Firebase Auth redirect helper for the official Hosting URL;
+- explicit redirect-result diagnostics and visible login-gate error codes;
+- removal of automatic pre-login `signOut()`;
 - cache/version bump for the official Firebase Hosting release.
 
 No V17 modular architecture, Cloud Run, staging, Control Center expansion, commercial-module refactor, data migration, or client data modification is included.
 
 ## Diagnosis
 
-The first bootstrap path could still depend on the normal local mutation path. That path is guarded by the authenticated mutation state, so a valid account with no remote tenant and limited local storage could be blocked before the canonical transaction created `state/main`.
+The official app was served from `https://click-360.web.app/`, but Firebase Auth used `authDomain: click-360.firebaseapp.com`. On iOS and Brave this redirect helper can lose the returned Auth session because the helper and app are on different browser storage partitions.
 
-The source `firestore.rules` did not include the limited PRO Lifetime clause already deployed live, creating source/live drift.
-
-On small mobile widths, the reminder date-time control could force horizontal overflow. Product and invoice image capture needed stricter separate controls so Galeria never inherited camera capture behavior.
+The client also did not call `getRedirectResult()` before treating a null Auth state as unauthenticated, so the customer saw the public landing again without a visible diagnostic code.
 
 ## Implemented Fixes
 
-- Added `click360PrepareInitialTenantState()` to prepare and validate the initial tenant snapshot without calling `save()`.
-- Updated bootstrap decision logic to require a prepared snapshot, then permit local, IndexedDB, or online-only safe creation.
-- Added source Rules support for active PRO Lifetime:
-  `status == active`, `lifetime == true`, `plan == pro`, `planCode == pro_lifetime`, `billingStatus == lifetime`.
-- Blocked malformed `planCode == pro_lifetime` from passing through the generic active paid branch.
-- Replaced the single reminder `datetime-local` control with separate `date` and `time` inputs inside a responsive grid.
-- Replaced label-wrapped image inputs with independent buttons and inputs:
-  Galeria uses `accept="image/*"` with no `capture`; Tomar foto uses `accept="image/*"` and `capture="environment"`.
-- Added release label `1.0.1-p0` and build SHA injection during static build.
-- Bumped service worker, runtime guard, manifest and asset query version to `mvp-launch-v16-2-p0-r1`.
+- Uses `authDomain: click-360.web.app` when the app is opened on the official URL, preserving redirect state in iOS/Brave.
+- Calls `auth.getRedirectResult()` during boot when a redirect login is pending.
+- Shows visible support codes instead of silently returning to the landing:
+  `AUTH_REDIRECT_NO_RESULT`, `AUTH_USER_NULL_AFTER_REDIRECT`, `AUTH_PERSISTENCE_FAILED`, `AUTH_ACCOUNT_NOT_FOUND`, `AUTH_ACCESS_REJECTED`, `AUTH_APPROVED_USERS_REJECTED`, `AUTH_ACCOUNT_ACCESS_REJECTED`, `FIRESTORE_PERMISSION_DENIED`, `BOOTSTRAP_PREPARE_FAILED`, `BOOTSTRAP_CREATE_FAILED`, `UNKNOWN_LOGIN_GATE_FAILURE`.
+- Keeps existing sessions while starting Google login; explicit logout/change-account remains available.
+- Added release label `1.0.2-p0` and build SHA injection during static build.
+- Bumped service worker, runtime guard, manifest and asset query version to `mvp-launch-v16-2-p0-r2`.
 
 ## Verification Before Deploy
 
@@ -49,13 +51,11 @@ On small mobile widths, the reminder date-time control could force horizontal ov
 | --- | --- | --- |
 | Static QA | PASS | `npm run qa` |
 | Firestore Rules emulator | PASS | `npm run qa:rules` |
-| PRO Lifetime first tenant | PASS | Emulator: `pro-lifetime-first` can create only `businesses/pro-lifetime-first/state/main` |
-| Malformed PRO Lifetime | PASS | Emulator rejects `bad-pro-lifetime` |
-| Demo tenant | PASS | Emulator rejects client writes to `demo-click360` |
-| Reminder mobile layout | PASS | Chromium Android + WebKit iPhone at 320, 360, 390, 430 px: no horizontal overflow |
-| Galeria contract | PASS | `capture == null`, `accept == image/*`, independent input/button |
-| Tomar foto contract | PASS | `capture == environment`, `accept == image/*`, independent input/button |
-| Public shell local smoke | PASS | Chromium and WebKit: HTTP 200, title OK, versioned scripts, no console errors |
+| Auth domain same-origin | PASS | Regression harness verifies `click-360.web.app` uses same-origin `authDomain` |
+| Redirect result handling | PASS | Regression harness verifies `getRedirectResult()` and redirect-pending marker |
+| Visible error codes | PASS | Regression harness verifies login-gate codes |
+| Public shell local smoke | PENDING | Must be rerun after build |
+| Real authenticated login | PENDING | Must cross dashboard before READY |
 
 Visual evidence is stored locally under `output/playwright/` and is intentionally not committed.
 
@@ -69,6 +69,6 @@ Before publishing:
 
 ## Status
 
-Pre-deploy status: `READY_FOR_OFFICIAL_RELEASE_CANDIDATE`
+Pre-deploy status: `NOT_READY_LOGIN_LOOP`
 
-Final production status must be updated only after PR, CI, Rules deploy, Hosting deploy, and official smoke are complete.
+Final production status must be updated only after real authenticated login crosses to the dashboard.
