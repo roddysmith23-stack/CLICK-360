@@ -6,6 +6,48 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function v17PlatformFounder() {
+      return signedIn()
+        && request.auth.token.platformRole == "platform_founder";
+    }
+
+    function v17SuperAdmin() {
+      return v17PlatformFounder()
+        && request.auth.token.adminLevel == "super_admin";
+    }
+
+    function v17PlatformControlReader() {
+      return v17PlatformFounder()
+        && (request.auth.token.adminLevel == "super_admin"
+          || request.auth.token.adminLevel == "founder_admin");
+    }
+
+    function v17MembershipData(organizationId) {
+      return get(/databases/$(database)/documents/organizations/$(organizationId)/members/$(request.auth.uid)).data;
+    }
+
+    function activeV17Member(organizationId) {
+      let member = v17MembershipData(organizationId);
+      return signedIn()
+        && organizationId != "demo-click360"
+        && exists(/databases/$(database)/documents/organizations/$(organizationId)/members/$(request.auth.uid))
+        && member.uid == request.auth.uid
+        && member.organizationId == organizationId
+        && member.status == "active";
+    }
+
+    function v17OrganizationAdmin(organizationId) {
+      let member = v17MembershipData(organizationId);
+      return activeV17Member(organizationId)
+        && (member.organizationRole == "owner"
+          || member.organizationRole == "co_owner"
+          || member.organizationRole == "admin");
+    }
+
+    function canReadV17Organization(organizationId) {
+      return v17SuperAdmin() || activeV17Member(organizationId);
+    }
+
     function userDoc() {
       return get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid));
     }
@@ -123,6 +165,10 @@ service cloud.firestore {
             && request.time < data.trialStartedAt + duration.value(7, "d"))
           || ((data.status == "founder" || data.status == "lifetime")
             && (data.plan == "base" || data.plan == "pro" || data.plan == "founder" || data.plan == "lifetime"))
+          || (data.status == "active"
+            && data.lifetime == true
+            && ((data.plan == "pro" && data.planCode == "pro_lifetime" && data.billingStatus == "lifetime")
+              || (data.plan == "founder_unlimited" && data.planCode == "founder_unlimited" && data.billingStatus == "internal")))
           || ((data.status == "active" || data.status == "paid_base" || data.status == "paid_pro")
             && (data.plan == "normal" || data.plan == "base" || data.plan == "pro")
             && (!data.keys().hasAny(["expiresAt"])
@@ -315,6 +361,7 @@ service cloud.firestore {
     match /approvedUsers/{uid} {
       allow read: if signedIn() && (
         request.auth.uid == uid
+        || v17PlatformControlReader()
         || (ownerUser() && resource.data.ownerId == request.auth.uid && resource.data.role == "worker")
       );
       // Owner accounts are provisioned only by an administrative credential.
@@ -326,6 +373,7 @@ service cloud.firestore {
     match /approvedUsersByEmail/{email} {
       allow read: if signedIn() && (
         request.auth.token.email == email
+        || v17PlatformControlReader()
         || (ownerUser() && resource.data.ownerId == request.auth.uid)
       );
       allow create: if validInviteWrite(email);
@@ -334,7 +382,7 @@ service cloud.firestore {
     }
 
     match /accountAccess/{uid} {
-      allow read: if signedIn() && request.auth.uid == uid;
+      allow read: if signedIn() && (request.auth.uid == uid || v17PlatformControlReader());
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.keys().hasAll([
@@ -501,7 +549,7 @@ service cloud.firestore {
     }
 
     match /activationRequests/{requestId} {
-      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || v17PlatformControlReader());
       allow create: if signedIn()
         && request.resource.data.keys().hasAll([
           "requestId", "uid", "businessId", "tenantKey", "email", "businessName", "plan",
@@ -582,6 +630,75 @@ service cloud.firestore {
         && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
         && request.resource.data.createdAt == request.time;
       allow read, update, delete: if false;
+    }
+
+    // V17 separates person identity, organization membership, commercial plan,
+    // billing and recognition. Provisioning remains Admin SDK-only.
+    match /plans/{planId} {
+      allow read: if resource.data.active == true;
+      allow write: if false;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || v17PlatformControlReader());
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["displayName", "photoURL", "updatedAt"])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 120
+        && request.resource.data.photoURL is string
+        && request.resource.data.photoURL.size() <= 100000
+        && request.resource.data.updatedAt == request.time;
+      allow create, delete: if false;
+    }
+
+    match /entitlements/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || v17PlatformControlReader());
+      allow write: if false;
+    }
+
+    match /organizations/{organizationId} {
+      allow read: if canReadV17Organization(organizationId);
+      allow write: if false;
+    }
+
+    match /organizations/{organizationId}/members/{uid} {
+      allow read: if signedIn() && (
+        v17SuperAdmin()
+        || request.auth.uid == uid
+        || v17OrganizationAdmin(organizationId)
+      );
+      allow write: if false;
+    }
+
+    match /userOrganizations/{uid}/organizations/{organizationId} {
+      allow read: if signedIn() && (request.auth.uid == uid || v17PlatformControlReader());
+      allow write: if false;
+    }
+
+    match /subscriptions/{organizationId} {
+      allow read: if signedIn() && (canReadV17Organization(organizationId) || v17PlatformControlReader());
+      allow write: if false;
+    }
+
+    match /activationCodes/{codeHash} {
+      allow read, write: if false;
+    }
+
+    match /provisioningJobs/{jobId} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || v17PlatformControlReader());
+      allow write: if false;
+    }
+
+    match /auditLogs/{auditId} {
+      allow read: if v17PlatformControlReader();
+      allow write: if false;
+    }
+
+    match /supportDiagnostics/{diagnosticId} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || v17PlatformControlReader());
+      allow write: if false;
     }
 
     // Administrative operations run only through IAM-protected Admin SDK

@@ -28,8 +28,8 @@
   function normalizePlan(value) {
     const plan = String(value || '').trim().toLowerCase();
     if (['normal', 'base', 'paid_base'].includes(plan)) return 'base';
-    if (['pro', 'paid_pro'].includes(plan)) return 'pro';
-    if (plan === 'founder') return 'founder';
+    if (['pro', 'paid_pro', 'pro_lifetime'].includes(plan)) return 'pro';
+    if (['founder', 'founder_unlimited'].includes(plan)) return 'founder';
     if (plan === 'lifetime') return 'lifetime';
     return 'base';
   }
@@ -148,9 +148,17 @@
     return { ...PLAN_CATALOG[normalized].limits };
   }
 
-  function initialTenantBootstrapDecision({ localPersisted = false, onlineOnlySafe = false, online = false, readOnly = false } = {}) {
+  function initialTenantBootstrapDecision({
+    snapshotPrepared = false,
+    localPersisted = false,
+    indexedPersisted = false,
+    onlineOnlySafe = false,
+    online = false,
+    readOnly = false
+  } = {}) {
     if (readOnly) return { allowed: false, reason: 'read_only' };
-    if (localPersisted) return { allowed: true, mode: 'local_and_cloud' };
+    if (!snapshotPrepared) return { allowed: false, reason: 'snapshot_preparation_required' };
+    if (localPersisted || indexedPersisted) return { allowed: true, mode: 'local_and_cloud' };
     if (onlineOnlySafe && online) return { allowed: true, mode: 'cloud_only' };
     return { allowed: false, reason: online ? 'local_storage_required' : 'connection_required' };
   }

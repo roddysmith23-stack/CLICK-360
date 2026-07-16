@@ -10,10 +10,12 @@ const css = fs.readFileSync('styles.css', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
 assert.equal(domain.APP_VERSION, '16.2');
-assert.deepEqual(domain.initialTenantBootstrapDecision({ localPersisted: true, online: true }), { allowed: true, mode: 'local_and_cloud' });
-assert.deepEqual(domain.initialTenantBootstrapDecision({ localPersisted: false, onlineOnlySafe: true, online: true }), { allowed: true, mode: 'cloud_only' });
-assert.equal(domain.initialTenantBootstrapDecision({ localPersisted: false, onlineOnlySafe: true, online: false }).allowed, false);
-assert.equal(domain.initialTenantBootstrapDecision({ localPersisted: true, online: true, readOnly: true }).reason, 'read_only');
+assert.deepEqual(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, localPersisted: true, online: true }), { allowed: true, mode: 'local_and_cloud' });
+assert.deepEqual(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, indexedPersisted: true, online: true }), { allowed: true, mode: 'local_and_cloud' });
+assert.deepEqual(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, localPersisted: false, onlineOnlySafe: true, online: true }), { allowed: true, mode: 'cloud_only' });
+assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, localPersisted: false, onlineOnlySafe: true, online: false }).allowed, false);
+assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, localPersisted: true, online: true, readOnly: true }).reason, 'read_only');
+assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: false, localPersisted: true, online: true }).reason, 'snapshot_preparation_required');
 
 assert.equal(domain.publicIntentAllowsTrialCreation('trial'), true);
 assert.equal(domain.publicIntentAllowsTrialCreation('register'), true);
@@ -37,6 +39,8 @@ assert(!firebase.includes('self_service_register') && !firebase.includes('self_s
 assert(firebase.includes('if (auth.currentUser) await auth.signOut()'));
 assert(firebase.includes("const currentParams = new URLSearchParams(location.search)"));
 assert(firebase.includes("initialTenantBootstrapDecision({"));
+assert(firebase.includes('click360PrepareInitialTenantState?.(ACTIVE_CONTEXT)'));
+assert(!firebase.includes('const localPersisted = window.click360PersistTenantState?.() === true'));
 assert(firebase.includes("pushLocalToFirestore('initial_tenant_seed')"));
 assert(!firebase.includes('STATE_DOC.set('));
 

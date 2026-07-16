@@ -798,6 +798,62 @@ function parseMoney(value) {
       return false;
     }
   };
+  window.click360PrepareInitialTenantState = async function(context = activeTenantContext) {
+    if (!context || !activeTenantContext || !stateStorageKey()
+      || context.authUid !== activeTenantContext.authUid
+      || context.tenantKey !== activeTenantContext.tenantKey) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'tenant_context_mismatch' };
+    }
+
+    const snapshot = cloneState(state);
+    if (!snapshot) return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_clone_failed' };
+    snapshot.identity = tenantIdentity();
+    if (!sameTenantIdentity(snapshot.identity, context)
+      || tenantRuntime?.validBusinessPayload({ identity: snapshot.identity, data: snapshot }, context) !== true) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_identity_invalid' };
+    }
+
+    const serialized = JSON.stringify(snapshot);
+    if (stateSizeBytes(serialized) > MAX_LOCAL_TENANT_STATE_BYTES) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_too_large' };
+    }
+
+    let localPersisted = false;
+    try {
+      localStorage.setItem(stateStorageKey(), serialized);
+      localPersisted = true;
+      writeCacheMeta('initial_tenant_snapshot', stateSizeBytes(serialized), {
+        pendingRemoteSync: true,
+        baseRevision: 0,
+        operationId: 'initial_tenant_seed'
+      });
+    } catch {}
+
+    const indexedPersisted = await queueIndexedSnapshot(snapshot, {
+      source: 'initial_tenant_snapshot',
+      pendingRemoteSync: true,
+      baseRevision: 0,
+      operationId: 'initial_tenant_seed',
+      localPersisted
+    });
+    if (!activeTenantContext
+      || activeTenantContext.authUid !== context.authUid
+      || activeTenantContext.tenantKey !== context.tenantKey) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'tenant_context_changed' };
+    }
+
+    state = snapshot;
+    tenantStateDeferred = false;
+    if (localPersisted || indexedPersisted) rememberPersistedState();
+    lastAutoSaveHash = JSON.stringify(state);
+    return {
+      prepared: true,
+      localPersisted,
+      indexedPersisted,
+      storageMode: storageState.mode,
+      reason: localPersisted || indexedPersisted ? 'device_snapshot_ready' : 'online_snapshot_ready'
+    };
+  };
   window.click360ClearTenantContext = function() {
     stopScanner();
     activeTenantContext = null;

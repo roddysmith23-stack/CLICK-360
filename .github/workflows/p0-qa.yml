@@ -22,6 +22,7 @@ jobs:
       - run: npm run qa
       - run: npm audit --omit=dev --audit-level=moderate
       - run: npm run qa:rules
+      - run: npm run qa:v17:shary-emulator
       - run: node scripts/audit-firestore-legacy.mjs --fixture fixtures/firebase-audit-fixture.json --out artifacts/firebase-audit
       - run: node scripts/migrate-legacy-v9-to-v10.mjs --fixture fixtures/firebase-audit-fixture.json --dry-run
       - name: Basic secret check
