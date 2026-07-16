@@ -15,6 +15,8 @@ const sitemap = fs.readFileSync('sitemap.xml', 'utf8');
 
 assert.equal(domain.APP_VERSION, '16.2');
 assert.equal(domain.TRIAL_DAYS, 7);
+assert.equal(domain.evaluateEntitlement({ status: 'active', plan: 'pro', planCode: 'pro_lifetime', lifetime: true }).plan, 'pro');
+assert.equal(domain.evaluateEntitlement({ status: 'active', planCode: 'founder_unlimited', lifetime: true }).mode, 'founder');
 assert.equal(domain.timestampMs(1_800_000_000), 1_800_000_000_000);
 assert.equal(domain.evaluateEntitlement({ status: 'trial', trialStartedAt: 1_800_000_000, trialDays: 30 }, 1_800_000_000_000).trialEndsAtMs, 1_800_604_800_000);
 
@@ -37,6 +39,9 @@ assert(app.includes('const actionLock = acquireCriticalAction(reason)') && app.i
 assert(app.includes('deferSync: true') && app.includes("options.deferSync !== true"), 'critical mutations do not start a second automatic cloud write');
 assert(app.includes('allowIndexedDbOffline: true') && app.includes('pendingRemoteSync: true'), 'offline critical changes require a verified pending snapshot');
 assert(firebase.includes("source: 'indexeddb_recovery'") && firebase.includes('offlineRecoveryDecision') && firebase.includes("recoveryDecision.action === 'conflict'"), 'pending offline data cannot be overwritten by a changed remote revision');
+assert(app.includes('window.click360PrepareInitialTenantState = async function'));
+assert(firebase.includes('click360PrepareInitialTenantState?.(ACTIVE_CONTEXT)'));
+assert(!firebase.includes('const localPersisted = window.click360PersistTenantState?.() === true'), 'initial bootstrap no longer passes through the AUTH_APPROVED mutation gate');
 assert(storage.includes('pendingRemoteSync: metadata.pendingRemoteSync === true') && storage.includes('baseRevision: Number(metadata.baseRevision || 0)'), 'IndexedDB persists pending state and its remote base revision');
 assert(firebase.includes('operationId: String(event.detail?.operationId') && app.includes('commitCheckpointKey(event.detail || {})'), 'cloud-only rollback is correlated to the exact operation');
 assert(app.includes("movement.operationId === operationId") && app.includes("item.status === 'cancelled'"), 'cash and cancellation paths have idempotent verification markers');

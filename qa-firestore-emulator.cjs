@@ -183,6 +183,32 @@ async function main() {
       });
       await setDoc(doc(db, 'adminBackups', 'private-backup'), { uid: 'owner-a', beforeHash: 'secret' });
       await setDoc(doc(db, 'adminAuditLogs', 'private-audit'), { uid: 'owner-a', action: 'activate' });
+      await setDoc(doc(db, 'plans', 'pro'), { planId: 'pro', active: true, workerLimit: 5, organizationLimit: 1 });
+      await setDoc(doc(db, 'users', 'owner-a'), { uid: 'owner-a', email: 'owner-a@example.test', displayName: 'Owner A', photoURL: '', platformRole: 'customer', status: 'active' });
+      await setDoc(doc(db, 'users', 'owner-b'), { uid: 'owner-b', email: 'owner-b@example.test', displayName: 'Owner B', photoURL: '', platformRole: 'customer', status: 'active' });
+      await setDoc(doc(db, 'entitlements', 'owner-a'), { uid: 'owner-a', platformRole: 'customer', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'lifetime', lifetime: true, status: 'active' });
+      await setDoc(doc(db, 'organizations', 'org-a'), { organizationId: 'org-a', ownerUid: 'owner-a', status: 'active' });
+      await setDoc(doc(db, 'organizations', 'org-a', 'members', 'owner-a'), { uid: 'owner-a', organizationId: 'org-a', organizationRole: 'owner', status: 'active' });
+      await setDoc(doc(db, 'organizations', 'org-a', 'members', 'founder-admin'), { uid: 'founder-admin', organizationId: 'org-a', organizationRole: 'co_owner', status: 'active' });
+      await setDoc(doc(db, 'organizations', 'org-b'), { organizationId: 'org-b', ownerUid: 'owner-b', status: 'active' });
+      await setDoc(doc(db, 'organizations', 'org-b', 'members', 'owner-b'), { uid: 'owner-b', organizationId: 'org-b', organizationRole: 'owner', status: 'active' });
+      await setDoc(doc(db, 'userOrganizations', 'owner-a', 'organizations', 'org-a'), { uid: 'owner-a', organizationId: 'org-a', organizationRole: 'owner', status: 'active' });
+      await setDoc(doc(db, 'subscriptions', 'org-a'), { organizationId: 'org-a', plan: 'pro', billingStatus: 'lifetime', lifetime: true, status: 'active' });
+      await setDoc(doc(db, 'subscriptions', 'org-b'), { organizationId: 'org-b', plan: 'base', billingStatus: 'subscription', status: 'active' });
+      await setDoc(doc(db, 'activationCodes', 'private-code-hash'), { codeHash: 'private-code-hash', status: 'pending' });
+      await setDoc(doc(db, 'provisioningJobs', 'owner-a-job'), { uid: 'owner-a', status: 'complete' });
+      await setDoc(doc(db, 'auditLogs', 'v17-audit'), { uid: 'owner-a', action: 'provision' });
+      await setDoc(doc(db, 'supportDiagnostics', 'owner-a-diagnostic'), { uid: 'owner-a', errorCode: 'fixture' });
+      await setDoc(doc(db, 'accountAccess', 'lifetime-pro'), {
+        uid: 'lifetime-pro', ownerId: 'lifetime-pro', businessId: 'lifetime-pro', tenantKey: 'owner:lifetime-pro:business:lifetime-pro',
+        email: 'lifetime-pro@example.test', status: 'active', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'lifetime',
+        lifetime: true, entitlementVersion: 17
+      });
+      await setDoc(doc(db, 'accountAccess', 'founder-unlimited'), {
+        uid: 'founder-unlimited', ownerId: 'founder-unlimited', businessId: 'founder-unlimited', tenantKey: 'owner:founder-unlimited:business:founder-unlimited',
+        email: 'founder-unlimited@example.test', status: 'active', plan: 'founder_unlimited', planCode: 'founder_unlimited', billingStatus: 'internal',
+        lifetime: true, entitlementVersion: 17
+      });
     });
 
     const ownerA = env.authenticatedContext('owner-a', { email: 'owner-a@example.test' }).firestore();
@@ -198,6 +224,14 @@ async function main() {
     const historicalPaid = env.authenticatedContext('historical-paid', { email: 'historical-paid@example.test' }).firestore();
     const paidFirstTenant = env.authenticatedContext('paid-first-tenant', { email: 'paid-first@example.test' }).firestore();
     const legacyHeartbeat = env.authenticatedContext('legacy-heartbeat', { email: 'legacy-heartbeat@example.test' }).firestore();
+    const lifetimePro = env.authenticatedContext('lifetime-pro', { email: 'lifetime-pro@example.test' }).firestore();
+    const founderUnlimited = env.authenticatedContext('founder-unlimited', { email: 'founder-unlimited@example.test' }).firestore();
+    const platformFounder = env.authenticatedContext('platform-founder', {
+      email: 'founder@example.test', platformRole: 'platform_founder', adminLevel: 'super_admin'
+    }).firestore();
+    const founderAdmin = env.authenticatedContext('founder-admin', {
+      email: 'founder-admin@example.test', platformRole: 'platform_founder', adminLevel: 'founder_admin'
+    }).firestore();
     const unauthenticated = env.unauthenticatedContext().firestore();
     const stateA = doc(ownerA, 'businesses', 'owner-a', 'state', 'main');
     const stateB = doc(ownerB, 'businesses', 'owner-b', 'state', 'main');
@@ -279,6 +313,31 @@ async function main() {
     await assertFails(setDoc(paidFirstState, state('owner-a', 2)));
     await assertFails(getDoc(doc(ownerA, 'adminBackups', 'private-backup')));
     await assertFails(getDoc(doc(ownerA, 'adminAuditLogs', 'private-audit')));
+    await assertSucceeds(getDoc(doc(unauthenticated, 'plans', 'pro')));
+    await assertSucceeds(getDoc(doc(ownerA, 'users', 'owner-a')));
+    await assertFails(getDoc(doc(ownerA, 'users', 'owner-b')));
+    await assertSucceeds(getDoc(doc(ownerA, 'entitlements', 'owner-a')));
+    await assertSucceeds(getDoc(doc(ownerA, 'organizations', 'org-a')));
+    await assertFails(getDoc(doc(ownerA, 'organizations', 'org-b')));
+    await assertSucceeds(getDoc(doc(ownerA, 'organizations', 'org-a', 'members', 'owner-a')));
+    await assertSucceeds(getDoc(doc(ownerA, 'subscriptions', 'org-a')));
+    await assertSucceeds(getDoc(doc(ownerA, 'provisioningJobs', 'owner-a-job')));
+    await assertSucceeds(getDoc(doc(ownerA, 'supportDiagnostics', 'owner-a-diagnostic')));
+    await assertFails(getDoc(doc(ownerA, 'auditLogs', 'v17-audit')));
+    await assertFails(getDoc(doc(ownerA, 'activationCodes', 'private-code-hash')));
+    await assertSucceeds(getDoc(doc(platformFounder, 'organizations', 'org-a')));
+    await assertSucceeds(getDoc(doc(platformFounder, 'organizations', 'org-b')));
+    await assertSucceeds(getDoc(doc(platformFounder, 'users', 'owner-a')));
+    await assertSucceeds(getDoc(doc(platformFounder, 'auditLogs', 'v17-audit')));
+    await assertFails(setDoc(doc(platformFounder, 'entitlements', 'owner-a'), { status: 'revoked' }, { merge: true }));
+    await assertSucceeds(getDoc(doc(founderAdmin, 'organizations', 'org-a')));
+    await assertFails(getDoc(doc(founderAdmin, 'organizations', 'org-b')));
+    await assertSucceeds(getDoc(doc(founderAdmin, 'users', 'owner-b')));
+    await assertSucceeds(getDoc(doc(founderAdmin, 'auditLogs', 'v17-audit')));
+    await assertFails(getDoc(doc(ownerB, 'organizations', 'org-a')));
+    await assertSucceeds(setDoc(doc(lifetimePro, 'businesses', 'lifetime-pro', 'state', 'main'), state('lifetime-pro')));
+    await assertSucceeds(setDoc(doc(founderUnlimited, 'businesses', 'founder-unlimited', 'state', 'main'), state('founder-unlimited')));
+    await assertFails(getDoc(doc(lifetimePro, 'businesses', 'owner-a', 'state', 'main')));
     await assertSucceeds(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-bootstrap'), telemetry('owner-a-bootstrap', 'owner-a')));
     await assertFails(getDoc(doc(ownerA, 'telemetryEvents', 'owner-a-bootstrap')));
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'invalid-event'), telemetry('invalid-event', 'owner-a', 'document_dump')));
@@ -383,6 +442,7 @@ async function main() {
     console.log('PASS Firestore emulator: active-but-unapproved and cross-tenant attempts are denied');
     console.log('PASS Firestore emulator: V16 invitations remain isolated and worker access to the monolithic snapshot is denied');
     console.log('PASS Firestore emulator: paid UID can transactionally create only its own first V10 tenant');
+    console.log('PASS Firestore emulator: V17 founders, founding customers, organizations, plans and Control Center boundaries');
   } finally {
     await env.cleanup();
   }

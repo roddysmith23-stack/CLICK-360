@@ -27,4 +27,23 @@ assert(rules.includes('businessId != "demo-click360"'), 'the suspect demo tenant
 assert(rules.includes('request.time < data.expiresAt'), 'paid subscriptions with an expiry become server-side read-only');
 assert(rules.includes('match /adminBackups/{backupId}') && rules.includes('match /adminAuditLogs/{eventId}'), 'administrative backups and audit logs have explicit client-deny routes');
 assert(rules.includes('match /telemetryEvents/{eventId}') && rules.includes('request.resource.data.uidHash.size() == 16'), 'non-sensitive telemetry is allowlisted, bounded, and write-only');
+for (const route of [
+  'match /plans/{planId}',
+  'match /users/{uid}',
+  'match /entitlements/{uid}',
+  'match /organizations/{organizationId}',
+  'match /organizations/{organizationId}/members/{uid}',
+  'match /userOrganizations/{uid}/organizations/{organizationId}',
+  'match /subscriptions/{organizationId}',
+  'match /activationCodes/{codeHash}',
+  'match /provisioningJobs/{jobId}',
+  'match /auditLogs/{auditId}',
+  'match /supportDiagnostics/{diagnosticId}'
+]) assert(rules.includes(route), `V17 route is explicit: ${route}`);
+assert(rules.includes('function v17SuperAdmin()') && rules.includes('request.auth.token.adminLevel == "super_admin"'), 'global organization inspection requires the super_admin claim');
+assert(rules.includes('function activeV17Member(organizationId)') && rules.includes('member.organizationId == organizationId'), 'organization reads require a matching active membership');
+assert(rules.includes('function v17OrganizationAdmin(organizationId)') && rules.includes('member.organizationRole == "co_owner"'), 'co-owner administration is organization-scoped');
+assert(rules.includes('data.planCode == "pro_lifetime"') && rules.includes('data.billingStatus == "lifetime"'), 'PRO Lifetime remains compatible with the protected V10 tenant during migration');
+assert(rules.includes('data.plan == "founder_unlimited"') && rules.includes('data.billingStatus == "internal"'), 'Founder Unlimited remains compatible with the protected V10 tenant during migration');
+assert(rules.includes('match /activationCodes/{codeHash}') && rules.includes('allow read, write: if false;'), 'activation code hashes are never exposed to public clients');
 console.log('PASS Firestore rules P0 contract');

@@ -140,6 +140,9 @@ for (const route of ['/', '/index.html', '/service-worker.js']) {
   assert(entry?.headers?.some((header) => header.key === 'Cache-Control' && header.value.includes('no-cache')), `Firebase Hosting does not retain the release shell at ${route}`);
 }
 assert(firebase.includes("initialTenantBootstrapDecision({"));
+assert(firebase.includes('click360PrepareInitialTenantState?.(ACTIVE_CONTEXT)'));
+assert(app.includes('window.click360PrepareInitialTenantState = async function'));
+assert(!firebase.includes('const localPersisted = window.click360PersistTenantState?.() === true'));
 assert(firebase.includes("pushLocalToFirestore('initial_tenant_seed')"));
 assert(!firebase.includes('STATE_DOC.set('), 'ONLINE_ONLY_SAFE bootstrap cannot overwrite a remote document');
 

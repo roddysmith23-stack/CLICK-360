@@ -1,0 +1,14 @@
+{
+  "nowMs": 1800000000000,
+  "organization": {
+    "organizationId": "org_fixture_primary",
+    "ownerUid": "fixture-owner-a",
+    "status": "active"
+  },
+  "authUsers": {
+    "ownerA": { "uid": "fixture-owner-a", "email": "owner-a@example.test", "disabled": false },
+    "ownerB": { "uid": "fixture-owner-b", "email": "owner-b@example.test", "disabled": false },
+    "founder": { "uid": "fixture-founder", "email": "founder@example.test", "disabled": false },
+    "founderAdmin": { "uid": "fixture-founder-admin", "email": "founder-admin@example.test", "disabled": false }
+  }
+}
