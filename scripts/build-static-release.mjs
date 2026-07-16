@@ -1,4 +1,5 @@
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -29,5 +30,21 @@ await mkdir(output, { recursive: true });
 for (const entry of files) {
   await cp(join(root, entry), join(output, entry), { recursive: true });
 }
+
+let shortSha = process.env.CLICK360_BUILD_SHA || '';
+if (!shortSha) {
+  try {
+    shortSha = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  } catch {
+    shortSha = 'unknown';
+  }
+}
+
+const appPath = join(output, 'app.js');
+const appSource = await readFile(appPath, 'utf8');
+await writeFile(appPath, appSource.replace(
+  "const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';",
+  `const APP_BUILD_SHA = '${shortSha}';`
+));
 
 console.log(`CLICK 360 static release: ${files.length} allowlisted entries copied to dist/`);

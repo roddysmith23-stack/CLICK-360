@@ -28,8 +28,8 @@
   function normalizePlan(value) {
     const plan = String(value || '').trim().toLowerCase();
     if (['normal', 'base', 'paid_base'].includes(plan)) return 'base';
-    if (['pro', 'paid_pro'].includes(plan)) return 'pro';
-    if (plan === 'founder') return 'founder';
+    if (['pro', 'paid_pro', 'pro_lifetime'].includes(plan)) return 'pro';
+    if (['founder', 'founder_unlimited'].includes(plan)) return 'founder';
     if (plan === 'lifetime') return 'lifetime';
     return 'base';
   }
@@ -55,11 +55,16 @@
 
   function evaluateEntitlement(data = {}, serverNowMs = 0) {
     const rawStatus = String(data.status || '').toLowerCase();
+    const rawPlanCode = String(data.planCode || '').trim().toLowerCase();
     const plan = normalizePlan(data.planCode || data.plan);
     const serverNow = timestampMs(serverNowMs || data.lastSeenAt || data.serverNow);
     const trialStartedAtMs = timestampMs(data.trialStartedAt);
     const trialEndsAtMs = trialStartedAtMs ? trialStartedAtMs + TRIAL_DAYS * DAY_MS : 0;
     const expiresAtMs = timestampMs(data.expiresAt);
+    if (rawStatus === 'active' && rawPlanCode === 'pro_lifetime'
+      && !(data.lifetime === true && String(data.billingStatus || '').toLowerCase() === 'lifetime')) {
+      return { allowed: false, readOnly: true, mode: 'pending_activation', plan: 'pro', serverNowMs: serverNow, trialEndsAtMs, expiresAtMs };
+    }
     const lifetime = data.lifetime === true || rawStatus === 'lifetime' || plan === 'lifetime';
     if (['founder'].includes(rawStatus) || plan === 'founder') {
       return { allowed: true, readOnly: false, mode: 'founder', plan: 'founder', serverNowMs: serverNow, trialEndsAtMs, expiresAtMs: 0 };
@@ -148,9 +153,17 @@
     return { ...PLAN_CATALOG[normalized].limits };
   }
 
-  function initialTenantBootstrapDecision({ localPersisted = false, onlineOnlySafe = false, online = false, readOnly = false } = {}) {
+  function initialTenantBootstrapDecision({
+    snapshotPrepared = false,
+    localPersisted = false,
+    indexedPersisted = false,
+    onlineOnlySafe = false,
+    online = false,
+    readOnly = false
+  } = {}) {
     if (readOnly) return { allowed: false, reason: 'read_only' };
-    if (localPersisted) return { allowed: true, mode: 'local_and_cloud' };
+    if (!snapshotPrepared) return { allowed: false, reason: 'snapshot_preparation_required' };
+    if (localPersisted || indexedPersisted) return { allowed: true, mode: 'local_and_cloud' };
     if (onlineOnlySafe && online) return { allowed: true, mode: 'cloud_only' };
     return { allowed: false, reason: online ? 'local_storage_required' : 'connection_required' };
   }
