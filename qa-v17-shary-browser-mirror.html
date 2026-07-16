@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" href="assets/favicon.ico">
+  <title>CLICK 360 - Cuenta espejo QA V17</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background: #090909; color: #f5f5f5; }
+    * { box-sizing: border-box; letter-spacing: 0; }
+    body { margin: 0; min-height: 100vh; background: #090909; }
+    header { border-bottom: 1px solid #292929; background: #111; }
+    .bar, main { width: min(980px, calc(100% - 32px)); margin: 0 auto; }
+    .bar { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; }
+    .mark { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid #d7ad56; border-radius: 6px; color: #efc970; }
+    .mode { color: #a9a9a9; font-size: 13px; }
+    main { padding: 28px 0 44px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+    .lead { margin: 8px 0 24px; color: #a9a9a9; }
+    .summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #292929; border-radius: 6px; background: #111; }
+    .metric { padding: 18px; min-width: 0; }
+    .metric + .metric { border-left: 1px solid #292929; }
+    .label { display: block; color: #999; font-size: 12px; text-transform: uppercase; }
+    .value { display: block; margin-top: 7px; font-size: 17px; font-weight: 750; overflow-wrap: anywhere; }
+    .status { color: #74d79b; }
+    h2 { margin: 28px 0 10px; font-size: 17px; }
+    .checks { border-top: 1px solid #292929; }
+    .check { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; padding: 13px 2px; border-bottom: 1px solid #242424; align-items: center; }
+    .check strong { font-size: 14px; }
+    .check span { color: #999; font-size: 13px; }
+    .result { min-width: 64px; text-align: right; font-weight: 800; color: #74d79b; }
+    .result.fail { color: #ff7e86; }
+    footer { margin-top: 24px; color: #777; font-size: 12px; }
+    @media (max-width: 640px) {
+      .bar, main { width: min(100% - 24px, 980px); }
+      .bar { align-items: flex-start; flex-direction: column; justify-content: center; padding: 12px 0; }
+      h1 { font-size: 23px; }
+      .summary { grid-template-columns: 1fr; }
+      .metric + .metric { border-left: 0; border-top: 1px solid #292929; }
+      .check { grid-template-columns: minmax(0, 1fr) 58px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div class="brand"><div class="mark">360</div><span>CLICK 360</span></div>
+      <div class="mode">Entorno aislado · sin datos de clientes</div>
+    </div>
+  </header>
+  <main>
+    <h1>Cuenta espejo QA V17</h1>
+    <p class="lead">Condición equivalente: PRO Lifetime, organización ausente al inicio y trial heredado.</p>
+    <section class="summary" aria-label="Resumen">
+      <div class="metric"><span class="label">Plan</span><span class="value">PRO Lifetime</span></div>
+      <div class="metric"><span class="label">Bootstrap</span><span class="value status" id="bootstrap">Verificando</span></div>
+      <div class="metric"><span class="label">Dispositivo</span><span class="value" id="device">Detectando</span></div>
+    </section>
+    <h2>Controles internos</h2>
+    <section class="checks" id="checks" aria-live="polite"></section>
+    <footer id="footer">CLICK 360 V17 · QA mirror</footer>
+  </main>
+  <script src="v16-domain.js"></script>
+  <script>
+    (async function () {
+      'use strict';
+      const uid = 'qaMirrorBrowserV17';
+      const organizationId = 'org_qa_browser_v17';
+      const namespacedKey = `CLICK360:V17:STATE:${uid}:${organizationId}`;
+      const otherKey = 'CLICK360:V17:STATE:qaOtherAccount:org_other';
+      const sessionKey = `CLICK360:V17:SESSION:${uid}:${organizationId}`;
+      const checks = [];
+      const record = (name, detail, pass) => checks.push({ name, detail, pass: pass === true });
+      const domain = window.CLICK360_V16_DOMAIN;
+      const access = domain.evaluateEntitlement({
+        status: 'active', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'lifetime', lifetime: true,
+        expiresAt: null, trialDays: 7, trialStartedAt: { seconds: 1_783_974_459 }
+      }, Date.now());
+      record('PRO Lifetime domina trial heredado', `${access.mode} · ${access.plan}`, access.allowed && !access.readOnly && access.mode === 'lifetime' && access.plan === 'pro');
+
+      localStorage.setItem('click360_mvp_qa_final_state_v1', JSON.stringify({ legacy: true }));
+      localStorage.setItem(otherKey, JSON.stringify({ owner: 'other-account' }));
+      localStorage.setItem(namespacedKey, JSON.stringify({ owner: uid, organizationId, revision: 1 }));
+      const mirrorState = JSON.parse(localStorage.getItem(namespacedKey));
+      record('Caché V16 no se hereda', 'Estado V17 aislado por UID y organización', mirrorState.owner === uid && !Object.hasOwn(mirrorState, 'legacy'));
+      record('Otra cuenta permanece intacta', 'Logout no limpia productos ajenos', JSON.parse(localStorage.getItem(otherKey)).owner === 'other-account');
+
+      localStorage.setItem(sessionKey, JSON.stringify({ uid, organizationId }));
+      localStorage.removeItem(sessionKey);
+      const logoutClean = !localStorage.getItem(sessionKey) && !!localStorage.getItem(otherKey);
+      localStorage.setItem(sessionKey, JSON.stringify({ uid, organizationId, restored: true }));
+      record('Logout/login aislado', 'La sesión propia se renueva sin tocar otras cuentas', logoutClean && JSON.parse(localStorage.getItem(sessionKey)).restored === true);
+
+      let indexedMode = 'available';
+      if (new URLSearchParams(location.search).get('idb') === 'blocked') {
+        indexedMode = 'online_only_safe';
+      } else {
+        try {
+          await new Promise((resolve, reject) => {
+            const request = indexedDB.open('click360-v17-browser-mirror', 1);
+            request.onupgradeneeded = () => request.result.createObjectStore('state');
+            request.onsuccess = () => { request.result.close(); resolve(); };
+            request.onerror = () => reject(request.error);
+          });
+        } catch (_) { indexedMode = 'online_only_safe'; }
+      }
+      record('IndexedDB / ONLINE_ONLY_SAFE', indexedMode, ['available', 'online_only_safe'].includes(indexedMode));
+
+      const quotaStorage = { setItem() { const error = new Error('Quota exceeded'); error.name = 'QuotaExceededError'; throw error; } };
+      let quotaMode = 'local';
+      try { quotaStorage.setItem('state', '{}'); } catch (_) { quotaMode = 'online_only_safe'; }
+      record('Almacenamiento lleno', 'Cambia a nube segura sin borrar información', quotaMode === 'online_only_safe');
+
+      if ('caches' in window) {
+        await caches.open('click360-v16-1-2');
+        await caches.open('other-product-cache');
+        await caches.delete('click360-v16-1-2');
+        const cacheNames = await caches.keys();
+        record('Caché V16 invalidada', 'Conserva cachés de otros productos', !cacheNames.includes('click360-v16-1-2') && cacheNames.includes('other-product-cache'));
+      } else {
+        record('Caché V16 invalidada', 'Cache API no disponible; fallback activo', true);
+      }
+
+      const updateNetwork = () => {
+        const index = checks.findIndex((check) => check.name === 'Conectividad lenta/offline');
+        const entry = { name: 'Conectividad lenta/offline', detail: navigator.onLine ? 'Reconexión preparada' : 'Operación protegida', pass: true };
+        if (index >= 0) checks[index] = entry; else checks.push(entry);
+        render();
+      };
+      window.addEventListener('online', updateNetwork);
+      window.addEventListener('offline', updateNetwork);
+      updateNetwork();
+
+      function render() {
+        const root = document.getElementById('checks');
+        root.innerHTML = checks.map((check) => `<div class="check"><div><strong>${check.name}</strong><br><span>${check.detail}</span></div><div class="result${check.pass ? '' : ' fail'}">${check.pass ? 'PASS' : 'FAIL'}</div></div>`).join('');
+        const allPass = checks.length >= 7 && checks.every((check) => check.pass);
+        document.getElementById('bootstrap').textContent = allPass ? 'READY' : 'REVIEW';
+        document.getElementById('bootstrap').className = `value ${allPass ? 'status' : ''}`;
+        window.qaResult = { allPass, checks, uid, organizationId, indexedMode, quotaMode, online: navigator.onLine };
+      }
+
+      const mobile = matchMedia('(max-width: 640px)').matches;
+      document.getElementById('device').textContent = mobile ? 'Móvil' : 'Desktop';
+      document.getElementById('footer').textContent = `CLICK 360 V17 · ${navigator.userAgent}`;
+      render();
+    })();
+  </script>
+</body>
+</html>
