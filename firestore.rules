@@ -123,6 +123,11 @@ service cloud.firestore {
             && request.time < data.trialStartedAt + duration.value(7, "d"))
           || ((data.status == "founder" || data.status == "lifetime")
             && (data.plan == "base" || data.plan == "pro" || data.plan == "founder" || data.plan == "lifetime"))
+          || (data.status == "active"
+            && data.lifetime == true
+            && data.plan == "pro"
+            && data.planCode == "pro_lifetime"
+            && data.billingStatus == "lifetime")
           || ((data.status == "active" || data.status == "paid_base" || data.status == "paid_pro")
             && (data.plan == "normal" || data.plan == "base" || data.plan == "pro")
             && (!data.keys().hasAny(["expiresAt"])
