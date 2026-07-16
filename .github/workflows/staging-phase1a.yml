@@ -41,9 +41,7 @@ jobs:
       - run: npm audit --prefix staging/backend --omit=dev --audit-level=high
       - run: npm audit --prefix staging/web --omit=dev --audit-level=high
       - name: Secret and production deployment guard
-        run: |
-          ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- ':!fixtures/**' ':!vendor/**' ':!.github/workflows/staging-phase1a.yml'
-          ! git grep -n 'firebase deploy.*click-360' -- .github staging
+        run: node staging/scripts/scan-repository.mjs
       - name: Build immutable deployment artifacts once
         run: |
           mkdir -p staging/artifacts
