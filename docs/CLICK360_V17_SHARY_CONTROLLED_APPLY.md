@@ -70,7 +70,7 @@ npm run admin:v17:shary -- \
   --reauthenticated \
   --reauthenticated-at <ISO-UTC-MENOR-A-10-MINUTOS> \
   --confirm "APPLY:CLICK360:V17:SHARY:3UTjgHd1QNSvqlcXNKQ6tL79X7u2:e95c038115be1b7571674ca9e3f3a33782cc2cf3ec2cf91b1ed8214d9a62e9ef" \
-  --plan artifacts/v17-confirmed-identities-plan-2026-07-16/CLICK360_V17_DRY_RUN.json \
+  --plan-file artifacts/v17-confirmed-identities-plan-2026-07-16/CLICK360_V17_DRY_RUN.json \
   --fresh-audit artifacts/v17-shary-fresh-audit/CLICK360_V17_AUDIT.json \
   --out artifacts/v17-shary-execution
 ```

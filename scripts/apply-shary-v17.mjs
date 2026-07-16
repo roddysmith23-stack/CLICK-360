@@ -36,11 +36,12 @@ async function resolveVerifiedAdcPrincipal(credential) {
   return verified;
 }
 
-function parseArgs(argv) {
+export function parseSharyArgs(argv) {
   const result = {};
   for (let index = 0; index < argv.length; index += 1) {
     const [key, inline] = argv[index].replace(/^--/, '').split('=');
     const next = argv[index + 1];
+    if (Object.hasOwn(result, key)) throw new Error(`SHARY_V17_AUTHORIZATION_REJECTED:duplicate_argument_${key}`);
     result[key] = inline ?? (next && !next.startsWith('--') ? (index += 1, next) : true);
   }
   return result;
@@ -53,13 +54,13 @@ function markdown(report) {
 }
 
 export async function runSharyCli(argv = process.argv.slice(2)) {
-  const args = parseArgs(argv);
+  const args = parseSharyArgs(argv);
   const command = String(args.command || 'preview').toLowerCase();
-  if (!args.plan) throw new Error('--plan is required.');
+  if (!args['plan-file']) throw new Error('--plan-file is required.');
   if (!args['fresh-audit']) throw new Error('--fresh-audit is required.');
   validateSharyInvocation(args, command);
 
-  const planPath = path.resolve(String(args.plan));
+  const planPath = path.resolve(String(args['plan-file']));
   const freshAuditPath = path.resolve(String(args['fresh-audit']));
   const outputDir = path.resolve(String(args.out || 'artifacts/v17-shary-execution'));
   const [plan, freshAudit] = await Promise.all([

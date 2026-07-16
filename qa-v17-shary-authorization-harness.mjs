@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { stableHash } from './scripts/lib/click360-data-core.mjs';
 import { firestoreHash } from './scripts/lib/click360-v16-admin-core.mjs';
 import { validateV17ProvisioningAuthorization } from './scripts/lib/click360-v17-provisioning-engine.mjs';
+import { parseSharyArgs } from './scripts/apply-shary-v17.mjs';
 import {
   SHARY_V17_ARTIFACT_PATHS,
   SHARY_V17_AUTHORIZATION,
@@ -169,6 +170,13 @@ scenario('11 engine rejects a production identity outside the Shary allowlist be
     claimsAction: { desired: {} }
   };
   assert.throws(() => validateV17ProvisioningAuthorization({ context, command: 'apply', evidence: {} }), /production_identity_not_allowlisted/);
+});
+
+scenario('12 CLI separates the commercial plan from the immutable plan file', () => {
+  const parsed = parseSharyArgs(['--plan', 'pro', '--plan-file', 'approved.json']);
+  assert.equal(parsed.plan, 'pro');
+  assert.equal(parsed['plan-file'], 'approved.json');
+  assert.throws(() => parseSharyArgs(['--plan', 'pro', '--plan', 'approved.json']), /duplicate_argument_plan/);
 });
 
 console.log(`PASS V17 Shary authorization harness: ${results.length} scenarios`);
