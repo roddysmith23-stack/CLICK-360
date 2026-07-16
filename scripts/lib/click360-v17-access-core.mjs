@@ -3,6 +3,26 @@ import { stableHash } from './click360-data-core.mjs';
 
 export const V17_MODEL_VERSION = 17;
 export const REQUIRED_PROJECT_ID = 'click-360';
+export const V17_PROVISIONING_ORDER = Object.freeze(['shary', 'smith', 'debby', 'lia']);
+
+export const KNOWN_TENANT_CLASSIFICATIONS = Object.freeze({
+  cPy0PqLSHGO6Ei3xlRc2DHufQ5B3: Object.freeze({
+    classification: 'internal_demo',
+    environment: 'sales_sandbox',
+    transferPolicy: 'no_automatic_transfer',
+    protected: true,
+    selectiveImportAllowed: Object.freeze(['branding', 'catalog', 'configuration']),
+    selectiveImportForbidden: Object.freeze(['sales', 'cash', 'movements', 'auditLogs'])
+  }),
+  'demo-click360': Object.freeze({
+    classification: 'cross_tenant_suspect',
+    environment: 'blocked_demo',
+    transferPolicy: 'never_transfer',
+    protected: true,
+    selectiveImportAllowed: Object.freeze([]),
+    selectiveImportForbidden: Object.freeze(['*'])
+  })
+});
 
 export const PLATFORM_ROLES = Object.freeze(['platform_founder', 'platform_admin', 'support_admin', 'customer']);
 export const ORGANIZATION_ROLES = Object.freeze(['owner', 'co_owner', 'admin', 'manager', 'worker']);
@@ -73,8 +93,9 @@ export const PLAN_CATALOG = Object.freeze({
 export const V17_SUBJECTS = Object.freeze({
   smith: Object.freeze({
     label: 'Sr. Smith',
-    requiredEmail: 'roddysmithceo@gmail.com',
-    confirmedUid: null,
+    requiredEmail: 'roddysmith23@hotmail.com',
+    administrativeEmail: 'roddysmithceo@gmail.com',
+    confirmedUid: 'iESlWpF92JXaGDoYTQ28ThWs93y1',
     candidateTerms: Object.freeze(['roddysmith', 'rod smith', 'roddysmith23']),
     legacySearchTerms: Object.freeze(['roddysmithceo@gmail.com', 'roddysmith23@hotmail.com', 'rod smith', 'roddysmith']),
     desired: Object.freeze({
@@ -86,8 +107,9 @@ export const V17_SUBJECTS = Object.freeze({
   }),
   debby: Object.freeze({
     label: 'Debby',
-    requiredEmail: null,
-    confirmedUid: null,
+    requiredEmail: 'debbya632@gmail.com',
+    administrativeEmail: null,
+    confirmedUid: 'g9e8NjJjrDS3ldvNxHLlhqvzm3E3',
     candidateTerms: Object.freeze(['debby', 'debby a', 'debbya']),
     legacySearchTerms: Object.freeze(['debby', 'debbya']),
     desired: Object.freeze({
@@ -381,6 +403,28 @@ export function buildPlanCatalogDryRun(currentPlans = {}) {
   return { actions, planHash: stableHash(actions) };
 }
 
+export function computeV17PlanHash(plan = {}) {
+  return stableHash({
+    projectId: plan.projectId,
+    modelVersion: plan.modelVersion,
+    mode: plan.mode,
+    applyEnabled: plan.applyEnabled,
+    productionWriteOperations: plan.productionWriteOperations,
+    auditReportHash: plan.auditReportHash,
+    auditInventoryHash: plan.auditInventoryHash,
+    planCatalog: plan.planCatalog,
+    subjects: plan.subjects,
+    recommendation: plan.recommendation,
+    executionState: plan.executionState,
+    technicalBlockers: plan.technicalBlockers,
+    operationalLocks: plan.operationalLocks,
+    productionOrder: plan.productionOrder,
+    backupManifest: plan.backupManifest,
+    applyProtocol: plan.applyProtocol,
+    rollbackProtocol: plan.rollbackProtocol
+  });
+}
+
 export function buildProvisioningDryRun({ subjectKey, resolution, current = {}, organizationId = null, includePlanCatalog = false }) {
   const subject = V17_SUBJECTS[subjectKey];
   if (!subject) throw new Error(`Unknown V17 subject: ${subjectKey}`);
@@ -393,15 +437,13 @@ export function buildProvisioningDryRun({ subjectKey, resolution, current = {}, 
   const organizationMode = subjectKey === 'smith'
     ? 'PLATFORM_ONLY'
     : subjectKey === 'debby'
-      ? 'JOIN_AUTHORIZED_ORGANIZATION'
+      ? 'PLATFORM_ONLY_MEMBERSHIP_DEFERRED'
       : 'PROVISION_OWNED_ORGANIZATION';
-  if (resolution?.confirmed && organizationMode !== 'PLATFORM_ONLY' && !organizationId) {
+  const organizationRequired = ['JOIN_AUTHORIZED_ORGANIZATION', 'PROVISION_OWNED_ORGANIZATION'].includes(organizationMode);
+  if (resolution?.confirmed && organizationRequired && !organizationId) {
     blockers.push(organizationMode === 'JOIN_AUTHORIZED_ORGANIZATION'
       ? 'authorized_organization_required'
       : 'organization_id_required');
-  }
-  if (resolution?.confirmed && organizationMode === 'JOIN_AUTHORIZED_ORGANIZATION' && !current.organization) {
-    blockers.push('authorized_organization_must_exist');
   }
 
   if (subjectKey === 'lia' && resolution?.status === 'AUTH_NOT_CREATED') {
@@ -420,13 +462,14 @@ export function buildProvisioningDryRun({ subjectKey, resolution, current = {}, 
   }
 
   const desired = subject.desired;
+  const { organizationRole: desiredOrganizationRole, ...accessDesired } = desired;
   const organization = uid && organizationId && organizationMode === 'PROVISION_OWNED_ORGANIZATION'
     ? plannedOrganizationDocument({ organizationId, uid, legacyBusinessId: current.legacyBusinessId || uid, label: current.organizationName || subject.label })
     : current.organization || null;
   const selectedPlan = PLAN_CATALOG[desired.plan];
   const entitlement = uid ? {
     uid,
-    ...desired,
+    ...accessDesired,
     primaryOrganizationId: organizationId || null,
     organizationLimit: selectedPlan.organizationLimit,
     workerLimit: selectedPlan.workerLimit,
@@ -435,6 +478,7 @@ export function buildProvisioningDryRun({ subjectKey, resolution, current = {}, 
   const user = uid ? {
     uid,
     email: normalizeEmail(resolution.user.email),
+    administrativeEmail: normalizeEmail(subject.administrativeEmail),
     displayName: String(resolution.user.displayName || current.user?.displayName || '').slice(0, 120),
     photoURL: String(resolution.user.photoURL || current.user?.photoURL || '').slice(0, 100000),
     platformRole: desired.platformRole,
@@ -443,7 +487,7 @@ export function buildProvisioningDryRun({ subjectKey, resolution, current = {}, 
     modelVersion: V17_MODEL_VERSION
   } : null;
   const membership = uid && organizationId ? {
-    uid, organizationId, organizationRole: desired.organizationRole || 'owner', status: 'active', modelVersion: V17_MODEL_VERSION
+    uid, organizationId, organizationRole: desiredOrganizationRole || 'owner', status: 'active', modelVersion: V17_MODEL_VERSION
   } : null;
   const subscription = organizationId && organizationMode === 'PROVISION_OWNED_ORGANIZATION' ? {
     organizationId, plan: desired.plan, planCode: desired.planCode, billingStatus: desired.billingStatus,
@@ -469,11 +513,12 @@ export function buildProvisioningDryRun({ subjectKey, resolution, current = {}, 
   }
   if (uid) {
     const compatibilityBusinessId = current.accountAccess?.businessId || current.legacyBusinessId || uid;
-    const accessAlreadyCurrent = currentAccessMatchesDesired(current.accountAccess, desired, organizationId);
+    const accessAlreadyCurrent = currentAccessMatchesDesired(current.accountAccess, accessDesired, organizationId);
     const accountAccess = {
-      ...desired,
+      ...accessDesired,
       uid,
       email: normalizeEmail(resolution.user.email),
+      administrativeEmail: normalizeEmail(subject.administrativeEmail),
       businessId: compatibilityBusinessId,
       ownerId: uid,
       tenantKey: `owner:${uid}:business:${compatibilityBusinessId}`,
@@ -496,6 +541,21 @@ export function buildProvisioningDryRun({ subjectKey, resolution, current = {}, 
       entitlementVersion: V17_MODEL_VERSION,
       platformAdmin: desired.platformRole === 'platform_founder'
     } });
+  }
+
+  if (subjectKey === 'debby' && uid && current.approvedUser?.exists) {
+    const expectedEmail = normalizeEmail(resolution.user.email);
+    const approvedEmailMatches = normalizeEmail(current.approvedUser.email) === expectedEmail;
+    actions.push({
+      path: `approvedUsers/${uid}`,
+      operation: approvedEmailMatches ? 'NOOP' : 'MERGE_WITH_HASH_PRECONDITION',
+      beforeHash: current.approvedUser.hash,
+      desired: approvedEmailMatches
+        ? { email: expectedEmail }
+        : { email: expectedEmail, updatedAt: 'SERVER_TIMESTAMP' },
+      preserveUnspecifiedFields: true,
+      correctionReason: 'confirmed_auth_email_mismatch'
+    });
   }
 
   return {

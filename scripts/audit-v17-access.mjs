@@ -5,7 +5,12 @@ import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { domainCounts, legacyStateFromDocument, stableHash } from './lib/click360-data-core.mjs';
 import { firestoreHash, normalizeEmail, plainFirestoreValue } from './lib/click360-v16-admin-core.mjs';
-import { REQUIRED_PROJECT_ID, V17_SUBJECTS, resolveAuthIdentity } from './lib/click360-v17-access-core.mjs';
+import {
+  KNOWN_TENANT_CLASSIFICATIONS,
+  REQUIRED_PROJECT_ID,
+  V17_SUBJECTS,
+  resolveAuthIdentity
+} from './lib/click360-v17-access-core.mjs';
 
 function parseArgs(argv) {
   const result = {};
@@ -226,6 +231,7 @@ function summarizeTenant(record, authByUid) {
   const raw = record.data || {};
   const state = tenantData(raw);
   const pathBusinessId = record.path.split('/')[1] || null;
+  const knownClassification = KNOWN_TENANT_CLASSIFICATIONS[pathBusinessId] || null;
   return {
     path: record.path,
     pathBusinessId,
@@ -240,6 +246,10 @@ function summarizeTenant(record, authByUid) {
     updatedByEmail: normalizeEmail(raw.updatedByEmail),
     hash: firestoreHash(raw),
     updateTime: record.updateTime,
+    businessNames: Array.isArray(state.businesses)
+      ? state.businesses.map((business) => String(business?.name || '')).filter(Boolean).slice(0, 20)
+      : [],
+    classification: knownClassification,
     counts: domainCounts(state)
   };
 }
@@ -253,8 +263,8 @@ function markdown(report) {
     const candidate = subject.identity.user || subject.identity.candidates[0] || {};
     return `| ${subject.label} | ${subject.identity.status} | ${candidate.email || '-'} | ${candidate.uid || '-'} | ${subject.accountAccess.status || '-'} | ${subject.accountAccess.planCode || subject.accountAccess.plan || '-'} | ${subject.canonicalTenant.exists ? 'sí' : 'no'} | ${subject.exactFirestoreHits.length} |`;
   }).join('\n');
-  const tenantRows = report.tenants.map((tenant) => `| ${tenant.path} | ${tenant.ownerAuthEmail || '-'} | ${tenant.schemaVersion || 'legacy'} | ${tenant.hash} | ${JSON.stringify(tenant.counts)} | ${tenant.readbackUnchanged ? 'PASS' : 'FAIL'} |`).join('\n');
-  return `# CLICK 360 V17 - Auditoría preflight\n\nFecha: ${report.generatedAt}\n\nProyecto: \`${report.projectId}\`\n\nModo: \`${report.mode}\`\n\nEscrituras de producción: **${report.productionWriteOperations}**\n\n## Identidades\n\n| Persona | Resolución Auth | Correo encontrado | UID encontrado | Acceso actual | Plan actual | Tenant canónico | Hits exactos |\n| --- | --- | --- | --- | --- | --- | --- | ---: |\n${subjectRows}\n\n## Tenants\n\n| Ruta | Auth owner | Schema | Hash | Conteos | Readback |\n| --- | --- | ---: | --- | --- | --- |\n${tenantRows}\n\n## Integridad\n\n- Documentos inspeccionados: ${report.firestore.documentCount}\n- Colecciones raíz: ${report.firestore.rootCollections.join(', ')}\n- Hash global de inventario: \`${report.firestore.inventoryHash}\`\n- Relectura sin cambios: **${report.integrity.allReadbacksUnchanged ? 'PASS' : 'FAIL'}**\n- Apply habilitado: **NO**\n`;
+  const tenantRows = report.tenants.map((tenant) => `| ${tenant.path} | ${tenant.ownerAuthEmail || '-'} | ${tenant.classification?.classification || 'customer'} | ${tenant.classification?.environment || 'production'} | ${tenant.schemaVersion || 'legacy'} | ${tenant.hash} | ${JSON.stringify(tenant.counts)} | ${tenant.readbackUnchanged ? 'PASS' : 'FAIL'} |`).join('\n');
+  return `# CLICK 360 V17 - Auditoría preflight\n\nFecha: ${report.generatedAt}\n\nProyecto: \`${report.projectId}\`\n\nModo: \`${report.mode}\`\n\nEscrituras de producción: **${report.productionWriteOperations}**\n\n## Identidades\n\n| Persona | Resolución Auth | Correo encontrado | UID encontrado | Acceso actual | Plan actual | Tenant canónico | Hits exactos |\n| --- | --- | --- | --- | --- | --- | --- | ---: |\n${subjectRows}\n\n## Tenants\n\n| Ruta | Auth owner | Clasificación | Entorno | Schema | Hash | Conteos | Readback |\n| --- | --- | --- | --- | ---: | --- | --- | --- |\n${tenantRows}\n\n## Integridad\n\n- Documentos inspeccionados: ${report.firestore.documentCount}\n- Colecciones raíz: ${report.firestore.rootCollections.join(', ')}\n- Hash global de inventario: \`${report.firestore.inventoryHash}\`\n- Relectura sin cambios: **${report.integrity.allReadbacksUnchanged ? 'PASS' : 'FAIL'}**\n- Apply habilitado: **NO**\n`;
 }
 
 const generatedAt = new Date().toISOString();
@@ -295,11 +305,20 @@ for (const [key, subject] of Object.entries(V17_SUBJECTS)) {
   subjects[key] = {
     label: subject.label,
     requiredEmail: subject.requiredEmail,
+    administrativeEmail: subject.administrativeEmail || null,
     confirmedUid: subject.confirmedUid,
     desired: subject.desired,
     identity: safeResolution(resolution),
     accountAccess: summarizeAccount(account),
     approvedUser: summarizeApproved(approved),
+    identityConsistency: {
+      authEmailMatchesRequired: resolution.user
+        ? normalizeEmail(resolution.user.email) === normalizeEmail(subject.requiredEmail)
+        : false,
+      approvedEmailMatchesAuth: approved && resolution.user
+        ? normalizeEmail(plainFirestoreValue(approved.data).email) === normalizeEmail(resolution.user.email)
+        : approved ? false : null
+    },
     canonicalTenant: canonicalTenantRecord
       ? { exists: true, ...summarizeTenant(canonicalTenantRecord, authByUid) }
       : { exists: false, path: uid ? `businesses/${uid}/state/main` : null, hash: null, counts: domainCounts({}) },

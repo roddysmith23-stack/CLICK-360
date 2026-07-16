@@ -28,6 +28,17 @@ El campo histórico `founder` no representa simultáneamente permisos, plan y re
 
 Durante la transición, `businesses/{uid}/state/main` permanece intacto como snapshot V10. `accountAccess.businessId == uid` se conserva únicamente como puente de compatibilidad; `primaryOrganizationId` enlaza el modelo V17.
 
+## Identidades confirmadas
+
+| Persona | Identidad Auth | Acceso V17 |
+| --- | --- | --- |
+| Sr. Smith | UID `iESlWpF92JXaGDoYTQ28ThWs93y1`, `roddysmith23@hotmail.com`; correo administrativo `roddysmithceo@gmail.com` | `platform_founder`, `super_admin`, `founder_unlimited`, `internal` |
+| Debby | UID `g9e8NjJjrDS3ldvNxHLlhqvzm3E3`, `debbya632@gmail.com` | `platform_founder`, `founder_admin`, `founder_unlimited`, `internal`; membership `co_owner` diferida hasta autorizar una organización |
+| Shary | UID `3UTjgHd1QNSvqlcXNKQ6tL79X7u2`, `shary10mmvv@gmail.com` | `customer`, owner, `pro_lifetime`, `lifetime`, `founding_customer` |
+| Lía | Sin Auth ni UID; correo pendiente `liavero_zambrano@hotmail.com` | Activación hash-only; PRO Lifetime después de autenticar el UID real |
+
+El tenant con “Lía Perfumería” bajo `cPy0PqLSHGO6Ei3xlRc2DHufQ5B3` es `internal_demo` / `sales_sandbox`. No pertenece automáticamente a Lía y no puede transferirse. Una importación futura requiere revisión selectiva y excluye ventas, caja, movimientos y auditorías.
+
 ## Planes
 
 `scripts/lib/click360-v17-access-core.mjs` es la definición canónica actual.
@@ -62,3 +73,5 @@ Las funciones puras `bootstrapSession`, `provisionOrganization`, `repairAccount`
 - Operaciones críticas exigen reautenticación, confirmación, motivo, backup, auditoría y, para `founder_admin`, aprobación adicional de `super_admin`.
 
 Las reglas V17 incluidas en esta rama son candidatas y solo se probaron en emulador. No se desplegaron.
+
+El ejecutor `scripts/admin-access-v17.mjs` está intencionalmente limitado a dry-run. Verifica plan, actor, identidades, rutas, precondiciones y tenants, pero no contiene métodos de escritura.

@@ -289,7 +289,9 @@ scenario('special preflight is deterministic and write-disabled', () => {
   assert(auditSource.includes("traversal.records.sort((left, right) => left.path.localeCompare(right.path))"));
   assert(auditSource.includes('V17_APPLY_NOT_AUTHORIZED'));
   assert(plannerSource.includes('V17_APPLY_NOT_AUTHORIZED'));
-  assert(plannerSource.includes("recommendation: 'DO_NOT_APPLY'"));
+  assert(plannerSource.includes("executionState: 'LOCKED_DRY_RUN'"));
+  assert(plannerSource.includes("technicalBlockers.length ? 'DO_NOT_APPLY' : 'APPLY'"));
+  assert(plannerSource.includes('productionWriteOperations: 0'));
 });
 
 console.log(`PASS V17 access harness: ${results.length} scenarios`);

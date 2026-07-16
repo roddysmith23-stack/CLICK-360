@@ -4,9 +4,11 @@ import { stableHash } from './lib/click360-data-core.mjs';
 import {
   REQUIRED_PROJECT_ID,
   V17_MODEL_VERSION,
+  V17_PROVISIONING_ORDER,
   V17_SUBJECTS,
   buildPlanCatalogDryRun,
-  buildProvisioningDryRun
+  buildProvisioningDryRun,
+  computeV17PlanHash
 } from './lib/click360-v17-access-core.mjs';
 
 function parseArgs(argv) {
@@ -26,7 +28,10 @@ function opaqueOrganizationId(projectId, subjectKey, uid) {
 function markdown(plan) {
   const subjectRows = Object.values(plan.subjects).map((subject) => `| ${subject.label} | ${subject.identityStatus} | ${subject.uid || '-'} | ${subject.organizationId || '-'} | ${subject.decision} | ${subject.blockers.join(', ') || '-'} |`).join('\n');
   const actionRows = Object.values(plan.subjects).flatMap((subject) => subject.actions.map((action) => `| ${subject.label} | ${action.path} | ${action.operation} |`)).join('\n');
-  return `# CLICK 360 V17 - Plan de cambios (dry-run)\n\nFecha: ${plan.generatedAt}\n\nProyecto: \`${plan.projectId}\`\n\nAuditoría base: \`${plan.auditReportHash}\`\n\nModo: **${plan.mode}**\n\nEscrituras ejecutadas: **${plan.productionWriteOperations}**\n\nRecomendación: **${plan.recommendation}**\n\n## Personas\n\n| Persona | Identidad | UID | Organización propuesta | Decisión | Bloqueos |\n| --- | --- | --- | --- | --- | --- |\n${subjectRows}\n\n## Cambios propuestos\n\n| Persona | Ruta | Operación |\n| --- | --- | --- |\n${actionRows || '| - | - | - |'}\n\n## Catálogo central\n\n${plan.planCatalog.actions.map((action) => `- \`${action.path}\`: ${action.operation}`).join('\n')}\n\n## Condiciones antes de aplicar\n\n${plan.blockers.map((blocker) => `- ${blocker}`).join('\n')}\n\n## Protección\n\n- Cada documento existente exige hash previo coincidente.\n- Cada documento ausente se crea con precondición create-only.\n- El estado V10 \`businesses/*/state/main\` no se sobrescribe.\n- \`demo-click360\` y tenants ajenos son referencias de integridad de solo lectura.\n- Claims se actualizan después de la transacción y quedan registrados en \`provisioningJobs\`.\n`;
+  const technical = plan.technicalBlockers.length
+    ? plan.technicalBlockers.map((blocker) => `- ${blocker}`).join('\n')
+    : '- Ninguno';
+  return `# CLICK 360 V17 - Plan de cambios (dry-run)\n\nFecha: ${plan.generatedAt}\n\nProyecto: \`${plan.projectId}\`\n\nAuditoría base: \`${plan.auditReportHash}\`\n\nModo: **${plan.mode}**\n\nEstado de ejecución: **${plan.executionState}**\n\nEscrituras ejecutadas: **${plan.productionWriteOperations}**\n\nRecomendación técnica: **${plan.recommendation}**\n\nOrden: ${plan.productionOrder.join(' → ')}\n\n## Personas\n\n| Persona | Identidad | UID | Organización propuesta | Decisión | Bloqueos |\n| --- | --- | --- | --- | --- | --- |\n${subjectRows}\n\n## Cambios propuestos\n\n| Persona | Ruta | Operación |\n| --- | --- | --- |\n${actionRows || '| - | - | - |'}\n\n## Catálogo central\n\n${plan.planCatalog.actions.map((action) => `- \`${action.path}\`: ${action.operation}`).join('\n')}\n\n## Bloqueos técnicos\n\n${technical}\n\n## Candados operativos\n\n${plan.operationalLocks.map((lock) => `- ${lock}`).join('\n')}\n\n## Protección\n\n- Cada documento existente exige hash previo coincidente.\n- Cada documento ausente se crea con precondición create-only.\n- El estado V10 \`businesses/*/state/main\` no se sobrescribe.\n- \`demo-click360\` y tenants ajenos son referencias de integridad de solo lectura.\n- Claims se actualizan después de la transacción y quedan registrados en \`provisioningJobs\`.\n`;
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -47,7 +52,8 @@ if (audit.integrity?.allReadbacksUnchanged !== true) throw new Error('The source
 const existingPlans = {};
 const planCatalog = buildPlanCatalogDryRun(existingPlans);
 const subjects = {};
-for (const [subjectKey, definition] of Object.entries(V17_SUBJECTS)) {
+for (const subjectKey of V17_PROVISIONING_ORDER) {
+  const definition = V17_SUBJECTS[subjectKey];
   const audited = audit.subjects?.[subjectKey];
   if (!audited) throw new Error(`Audit is missing subject ${subjectKey}.`);
   const resolution = audited.identity;
@@ -55,6 +61,7 @@ for (const [subjectKey, definition] of Object.entries(V17_SUBJECTS)) {
   const organizationId = ownOrganization ? opaqueOrganizationId(audit.projectId, subjectKey, resolution.user.uid) : null;
   const current = {
     accountAccess: audited.accountAccess,
+    approvedUser: audited.approvedUser,
     legacyBusinessId: audited.canonicalTenant?.exists ? audited.canonicalTenant.businessId : resolution.user?.uid || null,
     organizationName: definition.label,
     plans: existingPlans
@@ -71,28 +78,29 @@ for (const [subjectKey, definition] of Object.entries(V17_SUBJECTS)) {
     integrityReferences: {
       canonicalTenantHash: audited.canonicalTenant?.hash || null,
       accountAccessHash: audited.accountAccess?.hash || null,
+      approvedUserHash: audited.approvedUser?.hash || null,
       exactFirestoreHits: audited.exactFirestoreHits?.length || 0
     }
   };
 }
 
-const blockers = [
-  'owner_approval_not_recorded',
-  'smith_exact_auth_identity_not_confirmed',
-  'debby_exact_auth_identity_not_confirmed',
-  'debby_authorized_organization_not_confirmed',
-  'lia_auth_not_created_pending_secure_activation',
-  'authenticated_multidevice_smoke_not_executed',
-  'production_apply_explicitly_forbidden_in_current_phase'
-];
+const technicalBlockers = [];
 for (const [key, subject] of Object.entries(subjects)) {
-  if (subject.decision === 'BLOCKED') blockers.push(`${key}:${subject.blockers.join('+')}`);
+  if (subject.decision === 'BLOCKED') technicalBlockers.push(`${key}:${subject.blockers.join('+')}`);
 }
+const operationalLocks = [
+  'production_apply_explicitly_forbidden_in_current_phase',
+  'executor_apply_mode_disabled',
+  'authenticated_smoke_required_after_future_apply',
+  'rules_and_hosting_deployment_forbidden'
+];
 
 const tenantIntegrityManifest = audit.tenants.map((tenant) => ({
   path: tenant.path,
   hash: tenant.hash,
   counts: tenant.counts,
+  businessNames: tenant.businessNames || [],
+  classification: tenant.classification || null,
   protected: true,
   writeAllowed: false
 }));
@@ -101,13 +109,17 @@ const plan = {
   projectId: audit.projectId,
   modelVersion: V17_MODEL_VERSION,
   mode: 'DRY_RUN_ONLY',
+  applyEnabled: false,
   productionWriteOperations: 0,
   auditPath,
   auditGeneratedAt: audit.generatedAt,
   auditReportHash: audit.reportHash,
   auditInventoryHash: audit.firestore.inventoryHash,
-  recommendation: 'DO_NOT_APPLY',
-  blockers: [...new Set(blockers)],
+  recommendation: technicalBlockers.length ? 'DO_NOT_APPLY' : 'APPLY',
+  executionState: 'LOCKED_DRY_RUN',
+  technicalBlockers: [...new Set(technicalBlockers)],
+  operationalLocks,
+  productionOrder: [...V17_PROVISIONING_ORDER],
   planCatalog,
   subjects,
   backupManifest: {
@@ -141,16 +153,7 @@ const plan = {
     'record_rollback_in_auditLogs'
   ]
 };
-plan.planHash = stableHash({
-  projectId: plan.projectId,
-  modelVersion: plan.modelVersion,
-  auditReportHash: plan.auditReportHash,
-  planCatalog: plan.planCatalog,
-  subjects: plan.subjects,
-  backupManifest: plan.backupManifest,
-  applyProtocol: plan.applyProtocol,
-  rollbackProtocol: plan.rollbackProtocol
-});
+plan.planHash = computeV17PlanHash(plan);
 
 await fs.mkdir(outputDir, { recursive: true });
 await Promise.all([
