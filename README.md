@@ -48,8 +48,8 @@ La matriz de validación de V16.2 está en [`docs/CLICK360_V16_2_QA_CHECKLIST.md
 
 La consola es solo para una identidad IAM autorizada y está fijada al proyecto `click-360`. Primero se ejecuta en dry-run; `--apply` exige el hash recién leído y la frase exacta mostrada por la herramienta. Las colecciones `adminBackups` y `adminAuditLogs` están negadas al cliente.
 
-## Estado V16.2 / 1.0.1-p0
+## Estado V16.2 / 1.0.2-p0
 
-V16.2 es un candidato de release con hotfix comercial `1.0.1-p0` y build `mvp-launch-v16-2-p0-r1`. Firebase Hosting (`https://click-360.web.app/`) es la URL canónica y GitHub Pages queda como respaldo. El código incluye aislamiento UID/tenant, remoto V10 autoritativo, `ONLINE_ONLY_SAFE`, trial exacto de siete días, migración integral, confirmación de operaciones críticas, PWA/cache renovada y protección owner-only del snapshot de trabajadores. La compatibilidad directa con M02X continúa desactivada hasta validar protocolo y hardware real.
+V16.2 es un candidato de release con hotfix comercial `1.0.2-p0` y build `mvp-launch-v16-2-p0-r2`. Firebase Hosting (`https://click-360.web.app/`) es la única URL oficial para clientes. El código incluye aislamiento UID/tenant, remoto V10 autoritativo, `ONLINE_ONLY_SAFE`, trial exacto de siete días, migración integral, confirmación de operaciones críticas, PWA/cache renovada y protección owner-only del snapshot de trabajadores. La compatibilidad directa con M02X continúa desactivada hasta validar protocolo y hardware real.
 
 El estado del P0 está en [`docs/CLICK360_V16_2_P0_OFFICIAL_ACCESS_MOBILE_FIX_REPORT.md`](docs/CLICK360_V16_2_P0_OFFICIAL_ACCESS_MOBILE_FIX_REPORT.md). La evidencia histórica de V16.2 se conserva en [`docs/CLICK360_V16_2_RELEASE_REPORT.md`](docs/CLICK360_V16_2_RELEASE_REPORT.md).

@@ -4,7 +4,7 @@
   "id": "./",
   "lang": "es-EC",
   "description": "Controla inventario, ventas, caja, clientes y etiquetas QR desde tu celular o computadora con CLICK 360.",
-  "start_url": "./?v=mvp-launch-v16-2-p0-r1",
+  "start_url": "./?v=mvp-launch-v16-2-p0-r2",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",

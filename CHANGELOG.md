@@ -1,13 +1,12 @@
 # Changelog
 
-## 1.0.1-p0 - 2026-07-16
+## 1.0.2-p0 - 2026-07-16
 
-- Recupera el primer bootstrap V10 para cuentas válidas online sin `state/main`, preparando un snapshot inicial validado sin pasar por `save()` antes de `AUTH_APPROVED`.
-- Sincroniza en fuente la compatibilidad PRO Lifetime limitada para `status=active`, `lifetime=true`, `plan=pro`, `planCode=pro_lifetime` y `billingStatus=lifetime`, sin incorporar reglas V17.
-- Rechaza registros `pro_lifetime` incompletos para que no pasen por la rama genérica de plan activo.
-- Corrige "Nuevo recordatorio" en móvil con fecha y hora separadas, responsivas y sin overflow horizontal.
-- Separa Galeria y Tomar foto con inputs y handlers independientes; Galeria no usa `capture` y Camara usa `capture="environment"`.
-- Actualiza asset cache, runtime guard, manifest y service worker a `mvp-launch-v16-2-p0-r1`.
+- Corrige el loop de login posterior al redirect de Google en iOS/Brave usando `authDomain` same-origin en la URL oficial `click-360.web.app`.
+- Agrega verificación explícita de `getRedirectResult()` y marcador de redirect pendiente para distinguir `AUTH_REDIRECT_NO_RESULT`, `AUTH_USER_NULL_AFTER_REDIRECT` y `AUTH_PERSISTENCE_FAILED`.
+- Agrega códigos visibles para rechazos de `accountAccess`, `approvedUsers`, Rules y bootstrap, evitando volver al inicio sin causa.
+- Evita cerrar sesión automáticamente antes de abrir Google; el cambio/cierre de cuenta queda en el botón explícito.
+- Actualiza asset cache, runtime guard, manifest y service worker a `mvp-launch-v16-2-p0-r2`.
 
 ## V16.2 - 2026-07-15
 

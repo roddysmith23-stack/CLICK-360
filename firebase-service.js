@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-	  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p0-r1';
+	  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p0-r2';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -72,10 +72,14 @@
 		  const TRIAL_DAYS = 7;
 			  const PUBLIC_INTENT_KEY = 'CLICK360:V16_2:PUBLIC_INTENT';
 			  const EXPLICIT_INVITATION_KEY = 'CLICK360:V16_2:EXPLICIT_INVITATION';
+		  const AUTH_REDIRECT_PENDING_KEY = 'CLICK360:V16_2:AUTH_REDIRECT_PENDING';
 			  const PUBLIC_INTENTS = new Set(['login', 'trial', 'register', 'invite']);
 			  let PUBLIC_AUTH_INTENT = null;
 			  let AUTH_REQUEST_IN_FLIGHT = false;
 			  let APPROVED_LOOKUP_STATUS = 'unresolved';
+		  let AUTH_PERSISTENCE_READY = true;
+		  let AUTH_REDIRECT_RESULT_STATUS = 'not_checked';
+		  let AUTH_REDIRECT_RESULT_ERROR = '';
 			  const ACCESS_UI_STATES = window.CLICK360_ACCESS_FLOW?.STATES || Object.freeze({
 			    LOADING: 'loading',
 			    UNAUTHENTICATED: 'unauthenticated',
@@ -381,12 +385,74 @@
 			    PUBLIC_AUTH_INTENT = null;
 			    try { sessionStorage.removeItem(PUBLIC_INTENT_KEY); } catch {}
 			  }
+		  function setAuthRedirectPending(intent = 'login') {
+		    try {
+		      sessionStorage.setItem(AUTH_REDIRECT_PENDING_KEY, JSON.stringify({
+		        intent: PUBLIC_INTENTS.has(intent) ? intent : 'login',
+		        createdAtMs: Date.now(),
+		        appVersion: APP_ASSET_VERSION,
+		        authDomain: window.CLICK360_FIREBASE_CONFIG?.authDomain || ''
+		      }));
+		    } catch {}
+		  }
+		  function readAuthRedirectPending() {
+		    try {
+		      const pending = safeJsonParse(sessionStorage.getItem(AUTH_REDIRECT_PENDING_KEY));
+		      if (!pending || !Number.isFinite(Number(pending.createdAtMs))) return null;
+		      if (Date.now() - Number(pending.createdAtMs) > 10 * 60 * 1000) {
+		        sessionStorage.removeItem(AUTH_REDIRECT_PENDING_KEY);
+		        return null;
+		      }
+		      return pending;
+		    } catch { return null; }
+		  }
+		  function clearAuthRedirectPending() {
+		    try { sessionStorage.removeItem(AUTH_REDIRECT_PENDING_KEY); } catch {}
+		  }
+		  function loginErrorCode(code, fallback = 'UNKNOWN_LOGIN_GATE_FAILURE') {
+		    const raw = String(code || fallback).toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 80);
+		    return raw || fallback;
+		  }
+		  function loginGateConsole(code, details = {}) {
+		    const safeCode = loginErrorCode(code);
+		    const payload = {
+		      code: safeCode,
+		      authDomain: window.CLICK360_FIREBASE_CONFIG?.authDomain || '',
+		      appVersion: APP_ASSET_VERSION,
+		      uiState: ACCESS_UI_STATE,
+		      hasAuthUser: !!auth.currentUser,
+		      online: navigator.onLine,
+		      redirectResult: AUTH_REDIRECT_RESULT_STATUS,
+		      persistenceReady: AUTH_PERSISTENCE_READY,
+		      accountStatus: details.accountStatus || '',
+		      approvedStatus: APPROVED_LOOKUP_STATUS || '',
+		      firestoreCode: details.firestoreCode || '',
+		      route: location.pathname + location.search + location.hash
+		    };
+		    window.click360LastLoginGateError = Object.freeze(payload);
+		    console.warn('[CLICK360_LOGIN_GATE]', payload);
+		    recordTelemetryOnce(`login-gate:${AUTH_EPOCH}:${safeCode}:${payload.accountStatus}:${payload.approvedStatus}`, 'login', {
+		      mode: 'gate_failure',
+		      errorCode: safeCode
+		    });
+		    return safeCode;
+		  }
+		  function loginGateMessage(message, code, state = ACCESS_UI_STATES.RECOVERABLE_ERROR, details = {}) {
+		    const safeCode = loginGateConsole(code, details);
+		    showGate(`${escapeHtml(message)}<br><small>Código: ${safeCode}</small>`, state, { reason: safeCode, errorCode: safeCode });
+		    return safeCode;
+		  }
 			  window.click360GetPublicAuthDiagnostics = () => {
 			    const params = currentInvitationParams();
 			    return {
 			      intent: readPublicAuthIntent(),
 			      invitationParametersPresent: params.flow === 'invite' || !!params.ownerId || !!params.inviteHash || !!params.inviteToken,
-			      explicitInvitationIntent: readExplicitInvitationIntent()
+			      explicitInvitationIntent: readExplicitInvitationIntent(),
+		      authRedirectPending: readAuthRedirectPending(),
+		      redirectResultStatus: AUTH_REDIRECT_RESULT_STATUS,
+		      redirectResultError: AUTH_REDIRECT_RESULT_ERROR,
+		      authDomain: window.CLICK360_FIREBASE_CONFIG?.authDomain || '',
+		      lastLoginGateError: window.click360LastLoginGateError || null
 			    };
 			  };
 		  const TELEMETRY_EVENTS = new Set([
@@ -1982,10 +2048,7 @@
   }
 
 		  function showPending(user) {
-		    showGate(`
-	      Tu cuenta (<b>${escapeHtml(user.email || "sin email")}</b>) está pendiente de aprobación.<br><br>
-	      Tu solicitud está protegida. Contacta a CLICK 360 para revisar o activar el acceso de esta cuenta.
-		    `, ACCESS_UI_STATES.PENDING);
+		    loginGateMessage(`Tu cuenta (${user.email || "sin email"}) está pendiente de aprobación. Tu solicitud está protegida. Contacta a CLICK 360 para revisar o activar el acceso de esta cuenta.`, 'AUTH_APPROVED_USERS_REJECTED', ACCESS_UI_STATES.PENDING);
 
     const loginBtn = document.getElementById("c360-google-login");
 	    if(loginBtn) {
@@ -2047,7 +2110,6 @@
     AUTH_REQUEST_IN_FLIGHT = true;
     document.querySelectorAll('.c360-gate-actions button, .c360-public-plans button').forEach((button) => { button.disabled = true; });
     const selectGoogleAccount = async () => {
-      if (auth.currentUser) await auth.signOut();
       return signInGoogle();
     };
     Promise.resolve(selectGoogleAccount()).finally(() => {
@@ -2070,8 +2132,10 @@
 
 	    if (msg) msg.textContent = "Abriendo Google...";
 	    if (isIOS) {
+	      setAuthRedirectPending(readPublicAuthIntent());
 	      return auth.signInWithRedirect(providerGoogle()).catch(() => {
-	        if (msg) msg.innerHTML = `No pudimos abrir Google desde esta ventana.<br><a class="c360-open-browser" href="https://click-360.web.app/" target="_blank" rel="noopener noreferrer">Abrir CLICK 360 en Safari</a>`;
+	        clearAuthRedirectPending();
+	        if (msg) msg.innerHTML = `No pudimos abrir Google desde esta ventana.<br><small>Código: AUTH_REDIRECT_NO_RESULT</small><br><a class="c360-open-browser" href="https://click-360.web.app/" target="_blank" rel="noopener noreferrer">Abrir CLICK 360 en Safari</a>`;
 	        return false;
 	      });
 	    }
@@ -2083,9 +2147,10 @@
         if (msg) msg.innerHTML = "Tu navegador bloqueó la ventana de Google.<br>Por favor, <b>permite las ventanas emergentes</b> o intenta desde Chrome/Safari normal.";
       } else if (err.code === 'auth/operation-not-supported-in-this-environment') {
         if (msg) msg.textContent = "Redireccionando a Google...";
+        setAuthRedirectPending(readPublicAuthIntent());
         auth.signInWithRedirect(providerGoogle());
       } else if (err.code !== 'auth/popup-closed-by-user') {
-	        if (msg) msg.textContent = "No pudimos iniciar sesión con Google. Revisa la conexión e inténtalo otra vez desde Safari o Chrome.";
+	        if (msg) msg.innerHTML = "No pudimos iniciar sesión con Google. Revisa la conexión e inténtalo otra vez desde Safari o Chrome.<br><small>Código: AUTH_REDIRECT_NO_RESULT</small>";
       }
     });
   }
@@ -2303,7 +2368,7 @@
 	          : bootstrapDecision.reason === 'connection_required'
 	            ? 'Conéctate a internet para preparar esta cuenta por primera vez.'
 	            : 'No pudimos preparar esta cuenta de forma segura. Reintenta con internet o contacta a soporte con el código BOOTSTRAP-V10.';
-		        showGate(bootstrapMessage, ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: bootstrapErrorCode });
+		        loginGateMessage(bootstrapMessage, 'BOOTSTRAP_PREPARE_FAILED', ACCESS_UI_STATES.RECOVERABLE_ERROR, { accountStatus: bootstrapErrorCode });
 	        return false;
 	      }
 	      if (!preparedSnapshot.localPersisted && !preparedSnapshot.indexedPersisted) {
@@ -2318,7 +2383,7 @@
 	        recordTelemetryOnce(`bootstrap:${AUTH_EPOCH}:${ACTIVE_CONTEXT.tenantKey}:cloud_seed_failed`, 'bootstrap', {
 	          mode: 'failed', errorCode: 'cloud_seed_failed'
 	        });
-		        showGate('No pudimos preparar el negocio de forma segura. No se modificó información existente.', ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: 'bootstrap_failed' });
+		        loginGateMessage('No pudimos preparar el negocio de forma segura. No se modificó información existente.', 'BOOTSTRAP_CREATE_FAILED', ACCESS_UI_STATES.RECOVERABLE_ERROR, { accountStatus: 'bootstrap_failed' });
 	        return false;
 	      }
 	      INITIAL_TENANT_SEED_REQUIRED = false;
@@ -2361,19 +2426,47 @@
     try {
       await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
     } catch (e) {
+      AUTH_PERSISTENCE_READY = false;
       console.warn("Persistencia local no disponible:", e.message);
     }
 
 	    showGate("Verificando acceso Google...", ACCESS_UI_STATES.LOADING);
+
+	    const pendingRedirectAtBoot = readAuthRedirectPending();
+	    if (pendingRedirectAtBoot) {
+	      try {
+	        const result = await auth.getRedirectResult();
+	        AUTH_REDIRECT_RESULT_STATUS = result?.user ? 'user' : 'empty';
+	        AUTH_REDIRECT_RESULT_ERROR = '';
+	        if (result?.user) clearAuthRedirectPending();
+	      } catch (error) {
+	        AUTH_REDIRECT_RESULT_STATUS = 'error';
+	        AUTH_REDIRECT_RESULT_ERROR = String(error.code || error.message || 'unknown').slice(0, 100);
+	        loginGateConsole('AUTH_REDIRECT_NO_RESULT', { firestoreCode: AUTH_REDIRECT_RESULT_ERROR });
+	      }
+	    }
 
 
 	    auth.onAuthStateChanged(async user => {
 	      const epoch = AUTH_EPOCH + 1;
 	      deactivateActiveAccount();
 	      if (!user) {
+	        const pendingRedirect = readAuthRedirectPending();
+	        if (pendingRedirect) {
+	          const code = AUTH_PERSISTENCE_READY === false
+	            ? 'AUTH_PERSISTENCE_FAILED'
+	            : AUTH_REDIRECT_RESULT_STATUS === 'empty'
+	              ? 'AUTH_REDIRECT_NO_RESULT'
+	              : 'AUTH_USER_NULL_AFTER_REDIRECT';
+	          loginGateMessage('No pudimos completar tu acceso después de volver de Google.', code, ACCESS_UI_STATES.RECOVERABLE_ERROR, {
+	            firestoreCode: AUTH_REDIRECT_RESULT_ERROR
+	          });
+	          return;
+	        }
 	        showGate("Inicia sesión con Google para continuar.", ACCESS_UI_STATES.UNAUTHENTICATED);
 	        return;
 	      }
+	      clearAuthRedirectPending();
 
 	      const publicIntent = readPublicAuthIntent();
 	      showGate("Verificando acceso en CLICK 360...", ACCESS_UI_STATES.AUTHENTICATED_RESOLVING);
@@ -2385,7 +2478,7 @@
 	      if (account.status === 'ready' && account.state?.allowed) {
 	        clearInvitationIntent({ cleanUrl: true });
 	        if (!applyAccountAccessIdentity(user, account, epoch)) {
-	          showGate('La identidad de esta cuenta no coincide con su negocio. No se cargó ni modificó información.', ACCESS_UI_STATES.BLOCKED, { reason: 'account_identity_invalid' });
+	          loginGateMessage('La identidad de esta cuenta no coincide con su negocio. No se cargó ni modificó información.', 'AUTH_ACCESS_REJECTED', ACCESS_UI_STATES.BLOCKED, { accountStatus: account.status });
 	          return;
 	        }
 	        await enterApprovedApp(user, epoch);
@@ -2393,12 +2486,12 @@
 	      }
 	      if (account.status === 'identity_invalid') {
 	        clearInvitationIntent({ cleanUrl: true });
-	        showGate('La identidad de esta cuenta no coincide con su negocio. No se cargó ni modificó información.', ACCESS_UI_STATES.BLOCKED, { reason: 'account_identity_invalid' });
+	        loginGateMessage('La identidad de esta cuenta no coincide con su negocio. No se cargó ni modificó información.', 'AUTH_ACCESS_REJECTED', ACCESS_UI_STATES.BLOCKED, { accountStatus: account.status });
 	        return;
 	      }
 	      if (account.status === 'invalid_entitlement') {
 	        clearInvitationIntent({ cleanUrl: true });
-	        showGate('Tu acceso todavía no está activo. Tus datos permanecen protegidos; contacta a CLICK 360 para revisar el plan.', ACCESS_UI_STATES.PENDING, { reason: 'invalid_entitlement' });
+	        loginGateMessage('Tu acceso todavía no está activo. Tus datos permanecen protegidos; contacta a CLICK 360 para revisar el plan.', 'AUTH_ACCOUNT_ACCESS_REJECTED', ACCESS_UI_STATES.PENDING, { accountStatus: account.status });
 	        return;
 	      }
 
@@ -2412,17 +2505,17 @@
 	      }
 	      if (window.click360User && ['blocked', 'revoked'].includes(window.click360User.status)) {
 	        clearInvitationIntent({ cleanUrl: true });
-	        showGate(`Tu cuenta (<b>${escapeHtml(user.email || 'sin email')}</b>) está bloqueada o revocada.<br><br>Contacta al administrador o a soporte.`, ACCESS_UI_STATES.BLOCKED, { reason: window.click360User.status });
+	        loginGateMessage(`Tu cuenta (${user.email || 'sin email'}) está bloqueada o revocada. Contacta al administrador o a soporte.`, 'AUTH_ACCESS_REJECTED', ACCESS_UI_STATES.BLOCKED, { accountStatus: window.click360User.status });
 	        return;
 	      }
 	      if (window.click360User?.status === 'tenant_configuration_invalid') {
 	        clearInvitationIntent({ cleanUrl: true });
-	        showGate('La configuración de esta cuenta no coincide con el tenant seguro. No se cargó ni modificó información.', ACCESS_UI_STATES.BLOCKED, { reason: 'tenant_configuration_invalid' });
+	        loginGateMessage('La configuración de esta cuenta no coincide con el tenant seguro. No se cargó ni modificó información.', 'AUTH_ACCESS_REJECTED', ACCESS_UI_STATES.BLOCKED, { accountStatus: window.click360User.status });
 	        return;
 	      }
 	      if (window.click360User?.status === 'worker_module_upgrade') {
 	        clearInvitationIntent({ cleanUrl: true });
-	        showGate('El acceso de trabajadores está temporalmente pausado mientras terminamos la protección independiente de cada módulo. El negocio del propietario permanece intacto.', ACCESS_UI_STATES.PENDING, { reason: 'worker_module_upgrade' });
+	        loginGateMessage('El acceso de trabajadores está temporalmente pausado mientras terminamos la protección independiente de cada módulo. El negocio del propietario permanece intacto.', 'AUTH_APPROVED_USERS_REJECTED', ACCESS_UI_STATES.PENDING, { accountStatus: window.click360User.status });
 	        return;
 	      }
 
@@ -2484,9 +2577,14 @@
 	        const message = account.status === 'permission_denied'
 	          ? 'No pudimos verificar el permiso de esta cuenta. No se cargaron datos; vuelve a intentarlo o cambia de cuenta.'
 	          : 'No pudimos verificar la cuenta por un problema temporal de conexión. Vuelve a intentarlo sin crear datos nuevos.';
-	        showGate(message, ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: account.status, errorCode: account.errorCode || '' });
+	        const code = account.status === 'permission_denied'
+	          ? 'FIRESTORE_PERMISSION_DENIED'
+	          : account.status === 'network_error'
+	            ? 'AUTH_ACCOUNT_ACCESS_REJECTED'
+	            : 'UNKNOWN_LOGIN_GATE_FAILURE';
+	        loginGateMessage(message, code, ACCESS_UI_STATES.RECOVERABLE_ERROR, { accountStatus: account.status, firestoreCode: account.errorCode || '' });
 	      } else {
-	        showGate('No encontramos una cuenta activa con este Google. Puedes probar gratis, registrarte o cambiar de cuenta.', ACCESS_UI_STATES.AUTHENTICATED_NO_ACCESS, { reason: 'account_not_found' });
+	        loginGateMessage('No encontramos una cuenta activa con este Google. Puedes probar gratis, registrarte o cambiar de cuenta.', 'AUTH_ACCOUNT_NOT_FOUND', ACCESS_UI_STATES.AUTHENTICATED_NO_ACCESS, { accountStatus: account.status });
 	      }
 	    });
   }
