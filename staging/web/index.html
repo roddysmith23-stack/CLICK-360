@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta name="theme-color" content="#101010" />
+    <title>CLICK 360 STAGING</title>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand" aria-label="CLICK 360">
+          <span class="brand-mark">360</span>
+          <span>CLICK 360</span>
+        </div>
+        <span class="environment">STAGING · NO PRODUCTIVO</span>
+      </header>
+
+      <section class="workspace" aria-labelledby="title">
+        <div>
+          <p class="eyebrow">Bootstrap shadow</p>
+          <h1 id="title">Validación segura de acceso</h1>
+          <p class="summary">Entorno aislado con datos sintéticos. Ninguna operación comercial se ejecuta aquí.</p>
+        </div>
+
+        <div class="status-panel" aria-live="polite">
+          <div class="status-row">
+            <span class="status-label">Sesión</span>
+            <strong id="session-status">Sin autenticar</strong>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Shadow</span>
+            <strong id="shadow-status">Pendiente</strong>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Versión</span>
+            <strong id="version-status">Consultando</strong>
+          </div>
+          <p id="result-detail" class="result-detail">Inicia sesión con la identidad QA autorizada.</p>
+        </div>
+
+        <div class="actions">
+          <button id="login-button" class="primary" type="button">Iniciar sesión con Google</button>
+          <button id="logout-button" class="secondary" type="button" hidden>Cerrar sesión</button>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

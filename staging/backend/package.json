@@ -1,0 +1,35 @@
+{
+  "name": "click360-staging-shadow-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "lint": "eslint src test",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "verify:fixtures": "node scripts/verify-fixtures.mjs --project=click360-staging-7620168025",
+    "qa": "npm run lint && npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "fastify": "^5.5.0",
+    "firebase-admin": "^14.1.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.36.0",
+    "@types/node": "^24.7.2",
+    "eslint": "^9.36.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}

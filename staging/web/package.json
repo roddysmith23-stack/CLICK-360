@@ -1,0 +1,24 @@
+{
+  "name": "click360-staging-qa-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "test:e2e": "playwright test",
+    "qa": "npm run typecheck && npm run build"
+  },
+  "dependencies": {
+    "firebase": "^12.4.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  }
+}
