@@ -1,0 +1,152 @@
+name: CLICK 360 STABLE Phase 1A
+
+on:
+  pull_request:
+    branches: [develop]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: click360-staging-phase1a
+  cancel-in-progress: false
+
+env:
+  STAGING_PROJECT_ID: click360-staging-7620168025
+  STAGING_REGION: us-central1
+  STAGING_SERVICE: click360-api-staging
+  STAGING_REPOSITORY: click360-staging
+  RELEASE_VERSION: 0.1.0-staging.1
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            staging/backend/package-lock.json
+            staging/web/package-lock.json
+      - run: npm ci
+      - run: npm ci --prefix staging/backend
+      - run: npm ci --prefix staging/web
+      - run: npm --prefix staging/web exec -- playwright install --with-deps chromium
+      - run: npm run qa:staging
+      - run: npm audit --prefix staging/backend --omit=dev --audit-level=high
+      - run: npm audit --prefix staging/web --omit=dev --audit-level=high
+      - name: Secret and production deployment guard
+        run: |
+          ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- ':!fixtures/**' ':!vendor/**' ':!.github/workflows/staging-phase1a.yml'
+          ! git grep -n 'firebase deploy.*click-360' -- .github staging
+      - name: Build immutable deployment artifacts once
+        run: |
+          mkdir -p staging/artifacts
+          docker build --pull --file staging/backend/Dockerfile.release --tag "click360-shadow:$GITHUB_SHA" staging/backend
+          docker save --output staging/artifacts/api-image.tar "click360-shadow:$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: click360-phase1a-api-${{ github.sha }}
+          path: staging/artifacts/api-image.tar
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: click360-phase1a-web-${{ github.sha }}
+          path: staging/web/dist
+          retention-days: 7
+
+  deploy-staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: click360-phase1a-api-${{ github.sha }}
+          path: staging/artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: click360-phase1a-web-${{ github.sha }}
+          path: staging/web/dist
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/471043029016/locations/global/workloadIdentityPools/github-click360-staging/providers/github-click360-provider
+          service_account: click360-deployer-stg@click360-staging-7620168025.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+      - name: Build and push immutable image
+        id: image
+        run: |
+          REMOTE_IMAGE="us-central1-docker.pkg.dev/$STAGING_PROJECT_ID/$STAGING_REPOSITORY/api:$GITHUB_SHA"
+          docker load --input staging/artifacts/api-image.tar
+          docker tag "click360-shadow:$GITHUB_SHA" "$REMOTE_IMAGE"
+          docker push "$REMOTE_IMAGE"
+          DIGEST="$(gcloud artifacts docker images describe "$REMOTE_IMAGE" --format='value(image_summary.digest)')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+      - name: Deploy Cloud Run staging only
+        run: |
+          gcloud run deploy "$STAGING_SERVICE" \
+            --project="$STAGING_PROJECT_ID" \
+            --region="$STAGING_REGION" \
+            --image="us-central1-docker.pkg.dev/$STAGING_PROJECT_ID/$STAGING_REPOSITORY/api@${{ steps.image.outputs.digest }}" \
+            --service-account="click360-api-runtime-stg@$STAGING_PROJECT_ID.iam.gserviceaccount.com" \
+            --min=0 \
+            --max=2 \
+            --cpu=1 \
+            --memory=512Mi \
+            --concurrency=20 \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=$STAGING_PROJECT_ID,CLICK360_ENVIRONMENT=staging,APP_VERSION=$RELEASE_VERSION,RELEASE_SHA=$GITHUB_SHA,BUILD_TIME=${{ github.event.head_commit.timestamp }},SHADOW_MODE=true" \
+            --set-secrets="UID_PSEUDONYM_SECRET=click360-uid-pseudonym:latest" \
+            --allow-unauthenticated \
+            --quiet
+      - name: Preserve previous Hosting release
+        continue-on-error: true
+        run: node_modules/.bin/firebase hosting:clone "$STAGING_PROJECT_ID:live" "$STAGING_PROJECT_ID:phase1a-rollback" --project "$STAGING_PROJECT_ID" --non-interactive
+      - name: Deploy Hosting staging only
+        run: node_modules/.bin/firebase deploy --only hosting --config staging/firebase.staging.json --project "$STAGING_PROJECT_ID" --non-interactive
+      - name: Health checks
+        run: |
+          curl --fail --retry 8 --retry-delay 5 --silent --show-error "https://$STAGING_PROJECT_ID.web.app/health/live"
+          curl --fail --retry 8 --retry-delay 5 --silent --show-error "https://$STAGING_PROJECT_ID.web.app/health/ready"
+          curl --fail --retry 8 --retry-delay 5 --silent --show-error "https://$STAGING_PROJECT_ID.web.app/health/version"
+
+  release-gate:
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: [validate, deploy-staging]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build release evidence
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          IMAGE_DIGEST: ${{ needs.deploy-staging.outputs.image_digest }}
+          ROLLBACK_IMAGE_DIGEST: ${{ vars.STAGING_ROLLBACK_IMAGE_DIGEST }}
+          HEALTH_STATUS: ${{ needs.deploy-staging.result == 'success' && 'READY' || 'NOT_READY' }}
+          E2E_STATUS: ${{ vars.STAGING_GOOGLE_QA_E2E_STATUS || 'PENDING' }}
+        run: node staging/scripts/create-release-manifest.mjs staging/artifacts/release-manifest.json
+      - name: Release Manager
+        run: node staging/scripts/release-manager.mjs staging/artifacts/release-manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: click360-staging-release-manifest
+          path: staging/artifacts/release-manifest.json

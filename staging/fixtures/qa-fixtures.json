@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "environment": "staging",
+  "featureFlags": {
+    "bootstrap_shadow": true,
+    "observability_v1": true,
+    "maintenance_mode": false
+  },
+  "health": {
+    "ready": true,
+    "environment": "staging",
+    "schemaVersion": 1
+  },
+  "profiles": [
+    {
+      "uid": "qa-founder-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "founder", "status": "founder", "plan": "founder_unlimited", "organizationId": "org-qa-founder" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_FOUNDER" },
+      "organization": { "id": "org-qa-founder", "status": "active" }
+    },
+    {
+      "uid": "qa-founder-admin-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "founder_admin", "status": "founder", "plan": "founder_unlimited", "organizationId": "org-qa-founder-admin" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_FOUNDER_ADMIN" },
+      "organization": { "id": "org-qa-founder-admin", "status": "active" }
+    },
+    {
+      "uid": "qa-base-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "base", "status": "paid_base", "plan": "base", "organizationId": "org-qa-base" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_PAID_BASE" },
+      "organization": { "id": "org-qa-base", "status": "active" }
+    },
+    {
+      "uid": "qa-pro-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "pro", "status": "paid_pro", "plan": "pro", "organizationId": "org-qa-pro" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_PAID_PRO" },
+      "organization": { "id": "org-qa-pro", "status": "active" }
+    },
+    {
+      "uid": "qa-pro-lifetime-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "pro_lifetime", "status": "active", "plan": "pro", "planCode": "pro_lifetime", "billingStatus": "lifetime", "lifetime": true, "organizationId": "org-qa-pro-lifetime" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_PAID_PRO" },
+      "organization": { "id": "org-qa-pro-lifetime", "status": "active" }
+    },
+    {
+      "uid": "qa-trial-active-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "trial_active", "status": "active", "plan": "trial", "trialExpiresAtMs": 4102444800000, "organizationId": "org-qa-trial-active" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_TRIAL_ACTIVE" },
+      "organization": { "id": "org-qa-trial-active", "status": "active" }
+    },
+    {
+      "uid": "qa-trial-expired-0001",
+      "expected": "DIFFERENCE",
+      "access": { "accountType": "trial_expired", "status": "active", "plan": "trial", "trialExpiresAtMs": 946684800000, "organizationId": "org-qa-trial-expired" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_TRIAL_CLOCK_SKEW" },
+      "organization": { "id": "org-qa-trial-expired", "status": "active" }
+    },
+    {
+      "uid": "qa-suspended-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "suspended", "status": "suspended", "plan": "pro", "organizationId": "org-qa-suspended" },
+      "legacy": { "decision": "BLOCKED", "reason": "LEGACY_SUSPENDED" },
+      "organization": { "id": "org-qa-suspended", "status": "active" }
+    },
+    {
+      "uid": "qa-no-organization-0001",
+      "expected": "INSUFFICIENT_DATA",
+      "access": { "accountType": "no_organization", "status": "paid_base", "plan": "base" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_AUTO_SEED" },
+      "organization": null
+    },
+    {
+      "uid": "qa-organization-active-0001",
+      "expected": "MATCH",
+      "access": { "accountType": "organization_active", "status": "paid_base", "plan": "base", "organizationId": "org-qa-active" },
+      "legacy": { "decision": "READY", "reason": "LEGACY_OWNER" },
+      "organization": { "id": "org-qa-active", "status": "active" }
+    },
+    {
+      "uid": "qa-legacy-ambiguous-0001",
+      "expected": "LEGACY_AMBIGUOUS",
+      "access": { "accountType": "legacy_ambiguous", "status": "paid_base", "plan": "base", "organizationId": "org-qa-legacy-ambiguous" },
+      "legacy": { "decision": "LEGACY_AMBIGUOUS", "reason": "MULTIPLE_SYNTHETIC_OWNERS" },
+      "organization": { "id": "org-qa-legacy-ambiguous", "status": "active" }
+    }
+  ]
+}

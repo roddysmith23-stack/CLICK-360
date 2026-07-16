@@ -8,7 +8,12 @@
     "audit:fixture": "node scripts/audit-firestore-legacy.mjs --fixture fixtures/firebase-audit-fixture.json --out artifacts/firebase-audit",
     "migrate:fixture": "node scripts/migrate-legacy-v9-to-v10.mjs --fixture fixtures/firebase-audit-fixture.json --dry-run",
     "qa:rules": "sh scripts/run-firestore-emulator-qa.sh",
-    "admin:v16": "node scripts/admin-access-v16.mjs"
+    "admin:v16": "node scripts/admin-access-v16.mjs",
+    "qa:staging:backend": "npm --prefix staging/backend run qa",
+    "qa:staging:web": "npm --prefix staging/web run qa",
+    "qa:staging:e2e": "npm --prefix staging/web run test:e2e",
+    "qa:staging:release": "node --test staging/test/*.test.mjs",
+    "qa:staging": "npm run qa:staging:backend && npm run qa:staging:web && npm run qa:staging:e2e && npm run qa:staging:release && node staging/scripts/assert-staging-only.mjs"
   },
   "dependencies": {
     "firebase-admin": "^14.1.0",
