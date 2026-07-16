@@ -7,7 +7,10 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-r1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p0-r1';
+  const APP_RELEASE_VERSION = '1.0.1-p0';
+  const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
+  const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:';
   const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
@@ -228,11 +231,11 @@
     const comma = src.indexOf(',');
     return comma < 0 ? 0 : Math.floor((src.length - comma - 1) * 0.75);
   }
-  function readImageInput(input, cb, options={}){
-    const file = input?.files?.[0];
-    if(!file) return cb('');
-    if(!file.type.startsWith('image/')) return toast('Selecciona una imagen válida','err');
-    if(file.size > MAX_IMAGE_INPUT_BYTES) return toast('La imagen supera 8 MB. Elige una foto más ligera.', 'err');
+	  function readImageInput(input, cb, options={}){
+	    const file = input?.files?.[0];
+	    if(!file) return false;
+	    if(!file.type.startsWith('image/')) return toast('Selecciona una imagen válida','err');
+	    if(file.size > MAX_IMAGE_INPUT_BYTES) return toast('La imagen supera 8 MB. Elige una foto más ligera.', 'err');
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
@@ -262,7 +265,40 @@
       img.onerror = () => toast('No se pudo leer la imagen','err');
       img.src = reader.result;
     };
-    reader.readAsDataURL(file);
+	    reader.readAsDataURL(file);
+	    return true;
+	  }
+  function bindImageInputPair({ cameraInputId, galleryInputId, cameraButtonId, galleryButtonId, onImage, options = {} }) {
+    const cameraInput = document.getElementById(cameraInputId);
+    const galleryInput = document.getElementById(galleryInputId);
+    const cameraButton = document.getElementById(cameraButtonId);
+    const galleryButton = document.getElementById(galleryButtonId);
+    const handleImage = (event) => {
+      readImageInput(event.target, onImage, options);
+      event.target.value = '';
+    };
+    if (galleryInput) {
+      galleryInput.setAttribute('accept', 'image/*');
+      galleryInput.removeAttribute('capture');
+      galleryInput.onchange = handleImage;
+    }
+    if (cameraInput) {
+      cameraInput.setAttribute('accept', 'image/*');
+      cameraInput.setAttribute('capture', 'environment');
+      cameraInput.onchange = handleImage;
+    }
+    if (galleryButton && galleryInput) {
+      galleryButton.onclick = () => {
+        galleryInput.value = '';
+        galleryInput.click();
+      };
+    }
+    if (cameraButton && cameraInput) {
+      cameraButton.onclick = () => {
+        cameraInput.value = '';
+        cameraInput.click();
+      };
+    }
   }
 function parseMoney(value) {
     if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value * 100) / 100 : NaN;
@@ -795,8 +831,64 @@ function parseMoney(value) {
         return true;
       }
       publishStorageState({ mode: navigator.onLine ? 'online_only_safe' : 'unavailable', indexedDbReady: false, localReady: false, message: 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.' });
-      return false;
+	      return false;
+	    }
+	  };
+  window.click360PrepareInitialTenantState = async function(context = activeTenantContext) {
+    if (!context || !activeTenantContext || !stateStorageKey()
+      || context.authUid !== activeTenantContext.authUid
+      || context.tenantKey !== activeTenantContext.tenantKey) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'tenant_context_mismatch' };
     }
+
+    const snapshot = cloneState(state);
+    if (!snapshot) return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_clone_failed' };
+    snapshot.identity = tenantIdentity();
+    if (!sameTenantIdentity(snapshot.identity, context)
+      || tenantRuntime?.validBusinessPayload({ identity: snapshot.identity, data: snapshot }, context) !== true) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_identity_invalid' };
+    }
+
+    const serialized = JSON.stringify(snapshot);
+    if (stateSizeBytes(serialized) > MAX_LOCAL_TENANT_STATE_BYTES) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_too_large' };
+    }
+
+    let localPersisted = false;
+    try {
+      localStorage.setItem(stateStorageKey(), serialized);
+      localPersisted = true;
+      writeCacheMeta('initial_tenant_snapshot', stateSizeBytes(serialized), {
+        pendingRemoteSync: true,
+        baseRevision: 0,
+        operationId: 'initial_tenant_seed'
+      });
+    } catch {}
+
+    const indexedPersisted = await queueIndexedSnapshot(snapshot, {
+      source: 'initial_tenant_snapshot',
+      pendingRemoteSync: true,
+      baseRevision: 0,
+      operationId: 'initial_tenant_seed',
+      localPersisted
+    });
+    if (!activeTenantContext
+      || activeTenantContext.authUid !== context.authUid
+      || activeTenantContext.tenantKey !== context.tenantKey) {
+      return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'tenant_context_changed' };
+    }
+
+    state = snapshot;
+    tenantStateDeferred = false;
+    if (localPersisted || indexedPersisted) rememberPersistedState();
+    lastAutoSaveHash = JSON.stringify(state);
+    return {
+      prepared: true,
+      localPersisted,
+      indexedPersisted,
+      storageMode: storageState.mode,
+      reason: localPersisted || indexedPersisted ? 'device_snapshot_ready' : 'online_snapshot_ready'
+    };
   };
   window.click360ClearTenantContext = function() {
     stopScanner();
@@ -1384,7 +1476,7 @@ function parseMoney(value) {
 	    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
-		          <div class="logoMark sidebarBrand" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">V16.2</small><small class="brandSlogan">Control total de tu negocio</small></div></div>
+		          <div class="logoMark sidebarBrand" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">${escapeHtml(APP_VISIBLE_VERSION)}</small><small class="brandSlogan">Control total de tu negocio</small></div></div>
 	          <div class="field"><label>Negocio activo</label>${businessSwitcher('businessPickerSide')}</div>
 	          <nav class="sideNav">${navButtons(active, true)}</nav>
 	        </div>
@@ -2143,11 +2235,15 @@ function parseMoney(value) {
 	  function openReminderModal(reminderId = '') {
 	    const reminder = state.settings.reminders?.find((item) => item.id === reminderId) || {};
 	    const dueValue = reminder.dueAt ? new Date(new Date(reminder.dueAt).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+	    const dueDateValue = dueValue ? dueValue.slice(0, 10) : '';
+	    const dueTimeValue = dueValue ? dueValue.slice(11, 16) : '09:00';
 	    const customers = crmCustomers();
-	    showModal(`<div class="modalHeader"><h2>${reminder.id ? 'Editar' : 'Nuevo'} recordatorio</h2><button class="closeBtn" data-close>×</button></div><form id="reminderForm" class="formGrid"><div class="field"><label>Tipo</label><select id="reminderType"><option value="collection" ${reminder.type === 'collection' ? 'selected' : ''}>Cobrar cliente</option><option value="layaway" ${reminder.type === 'layaway' ? 'selected' : ''}>Apartado</option><option value="low_stock" ${reminder.type === 'low_stock' ? 'selected' : ''}>Inventario bajo</option><option value="supplier" ${reminder.type === 'supplier' ? 'selected' : ''}>Proveedor</option><option value="invoice" ${reminder.type === 'invoice' ? 'selected' : ''}>Factura</option><option value="task" ${!reminder.type || reminder.type === 'task' ? 'selected' : ''}>Tarea</option><option value="follow_up" ${reminder.type === 'follow_up' ? 'selected' : ''}>Seguimiento</option><option value="cash" ${reminder.type === 'cash' ? 'selected' : ''}>Caja</option></select></div><div class="field"><label>Titulo</label><input id="reminderTitle" required value="${escapeHtml(reminder.title || '')}" placeholder="Ej. Llamar a cliente"></div><div class="field"><label>Fecha y hora</label><input id="reminderDue" type="datetime-local" required value="${escapeHtml(dueValue)}"></div><div class="field"><label>Cliente</label><select id="reminderCustomer"><option value="">Sin cliente</option>${customers.map((customer) => `<option value="${escapeHtml(customer.id)}" ${customer.id === reminder.customerId ? 'selected' : ''}>${escapeHtml(customer.name)}</option>`).join('')}</select></div><div class="field"><label>Monto</label><input id="reminderAmount" inputmode="decimal" value="${numericInputValue(reminder.amount || 0)}"></div><div class="field full"><label>Notas</label><textarea id="reminderNotes">${escapeHtml(reminder.notes || '')}</textarea></div><button class="btn primary block" type="submit">Guardar recordatorio</button></form>`);
+	    showModal(`<div class="modalHeader"><h2>${reminder.id ? 'Editar' : 'Nuevo'} recordatorio</h2><button class="closeBtn" data-close>×</button></div><form id="reminderForm" class="formGrid reminderForm"><div class="field"><label>Tipo</label><select id="reminderType"><option value="collection" ${reminder.type === 'collection' ? 'selected' : ''}>Cobrar cliente</option><option value="layaway" ${reminder.type === 'layaway' ? 'selected' : ''}>Apartado</option><option value="low_stock" ${reminder.type === 'low_stock' ? 'selected' : ''}>Inventario bajo</option><option value="supplier" ${reminder.type === 'supplier' ? 'selected' : ''}>Proveedor</option><option value="invoice" ${reminder.type === 'invoice' ? 'selected' : ''}>Factura</option><option value="task" ${!reminder.type || reminder.type === 'task' ? 'selected' : ''}>Tarea</option><option value="follow_up" ${reminder.type === 'follow_up' ? 'selected' : ''}>Seguimiento</option><option value="cash" ${reminder.type === 'cash' ? 'selected' : ''}>Caja</option></select></div><div class="field"><label>Titulo</label><input id="reminderTitle" required value="${escapeHtml(reminder.title || '')}" placeholder="Ej. Llamar a cliente"></div><div class="field full reminderDueField"><label>Fecha y hora</label><div class="reminderDueGrid"><input id="reminderDueDate" type="date" required value="${escapeHtml(dueDateValue)}" aria-label="Fecha del recordatorio"><input id="reminderDueTime" type="time" required value="${escapeHtml(dueTimeValue)}" aria-label="Hora del recordatorio"></div></div><div class="field"><label>Cliente</label><select id="reminderCustomer"><option value="">Sin cliente</option>${customers.map((customer) => `<option value="${escapeHtml(customer.id)}" ${customer.id === reminder.customerId ? 'selected' : ''}>${escapeHtml(customer.name)}</option>`).join('')}</select></div><div class="field"><label>Monto</label><input id="reminderAmount" inputmode="decimal" value="${numericInputValue(reminder.amount || 0)}"></div><div class="field full"><label>Notas</label><textarea id="reminderNotes">${escapeHtml(reminder.notes || '')}</textarea></div><button class="btn primary block" type="submit">Guardar recordatorio</button></form>`);
 	    $('#reminderForm').onsubmit = (event) => {
 	      event.preventDefault();
-	      const dueAt = new Date($('#reminderDue').value);
+	      const dueDate = $('#reminderDueDate').value;
+	      const dueTime = $('#reminderDueTime').value;
+	      const dueAt = new Date(`${dueDate}T${dueTime}`);
 	      if (!Number.isFinite(dueAt.getTime())) return toast('Fecha invalida.', 'err');
 	      const customer = crmCustomers().find((item) => item.id === $('#reminderCustomer').value);
 	      const next = { id: reminder.id || uid('reminder'), businessId: currentBusiness().id, type: $('#reminderType').value, title: $('#reminderTitle').value.trim(), dueAt: dueAt.toISOString(), notes: $('#reminderNotes').value.trim(), customerId: customer?.id || '', customerName: customer?.name || '', phone: customer?.phone || '', amount: Math.max(0, parseMoney($('#reminderAmount').value) || 0), status: reminder.status || 'pending', done: reminder.done === true, createdAt: reminder.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -2580,14 +2676,16 @@ function parseMoney(value) {
       <form id="productForm" class="formGrid">
         <div class="field full productImageField">
           <label>Imagen del producto (opcional)</label>
-          <div class="imagePicker">
-            <div id="imagePreview">${productImage ? `<img src="${escapeHtml(productImage)}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
-            <div style="display:flex; gap:8px;">
-               <label class="btn silver"><input type="file" id="pImageCam" accept="image/*" capture="environment" hidden>Tomar foto</label>
-               <label class="btn silver"><input type="file" id="pImageGal" accept="image/*" hidden>Galería</label>
-            </div>
-            ${productImage ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
-          </div>
+	          <div class="imagePicker">
+	            <div id="imagePreview">${productImage ? `<img src="${escapeHtml(productImage)}" alt="Imagen del producto">` : `<span>Sin imagen</span>`}</div>
+	            <div class="imagePickerActions">
+	               <button type="button" class="btn silver" id="pImageGalleryBtn">Galería</button>
+	               <button type="button" class="btn silver" id="pImageCameraBtn">Tomar foto</button>
+	               <input type="file" id="pImageGal" accept="image/*" hidden>
+	               <input type="file" id="pImageCam" accept="image/*" capture="environment" hidden>
+	            </div>
+	            ${productImage ? '<button type="button" class="btn" id="removeImage">Quitar imagen</button>' : ''}
+	          </div>
         </div>
         <div class="field"><label>Código</label><input id="pCode" value="${escapeHtml(p.code)}" placeholder="Auto si vacío"></div>
         <div class="field"><label>${escapeHtml(v.category)}</label><input id="pCat" value="${escapeHtml(p.category)}" placeholder="${escapeHtml(v.examples)}"></div>
@@ -2600,16 +2698,20 @@ function parseMoney(value) {
         <div class="field full"><label>Notas</label><textarea id="pNotes">${escapeHtml(p.notes||'')}</textarea></div>
         <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button>
       </form>`);
-    let imageData = productImage;
-    const imgHandler = e => readImageInput(e.target, data => {
-      imageData = data;
-      const safe = safeImageSrc(data);
-      imageData = safe;
-      $('#imagePreview').innerHTML = safe ? `<img src="${escapeHtml(safe)}" alt="Imagen del producto">` : '<span>Sin imagen</span>';
-    });
-    $('#pImageCam').onchange = imgHandler;
-    $('#pImageGal').onchange = imgHandler;
-    $('#removeImage')?.addEventListener('click',()=>{ imageData=''; $('#imagePreview').innerHTML='<span>Sin imagen</span>'; });
+	    let imageData = productImage;
+		    bindImageInputPair({
+	      cameraInputId: 'pImageCam',
+	      galleryInputId: 'pImageGal',
+	      cameraButtonId: 'pImageCameraBtn',
+	      galleryButtonId: 'pImageGalleryBtn',
+	      onImage: (data) => {
+	        imageData = data;
+	        const safe = safeImageSrc(data);
+	        imageData = safe;
+	        $('#imagePreview').innerHTML = safe ? `<img src="${escapeHtml(safe)}" alt="Imagen del producto">` : '<span>Sin imagen</span>';
+	      }
+	    });
+	    $('#removeImage')?.addEventListener('click',()=>{ imageData=''; $('#imagePreview').innerHTML='<span>Sin imagen</span>'; });
 
     // Restrict inputs to numeric values only
     const qtyIn = $('#pQty');
@@ -5752,14 +5854,16 @@ function parseMoney(value) {
     showModal(`<div class="modalHeader"><h2>Registrar Factura</h2><button class="closeBtn" data-close>×</button></div>
       <form id="invoiceForm" class="formGrid">
          <div class="field full productImageField">
-           <label>Foto de la Factura (opcional)</label>
-           <div class="imagePicker">
-             <div id="invoiceImagePreview"><span>Sin foto</span></div>
-             <div style="display:flex; gap:8px;">
-                <label class="btn silver"><input type="file" id="iImageCam" accept="image/*" capture="environment" hidden>Tomar foto</label>
-                <label class="btn silver"><input type="file" id="iImageGal" accept="image/*" hidden>Galería</label>
-             </div>
-           </div>
+	           <label>Foto de la Factura (opcional)</label>
+	           <div class="imagePicker">
+	             <div id="invoiceImagePreview"><span>Sin foto</span></div>
+	             <div class="imagePickerActions">
+	                <button type="button" class="btn silver" id="iImageGalleryBtn">Galería</button>
+	                <button type="button" class="btn silver" id="iImageCameraBtn">Tomar foto</button>
+	                <input type="file" id="iImageGal" accept="image/*" hidden>
+	                <input type="file" id="iImageCam" accept="image/*" capture="environment" hidden>
+	             </div>
+	           </div>
          </div>
          <div class="field full"><label>Proveedor</label><input id="iProvider" required placeholder="Nombre del proveedor"></div>
          <div class="field"><label>N° Factura</label><input id="iNumber" required placeholder="Ej. 001-001-0000123"></div>
@@ -5769,15 +5873,19 @@ function parseMoney(value) {
          <button type="button" class="btn" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar Factura</button>
       </form>`);
 
-    let imageData = '';
-    const imgHandler = e => readImageInput(e.target, data => {
-      imageData = data;
-      const safe = safeImageSrc(data);
-      imageData = safe;
-      $('#invoiceImagePreview').innerHTML = safe ? `<img src="${escapeHtml(safe)}" style="max-height:160px; object-fit:contain; border-radius:8px;" alt="Foto de factura">` : '<span>Sin foto</span>';
-    });
-    $('#iImageCam').onchange = imgHandler;
-    $('#iImageGal').onchange = imgHandler;
+	    let imageData = '';
+	    bindImageInputPair({
+	      cameraInputId: 'iImageCam',
+	      galleryInputId: 'iImageGal',
+	      cameraButtonId: 'iImageCameraBtn',
+	      galleryButtonId: 'iImageGalleryBtn',
+	      onImage: (data) => {
+	        imageData = data;
+	        const safe = safeImageSrc(data);
+	        imageData = safe;
+	        $('#invoiceImagePreview').innerHTML = safe ? `<img src="${escapeHtml(safe)}" style="max-height:160px; object-fit:contain; border-radius:8px;" alt="Foto de factura">` : '<span>Sin foto</span>';
+	      }
+	    });
 
     const amountIn = $('#iAmount');
     if (amountIn) amountIn.oninput = () => { amountIn.value = amountIn.value.replace(/[^0-9.,]/g, ''); };

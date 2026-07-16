@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1-p0 - 2026-07-16
+
+- Recupera el primer bootstrap V10 para cuentas válidas online sin `state/main`, preparando un snapshot inicial validado sin pasar por `save()` antes de `AUTH_APPROVED`.
+- Sincroniza en fuente la compatibilidad PRO Lifetime limitada para `status=active`, `lifetime=true`, `plan=pro`, `planCode=pro_lifetime` y `billingStatus=lifetime`, sin incorporar reglas V17.
+- Rechaza registros `pro_lifetime` incompletos para que no pasen por la rama genérica de plan activo.
+- Corrige "Nuevo recordatorio" en móvil con fecha y hora separadas, responsivas y sin overflow horizontal.
+- Separa Galeria y Tomar foto con inputs y handlers independientes; Galeria no usa `capture` y Camara usa `capture="environment"`.
+- Actualiza asset cache, runtime guard, manifest y service worker a `mvp-launch-v16-2-p0-r1`.
+
 ## V16.2 - 2026-07-15
 
 - Resolución de identidad UID-first con precedencia explícita: `accountAccess`, aprobación histórica validada, invitación intencional y trial solo para una identidad realmente nueva.

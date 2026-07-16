@@ -25,6 +25,12 @@ assert(rules.includes('match /businesses/{businessId}/invitations/{inviteHash}')
 assert(rules.includes('match /businesses/{businessId}/members/{uid}') && rules.includes('request.resource.data.permissions is map') && rules.includes('request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId'), 'worker membership records remain tenant-scoped while operational access is paused');
 assert(rules.includes('businessId != "demo-click360"'), 'the suspect demo tenant remains client-blocked');
 assert(rules.includes('request.time < data.expiresAt'), 'paid subscriptions with an expiry become server-side read-only');
+assert(rules.includes('data.status == "active"')
+  && rules.includes('data.lifetime == true')
+  && rules.includes('data.plan == "pro"')
+  && rules.includes('data.planCode == "pro_lifetime"')
+  && rules.includes('data.billingStatus == "lifetime"'), 'PRO Lifetime compatibility remains limited to the authorized active lifetime contract');
+assert(rules.includes('data.planCode != "pro_lifetime"'), 'malformed PRO Lifetime records cannot pass through the generic active paid branch');
 assert(rules.includes('match /adminBackups/{backupId}') && rules.includes('match /adminAuditLogs/{eventId}'), 'administrative backups and audit logs have explicit client-deny routes');
 assert(rules.includes('match /telemetryEvents/{eventId}') && rules.includes('request.resource.data.uidHash.size() == 16'), 'non-sensitive telemetry is allowlisted, bounded, and write-only');
 console.log('PASS Firestore rules P0 contract');

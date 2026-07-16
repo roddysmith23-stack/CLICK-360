@@ -172,11 +172,23 @@ async function main() {
         source: 'historical_buyer_recovery', entitlementVersion: 16, revision: 2
       });
       await setDoc(doc(db, 'businesses', 'historical-paid', 'state', 'main'), state('historical-paid'));
-      await setDoc(doc(db, 'accountAccess', 'paid-first-tenant'), {
-        uid: 'paid-first-tenant', businessId: 'paid-first-tenant', email: 'paid-first@example.test', name: 'Paid first tenant', photoURL: '',
-        status: 'paid_base', plan: 'base', planCode: 'base', lastSeenAt: Timestamp.now(), createdAt: expiredStart,
-        source: 'historical_buyer_recovery', entitlementVersion: 16, revision: 1
-      });
+	      await setDoc(doc(db, 'accountAccess', 'paid-first-tenant'), {
+	        uid: 'paid-first-tenant', businessId: 'paid-first-tenant', email: 'paid-first@example.test', name: 'Paid first tenant', photoURL: '',
+	        status: 'paid_base', plan: 'base', planCode: 'base', lastSeenAt: Timestamp.now(), createdAt: expiredStart,
+	        source: 'historical_buyer_recovery', entitlementVersion: 16, revision: 1
+	      });
+	      await setDoc(doc(db, 'accountAccess', 'pro-lifetime-first'), {
+	        uid: 'pro-lifetime-first', ownerId: 'pro-lifetime-first', businessId: 'pro-lifetime-first',
+	        tenantKey: 'owner:pro-lifetime-first:business:pro-lifetime-first', email: 'pro-lifetime@example.test', name: 'PRO Lifetime first tenant', photoURL: '',
+	        status: 'active', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'lifetime', lifetime: true, expiresAt: null,
+	        lastSeenAt: Timestamp.now(), createdAt: expiredStart, source: 'founding_customer_upgrade', entitlementVersion: 16, revision: 1
+	      });
+	      await setDoc(doc(db, 'accountAccess', 'bad-pro-lifetime'), {
+	        uid: 'bad-pro-lifetime', ownerId: 'bad-pro-lifetime', businessId: 'bad-pro-lifetime',
+	        tenantKey: 'owner:bad-pro-lifetime:business:bad-pro-lifetime', email: 'bad-pro-lifetime@example.test', name: 'Bad PRO Lifetime', photoURL: '',
+	        status: 'active', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'subscription', lifetime: false,
+	        lastSeenAt: Timestamp.now(), createdAt: expiredStart, source: 'qa_malformed', entitlementVersion: 16, revision: 1
+	      });
       await setDoc(doc(db, 'accountAccess', 'legacy-heartbeat'), {
         uid: 'legacy-heartbeat', email: 'legacy-heartbeat@example.test', status: 'paid_base', plan: 'base',
         lastSeenAt: Timestamp.now(), createdAt: expiredStart, source: 'historical_buyer_recovery'
@@ -195,16 +207,19 @@ async function main() {
     const legacyTrial = env.authenticatedContext('legacy-trial-user', { email: 'legacy-trial@example.test' }).firestore();
     const expiredTrial = env.authenticatedContext('expired-trial', { email: 'expired@example.test' }).firestore();
     const expiredPaid = env.authenticatedContext('expired-paid', { email: 'expired-paid@example.test' }).firestore();
-    const historicalPaid = env.authenticatedContext('historical-paid', { email: 'historical-paid@example.test' }).firestore();
-    const paidFirstTenant = env.authenticatedContext('paid-first-tenant', { email: 'paid-first@example.test' }).firestore();
-    const legacyHeartbeat = env.authenticatedContext('legacy-heartbeat', { email: 'legacy-heartbeat@example.test' }).firestore();
+	    const historicalPaid = env.authenticatedContext('historical-paid', { email: 'historical-paid@example.test' }).firestore();
+	    const paidFirstTenant = env.authenticatedContext('paid-first-tenant', { email: 'paid-first@example.test' }).firestore();
+	    const proLifetimeFirst = env.authenticatedContext('pro-lifetime-first', { email: 'pro-lifetime@example.test' }).firestore();
+	    const badProLifetime = env.authenticatedContext('bad-pro-lifetime', { email: 'bad-pro-lifetime@example.test' }).firestore();
+	    const legacyHeartbeat = env.authenticatedContext('legacy-heartbeat', { email: 'legacy-heartbeat@example.test' }).firestore();
     const unauthenticated = env.unauthenticatedContext().firestore();
     const stateA = doc(ownerA, 'businesses', 'owner-a', 'state', 'main');
     const stateB = doc(ownerB, 'businesses', 'owner-b', 'state', 'main');
     const trialAccess = doc(trial, 'accountAccess', 'trial-user');
     const legacyTrialAccess = doc(legacyTrial, 'accountAccess', 'legacy-trial-user');
-    const trialState = doc(trial, 'businesses', 'trial-user', 'state', 'main');
-    const paidFirstState = doc(paidFirstTenant, 'businesses', 'paid-first-tenant', 'state', 'main');
+	    const trialState = doc(trial, 'businesses', 'trial-user', 'state', 'main');
+	    const paidFirstState = doc(paidFirstTenant, 'businesses', 'paid-first-tenant', 'state', 'main');
+	    const proLifetimeState = doc(proLifetimeFirst, 'businesses', 'pro-lifetime-first', 'state', 'main');
 
     await assertSucceeds(setDoc(stateA, state('owner-a')));
     await assertSucceeds(getDoc(stateA));
@@ -274,10 +289,19 @@ async function main() {
       assert.equal(current.exists(), false, 'paid account starts without a tenant');
       transaction.set(paidFirstState, state('paid-first-tenant'));
     }));
-    await assertSucceeds(getDoc(paidFirstState));
-    await assertFails(getDoc(doc(ownerA, 'businesses', 'paid-first-tenant', 'state', 'main')));
-    await assertFails(setDoc(paidFirstState, state('owner-a', 2)));
-    await assertFails(getDoc(doc(ownerA, 'adminBackups', 'private-backup')));
+	    await assertSucceeds(getDoc(paidFirstState));
+	    await assertFails(getDoc(doc(ownerA, 'businesses', 'paid-first-tenant', 'state', 'main')));
+	    await assertFails(setDoc(paidFirstState, state('owner-a', 2)));
+	    await assertSucceeds(runTransaction(proLifetimeFirst, async (transaction) => {
+	      const current = await transaction.get(proLifetimeState);
+	      assert.equal(current.exists(), false, 'PRO Lifetime account starts without a tenant');
+	      transaction.set(proLifetimeState, state('pro-lifetime-first'));
+	    }));
+	    await assertSucceeds(getDoc(proLifetimeState));
+	    await assertFails(getDoc(doc(ownerA, 'businesses', 'pro-lifetime-first', 'state', 'main')));
+	    await assertFails(setDoc(doc(proLifetimeFirst, 'businesses', 'demo-click360', 'state', 'main'), state('demo-click360')));
+	    await assertFails(setDoc(doc(badProLifetime, 'businesses', 'bad-pro-lifetime', 'state', 'main'), state('bad-pro-lifetime')));
+	    await assertFails(getDoc(doc(ownerA, 'adminBackups', 'private-backup')));
     await assertFails(getDoc(doc(ownerA, 'adminAuditLogs', 'private-audit')));
     await assertSucceeds(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-bootstrap'), telemetry('owner-a-bootstrap', 'owner-a')));
     await assertFails(getDoc(doc(ownerA, 'telemetryEvents', 'owner-a-bootstrap')));

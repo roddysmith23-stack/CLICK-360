@@ -10,7 +10,7 @@ const worker = fs.readFileSync('service-worker.js', 'utf8');
 const manifest = fs.readFileSync('manifest.webmanifest', 'utf8');
 const styles = fs.readFileSync('styles.css', 'utf8');
 const hosting = JSON.parse(fs.readFileSync('firebase.json', 'utf8'));
-const assetVersion = 'mvp-launch-v16-2-r1';
+const assetVersion = 'mvp-launch-v16-2-p0-r1';
 
 class StorageMock {
   constructor() { this.values = new Map(); this.failWrites = false; }
@@ -121,7 +121,7 @@ for (const file of ['app.js', 'firebase-service.js', 'p0-tenant-guard.js', 'v16-
 }
 
 assert(!app.includes('window.onerror'), 'legacy raw-error handler was removed');
-assert(app.includes('class="versionBadge">V16.2</small>') && app.includes('class="brandSlogan">Control total de tu negocio</small>'));
+assert(app.includes("const APP_RELEASE_VERSION = '1.0.1-p0'") && app.includes('APP_VISIBLE_VERSION') && app.includes('class="brandSlogan">Control total de tu negocio</small>'));
 assert(firebase.includes('<small>V16.2</small>'));
 assert(app.includes('CLICK360_RUNTIME_GUARD?.setContext(activeTenantContext)'));
 assert(app.includes('CLICK360_RUNTIME_GUARD?.clearContext()'));

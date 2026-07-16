@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-	  const APP_ASSET_VERSION = 'mvp-launch-v16-2-r1';
+	  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p0-r1';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -2278,33 +2278,46 @@
 	      return false;
 	    }
 	    if (INITIAL_TENANT_SEED_REQUIRED) {
-	      const localPersisted = window.click360PersistTenantState?.() === true;
+	      const preparedSnapshot = await window.click360PrepareInitialTenantState?.(ACTIVE_CONTEXT)
+	        || { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_preparer_unavailable' };
+	      if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
 	      const storageMode = window.click360GetStorageState?.()?.mode || '';
 	      ONLINE_ONLY_SAFE = ONLINE_ONLY_SAFE || ['online_only_safe', 'unavailable'].includes(storageMode);
 	      const bootstrapDecision = window.CLICK360_V16_DOMAIN?.initialTenantBootstrapDecision({
-	        localPersisted,
+	        snapshotPrepared: preparedSnapshot.prepared === true,
+	        localPersisted: preparedSnapshot.localPersisted === true,
+	        indexedPersisted: preparedSnapshot.indexedPersisted === true,
 	        onlineOnlySafe: ONLINE_ONLY_SAFE,
 	        online: navigator.onLine,
 	        readOnly: ACCESS_READ_ONLY
-	      }) || { allowed: localPersisted && !ACCESS_READ_ONLY };
+	      }) || { allowed: preparedSnapshot.prepared === true && !ACCESS_READ_ONLY && navigator.onLine };
 	      if (!bootstrapDecision.allowed) {
 	        tenantGuard.block();
 	        PULL_COMPLETE = false;
+	        const bootstrapErrorCode = bootstrapDecision.reason || preparedSnapshot.reason || 'bootstrap_blocked';
+	        recordTelemetryOnce(`bootstrap:${AUTH_EPOCH}:${ACTIVE_CONTEXT.tenantKey}:${bootstrapErrorCode}`, 'bootstrap', {
+	          mode: 'blocked', errorCode: bootstrapErrorCode
+	        });
 	        const bootstrapMessage = bootstrapDecision.reason === 'read_only'
 	          ? 'Tu plan terminó antes de crear el negocio. Contacta a CLICK 360 para activarlo.'
 	          : bootstrapDecision.reason === 'connection_required'
 	            ? 'Conéctate a internet para preparar esta cuenta por primera vez.'
-	            : 'No pudimos preparar la aplicación en este dispositivo. Tus datos no fueron modificados.';
-		        showGate(bootstrapMessage, ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: bootstrapDecision.reason || 'bootstrap_blocked' });
+	            : 'No pudimos preparar esta cuenta de forma segura. Reintenta con internet o contacta a soporte con el código BOOTSTRAP-V10.';
+		        showGate(bootstrapMessage, ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: bootstrapErrorCode });
 	        return false;
 	      }
-	      if (!localPersisted) setSyncStatus('online_only_safe', 'Este dispositivo trabajará directamente con la nube mientras tenga internet.');
+	      if (!preparedSnapshot.localPersisted && !preparedSnapshot.indexedPersisted) {
+	        setSyncStatus('online_only_safe', 'Este dispositivo trabajará directamente con la nube mientras tenga internet.');
+	      }
 	      AUTH_APPROVED = true;
 	      const seeded = await pushLocalToFirestore('initial_tenant_seed');
 	      if (!seeded) {
 	        AUTH_APPROVED = false;
 	        PULL_COMPLETE = false;
 	        tenantGuard.block();
+	        recordTelemetryOnce(`bootstrap:${AUTH_EPOCH}:${ACTIVE_CONTEXT.tenantKey}:cloud_seed_failed`, 'bootstrap', {
+	          mode: 'failed', errorCode: 'cloud_seed_failed'
+	        });
 		        showGate('No pudimos preparar el negocio de forma segura. No se modificó información existente.', ACCESS_UI_STATES.RECOVERABLE_ERROR, { reason: 'bootstrap_failed' });
 	        return false;
 	      }

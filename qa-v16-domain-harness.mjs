@@ -55,6 +55,12 @@ assert.equal(domain.offlineRecoveryDecision({ pendingRemoteSync: true, baseRevis
 assert.equal(domain.offlineRecoveryDecision({ pendingRemoteSync: false, baseRevision: 7, remoteRevision: 8 }).action, 'apply_remote');
 assert.equal(domain.evaluateEntitlement({ status: 'founder', plan: 'founder' }, startedAt).readOnly, false);
 assert.equal(domain.evaluateEntitlement({ status: 'paid_pro', plan: 'pro' }, startedAt).plan, 'pro');
+assert.equal(domain.evaluateEntitlement({ status: 'active', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'lifetime', lifetime: true }, startedAt).plan, 'pro');
+assert.equal(domain.evaluateEntitlement({ status: 'active', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'subscription', lifetime: false }, startedAt).allowed, false);
+assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: false, localPersisted: true, online: true }).allowed, false);
+assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, localPersisted: true, online: true }).mode, 'local_and_cloud');
+assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, indexedPersisted: true, online: true }).mode, 'local_and_cloud');
+assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, onlineOnlySafe: true, online: true }).mode, 'cloud_only');
 assert.deepEqual(domain.planLimits('base'), { businesses: 1, workers: 2 });
 assert.deepEqual(domain.planLimits('pro'), { businesses: 5, workers: 10 });
 

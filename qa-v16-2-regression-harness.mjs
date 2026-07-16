@@ -15,6 +15,7 @@ const sitemap = fs.readFileSync('sitemap.xml', 'utf8');
 
 assert.equal(domain.APP_VERSION, '16.2');
 assert.equal(domain.TRIAL_DAYS, 7);
+assert.equal(domain.evaluateEntitlement({ status: 'active', plan: 'pro', planCode: 'pro_lifetime', billingStatus: 'lifetime', lifetime: true }).plan, 'pro');
 assert.equal(domain.timestampMs(1_800_000_000), 1_800_000_000_000);
 assert.equal(domain.evaluateEntitlement({ status: 'trial', trialStartedAt: 1_800_000_000, trialDays: 30 }, 1_800_000_000_000).trialEndsAtMs, 1_800_604_800_000);
 
@@ -37,6 +38,9 @@ assert(app.includes('const actionLock = acquireCriticalAction(reason)') && app.i
 assert(app.includes('deferSync: true') && app.includes("options.deferSync !== true"), 'critical mutations do not start a second automatic cloud write');
 assert(app.includes('allowIndexedDbOffline: true') && app.includes('pendingRemoteSync: true'), 'offline critical changes require a verified pending snapshot');
 assert(firebase.includes("source: 'indexeddb_recovery'") && firebase.includes('offlineRecoveryDecision') && firebase.includes("recoveryDecision.action === 'conflict'"), 'pending offline data cannot be overwritten by a changed remote revision');
+assert(app.includes('window.click360PrepareInitialTenantState = async function'));
+assert(firebase.includes('click360PrepareInitialTenantState?.(ACTIVE_CONTEXT)'));
+assert(!firebase.includes('const localPersisted = window.click360PersistTenantState?.() === true'), 'initial bootstrap no longer passes through the AUTH_APPROVED mutation gate');
 assert(storage.includes('pendingRemoteSync: metadata.pendingRemoteSync === true') && storage.includes('baseRevision: Number(metadata.baseRevision || 0)'), 'IndexedDB persists pending state and its remote base revision');
 assert(firebase.includes('operationId: String(event.detail?.operationId') && app.includes('commitCheckpointKey(event.detail || {})'), 'cloud-only rollback is correlated to the exact operation');
 assert(app.includes("movement.operationId === operationId") && app.includes("item.status === 'cancelled'"), 'cash and cancellation paths have idempotent verification markers');
@@ -54,13 +58,22 @@ assert(rules.includes('!exists(/databases/$(database)/documents/approvedUsers/$(
 assert(rules.includes('!exists(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email))'));
 assert(rules.includes('request.resource.data.ownerId == request.auth.uid'));
 assert(rules.includes('request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid'));
+assert(rules.includes('data.planCode == "pro_lifetime"') && rules.includes('data.billingStatus == "lifetime"'), 'rules source matches the live PRO Lifetime compatibility hotfix');
 assert(rules.includes('return ownerReadUser() && request.auth.uid == businessId;'), 'monolithic tenant reads are owner-only');
 assert(!rules.includes('validWorkerStateUpdate') && !rules.includes('workerListMutationAllowed'), 'worker access to the monolithic tenant snapshot is disabled');
+
+assert(app.includes('id="reminderDueDate" type="date"') && app.includes('id="reminderDueTime" type="time"'), 'reminder date and time use separate mobile-safe controls');
+assert(!app.includes('id="reminderDue" type="datetime-local"'), 'wide datetime-local reminder input is not used');
+assert(app.includes('class="reminderDueGrid"') && fs.readFileSync('styles.css', 'utf8').includes('.reminderDueGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))'), 'reminder due controls are responsive and bounded');
+assert(app.includes('id="pImageGal" accept="image/*" hidden') && app.includes('id="pImageCam" accept="image/*" capture="environment" hidden'), 'product gallery and camera inputs are separate');
+assert(app.includes('id="iImageGal" accept="image/*" hidden') && app.includes('id="iImageCam" accept="image/*" capture="environment" hidden'), 'invoice gallery and camera inputs are separate');
+assert(app.includes("galleryInput.removeAttribute('capture')") && app.includes("cameraInput.setAttribute('capture', 'environment')"), 'gallery never forces capture and camera prefers environment capture');
+assert(app.includes('event.target.value =') && app.includes('galleryInput.click()') && app.includes('cameraInput.click()'), 'image inputs clear their value and use independent handlers');
 
 for (const source of [app, firebase, html, worker]) {
   assert(!source.includes('mvp-launch-v16-1-2-r1'));
 }
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-r1'"));
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p0-r1'"));
 assert(html.includes('<link rel="canonical" href="https://click-360.web.app/"'));
 assert(robots.includes('https://click-360.web.app/sitemap.xml'));
 assert(sitemap.includes('<loc>https://click-360.web.app/</loc>'));
