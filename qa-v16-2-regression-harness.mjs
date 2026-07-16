@@ -11,6 +11,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 const storage = fs.readFileSync('v16-storage.js', 'utf8');
 const config = fs.readFileSync('firebase-config.js', 'utf8');
+const styles = fs.readFileSync('styles.css', 'utf8');
 const robots = fs.readFileSync('robots.txt', 'utf8');
 const sitemap = fs.readFileSync('sitemap.xml', 'utf8');
 
@@ -91,6 +92,8 @@ assert(app.includes('event.target.value =') && app.includes('galleryInput.click(
 for (const source of [app, firebase, html, worker]) {
   assert(!source.includes('mvp-launch-v16-1-2-r1'));
 }
+assert(!styles.includes('mvp-launch-v16-2-p0-r1'), 'CSS image assets must not retain the previous P0 cache version');
+assert(styles.includes('assets/logo.png?v=mvp-launch-v16-2-p0-r2') && styles.includes('assets/banner-click360-home.png?v=mvp-launch-v16-2-p0-r2'));
 assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p0-r2'"));
 assert(html.includes('<link rel="canonical" href="https://click-360.web.app/"'));
 assert(robots.includes('https://click-360.web.app/sitemap.xml'));
