@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = '16.2';
-  const ASSET_VERSION = 'mvp-launch-v16-2-p0-r2';
+  const ASSET_VERSION = 'mvp-launch-v16-2-p1-r0';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;

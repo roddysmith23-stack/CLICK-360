@@ -93,8 +93,8 @@ for (const source of [app, firebase, html, worker]) {
   assert(!source.includes('mvp-launch-v16-1-2-r1'));
 }
 assert(!styles.includes('mvp-launch-v16-2-p0-r1'), 'CSS image assets must not retain the previous P0 cache version');
-assert(styles.includes('assets/logo.png?v=mvp-launch-v16-2-p0-r2') && styles.includes('assets/banner-click360-home.png?v=mvp-launch-v16-2-p0-r2'));
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p0-r2'"));
+assert(styles.includes('assets/logo.png?v=mvp-launch-v16-2-p1-r0') && styles.includes('assets/banner-click360-home.png?v=mvp-launch-v16-2-p1-r0'));
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-r0'"));
 assert(html.includes('<link rel="canonical" href="https://click-360.web.app/"'));
 assert(robots.includes('https://click-360.web.app/sitemap.xml'));
 assert(sitemap.includes('<loc>https://click-360.web.app/</loc>'));
