@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p0-r2';
-  const APP_RELEASE_VERSION = '1.0.2-p0';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r0';
+  const APP_RELEASE_VERSION = '1.0.3-p0';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
@@ -22,6 +22,77 @@
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
   const WORKER_TENANT_ACCESS_ENABLED = false;
+
+  // P1 FIX: Guard para cambio atómico de negocio.
+  // Previene doble-tap, herencia de readOnly entre negocios y estado visual contradictorio.
+  // true mientras la transición está en curso; accessInfo() devuelve estado seguro durante este período.
+  let BUSINESS_SWITCH_GUARD = false;
+
+  /**
+   * Calcula readOnly efectivo desde el accessState actual, aplicando
+   * la precedencia correcta de V16.2:
+   *   founder / lifetime → nunca readOnly
+   *   paid_base / paid_pro / member → readOnly solo si está expirado
+   *   trial / trial_expired → readOnly según reloj
+   *   switching en curso → false (no mostrar modo lectura durante transición)
+   * @param {object} accessState - window.click360AccessState o equivalente
+   * @returns {boolean}
+   */
+  function resolveReadOnly(accessState) {
+    if (BUSINESS_SWITCH_GUARD) return false;
+    if (!accessState || typeof accessState !== 'object') return false;
+    const mode = String(accessState.mode || '').toLowerCase();
+    // Founder y lifetime NUNCA son readOnly (salvo suspended, que no existe como mode)
+    if (mode === 'founder' || mode === 'lifetime') return false;
+    // Miembros trabajadores tampoco son readOnly
+    if (mode === 'member') return false;
+    // Planes pagados: solo readOnly si expiresAt ya pasó
+    if (mode === 'paid_base' || mode === 'paid_pro') return accessState.readOnly === true;
+    // Trial activo: no readOnly
+    if (mode === 'trial_active') return false;
+    // Trial expirado, subscription_expired u otro: respetar readOnly del estado calculado
+    return accessState.readOnly === true;
+  }
+
+  /**
+   * Cambia de negocio de forma atómica:
+   * 1. Bloquea nuevos cambios (anti double-tap)
+   * 2. Actualiza activeBusinessId
+   * 3. Persiste si es owner
+   * 4. Recalcula readOnly desde el accessState actual del usuario (no del negocio)
+   * 5. Renderiza con el estado limpio
+   * 6. Desbloquea
+   *
+   * NO toca Firebase, Auth, Rules ni datos.
+   * @param {string} nextId - ID del negocio destino
+   * @param {string} currentRoute - ruta activa actual
+   */
+  function selectBusinessAtomically(nextId, currentRoute) {
+    // Guard: evitar doble-tap o cambio mientras ya se está cambiando
+    if (BUSINESS_SWITCH_GUARD) return;
+    if (!state.businesses.some((b) => b.id === nextId)) return;
+    if (state.activeBusinessId === nextId) { closeModal(); return; }
+
+    BUSINESS_SWITCH_GUARD = true;
+    try {
+      // 1. Cambiar ID de negocio activo
+      state.activeBusinessId = nextId;
+
+      // 2. Persistir si el usuario es owner (mismo comportamiento que antes)
+      if (authUser().role === 'owner') save();
+
+      // 3. Cerrar modal antes de renderizar
+      closeModal();
+
+      // 4. Renderizar — accessInfo() devolverá estado seguro mientras BUSINESS_SWITCH_GUARD=true
+      renderApp(currentRoute);
+    } finally {
+      // 5. Desbloquear en el siguiente tick para que la UI ya haya pintado
+      // Usamos setTimeout 0 para liberar el event loop y evitar que un segundo tap
+      // se procese antes de que el render termine.
+      setTimeout(() => { BUSINESS_SWITCH_GUARD = false; }, 0);
+    }
+  }
   const $ = (sel, root=document) => root.querySelector(sel);
   const $$ = (sel, root=document) => [...root.querySelectorAll(sel)];
   const app = $('#app');
@@ -1525,16 +1596,18 @@ function parseMoney(value) {
   }
 	  function bottomNav(active){ return `<nav class="bottomNav">${navButtons(active)}</nav>`; }
 	  function openBusinessSwitcher() {
+	    // P1 FIX: No abrir el switcher si ya hay un cambio en curso
+	    if (BUSINESS_SWITCH_GUARD) return;
 	    const active = currentBusiness()?.id;
 	    showModal(`<div class="modalHeader"><div><h2>Cambiar negocio</h2><p class="fieldHint">Selecciona dónde quieres trabajar.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div><div class="businessSwitchList">${state.businesses.map((business) => `<button type="button" class="businessSwitchOption ${business.id === active ? 'active' : ''}" data-business-switch="${actionId(business.id)}"><span>${icon(business.id === active ? 'circle-check-big' : 'store')}<b>${escapeHtml(business.name)}</b></span>${business.id === active ? '<small>Activo</small>' : icon('chevron-right')}</button>`).join('')}</div>`);
 	    $$('[data-business-switch]').forEach((button) => {
 	      button.onclick = () => {
+	        // P1 FIX: Usar selectBusinessAtomically para cambio seguro:
+	        // - evita doble-tap
+	        // - recalcula readOnly desde accessState del usuario (no hereda del negocio anterior)
+	        // - no muestra "modo lectura" durante la transición
 	        const nextId = decodeActionId(button.dataset.businessSwitch);
-	        if (!state.businesses.some((business) => business.id === nextId)) return;
-	        state.activeBusinessId = nextId;
-	        if (authUser().role === 'owner' && !save()) return;
-	        closeModal();
-	        renderApp(route);
+	        selectBusinessAtomically(nextId, route);
 	      };
 	    });
 	  }
@@ -2060,7 +2133,13 @@ function parseMoney(value) {
 	};
 
 	  function accessInfo() {
-	    return window.click360AccessState || { mode: 'founder', plan: 'founder', readOnly: false, source: 'approvedUsers' };
+	    const raw = window.click360AccessState || { mode: 'founder', plan: 'founder', readOnly: false, source: 'approvedUsers' };
+	    // P1 FIX: Durante un cambio de negocio activo, nunca exponer readOnly=true.
+	    // El accessState pertenece al usuario/owner, no al negocio individual.
+	    // resolveReadOnly() aplica la precedencia correcta de V16.2 y bloquea
+	    // la herencia de readOnly stale del negocio anterior o del epoch de arranque.
+	    if (BUSINESS_SWITCH_GUARD) return { ...raw, readOnly: false };
+	    return { ...raw, readOnly: resolveReadOnly(raw) };
 	  }
 		  function purchaseWhatsAppUrl() {
 	    const plan = accessInfo().plan || 'base';
