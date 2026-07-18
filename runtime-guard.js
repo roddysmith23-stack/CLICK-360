@@ -1,8 +1,8 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.0.3-p2';
-  const ASSET_VERSION = 'mvp-launch-v16-2-p1-r2';
+  const APP_VERSION = '1.0.3-p3';
+  const ASSET_VERSION = 'mvp-launch-v16-2-p1-r3';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
@@ -217,6 +217,8 @@
     let accessDiagnostics = {};
     try { accessDiagnostics = root.click360GetPublicAuthDiagnostics?.() || {}; } catch {}
     const syncState = root.click360GetSyncStatus?.() || {};
+    let reliabilityState = {};
+    try { reliabilityState = root.click360GetSyncState?.({ reason: 'runtime_report' }) || {}; } catch {}
     const storageState = root.click360GetStorageState?.() || {};
     let effectiveAccess = {};
     try {
@@ -254,9 +256,19 @@
       publicIntent: String(accessDiagnostics.intent || '').slice(0, 20),
       invitationParametersPresent: accessDiagnostics.invitationParametersPresent === true,
       explicitInvitationIntent: accessDiagnostics.explicitInvitationIntent === true,
-      syncMode: String(syncState.status || '').slice(0, 40),
-      storageMode: String(storageState.mode || '').slice(0, 40)
-    });
+	      syncMode: String(syncState.status || '').slice(0, 40),
+	      storageMode: String(storageState.mode || '').slice(0, 40),
+	      reliability: {
+	        status: String(reliabilityState.status || '').slice(0, 40),
+	        blocking: reliabilityState.blocking === true,
+	        reason: String(reliabilityState.reason || '').slice(0, 80),
+	        localHash: String(reliabilityState.localHash || '').slice(0, 24),
+	        remoteHash: String(reliabilityState.remoteHash || '').slice(0, 24),
+	        lockAgeMs: Number(reliabilityState.lockAgeMs || 0),
+	        hasDirtyFields: reliabilityState.hasDirtyFields === true,
+	        displayMode: String(reliabilityState.displayMode || displayMode()).slice(0, 24)
+	      }
+	    });
     showFriendlyMessage(report);
     return report;
   }

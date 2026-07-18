@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r2';
-  const APP_RELEASE_VERSION = '1.0.3-p2';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r3';
+  const APP_RELEASE_VERSION = '1.0.3-p3';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -566,13 +566,14 @@ function parseMoney(value) {
       return false;
     }
     const gate = writeGateStatus();
-    if (!gate.allowed) {
-      lastWriteBlock = { ...gate, at: new Date().toISOString() };
-      window.click360LastWriteBlock = lastWriteBlock;
-      restoreLastPersistedState();
-      toast(writeBlockMessage(gate), gate.reason === 'pending_remote_sync' ? 'ok' : 'err');
-      return false;
-    }
+	    if (!gate.allowed) {
+	      lastWriteBlock = { ...gate, at: new Date().toISOString() };
+	      window.click360LastWriteBlock = lastWriteBlock;
+	      restoreLastPersistedState();
+	      if (gate.reason === 'sync_conflict') showSyncConflictRecovery(gate);
+	      toast(writeBlockMessage(gate), gate.reason === 'pending_remote_sync' ? 'ok' : 'err');
+	      return false;
+	    }
     lastWriteBlock = null;
     window.click360LastWriteBlock = null;
     const previousState = cloneState(lastPersistedState);
@@ -2607,7 +2608,12 @@ function parseMoney(value) {
 	        <h3>Nube CLICK 360</h3>
 	        <p id="cloudStatusDynamic" class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">\u2605 ${escapeHtml(cloud.title)}</p>
 	        <p id="cloudStatusDetail" class="cloudStatus">${escapeHtml(cloud.detail)}</p>
-	        <div class="split" style="gap:10px;margin-top:12px;"><button type="button" class="btn silver" id="refreshCloudBtn">Actualizar desde nube</button><button type="button" class="btn primary" id="forceSyncCloud">Guardar ahora en nube</button></div>
+		        <div class="split" style="gap:10px;margin-top:12px;"><button type="button" class="btn silver" id="refreshCloudBtn">Actualizar desde nube</button><button type="button" class="btn primary" id="forceSyncCloud">Guardar ahora en nube</button></div>
+		        <div class="syncRecoveryCard">
+		          <button type="button" class="btn block" id="clearLocalAppStateBtn">Limpiar estado local de esta app</button>
+		          <button type="button" class="btn silver block" id="copySyncDiagnosticBtn" style="margin-top:8px;">Copiar diagnóstico técnico</button>
+		          <p class="fieldHint">Solo limpia locks locales de sincronización y vuelve a leer la nube. No borra Firebase, negocios ni productos.</p>
+		        </div>
 	      </section>
       <section class="card sectionCard" style="margin-top:14px">
         <h3>Reporte Contable General</h3>
@@ -4350,9 +4356,9 @@ function parseMoney(value) {
 	    refreshIcons(root);
 	    requestAnimationFrame(() => (heading || focusable()[0] || dialog).focus());
 	  }
-	  function closeModal(restoreFocus = true){
-	    if (modalKeyHandler) document.removeEventListener('keydown', modalKeyHandler);
-	    modalKeyHandler = null;
+		  function closeModal(restoreFocus = true){
+		    if (modalKeyHandler) document.removeEventListener('keydown', modalKeyHandler);
+		    modalKeyHandler = null;
 	    $$('#modalRoot').forEach((root) => {
 	      if (root.closest('.app')) root.innerHTML = '';
 	      else root.remove();
@@ -4361,11 +4367,101 @@ function parseMoney(value) {
 	      element.inert = false;
 	      element.removeAttribute('aria-hidden');
 	    });
-	    const returnFocus = modalReturnFocus;
-	    modalReturnFocus = null;
-	    if (restoreFocus && returnFocus?.isConnected) requestAnimationFrame(() => returnFocus.focus());
-	  }
-	  function closeCalculator(){ $('#calculatorRoot')?.remove(); }
+		    const returnFocus = modalReturnFocus;
+		    modalReturnFocus = null;
+		    if (restoreFocus && returnFocus?.isConnected) requestAnimationFrame(() => returnFocus.focus());
+		  }
+		  function syncDiagnosticRows(syncState = {}) {
+		    const access = accessInfo();
+		    const rows = [
+		      ['Versión', APP_VISIBLE_VERSION],
+		      ['Modo', syncState.displayMode || (window.matchMedia?.('(display-mode: standalone)')?.matches ? 'standalone' : 'browser')],
+		      ['Ruta', route || 'home'],
+		      ['Acceso', `${access.mode || 'unknown'} / lectura=${access.readOnly === true}`],
+		      ['Sync', `${syncState.status || 'unknown'} / bloquea=${syncState.blocking === true}`],
+		      ['Motivo', syncState.reason || 'sin_detalle'],
+		      ['Hash local', syncState.localHash || 'n/a'],
+		      ['Hash nube', syncState.remoteHash || 'n/a'],
+		      ['Edad lock', `${Math.round(Number(syncState.lockAgeMs || 0) / 1000)}s`],
+		      ['Cambios reales', syncState.hasDirtyFields === true ? 'sí' : 'no'],
+		      ['Online', navigator.onLine ? 'sí' : 'no']
+		    ];
+		    return `<dl class="syncDiagnosticList">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`;
+		  }
+		  function anonFingerprint(value = '') {
+		    const text = String(value || '');
+		    if (!text) return '';
+		    let hash = 2166136261;
+		    for (let index = 0; index < text.length; index += 1) {
+		      hash ^= text.charCodeAt(index);
+		      hash = Math.imul(hash, 16777619);
+		    }
+		    return `anon_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+		  }
+		  window.click360GetReliabilityDiagnostics = function() {
+		    const syncState = window.click360GetSyncState?.({ reason: 'ui_diagnostic' }) || {};
+		    const access = accessInfo();
+		    return {
+		      appVersion: APP_RELEASE_VERSION,
+		      buildSha: APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? APP_BUILD_SHA : '',
+		      assetVersion: APP_ASSET_VERSION,
+		      displayMode: syncState.displayMode || (window.matchMedia?.('(display-mode: standalone)')?.matches ? 'standalone' : 'browser'),
+		      route,
+		      activeBusinessId: anonFingerprint(syncState.activeBusinessId || currentBusiness()?.id || state.activeBusinessId),
+		      effectiveAccess: { mode: String(access.mode || ''), readOnly: access.readOnly === true },
+		      syncState: {
+		        status: String(syncState.status || ''),
+		        blocking: syncState.blocking === true,
+		        reason: String(syncState.reason || ''),
+		        localHash: String(syncState.localHash || ''),
+		        remoteHash: String(syncState.remoteHash || ''),
+		        lockAgeMs: Number(syncState.lockAgeMs || 0),
+		        hasDirtyFields: syncState.hasDirtyFields === true
+		      },
+		      isOnline: navigator.onLine !== false,
+		      userAgent: String(navigator.userAgent || '').slice(0, 500)
+		    };
+		  };
+		  function showSyncConflictRecovery(gate = {}) {
+		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
+		    showModal(`<div class="modalHeader"><div><h2>Conflicto de sincronización</h2><p class="fieldHint">Encontramos cambios locales y cambios en nube que podrían diferir.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+		      <div class="syncConflictPanel">
+		        ${syncDiagnosticRows(syncState)}
+		        <div class="split syncRecoveryActions" style="gap:10px;margin-top:14px;">
+		          <button type="button" class="btn silver" id="syncRefreshCloud">Actualizar desde nube</button>
+		          <button type="button" class="btn primary" id="syncKeepLocal">Conservar mi versión local</button>
+		        </div>
+		        <button type="button" class="btn block" data-close style="margin-top:10px;">Cancelar</button>
+		      </div>`);
+		    $('#syncRefreshCloud')?.addEventListener('click', async () => {
+		      downloadBackup('antes-de-actualizar-conflicto');
+		      toast('Actualizando desde nube...');
+		      const result = await window.click360ResolveSyncConflict?.('refresh_cloud').catch(() => null);
+		      closeModal();
+		      renderApp(route);
+		      toast(result?.ok ? 'Datos actualizados desde nube.' : 'No se pudo actualizar desde nube.', result?.ok ? 'ok' : 'err');
+		    });
+		    $('#syncKeepLocal')?.addEventListener('click', async () => {
+		      if (!confirm('Conservar la versión local intentará guardarla en la nube sin borrar respaldos. ¿Deseas continuar?')) return;
+		      downloadBackup('antes-de-conservar-local');
+		      toast('Confirmando tu versión local...');
+		      const result = await window.click360ResolveSyncConflict?.('keep_local').catch(() => null);
+		      closeModal();
+		      renderApp(route);
+		      toast(result?.ok ? 'Tu versión local quedó confirmada.' : 'El conflicto sigue protegido; actualiza desde nube o contacta soporte.', result?.ok ? 'ok' : 'err');
+		    });
+		  }
+		  window.click360ShowSyncConflictRecovery = showSyncConflictRecovery;
+		  async function clearLocalAppStateRecovery() {
+		    if (!window.click360ClearLocalRecoveryState) return toast('Recuperación local no disponible en este entorno.', 'err');
+		    if (!confirm('Esto limpiará únicamente locks locales de sincronización de esta app y recargará desde nube. No borra Firebase ni tus negocios. ¿Continuar?')) return;
+		    downloadBackup('antes-de-limpiar-estado-local');
+		    toast('Limpiando estado local...');
+		    const result = await window.click360ClearLocalRecoveryState().catch(() => null);
+		    renderApp(route);
+		    toast(result?.ok ? 'Estado local recuperado desde nube.' : 'No se pudo completar la recuperación local.', result?.ok ? 'ok' : 'err');
+		  }
+		  function closeCalculator(){ $('#calculatorRoot')?.remove(); }
 	  function calculatorOperation(left, right, operator) {
 	    const domainResult = window.CLICK360_V16_DOMAIN?.calculatorOperation(left, right, operator);
 	    if (domainResult !== undefined) return domainResult;
@@ -5102,14 +5198,26 @@ function parseMoney(value) {
 	        toast(synced ? 'Nube actualizada' : 'No se pudo sincronizar', synced ? 'ok' : 'err');
 	      } else toast('Nube no disponible en este entorno', 'err');
 	    });
-	    $('#refreshCloudBtn')?.addEventListener('click', async ()=>{
-	      if(!window.click360RefreshNow) return toast('Nube no disponible en este entorno', 'err');
-	      if(!confirm('Actualizar desde nube reemplazará la copia local actual. Se descargará un respaldo antes de continuar. ¿Deseas seguir?')) return;
-	      if(prompt('Escribe exactamente REEMPLAZAR LOCAL para confirmar:') !== 'REEMPLAZAR LOCAL') return toast('Actualización cancelada', 'err');
-	      downloadBackup('antes-de-actualizar-desde-nube');
-	      toast('Actualizando desde nube...');
-	      await window.click360RefreshNow().catch(()=>toast('No se pudo actualizar desde nube', 'err'));
-	    });
+		    $('#refreshCloudBtn')?.addEventListener('click', async ()=>{
+		      if(!window.click360RefreshNow) return toast('Nube no disponible en este entorno', 'err');
+		      if(!confirm('Actualizar desde nube reemplazará la copia local actual. Se descargará un respaldo antes de continuar. ¿Deseas seguir?')) return;
+		      if(prompt('Escribe exactamente REEMPLAZAR LOCAL para confirmar:') !== 'REEMPLAZAR LOCAL') return toast('Actualización cancelada', 'err');
+		      downloadBackup('antes-de-actualizar-desde-nube');
+		      toast('Actualizando desde nube...');
+		      await window.click360RefreshNow().catch(()=>toast('No se pudo actualizar desde nube', 'err'));
+		    });
+		    $('#clearLocalAppStateBtn')?.addEventListener('click', clearLocalAppStateRecovery);
+		    $('#copySyncDiagnosticBtn')?.addEventListener('click', async () => {
+		      const diagnostic = window.click360GetReliabilityDiagnostics?.() || {};
+		      const text = JSON.stringify(diagnostic, null, 2);
+		      try {
+		        await navigator.clipboard.writeText(text);
+		        toast('Diagnóstico copiado.');
+		      } catch {
+		        console.info('CLICK360 diagnóstico', diagnostic);
+		        toast('Diagnóstico enviado a consola.', 'ok');
+		      }
+		    });
 	    $('#restoreFile').onchange = (e) => {
 	        if(!isOwnerUser()) {
 	          e.target.value = '';
