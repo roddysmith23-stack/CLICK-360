@@ -1,7 +1,7 @@
 /**
  * qa-business-switch-harness.cjs
  * P1 FIX: Business Switch readOnly Stale State — Test Harness
- * Version candidate: 1.0.3-p2
+ * Version candidate: 1.0.3-p3
  *
  * Pruebas con datos 100% ficticios/anónimos.
  * No contiene UIDs reales, correos, nombres ni datos de Firebase.
@@ -227,7 +227,7 @@ assert('H4: Sincronización pendiente conserva razón específica', writeGateSta
 // ─── Resultado ────────────────────────────────────────────────────────────────
 console.log('\n' + '─'.repeat(60));
 console.log('CLICK 360 V16.2 P1 — Business Switch Harness');
-console.log('Versión candidata: 1.0.3-p2');
+console.log('Versión candidata: 1.0.3-p3');
 console.log('─'.repeat(60));
 console.log(`Passed: ${passed}`);
 console.log(`Failed: ${failed}`);
