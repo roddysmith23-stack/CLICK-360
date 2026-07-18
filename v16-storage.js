@@ -66,8 +66,10 @@
       pendingRemoteSync: metadata.pendingRemoteSync === true,
       operationId: String(metadata.operationId || '').slice(0, 96),
       payloadHash: String(metadata.payloadHash || '').slice(0, 128),
+      materialHash: String(metadata.materialHash || '').slice(0, 128),
       source: String(metadata.source || 'local_snapshot').slice(0, 48),
       updatedAtMs: Number(snapshot?.updatedAtMs || Date.now()),
+      pendingCreatedAtMs: Number(metadata.pendingCreatedAtMs || 0),
       savedAtMs: Date.now()
     };
     await transact(SNAPSHOT_STORE, 'readwrite', (store) => store.put(record));

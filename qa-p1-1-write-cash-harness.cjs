@@ -58,13 +58,13 @@ assert.equal(isDayStarted({ latestSessionStatus: 'closed', hasOpeningMovement: t
 assert.equal(isDayStarted({ latestSessionStatus: 'open', hasOpeningMovement: true, dayClosed: true }), true, 'reopened session allows the new daily register');
 
 assert(app.includes('window.click360GetEffectiveAccess = accessInfo'), 'app exposes one effective access source');
-assert(app.includes('const gate = writeGateStatus();') && app.includes("toast(writeBlockMessage(gate), 'err')"), 'save uses the unified write gate and specific error message');
+assert(app.includes('const gate = writeGateStatus();') && app.includes("gate.reason === 'pending_remote_sync' ? 'ok' : 'err'"), 'save uses the unified write gate and keeps temporary sync pending non-destructive');
 assert(app.includes("await commitCriticalMutation(previousState, 'business_profile_updated'"), 'business profile persists through critical commit');
 assert(app.includes("await commitCriticalMutation(previousState, 'cash_closed'"), 'cash close persists before success');
 assert(app.includes('showCloseSummary();'), 'cash close summary is displayed after commit');
 assert(firebase.includes('window.click360WriteGate = writeGateStatus'), 'Firebase service publishes structured write gate status');
 assert(firebase.includes('if (accessDoesNotExpire()) return true'), 'permanent access is not degraded by offline clock revalidation');
-assert(runtime.includes("const APP_VERSION = '1.0.3-p1'"), 'runtime error report version is the release version');
+assert(runtime.includes("const APP_VERSION = '1.0.3-p2'"), 'runtime error report version is the release version');
 assert(runtime.includes('buildSha') && runtime.includes('displayMode') && runtime.includes('effectiveAccess'), 'runtime report includes build, PWA and access diagnostics');
 assert(styles.includes('.cashClosePreview') && styles.includes('.cashCloseActions') && styles.includes('bottom:calc(108px + var(--safe-bottom))'), 'mobile UI protects cash close actions and toasts');
 
