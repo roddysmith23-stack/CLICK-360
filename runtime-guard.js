@@ -1,8 +1,8 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.0.3-p3';
-  const ASSET_VERSION = 'mvp-launch-v16-2-p1-r3';
+  const APP_VERSION = '1.0.3-p4';
+  const ASSET_VERSION = 'mvp-launch-v16-2-p1-r4';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
@@ -217,9 +217,11 @@
     let accessDiagnostics = {};
     try { accessDiagnostics = root.click360GetPublicAuthDiagnostics?.() || {}; } catch {}
     const syncState = root.click360GetSyncStatus?.() || {};
-    let reliabilityState = {};
-    try { reliabilityState = root.click360GetSyncState?.({ reason: 'runtime_report' }) || {}; } catch {}
-    const storageState = root.click360GetStorageState?.() || {};
+	    let reliabilityState = {};
+	    try { reliabilityState = root.click360GetSyncState?.({ reason: 'runtime_report' }) || {}; } catch {}
+	    let cashCloseState = {};
+	    try { cashCloseState = root.click360GetCashCloseDiagnostics?.() || {}; } catch {}
+	    const storageState = root.click360GetStorageState?.() || {};
     let effectiveAccess = {};
     try {
       const rawAccess = root.click360GetEffectiveAccess?.() || root.click360AccessState || {};
@@ -258,20 +260,29 @@
       explicitInvitationIntent: accessDiagnostics.explicitInvitationIntent === true,
 	      syncMode: String(syncState.status || '').slice(0, 40),
 	      storageMode: String(storageState.mode || '').slice(0, 40),
-	      reliability: {
-	        status: String(reliabilityState.status || '').slice(0, 40),
-	        blocking: reliabilityState.blocking === true,
-	        reason: String(reliabilityState.reason || '').slice(0, 80),
-	        localHash: String(reliabilityState.localHash || '').slice(0, 24),
-	        remoteHash: String(reliabilityState.remoteHash || '').slice(0, 24),
-	        lockAgeMs: Number(reliabilityState.lockAgeMs || 0),
-	        hasDirtyFields: reliabilityState.hasDirtyFields === true,
-	        displayMode: String(reliabilityState.displayMode || displayMode()).slice(0, 24)
-	      }
-	    });
-    showFriendlyMessage(report);
-    return report;
-  }
+		      reliability: {
+		        status: String(reliabilityState.status || '').slice(0, 40),
+		        blocking: reliabilityState.blocking === true,
+		        reason: String(reliabilityState.reason || '').slice(0, 80),
+		        localHash: String(reliabilityState.localHash || '').slice(0, 24),
+		        remoteHash: String(reliabilityState.remoteHash || '').slice(0, 24),
+		        lockAgeMs: Number(reliabilityState.lockAgeMs || 0),
+		        hasDirtyFields: reliabilityState.hasDirtyFields === true,
+		        displayMode: String(reliabilityState.displayMode || displayMode()).slice(0, 24)
+		      },
+		      cashClose: {
+		        stage: String(cashCloseState.stage || '').slice(0, 80),
+		        status: String(cashCloseState.status || '').slice(0, 40),
+		        reason: String(cashCloseState.reason || '').slice(0, 120),
+		        errorCode: String(cashCloseState.errorCode || '').slice(0, 80),
+		        business: shortHash(cashCloseState.activeBusinessId || ''),
+		        session: shortHash(cashCloseState.cashSessionId || ''),
+		        report: shortHash(cashCloseState.reportId || '')
+		      }
+		    });
+	    if (details.uiHandled !== true) showFriendlyMessage(report);
+	    return report;
+	  }
   function setContext(context) {
     if (!validContext(context)) return false;
     const publicTarget = storageTarget(null);

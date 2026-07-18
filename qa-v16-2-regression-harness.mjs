@@ -54,9 +54,12 @@ assert(storage.includes('pendingRemoteSync: metadata.pendingRemoteSync === true'
 assert(firebase.includes('operationId: String(event.detail?.operationId') && app.includes('commitCheckpointKey(event.detail || {})'), 'cloud-only rollback is correlated to the exact operation');
 assert(app.includes("movement.operationId === operationId") && app.includes("item.status === 'cancelled'"), 'cash and cancellation paths have idempotent verification markers');
 assert(app.includes('function latestCashSession(') && app.includes("return session?.status === 'open' ? session : null;"), 'cash operations use the latest session state');
-assert(app.includes('const showCloseSummary = () =>') && app.includes('showCloseSummary();') && app.indexOf("const committed = await commitCriticalMutation(previousState, 'cash_closed'") < app.indexOf('showCloseSummary();'), 'cash summary opens only after the close is persisted');
+assert(app.includes('function showCashCloseSummary(')
+  && app.includes("stage = 'cash_close_verify_closed'")
+  && app.includes('showCashCloseSummary(closeDetails, committed);')
+  && app.indexOf("const committed = await commitCriticalMutation(previousState, 'cash_closed'") < app.indexOf('showCashCloseSummary(closeDetails, committed);'), 'cash summary opens only after the close is persisted and verified');
 assert(app.includes('const closeMovements = activeSession') && app.includes('movement.cashSessionId === activeSession.id'), 'a reopened register closes only its own movements');
-assert(app.includes("cashSessionId: activeSession?.id || ''") && app.includes('sale.cashSessionId'), 'sales and closing reports retain their cash session identity');
+assert(app.includes("cashSessionId: basis.activeSession?.id || ''") && app.includes('sale.cashSessionId'), 'sales and closing reports retain their cash session identity');
 assert(app.includes("deletedById.get(`${businessId}:${p.id}`)"), 'product tombstones are scoped by business');
 assert(!app.includes('Error de Renderizado') && !app.includes('e.stack || e.message}</pre>'), 'raw render errors are not shown to customers');
 assert(!firebase.includes('UID de usuario:') && !firebase.includes('usando este UID en Firestore'));
@@ -106,8 +109,8 @@ for (const source of [app, firebase, html, worker]) {
   assert(!source.includes('mvp-launch-v16-1-2-r1'));
 }
 assert(!styles.includes('mvp-launch-v16-2-p0-r1'), 'CSS image assets must not retain the previous P0 cache version');
-assert(styles.includes('assets/logo.png?v=mvp-launch-v16-2-p1-r3') && styles.includes('assets/banner-click360-home.png?v=mvp-launch-v16-2-p1-r3'));
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-r3'"));
+assert(styles.includes('assets/logo.png?v=mvp-launch-v16-2-p1-r4') && styles.includes('assets/banner-click360-home.png?v=mvp-launch-v16-2-p1-r4'));
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-r4'"));
 assert(html.includes('<link rel="canonical" href="https://click-360.web.app/"'));
 assert(robots.includes('https://click-360.web.app/sitemap.xml'));
 assert(sitemap.includes('<loc>https://click-360.web.app/</loc>'));
