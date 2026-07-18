@@ -3,6 +3,7 @@ artifacts/
 .playwright-cli/
 output/
 dist/
+qa/reports/
 .env
 .env.*
 !*.example

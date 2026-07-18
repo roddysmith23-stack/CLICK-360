@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3-p4 - 2026-07-18
+
+- Endurece el cierre de caja con etapas explícitas de acceso, sesión, cálculo, persistencia, verificación y exportación.
+- Evita dobles cierres por doble toque y separa fallos de PDF/PNG/impresión de la escritura comercial ya confirmada.
+- Agrega diagnóstico seguro de caja sin UID, correo ni datos comerciales completos, con códigos visibles y acción de reintento.
+- Mantiene trabajadores pausados para el snapshot monolítico y muestra un bloqueo claro cuando el rol no puede cerrar caja.
+- Añade harness P1.1d y simulador sintético quick/full para caja, negocios múltiples, usuarios y almacenamiento local falso.
+- Actualiza versión, manifest, runtime guard y Service Worker a `1.0.3-p4` / `mvp-launch-v16-2-p1-r4`.
+
 ## 1.0.2-p0 - 2026-07-16
 
 - Corrige el loop de login posterior al redirect de Google en iOS/Brave usando `authDomain` same-origin en la URL oficial `click-360.web.app`.

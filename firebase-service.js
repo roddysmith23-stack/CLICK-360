@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-			  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r3';
+			  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r4';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {

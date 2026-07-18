@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r3';
-  const APP_RELEASE_VERSION = '1.0.3-p3';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r4';
+  const APP_RELEASE_VERSION = '1.0.3-p4';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -164,10 +164,12 @@
   let clockTimer = null;
   let modalReturnFocus = null;
   let modalKeyHandler = null;
-  let storageState = Object.freeze({ mode: 'checking', indexedDbReady: false, localReady: true, tenantKey: null, message: '' });
-  let indexedTenantCacheMeta = null;
-  let lastSavePersistence = null;
-  const onlineOnlyCommitCheckpoints = new Map();
+	  let storageState = Object.freeze({ mode: 'checking', indexedDbReady: false, localReady: true, tenantKey: null, message: '' });
+	  let indexedTenantCacheMeta = null;
+	  let lastSavePersistence = null;
+	  const onlineOnlyCommitCheckpoints = new Map();
+	  const cashCloseInFlight = new Set();
+	  let lastCashCloseDiagnostic = Object.freeze({ stage: 'idle', status: 'idle', blocking: false, reason: '' });
 
   function publishStorageState(next = {}) {
     storageState = Object.freeze({ ...storageState, ...next, tenantKey: activeTenantContext?.tenantKey || next.tenantKey || null });
@@ -3473,10 +3475,410 @@ function parseMoney(value) {
       img.src=reader.result;
     };
     reader.readAsDataURL(file);
-  }
-  function stopScanner(hide=true){ if(scanTimer) clearInterval(scanTimer); scanTimer=null; if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } const p=$('#cameraPanel'); if(p&&hide)p.classList.remove('show'); }
+	  }
+	  function stopScanner(hide=true){ if(scanTimer) clearInterval(scanTimer); scanTimer=null; if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } const p=$('#cameraPanel'); if(p&&hide)p.classList.remove('show'); }
 
-	  function bindCash(){
+	  function cashCloseDisplayMode() {
+	    return window.matchMedia?.('(display-mode: standalone)')?.matches === true || navigator.standalone === true ? 'standalone' : 'browser';
+	  }
+	  function cashCloseSyncState(reason = 'cash_close_diagnostic') {
+	    try { return window.click360GetSyncState?.({ cleanup: true, reason }) || {}; } catch { return {}; }
+	  }
+	  function cashCloseDiagnostic(stage = 'unknown', details = {}) {
+	    const access = accessInfo();
+	    const syncState = details.syncState || cashCloseSyncState(`cash_close_${stage}`);
+	    const business = details.business || currentBusiness();
+	    const reportId = details.reportId || details.closeDetails?.id || '';
+	    const cashSessionId = details.cashSessionId || details.closeDetails?.cashSessionId || currentOpenCashSession(business?.id)?.id || '';
+	    return {
+	      appVersion: APP_RELEASE_VERSION,
+	      buildSha: APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? APP_BUILD_SHA : '',
+	      assetVersion: APP_ASSET_VERSION,
+	      stage: String(stage || 'unknown').slice(0, 80),
+	      status: String(details.status || 'active').slice(0, 40),
+	      reason: String(details.reason || syncState.reason || '').slice(0, 120),
+	      errorCode: String(details.errorCode || details.error?.code || details.error?.name || '').slice(0, 80),
+	      displayMode: cashCloseDisplayMode(),
+	      route: route || 'cash',
+	      activeBusinessId: anonFingerprint(business?.id || state.activeBusinessId || ''),
+	      cashSessionId: anonFingerprint(cashSessionId),
+	      reportId: anonFingerprint(reportId),
+	      effectiveAccess: { mode: String(access.mode || '').slice(0, 40), readOnly: access.readOnly === true },
+	      canCash: can('cash') === true,
+	      ownerWritable: isOwnerUser() === true,
+	      writeGate: details.gate ? {
+	        allowed: details.gate.allowed !== false,
+	        reason: String(details.gate.reason || '').slice(0, 80)
+	      } : null,
+	      syncState: {
+	        status: String(syncState.status || '').slice(0, 40),
+	        blocking: syncState.blocking === true,
+	        reason: String(syncState.reason || '').slice(0, 80),
+	        localHash: String(syncState.localHash || '').slice(0, 24),
+	        remoteHash: String(syncState.remoteHash || '').slice(0, 24),
+	        lockAgeMs: Number(syncState.lockAgeMs || 0),
+	        hasDirtyFields: syncState.hasDirtyFields === true
+	      },
+	      storageMode: String(storageState.mode || '').slice(0, 40),
+	      online: navigator.onLine !== false,
+	      userAgent: String(navigator.userAgent || '').slice(0, 500)
+	    };
+	  }
+	  function updateCashCloseDiagnostic(stage, details = {}) {
+	    const diagnostic = cashCloseDiagnostic(stage, details);
+	    lastCashCloseDiagnostic = Object.freeze(diagnostic);
+	    window.click360LastCashCloseDiagnostic = diagnostic;
+	    return diagnostic;
+	  }
+	  window.click360GetCashCloseDiagnostics = () => ({ ...lastCashCloseDiagnostic });
+	  function cashCloseDiagnosticRows(diagnostic = lastCashCloseDiagnostic) {
+	    const rows = [
+	      ['Etapa', diagnostic.stage || 'unknown'],
+	      ['Código', diagnostic.errorCode || 'sin_codigo'],
+	      ['Acceso', `${diagnostic.effectiveAccess?.mode || 'unknown'} / lectura=${diagnostic.effectiveAccess?.readOnly === true}`],
+	      ['Caja', diagnostic.canCash ? 'permitida' : 'sin permiso'],
+	      ['Escritura', diagnostic.writeGate ? `${diagnostic.writeGate.allowed ? 'permitida' : 'bloqueada'} / ${diagnostic.writeGate.reason || 'ok'}` : 'sin evaluar'],
+	      ['Sync', `${diagnostic.syncState?.status || 'unknown'} / bloquea=${diagnostic.syncState?.blocking === true}`],
+	      ['Motivo', diagnostic.reason || diagnostic.syncState?.reason || 'sin_detalle'],
+	      ['Hash local', diagnostic.syncState?.localHash || 'n/a'],
+	      ['Hash nube', diagnostic.syncState?.remoteHash || 'n/a'],
+	      ['Edad lock', `${Math.round(Number(diagnostic.syncState?.lockAgeMs || 0) / 1000)}s`],
+	      ['Modo', diagnostic.displayMode || 'browser'],
+	      ['Online', diagnostic.online ? 'sí' : 'no']
+	    ];
+	    return `<dl class="syncDiagnosticList cashCloseDiagnosticList">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`;
+	  }
+	  function cashCloseAccessStatus(stage = 'validate_access') {
+	    const business = currentBusiness();
+	    if (!business?.id) return { allowed: false, reason: 'cash_close_no_active_business', business };
+	    const access = accessInfo();
+	    if (access.readOnly) return { allowed: false, reason: 'read_only', business };
+	    const gate = writeGateStatus();
+	    if (!gate.allowed) return { allowed: false, reason: gate.reason || 'write_gate_blocked', gate, business };
+	    if (!can('cash')) return { allowed: false, reason: 'cash_permission_denied', gate, business };
+	    if (!isOwnerUser()) return { allowed: false, reason: WORKER_TENANT_ACCESS_ENABLED ? 'cash_role_denied' : 'worker_module_paused', gate, business };
+	    return { allowed: true, reason: 'ok', gate, business };
+	  }
+	  function recordCashCloseIssue(stage, error, details = {}) {
+	    const diagnostic = updateCashCloseDiagnostic(stage, {
+	      ...details,
+	      error,
+	      errorCode: details.errorCode || error?.code || error?.name || 'cash_close_error',
+	      status: 'error'
+	    });
+	    window.CLICK360_RUNTIME_GUARD?.record?.({
+	      message: `Cash close failed at ${diagnostic.stage}`,
+	      filename: 'app.js',
+	      stack: error?.stack || '',
+	      cause: diagnostic.errorCode || diagnostic.reason,
+	      uiHandled: true
+	    });
+	    window.click360RecordTelemetry?.('cash_close_failure', {
+	      requestId: details.reportId || details.operationId || '',
+	      mode: diagnostic.stage,
+	      errorCode: diagnostic.errorCode || 'cash_close_error'
+	    }).catch?.(() => {});
+	    return diagnostic;
+	  }
+	  function showCashCloseAccessBlocked(status = {}) {
+	    const diagnostic = updateCashCloseDiagnostic('cash_close_validate_access', {
+	      business: status.business,
+	      gate: status.gate,
+	      reason: status.reason,
+	      errorCode: status.reason || 'cash_close_access_blocked',
+	      status: 'blocked'
+	    });
+	    const message = status.reason === 'worker_module_paused'
+	      ? 'El acceso operativo para trabajadores está temporalmente pausado. Ingresa con el dueño del negocio para cerrar caja.'
+	      : status.reason === 'read_only'
+	        ? 'Tu cuenta está en modo lectura. No se cerró la caja.'
+	        : 'Tu cuenta no tiene autorización para cerrar caja en este negocio.';
+	    showModal(`<div class="modalHeader"><div><h2>Sin permiso para cerrar caja</h2><p class="fieldHint">${escapeHtml(message)}</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <div class="cashCloseIssuePanel">
+	        ${cashCloseDiagnosticRows(diagnostic)}
+	        <button type="button" class="btn primary block" data-close>Entendido</button>
+	      </div>`);
+	    toast('No se cerró la caja.', 'err');
+	  }
+	  function showCashCloseError(stage, diagnostic, retryOptions = {}) {
+	    showModal(`<div class="modalHeader"><div><h2>No pudimos cerrar la caja</h2><p class="fieldHint">El cierre no se guardó. Tus datos anteriores siguen intactos.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <div class="cashCloseIssuePanel">
+	        ${cashCloseDiagnosticRows(diagnostic)}
+	        <div class="cashCloseActions">
+	          <button type="button" class="btn primary block" id="retryCashCloseBtn">Reintentar cierre</button>
+	          <button type="button" class="btn silver block" id="copyCashCloseDiagnosticBtn">Copiar diagnóstico</button>
+	        </div>
+	        <button type="button" class="btn block" data-close style="margin-top:10px;">Cancelar</button>
+	      </div>`);
+	    $('#retryCashCloseBtn')?.addEventListener('click', () => {
+	      closeModal(false);
+	      openCashCloseDialog(retryOptions);
+	    });
+	    $('#copyCashCloseDiagnosticBtn')?.addEventListener('click', async () => {
+	      await navigator.clipboard?.writeText(JSON.stringify(diagnostic, null, 2)).catch(() => null);
+	      toast('Diagnóstico copiado');
+	    });
+	    toast(`No se cerró la caja. Código: ${stage}`, 'err');
+	  }
+	  function showCashCloseExportIssue(stage, diagnostic) {
+	    showModal(`<div class="modalHeader"><div><h2>Caja cerrada</h2><p class="fieldHint">El cierre quedó guardado, pero la exportación no se pudo completar en este dispositivo.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <div class="cashCloseIssuePanel">
+	        ${cashCloseDiagnosticRows(diagnostic)}
+	        <button type="button" class="btn primary block" data-close>Entendido</button>
+	      </div>`);
+	    toast(`Caja cerrada. Exportación pendiente: ${stage}`, 'err');
+	  }
+	  function cashCloseBasis() {
+	    const business = currentBusiness();
+	    const businessId = business?.id || '';
+	    const date = today();
+	    const activeSession = currentOpenCashSession(businessId, date);
+	    const allMovements = Array.isArray(state.movements) ? state.movements.filter(m => m.businessId === businessId && m.date === date) : [];
+	    const closeMovements = activeSession && allMovements.some((movement) => movement.cashSessionId === activeSession.id)
+	      ? allMovements.filter((movement) => movement.cashSessionId === activeSession.id)
+	      : allMovements;
+	    const apertureMov = closeMovements.slice().reverse().find((movement) => movement.kind === 'apertura');
+	    const lastCash = apertureMov ? Number(apertureMov.amount || 0) : Number(business?.lastCashBalance || 0);
+	    return { business, businessId, date, activeSession, closeMovements, apertureMov, lastCash };
+	  }
+	  function buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId }) {
+	    updateCashCloseDiagnostic('cash_close_calculate_totals', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
+	    const income = basis.closeMovements.filter(isCashIncomeMovement).reduce((a, m) => a + Number(m.amount || 0), 0);
+	    const out = basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura').reduce((a, m) => a + Number(m.amount || 0), 0);
+	    const balanceCalculado = cInicial + income - out;
+	    const diferencia = eFisico - balanceCalculado;
+	    const allSales = Array.isArray(state.sales) ? state.sales.filter(s => s.businessId === basis.businessId && s.date === basis.date && s.status !== 'cancelled') : [];
+	    const sales = basis.activeSession && allSales.some((sale) => sale.cashSessionId === basis.activeSession.id)
+	      ? allSales.filter((sale) => sale.cashSessionId === basis.activeSession.id)
+	      : allSales;
+	    const salesEfectivo = sales.filter(s => s.method === 'Efectivo').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const salesTarjeta = sales.filter(s => s.method === 'Tarjeta').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const salesTransf = sales.filter(s => s.method === 'Transferencia').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const abonosApartado = basis.closeMovements.filter((movement) => movement.status !== 'cancelled'
+	      && (movement.paymentMethod === 'Apartado' || movement.paymentType === 'receivable_payment'))
+	      .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
+	    const totalIva = sales.reduce((a, s) => a + Number(s.iva || 0), 0);
+	    let totalItems = 0;
+	    sales.forEach(s => saleItems(s).forEach(i => { totalItems += Number(i.qty || 0); }));
+	    updateCashCloseDiagnostic('cash_close_build_summary', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
+	    const bizSettings = basis.business?.settings || {};
+	    const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
+	    const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
+	    const logoSrc = safeImageSrc(bizSettings.logoUrl);
+	    const logoUrl = logoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(logoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
+	    const html = `
+	            <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
+	            ${logoUrl}
+	            <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(basis.business?.name || 'Negocio')}</h2>
+	            ${ruc}${phone}
+	            <div style="text-align:center; margin:10px 0;">CIERRE DE CAJA<br>${nowLabel()}</div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
+	            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	            <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Productos Vendidos:</span><span>${totalItems}</span></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA Recaudado:</span><span>${fmt(totalIva)}</span></div>
+	            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(salesTransf)}</span></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
+	            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	            <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingresos en efectivo:</span><span>+${fmt(income)}</span></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Salidas:</span><span>-${fmt(out)}</span></div>
+	            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo Declarado:</span><span>${fmt(eFisico)}</span></div>
+	            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
+	            <div style="margin-top:10px;">Obs: ${escapeHtml(observations)}</div>
+	            <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(authUser().name || 'Usuario')}</div>
+	            </div>`;
+	    return { income, out, balanceCalculado, diferencia, sales, salesEfectivo, salesTarjeta, salesTransf, abonosApartado, totalIva, totalItems, html };
+	  }
+	  function showCashCloseSummary(closeDetails, committed = {}) {
+	    updateCashCloseDiagnostic('cash_close_export_ready', { closeDetails, reportId: closeDetails.id });
+	    showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
+	      <div class="cashClosePreview">
+	        <div id="pdfContentPreview" class="cashClosePreviewInner">
+	          ${closeDetails.html}
+	        </div>
+	      </div>
+	      <div class="cashCloseActions">
+	          <button class="btn silver block" id="printCierreBtn">Imprimir</button>
+	          <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
+	          <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
+	      </div>
+	      <p class="fieldHint">El cierre ya quedó guardado. Si una exportación falla, puedes volver a abrir este resumen desde el historial.</p>
+	    `);
+	    const runExport = async (stage, job) => {
+	      updateCashCloseDiagnostic(stage, { closeDetails, reportId: closeDetails.id });
+	      try {
+	        await Promise.resolve(job());
+	      } catch (error) {
+	        const diagnostic = recordCashCloseIssue(stage, error, { closeDetails, reportId: closeDetails.id, errorCode: 'cash_close_export_failed' });
+	        showCashCloseExportIssue(stage, diagnostic);
+	      }
+	    };
+	    $('#printCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_print', () => handoffPrint({ html: closeDetails.html, media: 'a4', filename: `Cierre_Caja_${closeDetails.date}.pdf` }, 'system')));
+	    $('#downloadPdfCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_pdf', () => handoffPrint({ html: closeDetails.html, media: 'a4', filename: `Cierre_Caja_${closeDetails.date}.pdf` }, 'pdf')));
+	    $('#downloadImgCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_png', () => downloadHtmlAsPng(closeDetails.html, `Cierre_Caja_${closeDetails.date}.png`)));
+	    toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
+	  }
+	  function openCashCloseDialog(options = {}) {
+	    const accessStatus = cashCloseAccessStatus('cash_close_open_modal');
+	    if (!accessStatus.allowed) return showCashCloseAccessBlocked(accessStatus);
+	    const basis = cashCloseBasis();
+	    if (!basis.businessId) return toast('No se encontró el negocio activo.', 'err');
+	    if (isBusinessDateClosed(basis.date, basis.businessId)) return toast('La caja de hoy ya está cerrada.', 'ok');
+	    updateCashCloseDiagnostic('cash_close_open_modal', { business: basis.business, cashSessionId: basis.activeSession?.id || '' });
+	    showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
+	      <form id="closeDayForm" class="formGrid">
+	        <div class="field full"><label>Caja Inicial (Auto-cuadre)</label><input id="cajaInicial" value="${escapeHtml(options.cajaInicial ?? basis.lastCash)}" inputmode="decimal"></div>
+	        <div class="field full"><label>Efectivo Físico (Contado)</label><input id="efectivoFisico" value="${escapeHtml(options.efectivoFisico ?? 0)}" inputmode="decimal"></div>
+	        <div class="field full"><label>Observaciones</label><input id="cierreObs" value="${escapeHtml(options.observations || '')}"></div>
+	        <button class="btn silver" type="button" data-close>Cancelar</button>
+	        <button class="btn primary block" type="submit" id="closeDaySubmitBtn">Generar Cierre</button>
+	      </form>`);
+	    const cInicialInput = $('#cajaInicial'), eFisicoInput = $('#efectivoFisico');
+	    if (cInicialInput) cInicialInput.oninput = () => { cInicialInput.value = cInicialInput.value.replace(/[^0-9.,]/g, ''); };
+	    if (eFisicoInput) eFisicoInput.oninput = () => { eFisicoInput.value = eFisicoInput.value.replace(/[^0-9.,]/g, ''); };
+	    $('#closeDayForm').onsubmit = submitCashClose;
+	  }
+	  async function submitCashClose(e) {
+	    e.preventDefault();
+	    const retryOptions = {
+	      cajaInicial: $('#cajaInicial')?.value || '',
+	      efectivoFisico: $('#efectivoFisico')?.value || '',
+	      observations: $('#cierreObs')?.value || ''
+	    };
+	    let stage = 'cash_close_validate_access';
+	    let previousState = null;
+	    let inFlightKey = '';
+	    let commitStarted = false;
+	    let reportId = '';
+	    const submitButton = $('#closeDaySubmitBtn');
+	    try {
+	      submitButton?.setAttribute('disabled', 'disabled');
+	      const accessStatus = cashCloseAccessStatus(stage);
+	      updateCashCloseDiagnostic(stage, { business: accessStatus.business, gate: accessStatus.gate, reason: accessStatus.reason });
+	      if (!accessStatus.allowed) {
+	        showCashCloseAccessBlocked(accessStatus);
+	        return;
+	      }
+	      stage = 'cash_close_load_session';
+	      const basis = cashCloseBasis();
+	      if (!basis.businessId) {
+	        const error = new Error('No active business for cash close.');
+	        error.code = 'cash_close_no_active_business';
+	        throw error;
+	      }
+	      if (isBusinessDateClosed(basis.date, basis.businessId)) {
+	        toast('La caja de hoy ya está cerrada.', 'ok');
+	        closeModal();
+	        renderApp('cash');
+	        return;
+	      }
+	      const sessionKey = basis.activeSession?.id || `legacy:${basis.businessId}:${basis.date}`;
+	      inFlightKey = `${basis.businessId}:${basis.date}:${sessionKey}`;
+	      if (cashCloseInFlight.has(inFlightKey)) {
+	        toast('Ya estamos cerrando esta caja. Espera la confirmación.', 'ok');
+	        return;
+	      }
+	      cashCloseInFlight.add(inFlightKey);
+	      updateCashCloseDiagnostic(stage, { business: basis.business, cashSessionId: basis.activeSession?.id || '' });
+	      const cInicial = parseMoney($('#cajaInicial')?.value);
+	      const eFisico = parseMoney($('#efectivoFisico')?.value);
+	      const observations = ($('#cierreObs')?.value || '').trim();
+	      if (!Number.isFinite(cInicial) || !Number.isFinite(eFisico)) {
+	        const error = new Error('Invalid cash close amounts.');
+	        error.code = 'cash_close_invalid_amounts';
+	        throw error;
+	      }
+	      reportId = uid('rep');
+	      const summary = buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId });
+	      stage = 'cash_close_persist_summary';
+	      previousState = cloneState(state);
+	      state.dailyReports ||= [];
+	      state.cashSessions ||= [];
+	      const existingClosedReport = state.dailyReports.find((report) =>
+	        report.businessId === basis.businessId && report.date === basis.date && report.status === 'closed'
+	        && (basis.activeSession?.id ? report.cashSessionId === basis.activeSession.id : true));
+	      if (existingClosedReport) {
+	        toast('La caja ya estaba cerrada. Puedes ver el cierre en el historial.', 'ok');
+	        closeModal();
+	        renderApp('cash');
+	        return;
+	      }
+	      const closeDetails = {
+	        id: reportId,
+	        operationId: reportId,
+	        businessId: basis.businessId,
+	        date: basis.date,
+	        cashSessionId: basis.activeSession?.id || '',
+	        openedBy: basis.activeSession?.openedBy || basis.apertureMov?.createdBy || '',
+	        openedAt: basis.activeSession?.openedAt || '',
+	        closedBy: authUser().name,
+	        closedByUid: window.click360User?.uid || '',
+	        closedAt: new Date().toISOString(),
+	        openingAmount: cInicial,
+	        productQuantity: summary.totalItems,
+	        buyers: [...new Set(summary.sales.map((sale) => sale.customer).filter(Boolean))],
+	        saleIds: summary.sales.map((sale) => sale.id),
+	        paymentTotals: { cash: summary.salesEfectivo, card: summary.salesTarjeta, transfer: summary.salesTransf, layawayPayments: summary.abonosApartado },
+	        taxTotal: summary.totalIva,
+	        income: summary.income,
+	        expenses: summary.out,
+	        expectedCash: summary.balanceCalculado,
+	        countedCash: eFisico,
+	        difference: summary.diferencia,
+	        observations,
+	        closeCash: eFisico,
+	        status: 'closed',
+	        html: summary.html
+	      };
+	      state.dailyReports.push(closeDetails);
+	      if (basis.activeSession) Object.assign(basis.activeSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: summary.balanceCalculado, difference: summary.diferencia, reportId, observations });
+	      addAudit('cash_closed', { reportId, expectedCash: summary.balanceCalculado, countedCash: eFisico, difference: summary.diferencia, cashSessionId: basis.activeSession?.id || '' });
+	      const business = state.businesses.find((item) => item.id === basis.businessId);
+	      if (business) business.lastCashBalance = eFisico;
+	      updateCashCloseDiagnostic(stage, { business: basis.business, closeDetails, reportId });
+	      stage = 'cash_close_verify_closed';
+	      commitStarted = true;
+	      const committed = await commitCriticalMutation(previousState, 'cash_closed', (next) => {
+	        const reportClosed = (next.dailyReports || []).some((report) => report.id === reportId && report.businessId === basis.businessId && report.status === 'closed');
+	        const sessionClosed = !basis.activeSession || (next.cashSessions || []).some((session) => session.id === basis.activeSession.id && session.businessId === basis.businessId && session.status === 'closed' && session.reportId === reportId);
+	        return reportClosed && sessionClosed;
+	      });
+	      if (!committed.ok) {
+	        const error = new Error(writeBlockMessage(window.click360LastWriteBlock || { reason: committed.reason || 'cash_close_commit_not_confirmed' }));
+	        error.code = committed.reason || 'cash_close_commit_not_confirmed';
+	        throw error;
+	      }
+	      updateCashCloseDiagnostic('cash_close_verify_closed', { business: basis.business, closeDetails, reportId, status: committed.pending ? 'pending' : 'closed' });
+	      window.click360RecordTelemetry?.('cash_close', { requestId: reportId, mode: summary.diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
+	      closeModal(false);
+	      renderApp('cash');
+	      try {
+	        showCashCloseSummary(closeDetails, committed);
+	      } catch (error) {
+	        const diagnostic = recordCashCloseIssue('cash_close_export_ready', error, { closeDetails, reportId, errorCode: 'cash_close_summary_modal_failed' });
+	        showCashCloseExportIssue('cash_close_export_ready', diagnostic);
+	      }
+	    } catch (error) {
+	      if (previousState && !commitStarted) {
+	        state = normalizeState(cloneState(previousState));
+	        lastAutoSaveHash = JSON.stringify(state);
+	      }
+	      const diagnostic = recordCashCloseIssue(stage, error, { reportId, errorCode: error?.code || error?.name || 'cash_close_failed' });
+	      showCashCloseError(stage, diagnostic, retryOptions);
+	    } finally {
+	      if (inFlightKey) cashCloseInFlight.delete(inFlightKey);
+	      submitButton?.removeAttribute('disabled');
+	    }
+	  }
+
+		  function bindCash(){
 	    $('#calculatorCashBtn')?.addEventListener('click', () => openCalculator({ preferredTarget: isDayStarted() ? '' : 'apertureAmountInput' }));
     const btnReopenCash = $('#reopenCashBtn');
 	    if (btnReopenCash) {
@@ -3609,157 +4011,11 @@ function parseMoney(value) {
       };
     }
 
-    const btnCloseDay = $('#closeDayBtn');
-    if (btnCloseDay) {
-      btnCloseDay.onclick=()=>{
-        const activeSession = currentOpenCashSession();
-        const dayMovements = movementsForBiz().filter((movement) => movement.date === today());
-        const closeMovements = activeSession
-          && dayMovements.some((movement) => movement.cashSessionId === activeSession.id)
-          ? dayMovements.filter((movement) => movement.cashSessionId === activeSession.id)
-          : dayMovements;
-        const apertureMov = closeMovements.slice().reverse().find((movement) => movement.kind === 'apertura');
-        const lastCash = apertureMov ? apertureMov.amount : (currentBusiness().lastCashBalance || 0);
-        showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
-          <form id="closeDayForm" class="formGrid">
-            <div class="field full"><label>Caja Inicial (Auto-cuadre)</label><input id="cajaInicial" value="${lastCash}" inputmode="decimal"></div>
-            <div class="field full"><label>Efectivo Físico (Contado)</label><input id="efectivoFisico" value="0" inputmode="decimal"></div>
-            <div class="field full"><label>Observaciones</label><input id="cierreObs"></div>
-            <button class="btn silver" type="button" data-close>Cancelar</button>
-            <button class="btn primary block" type="submit">Generar Cierre</button>
-          </form>`);
-
-        const cInicialInput = $('#cajaInicial'), eFisicoInput = $('#efectivoFisico');
-        if (cInicialInput) cInicialInput.oninput = () => { cInicialInput.value = cInicialInput.value.replace(/[^0-9.,]/g, ''); };
-        if (eFisicoInput) eFisicoInput.oninput = () => { eFisicoInput.value = eFisicoInput.value.replace(/[^0-9.,]/g, ''); };
-
-        $('#closeDayForm').onsubmit = async (e) => {
-           e.preventDefault();
-           const cInicial = parseMoney($('#cajaInicial').value);
-           const eFisico = parseMoney($('#efectivoFisico').value);
-           if(!Number.isFinite(cInicial) || !Number.isFinite(eFisico)){ return toast('Montos inválidos', 'err'); }
-
-           const income=closeMovements.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
-           const out=closeMovements.filter(m=>m.kind!=='ingreso' && m.kind!=='apertura').reduce((a,m)=>a+m.amount,0);
-           const balanceCalculado = cInicial + income - out;
-           const diferencia = eFisico - balanceCalculado;
-
-           const allSales = salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled');
-           const sales = activeSession && allSales.some((sale) => sale.cashSessionId === activeSession.id)
-             ? allSales.filter((sale) => sale.cashSessionId === activeSession.id)
-             : allSales;
-           const salesEfectivo = sales.filter(s=>s.method==='Efectivo').reduce((a,s)=>a+s.total,0);
-           const salesTarjeta = sales.filter(s=>s.method==='Tarjeta').reduce((a,s)=>a+s.total,0);
-           const salesTransf = sales.filter(s=>s.method==='Transferencia').reduce((a,s)=>a+s.total,0);
-           const abonosApartado = closeMovements.filter((movement) => movement.status !== 'cancelled'
-             && (movement.paymentMethod === 'Apartado' || movement.paymentType === 'receivable_payment'))
-             .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
-
-           const totalIva = sales.reduce((a,s)=>a+(s.iva||0),0);
-           let totalItems = 0;
-	           sales.forEach(s => saleItems(s).forEach(i => totalItems += i.qty));
-
-           const bizSettings = currentBusiness().settings || {};
-           const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
-           const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
-	           const logoSrc = safeImageSrc(bizSettings.logoUrl);
-	           const logoUrl = logoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(logoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
-
-           const html = `
-            <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
-            ${logoUrl}
-            <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(currentBusiness().name)}</h2>
-            ${ruc}${phone}
-            <div style="text-align:center; margin:10px 0;">CIERRE DE CAJA<br>${nowLabel()}</div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(cInicial)}</span></div>
-            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-            <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Productos Vendidos:</span><span>${totalItems}</span></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA Recaudado:</span><span>${fmt(totalIva)}</span></div>
-            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(salesEfectivo)}</span></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(salesTarjeta)}</span></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(salesTransf)}</span></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(abonosApartado)}</span></div>
-            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-            <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingresos en efectivo:</span><span>+${fmt(income)}</span></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Salidas:</span><span>-${fmt(out)}</span></div>
-            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px;"><b>Balance Teórico:</b><b>${fmt(balanceCalculado)}</b></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo Declarado:</span><span>${fmt(eFisico)}</span></div>
-            <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;"><b>Diferencia:</b><b>${fmt(diferencia)}</b></div>
-            <div style="margin-top:10px;">Obs: ${escapeHtml($('#cierreObs').value)}</div>
-            <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(authUser().name || 'Usuario')}</div>
-            </div>`;
-
-	           closeModal();
-	           const showCloseSummary = () => {
-	             showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
-	               <div class="cashClosePreview">
-	                 <div id="pdfContentPreview" class="cashClosePreviewInner">
-	                   ${html}
-	                 </div>
-	               </div>
-	               <div class="cashCloseActions">
-	                   <button class="btn silver block" id="printCierreBtn">Imprimir</button>
-	                   <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
-	                   <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
-	               </div>
-	               <p class="fieldHint">El cierre ya quedó guardado. Si una exportación falla, puedes volver a abrir este resumen desde el historial.</p>
-	             `);
-	             $('#printCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'system');
-	             $('#downloadPdfCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'pdf');
-	             $('#downloadImgCierreBtn').onclick = () => downloadHtmlAsPng(html, `Cierre_Caja_${today()}.png`);
-	           };
-
-	           const previousState = cloneState(state);
-	           const repId = uid('rep');
-	           const closeDetails = {
-	             id: repId,
-	             operationId: repId,
-	             businessId: currentBusiness().id,
-	             date: today(),
-	             cashSessionId: activeSession?.id || '',
-	             openedBy: activeSession?.openedBy || apertureMov?.createdBy || '',
-	             openedAt: activeSession?.openedAt || '',
-	             closedBy: authUser().name,
-	             closedByUid: window.click360User?.uid || '',
-	             closedAt: new Date().toISOString(),
-	             openingAmount: cInicial,
-	             productQuantity: totalItems,
-	             buyers: [...new Set(sales.map((sale) => sale.customer).filter(Boolean))],
-	             saleIds: sales.map((sale) => sale.id),
-	             paymentTotals: { cash: salesEfectivo, card: salesTarjeta, transfer: salesTransf, layawayPayments: abonosApartado },
-	             taxTotal: totalIva,
-	             income,
-	             expenses: out,
-	             expectedCash: balanceCalculado,
-	             countedCash: eFisico,
-	             difference: diferencia,
-	             observations: $('#cierreObs').value.trim(),
-	             closeCash: eFisico,
-	             status: 'closed',
-	             html
-	           };
-	           state.dailyReports.push(closeDetails);
-	           if (activeSession) Object.assign(activeSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: balanceCalculado, difference: diferencia, reportId: repId, observations: closeDetails.observations });
-	           addAudit('cash_closed', { reportId: repId, expectedCash: balanceCalculado, countedCash: eFisico, difference: diferencia });
-	           currentBusiness().lastCashBalance = eFisico;
-	           const businessId = currentBusiness().id;
-	           const committed = await commitCriticalMutation(previousState, 'cash_closed', (next) =>
-	             next.dailyReports.some((report) => report.id === repId && report.businessId === businessId && report.status === 'closed'));
-		           if (!committed.ok) { renderApp('cash'); return; }
-		           window.click360RecordTelemetry?.('cash_close', { requestId: repId, mode: diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
-		           renderApp('cash');
-		           showCloseSummary();
-
-		           toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
-        };
-      };
-    }
-  }
+	    const btnCloseDay = $('#closeDayBtn');
+	    if (btnCloseDay) {
+	      btnCloseDay.onclick=()=>openCashCloseDialog();
+	    }
+	  }
 		  function bindPrinting() {
 		    const provider = $('#printingProvider');
 		    const media = $('#printingMedia');
