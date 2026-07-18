@@ -95,10 +95,19 @@
     const status = String(data.status || '').toLowerCase();
     const rawPlan = String(data.planCode || data.plan || 'normal').toLowerCase();
     const plan = ['normal', 'base', 'paid_base'].includes(rawPlan) ? 'base'
-      : ['pro', 'paid_pro'].includes(rawPlan) ? 'pro' : rawPlan;
+      : ['pro', 'paid_pro', 'pro_lifetime'].includes(rawPlan) ? 'pro'
+      : ['founder', 'founder_unlimited'].includes(rawPlan) ? 'founder'
+      : rawPlan;
+    const billingStatus = String(data.billingStatus || '').toLowerCase();
     const startedAtMs = Number(data.trialStartedAtMs || 0);
     const now = Number(serverNowMs || 0);
     const trialEndsAtMs = startedAtMs ? startedAtMs + Number(trialDays || 7) * 24 * 60 * 60 * 1000 : 0;
+    if (status === 'active' && rawPlan === 'pro_lifetime') {
+      const activeLifetime = data.lifetime === true && billingStatus === 'lifetime';
+      return activeLifetime
+        ? { allowed: true, readOnly: false, mode: 'lifetime', plan: 'pro', trialEndsAtMs }
+        : { allowed: false, readOnly: true, mode: 'pending_activation', plan: 'pro', trialEndsAtMs };
+    }
     if (status === 'trial' || status === 'trial_active') {
       const readOnly = !now || !trialEndsAtMs || now >= trialEndsAtMs;
       return { allowed: true, readOnly, mode: readOnly ? 'trial_expired' : 'trial_active', plan: 'base', trialEndsAtMs };

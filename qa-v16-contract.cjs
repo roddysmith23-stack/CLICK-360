@@ -30,5 +30,5 @@ assert(app.includes("const fullName = [name, lastName].filter(Boolean).join(' ')
 assert(admin.includes("REQUIRED_PROJECT_ID") && admin.includes("expected-before-hash") && admin.includes('adminBackups'), 'secure administration is project-locked, hash-confirmed, and backed up');
 assert(firebase.includes('click360RecordTelemetry') && rules.includes('match /telemetryEvents/{eventId}'), 'V16 telemetry is non-blocking and protected by an explicit server contract');
 assert(html.includes('v16-domain.js') && html.includes('v16-storage.js'), 'V16 modules load before the application');
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-r0'"), 'PWA cache version is V16.2');
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-r1'"), 'PWA cache version is V16.2');
 console.log('PASS V16.1 contract: storage, profiles, permissions, receipts, labels, plans, rules, and PWA');
