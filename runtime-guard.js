@@ -1,14 +1,20 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '16.2';
-  const ASSET_VERSION = 'mvp-launch-v16-2-p1-r0';
+  const APP_VERSION = '1.0.3-p1';
+  const ASSET_VERSION = 'mvp-launch-v16-2-p1-r1';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
   let activeContext = null;
   let lastFingerprint = '';
   let lastFingerprintAt = 0;
+  let releaseMetadata = Object.freeze({
+    appVersion: APP_VERSION,
+    assetVersion: ASSET_VERSION,
+    buildSha: '',
+    environment: 'production'
+  });
 
   function safeStorage(name) {
     try { return root[name] || null; } catch { return null; }
@@ -25,6 +31,36 @@
   function createId(prefix) {
     const random = root.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     return `${prefix}_${random}`;
+  }
+  function shortHash(value = '') {
+    const text = String(value || '');
+    if (!text) return '';
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `anon_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  }
+  function setReleaseMetadata(next = {}) {
+    const current = releaseMetadata;
+    releaseMetadata = Object.freeze({
+      appVersion: String(next.appVersion || current.appVersion || APP_VERSION).slice(0, 80),
+      assetVersion: String(next.assetVersion || current.assetVersion || ASSET_VERSION).slice(0, 120),
+      buildSha: String(next.buildSha || current.buildSha || '').slice(0, 40),
+      environment: String(next.environment || current.environment || 'production').slice(0, 40)
+    });
+    return releaseMetadata;
+  }
+  function versionLabel() {
+    const sha = releaseMetadata.buildSha ? ` ${releaseMetadata.buildSha.slice(0, 12)}` : '';
+    return `${releaseMetadata.appVersion}${sha}`;
+  }
+  function displayMode() {
+    const navigatorValue = root.navigator || {};
+    return root.matchMedia?.('(display-mode: standalone)')?.matches === true || navigatorValue.standalone === true
+      ? 'standalone'
+      : 'browser';
   }
 
   const sessionStorage = safeStorage('sessionStorage');
@@ -52,7 +88,7 @@
       userAgent,
       platform: String(navigatorValue.platform || navigatorValue.userAgentData?.platform || '').slice(0, 100),
       language: String(navigatorValue.language || '').slice(0, 30),
-      standalone: root.matchMedia?.('(display-mode: standalone)')?.matches === true || navigatorValue.standalone === true
+      standalone: displayMode() === 'standalone'
     };
   }
 
@@ -89,6 +125,11 @@
       .replace(/([?&](?:token|inviteToken|inviteHash|ownerId|code|key)=)[^&\s)]+/gi, '$1[redacted]')
       .slice(0, 4000);
   }
+  function safeCause(value = '') {
+    return String(value || '')
+      .replace(/([?&](?:token|inviteToken|inviteHash|ownerId|code|key)=)[^&\s)]+/gi, '$1[redacted]')
+      .slice(0, 900);
+  }
   function validContext(context) {
     return !!context?.authUid && !!context?.tenantKey
       && String(context.tenantKey) === `owner:${context.ownerId}:business:${context.businessId}`;
@@ -124,7 +165,16 @@
     return report;
   }
   function reportLink(report) {
-    const message = `Necesito ayuda con CLICK 360. Codigo de reporte: ${report.reportId}. Version: ${APP_VERSION}. Navegador: ${report.browser.name} ${report.browser.version}.`;
+    const message = [
+      'Necesito ayuda con CLICK 360.',
+      `Codigo de reporte: ${report.reportId}.`,
+      `Version: ${report.appVersion}${report.buildSha ? ` ${report.buildSha}` : ''}.`,
+      `Asset: ${report.assetVersion}.`,
+      `Modo: ${report.displayMode}.`,
+      `Ruta: ${report.route}.`,
+      `Acceso: ${report.effectiveAccess?.mode || 'unknown'} readOnly=${report.effectiveAccess?.readOnly === true}.`,
+      `Navegador: ${report.browser.name} ${report.browser.version}.`
+    ].join(' ');
     return `https://wa.me/593969399562?text=${encodeURIComponent(message)}`;
   }
   function showFriendlyMessage(report) {
@@ -168,6 +218,16 @@
     try { accessDiagnostics = root.click360GetPublicAuthDiagnostics?.() || {}; } catch {}
     const syncState = root.click360GetSyncStatus?.() || {};
     const storageState = root.click360GetStorageState?.() || {};
+    let effectiveAccess = {};
+    try {
+      const rawAccess = root.click360GetEffectiveAccess?.() || root.click360AccessState || {};
+      effectiveAccess = {
+        mode: String(rawAccess.mode || '').slice(0, 40),
+        readOnly: rawAccess.readOnly === true
+      };
+    } catch {}
+    let activeBusinessId = activeContext?.businessId || '';
+    try { activeBusinessId ||= root.click360GetTenantState?.()?.activeBusinessId || ''; } catch {}
     const report = saveReport({
       reportId: createId('err'),
       createdAt: new Date(now).toISOString(),
@@ -176,10 +236,17 @@
       line: Number(details.line || 0),
       column: Number(details.column || 0),
       stack: safeStack(details.stack || ''),
+      cause: safeCause(details.cause || details.errorCode || ''),
       sourceKind: sourceKind(filename),
       browser,
-      appVersion: APP_VERSION,
-      assetVersion: ASSET_VERSION,
+      appVersion: releaseMetadata.appVersion,
+      buildSha: releaseMetadata.buildSha,
+      assetVersion: releaseMetadata.assetVersion,
+      releaseLabel: versionLabel(),
+      displayMode: displayMode(),
+      route: String(root.location?.hash || root.location?.pathname || '').slice(0, 180),
+      activeBusinessId: shortHash(activeBusinessId),
+      effectiveAccess,
       pageUrl: safePageUrl(),
       online: root.navigator?.onLine !== false,
       authState: root.click360Auth?.currentUser ? 'authenticated' : 'unauthenticated',
@@ -222,7 +289,8 @@
         filename: event?.filename || resource,
         line: event?.lineno,
         column: event?.colno,
-        stack: event?.error?.stack || ''
+        stack: event?.error?.stack || '',
+        cause: event?.error?.cause?.message || event?.error?.code || ''
       });
     }, true);
     root.addEventListener('unhandledrejection', (event) => {
@@ -232,7 +300,8 @@
         filename: reason?.fileName || '',
         line: reason?.lineNumber,
         column: reason?.columnNumber,
-        stack: reason?.stack || ''
+        stack: reason?.stack || '',
+        cause: reason?.cause?.message || reason?.code || ''
       });
     });
   }
@@ -243,6 +312,8 @@
     browser,
     detectedFirefox,
     record,
+    setReleaseMetadata,
+    displayMode,
     setContext,
     clearContext,
     listReports: () => readReports(storageTarget()).map((entry) => ({ ...entry }))

@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-	  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r0';
+	  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r1';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -150,6 +150,49 @@
 	      workers: { view: false, create: false, edit: false, delete: false, manage: false }
 	    };
 	  }
+	  function resolveEffectiveReadOnly(accessState = {}) {
+	    if (typeof window.click360ResolveReadOnly === 'function') return window.click360ResolveReadOnly(accessState);
+	    const mode = String(accessState.mode || '').toLowerCase();
+	    const status = String(accessState.status || '').toLowerCase();
+	    const plan = String(accessState.plan || '').toLowerCase();
+	    const planCode = String(accessState.planCode || '').toLowerCase();
+	    const billingStatus = String(accessState.billingStatus || '').toLowerCase();
+	    const platformRole = String(accessState.platformRole || '').toLowerCase();
+	    const customerTier = String(accessState.customerTier || '').toLowerCase();
+	    if (['suspended', 'blocked', 'disabled'].includes(status) || ['blocked', 'suspended'].includes(mode)) return true;
+	    if (platformRole === 'platform_founder' || customerTier === 'platform_founder') return false;
+	    if (plan === 'founder_unlimited' || planCode === 'founder_unlimited') return false;
+	    if (mode === 'founder' || mode === 'lifetime' || mode === 'member') return false;
+	    if (accessState.lifetime === true && billingStatus === 'lifetime') return false;
+	    if (planCode === 'pro_lifetime' && billingStatus === 'lifetime' && accessState.lifetime === true) return false;
+	    if (mode === 'trial_active') return false;
+	    if (mode === 'paid_base' || mode === 'paid_pro') return accessState.readOnly === true;
+	    return accessState.readOnly === true;
+	  }
+	  function isEffectiveReadOnly() {
+	    const access = typeof window.click360GetEffectiveAccess === 'function'
+	      ? window.click360GetEffectiveAccess()
+	      : window.click360AccessState;
+	    return resolveEffectiveReadOnly(access || {});
+	  }
+	  function accessDoesNotExpire(state = window.click360AccessState || {}) {
+	    const mode = String(state.mode || '').toLowerCase();
+	    const plan = String(state.plan || '').toLowerCase();
+	    return ['founder', 'lifetime', 'member'].includes(mode)
+	      || ['founder', 'founder_unlimited', 'lifetime'].includes(plan);
+	  }
+	  function writeGateStatus() {
+	    if (!AUTH_APPROVED) return { allowed: false, reason: 'auth_not_ready' };
+	    if (isEffectiveReadOnly()) return { allowed: false, reason: 'read_only' };
+	    if (legacyMigrationRequired()) return { allowed: false, reason: 'legacy_migration_required' };
+	    if (SYNC_CONFLICT_PENDING) return { allowed: false, reason: 'sync_conflict' };
+	    if (navigator.onLine && window.click360GetIndexedTenantCacheMeta?.()?.pendingRemoteSync === true) {
+	      return { allowed: false, reason: 'pending_remote_sync' };
+	    }
+	    if (!tenantGuard.canWrite(ACTIVE_CONTEXT)) return { allowed: false, reason: 'tenant_guard_not_ready' };
+	    if (ONLINE_ONLY_SAFE && !navigator.onLine) return { allowed: false, reason: 'offline_online_only' };
+	    return { allowed: true, reason: 'ok' };
+	  }
 	  function publishAccessState(next = {}) {
 	    const source = next.source || 'approvedUsers';
       const previous = window.click360AccessState?.source === source ? window.click360AccessState : {};
@@ -160,7 +203,7 @@
 	    const state = Object.freeze({
 	      mode: next.mode || 'founder',
 	      plan: next.plan || 'founder',
-	      readOnly: next.readOnly === true,
+	      readOnly: resolveEffectiveReadOnly(next),
 	      trialEndsAtMs: Number(next.trialEndsAtMs || 0),
 		      expiresAtMs: Number(next.expiresAtMs || 0),
 		      serverNowMs: Number(anchor.serverNowMs || 0),
@@ -184,9 +227,10 @@
 	    window.click360Route?.(window.location.hash.replace('#', '') || 'home');
 	    return next;
 	  }
-	  async function refreshAccountEntitlement(user, expectedEpoch = AUTH_EPOCH) {
+		  async function refreshAccountEntitlement(user, expectedEpoch = AUTH_EPOCH) {
 	    if (!isCurrentAuthEpoch(user, expectedEpoch) || window.click360AccessState?.source !== 'accountAccess') return false;
 	    if (!navigator.onLine) {
+	      if (accessDoesNotExpire()) return true;
 	      enterEntitlementReadOnly();
 	      return false;
 	    }
@@ -211,6 +255,10 @@
 	      return !published.readOnly;
 	    } catch (error) {
 	      console.warn('No se pudo revalidar el acceso con tiempo de servidor:', error.message);
+	      if (accessDoesNotExpire()) {
+	        setSyncStatus('pending', 'No se pudo revalidar la actividad ahora; tu acceso permanente sigue activo.');
+	        return true;
+	      }
 	      enterEntitlementReadOnly();
 	      return false;
 	    }
@@ -229,10 +277,8 @@
 	      Math.min(Math.max(delay, 1000), 2147000000)
 	    );
 	  }
-		  window.click360CanMutate = () => AUTH_APPROVED && !ACCESS_READ_ONLY && !legacyMigrationRequired()
-        && !SYNC_CONFLICT_PENDING
-        && !(navigator.onLine && window.click360GetIndexedTenantCacheMeta?.()?.pendingRemoteSync === true)
-		    && tenantGuard.canWrite(ACTIVE_CONTEXT) && (!ONLINE_ONLY_SAFE || navigator.onLine);
+			  window.click360WriteGate = writeGateStatus;
+			  window.click360CanMutate = () => writeGateStatus().allowed;
 		  window.addEventListener('click360-storage-mode', (event) => {
 		    ONLINE_ONLY_SAFE = event.detail?.mode === 'online_only_safe' || event.detail?.mode === 'unavailable';
 		    if (ONLINE_ONLY_SAFE && auth.currentUser) {
@@ -1055,8 +1101,10 @@
       : window.CLICK360_P0_TENANT_GUARD.evaluateAccountAccess({
           status: data.status,
           plan: data.plan,
-          planCode: data.planCode,
-          trialStartedAtMs: serverTimestampMs(data.trialStartedAt)
+	          planCode: data.planCode,
+	          lifetime: data.lifetime === true,
+	          billingStatus: data.billingStatus,
+	          trialStartedAtMs: serverTimestampMs(data.trialStartedAt)
         }, serverNowMs, TRIAL_DAYS);
 	    return { ...evaluated, serverNowMs, source: 'accountAccess', revision: Number(data.revision || 0) };
 	  }
@@ -1474,7 +1522,7 @@
 	      setSyncStatus('error', 'Hay un conflicto pendiente. Descarga o respalda los datos antes de volver a sincronizar.');
 	      return false;
 	    }
-	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user) || !AUTH_APPROVED || ACCESS_READ_ONLY || IS_RESTORING_REMOTE || !PULL_COMPLETE || !tenantGuard.canWrite(context)) return false;
+		    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user) || !AUTH_APPROVED || isEffectiveReadOnly() || IS_RESTORING_REMOTE || !PULL_COMPLETE || !tenantGuard.canWrite(context)) return false;
 	    if (!navigator.onLine) {
 	      setSyncStatus('offline', 'Sin internet. Cambios pendientes de subir.');
 	      return false;
@@ -2354,8 +2402,8 @@
 	        indexedPersisted: preparedSnapshot.indexedPersisted === true,
 	        onlineOnlySafe: ONLINE_ONLY_SAFE,
 	        online: navigator.onLine,
-	        readOnly: ACCESS_READ_ONLY
-	      }) || { allowed: preparedSnapshot.prepared === true && !ACCESS_READ_ONLY && navigator.onLine };
+		        readOnly: isEffectiveReadOnly()
+		      }) || { allowed: preparedSnapshot.prepared === true && !isEffectiveReadOnly() && navigator.onLine };
 	      if (!bootstrapDecision.allowed) {
 	        tenantGuard.block();
 	        PULL_COMPLETE = false;

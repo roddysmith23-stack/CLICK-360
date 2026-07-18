@@ -7,10 +7,15 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r0';
-  const APP_RELEASE_VERSION = '1.0.3-p0';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r1';
+  const APP_RELEASE_VERSION = '1.0.3-p1';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
+  window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
+    appVersion: APP_RELEASE_VERSION,
+    assetVersion: APP_ASSET_VERSION,
+    buildSha: APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? APP_BUILD_SHA : ''
+  });
   const HOME_BANNER_SRC = `assets/banner-click360-home.png?v=${APP_ASSET_VERSION}`;
   const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:';
   const PROFILE_PENDING_PREFIX = 'CLICK360:V16:PROFILE_PENDING:';
@@ -42,16 +47,51 @@
     if (BUSINESS_SWITCH_GUARD) return false;
     if (!accessState || typeof accessState !== 'object') return false;
     const mode = String(accessState.mode || '').toLowerCase();
-    // Founder y lifetime NUNCA son readOnly (salvo suspended, que no existe como mode)
+    const status = String(accessState.status || '').toLowerCase();
+    const plan = String(accessState.plan || '').toLowerCase();
+    const planCode = String(accessState.planCode || '').toLowerCase();
+    const billingStatus = String(accessState.billingStatus || '').toLowerCase();
+    const platformRole = String(accessState.platformRole || '').toLowerCase();
+    const customerTier = String(accessState.customerTier || '').toLowerCase();
+    if (['suspended', 'blocked', 'disabled'].includes(status) || ['blocked', 'suspended'].includes(mode)) return true;
+    if (platformRole === 'platform_founder' || customerTier === 'platform_founder') return false;
+    if (plan === 'founder_unlimited' || planCode === 'founder_unlimited') return false;
     if (mode === 'founder' || mode === 'lifetime') return false;
-    // Miembros trabajadores tampoco son readOnly
+    if (accessState.lifetime === true && billingStatus === 'lifetime') return false;
+    if (planCode === 'pro_lifetime' && billingStatus === 'lifetime' && accessState.lifetime === true) return false;
     if (mode === 'member') return false;
-    // Planes pagados: solo readOnly si expiresAt ya pasó
     if (mode === 'paid_base' || mode === 'paid_pro') return accessState.readOnly === true;
-    // Trial activo: no readOnly
     if (mode === 'trial_active') return false;
-    // Trial expirado, subscription_expired u otro: respetar readOnly del estado calculado
     return accessState.readOnly === true;
+  }
+  function accessInfo() {
+    const raw = window.click360AccessState || { mode: 'founder', plan: 'founder', readOnly: false, source: 'approvedUsers' };
+    if (BUSINESS_SWITCH_GUARD) return { ...raw, readOnly: false };
+    return { ...raw, readOnly: resolveReadOnly(raw) };
+  }
+  window.click360ResolveReadOnly = resolveReadOnly;
+  window.click360GetEffectiveAccess = accessInfo;
+  window.click360CanWriteByAccess = () => !accessInfo().readOnly;
+  let lastWriteBlock = null;
+  function writeGateStatus() {
+    const external = typeof window.click360WriteGate === 'function' ? window.click360WriteGate() : null;
+    if (external && external.allowed === false) {
+      const access = accessInfo();
+      if (external.reason === 'read_only' && !access.readOnly) return { allowed: true, reason: 'effective_access_allows' };
+      return external;
+    }
+    return { allowed: true, reason: 'ok' };
+  }
+  function writeBlockMessage(gate = {}) {
+    const reason = String(gate.reason || 'unknown');
+    if (reason === 'read_only') return 'Tu acceso está en modo lectura. Contacta a CLICK 360 para activar tu plan.';
+    if (reason === 'pending_remote_sync') return 'Estamos confirmando un cambio anterior en la nube. Espera unos segundos e intenta nuevamente.';
+    if (reason === 'offline_online_only') return 'Este dispositivo necesita internet para guardar. Conéctate y vuelve a intentar.';
+    if (reason === 'legacy_migration_required') return 'Estos datos están protegidos hasta completar una migración segura.';
+    if (reason === 'sync_conflict') return 'Hay un conflicto de sincronización pendiente. Actualiza desde nube o respalda antes de continuar.';
+    if (reason === 'auth_not_ready') return 'La sesión aún se está verificando. Intenta nuevamente en unos segundos.';
+    if (reason === 'tenant_guard_not_ready') return 'La cuenta aún está preparando la protección de datos. Intenta nuevamente en unos segundos.';
+    return gate.message || 'No se pudo guardar ahora. Tus datos anteriores siguen intactos.';
   }
 
   /**
@@ -522,11 +562,16 @@ function parseMoney(value) {
       console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
       return false;
     }
-    if (typeof window.click360CanMutate === 'function' && !window.click360CanMutate()) {
+    const gate = writeGateStatus();
+    if (!gate.allowed) {
+      lastWriteBlock = { ...gate, at: new Date().toISOString() };
+      window.click360LastWriteBlock = lastWriteBlock;
       restoreLastPersistedState();
-      toast('Tu acceso está en modo lectura. Contacta a CLICK 360 para activar tu plan.', 'err');
+      toast(writeBlockMessage(gate), 'err');
       return false;
     }
+    lastWriteBlock = null;
+    window.click360LastWriteBlock = null;
     const previousState = cloneState(lastPersistedState);
     lastSavePersistence = null;
     try {
@@ -612,6 +657,11 @@ function parseMoney(value) {
     } catch(e) {
       console.error(e);
       state = previousState || state;
+      window.CLICK360_RUNTIME_GUARD?.record?.({
+        message: e.message || 'Error al guardar estado local.',
+        filename: 'app.js',
+        stack: e.stack || ''
+      });
       if (e.code === 'click360/permission-denied') {
         toast(e.message, 'err');
         return false;
@@ -660,7 +710,9 @@ function parseMoney(value) {
     }
     const operationId = uid('persist');
     try {
-      if (!save({ allowIndexedDbOffline: true, operationId, deferSync: true })) return { ok: false, pending: false };
+      if (!save({ allowIndexedDbOffline: true, operationId, deferSync: true })) {
+        return { ok: false, pending: false, reason: lastWriteBlock?.reason || 'save_rejected' };
+      }
       const persistence = lastSavePersistence?.operationId === operationId ? lastSavePersistence : null;
       if (!navigator.onLine && !persistence?.localPersisted) {
         const indexedPersisted = await persistence?.indexedPromise;
@@ -1377,7 +1429,11 @@ function parseMoney(value) {
   function isDayStarted() {
     const bid = currentBusiness()?.id;
     if (!bid) return true;
-    return state.movements.some(m => m.businessId === bid && m.date === today() && m.kind === 'apertura');
+    if (currentOpenCashSession(bid, today())) return true;
+    const latestSession = latestCashSession(bid, today());
+    if (latestSession) return latestSession.status === 'open';
+    return state.movements.some(m => m.businessId === bid && m.date === today() && m.kind === 'apertura')
+      && !isBusinessDateClosed(today(), bid);
   }
   function isDayClosed() {
 	    const bid = currentBusiness()?.id;
@@ -2132,16 +2188,7 @@ function parseMoney(value) {
 	  toast(nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro');
 	};
 
-	  function accessInfo() {
-	    const raw = window.click360AccessState || { mode: 'founder', plan: 'founder', readOnly: false, source: 'approvedUsers' };
-	    // P1 FIX: Durante un cambio de negocio activo, nunca exponer readOnly=true.
-	    // El accessState pertenece al usuario/owner, no al negocio individual.
-	    // resolveReadOnly() aplica la precedencia correcta de V16.2 y bloquea
-	    // la herencia de readOnly stale del negocio anterior o del epoch de arranque.
-	    if (BUSINESS_SWITCH_GUARD) return { ...raw, readOnly: false };
-	    return { ...raw, readOnly: resolveReadOnly(raw) };
-	  }
-		  function purchaseWhatsAppUrl() {
+			  function purchaseWhatsAppUrl() {
 	    const plan = accessInfo().plan || 'base';
 	    return `https://wa.me/593969399562?text=${encodeURIComponent(`Hola CLICK 360, quiero activar mi plan ${plan}. Negocio: ${currentBusiness()?.name || ''}. Correo: ${authUser()?.email || ''}.`)}`;
 		  }
@@ -2557,9 +2604,10 @@ function parseMoney(value) {
   }
   function workersView(){
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
-	  ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<section class="card sectionCard"><h3>Acceso protegido</h3><p class="cloudStatus">Las cuentas de trabajadores están temporalmente pausadas mientras terminamos su acceso por módulos. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>'}
-      <section class="card sectionCard">
+	  ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<section class="card sectionCard"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>'}
+      <section class="card sectionCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
          <h3>Registrar Trabajador</h3>
+         ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<p class="fieldHint">Disponible en una fase posterior; no se activó en este release P1.1.</p>'}
 	         <form id="addWorkerForm" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:flex' : 'display:none'}; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
             <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
@@ -3613,26 +3661,25 @@ function parseMoney(value) {
             <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(authUser().name || 'Usuario')}</div>
             </div>`;
 
-           closeModal();
-           showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
-             <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
-               <div id="pdfContentPreview" style="transform: scale(0.85); transform-origin: top center;">
-                 ${html}
-               </div>
-             </div>
-	             <div style="display:flex; gap:10px;">
-	                 <button class="btn silver block" id="printCierreBtn">Imprimir</button>
-	                 <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
-	                 <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
-             </div>
-           `);
-
-	           $('#printCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'system');
-	           $('#downloadPdfCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'pdf');
-
-	           $('#downloadImgCierreBtn').onclick = () => {
-	                downloadHtmlAsPng(html, `Cierre_Caja_${today()}.png`);
-	            };
+	           closeModal();
+	           const showCloseSummary = () => {
+	             showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
+	               <div class="cashClosePreview">
+	                 <div id="pdfContentPreview" class="cashClosePreviewInner">
+	                   ${html}
+	                 </div>
+	               </div>
+	               <div class="cashCloseActions">
+	                   <button class="btn silver block" id="printCierreBtn">Imprimir</button>
+	                   <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
+	                   <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
+	               </div>
+	               <p class="fieldHint">El cierre ya quedó guardado. Si una exportación falla, puedes volver a abrir este resumen desde el historial.</p>
+	             `);
+	             $('#printCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'system');
+	             $('#downloadPdfCierreBtn').onclick = () => handoffPrint({ html, media: 'a4', filename: `Cierre_Caja_${today()}.pdf` }, 'pdf');
+	             $('#downloadImgCierreBtn').onclick = () => downloadHtmlAsPng(html, `Cierre_Caja_${today()}.png`);
+	           };
 
 	           const previousState = cloneState(state);
 	           const repId = uid('rep');
@@ -3670,11 +3717,12 @@ function parseMoney(value) {
 	           const businessId = currentBusiness().id;
 	           const committed = await commitCriticalMutation(previousState, 'cash_closed', (next) =>
 	             next.dailyReports.some((report) => report.id === repId && report.businessId === businessId && report.status === 'closed'));
-	           if (!committed.ok) { renderApp('cash'); return; }
-	           window.click360RecordTelemetry?.('cash_close', { requestId: repId, mode: diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
-	           renderApp('cash');
+		           if (!committed.ok) { renderApp('cash'); return; }
+		           window.click360RecordTelemetry?.('cash_close', { requestId: repId, mode: diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
+		           renderApp('cash');
+		           showCloseSummary();
 
-	           toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
+		           toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
         };
       };
     }
@@ -4038,7 +4086,11 @@ function parseMoney(value) {
          const safeProfile = cacheUserProfile(profile);
          const committed = await commitCriticalMutation(previousState, 'profile_updated', (next) =>
            next.settings?.userProfiles?.[uid]?.name === newName);
-         if(!committed.ok) throw new Error('No se pudo guardar el perfil de forma segura');
+	         if(!committed.ok) {
+	           const error = new Error(writeBlockMessage({ reason: committed.reason || 'profile_save_rejected' }));
+	           error.code = committed.reason || 'profile_save_rejected';
+	           throw error;
+	         }
          if (window.click360User) {
            window.click360User.name = newName;
            window.click360User.photoURL = safeProfile.photoURL;
@@ -4060,20 +4112,28 @@ function parseMoney(value) {
          } else {
            toast(committed.pending ? 'Perfil guardado sin conexión; se sincronizará al volver.' : 'Perfil guardado en este dispositivo');
          }
-       } catch(e) {
-         console.error("Error actualizando perfil:", e);
-         toast('No se pudo guardar el perfil. Intenta otra vez.', 'err');
-       } finally {
+	       } catch(e) {
+	         console.error("Error actualizando perfil:", e);
+	         const errorCode = String(e.code || window.click360LastWriteBlock?.reason || 'profile_save_failed');
+	         window.CLICK360_RUNTIME_GUARD?.record?.({
+	           message: `No se pudo guardar perfil: ${errorCode}`,
+	           filename: 'app.js',
+	           stack: e.stack || ''
+	         });
+	         toast(`No se pudo guardar el perfil. Código: ${errorCode}.`, 'err');
+	       } finally {
          btn.textContent = 'Guardar Perfil';
          btn.disabled = false;
        }
        renderApp('settings');
     };
 
-	    $('#saveBiz').onclick=()=>{
-	       if (!isOwnerUser()) return toast('Solo el dueño puede cambiar datos del negocio.', 'err');
-	       const b=currentBusiness();
-       b.name=$('#bizName').value.trim()||b.name;
+		    $('#saveBiz').onclick=async ()=>{
+		       if (!isOwnerUser()) return toast('Solo el dueño puede cambiar datos del negocio.', 'err');
+		       const b=currentBusiness();
+		       const previousState = cloneState(state);
+		       const businessId = b?.id || '';
+	       b.name=$('#bizName').value.trim()||b.name;
        b.type=$('#bizType').value;
        currentBusiness().settings = currentBusiness().settings || {};
        const taxRate = Math.max(0, Math.min(100, parseFloat($('#bizIva').value) || 0));
@@ -4098,10 +4158,17 @@ function parseMoney(value) {
        currentBusiness().settings.ruc = $('#bizRuc') ? $('#bizRuc').value.trim() : '';
 	       currentBusiness().settings.phone = $('#bizPhone') ? $('#bizPhone').value.trim() : '';
 	       currentBusiness().settings.address = $('#bizAddress') ? $('#bizAddress').value.trim() : '';
-	       if (pendingLogoUrl) currentBusiness().settings.logoUrl = pendingLogoUrl;
-	       if(!save()) return;
-	       renderApp('settings'); toast('Guardado');
-    };
+		       if (pendingLogoUrl) currentBusiness().settings.logoUrl = pendingLogoUrl;
+		       const expectedName = b.name;
+		       const expectedRuc = currentBusiness().settings.ruc;
+		       addAudit('business_profile_updated', { businessId });
+		       const committed = await commitCriticalMutation(previousState, 'business_profile_updated', (next) =>
+		         next.businesses.some((business) => business.id === businessId
+		           && business.name === expectedName
+		           && business.settings?.ruc === expectedRuc));
+		       renderApp('settings');
+		       if (committed.ok) toast(committed.pending ? 'Perfil del negocio guardado; sincronización pendiente.' : 'Perfil del negocio guardado');
+	    };
 	    $('#createBiz').onclick=()=>{
 	      if (!isOwnerUser()) return toast('Solo el dueño puede crear negocios.', 'err');
 	      const name=$('#newBizName').value.trim();

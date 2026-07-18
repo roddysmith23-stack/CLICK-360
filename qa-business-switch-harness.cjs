@@ -1,7 +1,7 @@
 /**
  * qa-business-switch-harness.cjs
  * P1 FIX: Business Switch readOnly Stale State — Test Harness
- * Version candidate: 1.0.3-p0
+ * Version candidate: 1.0.3-p1
  *
  * Pruebas con datos 100% ficticios/anónimos.
  * No contiene UIDs reales, correos, nombres ni datos de Firebase.
@@ -73,11 +73,31 @@ function resolveReadOnly(accessState, switchGuardActive = false) {
   if (switchGuardActive) return false;
   if (!accessState || typeof accessState !== 'object') return false;
   const mode = String(accessState.mode || '').toLowerCase();
+  const status = String(accessState.status || '').toLowerCase();
+  const plan = String(accessState.plan || '').toLowerCase();
+  const planCode = String(accessState.planCode || '').toLowerCase();
+  const billingStatus = String(accessState.billingStatus || '').toLowerCase();
+  const platformRole = String(accessState.platformRole || '').toLowerCase();
+  const customerTier = String(accessState.customerTier || '').toLowerCase();
+  if (['suspended', 'blocked', 'disabled'].includes(status) || ['blocked', 'suspended'].includes(mode)) return true;
+  if (platformRole === 'platform_founder' || customerTier === 'platform_founder') return false;
+  if (plan === 'founder_unlimited' || planCode === 'founder_unlimited') return false;
   if (mode === 'founder' || mode === 'lifetime') return false;
+  if (accessState.lifetime === true && billingStatus === 'lifetime') return false;
+  if (planCode === 'pro_lifetime' && billingStatus === 'lifetime' && accessState.lifetime === true) return false;
   if (mode === 'member') return false;
   if (mode === 'paid_base' || mode === 'paid_pro') return accessState.readOnly === true;
   if (mode === 'trial_active') return false;
   return accessState.readOnly === true;
+}
+function writeGateStatus(externalGate, accessState) {
+  if (externalGate?.allowed === false) {
+    if (externalGate.reason === 'read_only' && !resolveReadOnly(accessState, false)) {
+      return { allowed: true, reason: 'effective_access_allows' };
+    }
+    return externalGate;
+  }
+  return { allowed: true, reason: 'ok' };
 }
 
 // ─── Datos anónimos ───────────────────────────────────────────────────────────
@@ -176,6 +196,11 @@ section('G. Precedencia: founder > lifetime > paid > trial_active > trial_expire
   { mode: 'founder',              readOnly: true,  expected: false },
   { mode: 'lifetime',             readOnly: true,  expected: false },
   { mode: 'member',               readOnly: true,  expected: false },
+  { mode: 'paid_base', plan: 'founder_unlimited', readOnly: true, expected: false },
+  { mode: 'trial_active', platformRole: 'platform_founder', readOnly: true, expected: false },
+  { mode: 'paid_pro', lifetime: true, billingStatus: 'lifetime', readOnly: true, expected: false },
+  { mode: 'paid_pro', planCode: 'pro_lifetime', lifetime: true, billingStatus: 'lifetime', readOnly: true, expected: false },
+  { mode: 'paid_pro', status: 'suspended', readOnly: false, expected: true },
   { mode: 'paid_base',            readOnly: false, expected: false },
   { mode: 'paid_base',            readOnly: true,  expected: true  },
   { mode: 'paid_pro',             readOnly: false, expected: false },
@@ -184,18 +209,25 @@ section('G. Precedencia: founder > lifetime > paid > trial_active > trial_expire
   { mode: 'trial_active',         readOnly: true,  expected: false },
   { mode: 'trial_expired',        readOnly: true,  expected: true  },
   { mode: 'subscription_expired', readOnly: true,  expected: true  },
-].forEach(({ mode, readOnly, expected }) => {
-  const r = resolveReadOnly({ mode, readOnly }, false);
+].forEach(({ mode, readOnly, expected, status, plan, planCode, lifetime, billingStatus, platformRole }) => {
+  const r = resolveReadOnly({ mode, readOnly, status, plan, planCode, lifetime, billingStatus, platformRole }, false);
   assert(`G: ${mode} readOnly=${readOnly} → ${expected}`, r === expected, `got=${r}`);
   // Durante switch siempre false
   const rg = resolveReadOnly({ mode, readOnly: true }, true);
   assert(`G-GUARD: ${mode} durante switch → false`, rg === false);
 });
 
+// ─── TEST H: write gate único ────────────────────────────────────────────────
+section('H. Write gate: stale readOnly no bloquea cuentas activas, errores reales si bloquean');
+assert('H1: Firebase gate read_only stale + founder → allowed', writeGateStatus({ allowed: false, reason: 'read_only' }, staleFounder).allowed === true);
+assert('H2: Firebase gate read_only stale + PRO Lifetime → allowed', writeGateStatus({ allowed: false, reason: 'read_only' }, { ...proLifetimeState, readOnly: true, lifetime: true, billingStatus: 'lifetime', planCode: 'pro_lifetime' }).allowed === true);
+assert('H3: Trial vencido con read_only → bloqueado', writeGateStatus({ allowed: false, reason: 'read_only' }, expiredTrial).allowed === false);
+assert('H4: Sincronización pendiente conserva razón específica', writeGateStatus({ allowed: false, reason: 'pending_remote_sync' }, founderState).reason === 'pending_remote_sync');
+
 // ─── Resultado ────────────────────────────────────────────────────────────────
 console.log('\n' + '─'.repeat(60));
 console.log('CLICK 360 V16.2 P1 — Business Switch Harness');
-console.log('Versión candidata: 1.0.3-p0');
+console.log('Versión candidata: 1.0.3-p1');
 console.log('─'.repeat(60));
 console.log(`Passed: ${passed}`);
 console.log(`Failed: ${failed}`);
