@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r1';
-  const APP_RELEASE_VERSION = '1.0.3-p1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r2';
+  const APP_RELEASE_VERSION = '1.0.3-p2';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -85,7 +85,7 @@
   function writeBlockMessage(gate = {}) {
     const reason = String(gate.reason || 'unknown');
     if (reason === 'read_only') return 'Tu acceso está en modo lectura. Contacta a CLICK 360 para activar tu plan.';
-    if (reason === 'pending_remote_sync') return 'Estamos confirmando un cambio anterior en la nube. Espera unos segundos e intenta nuevamente.';
+    if (reason === 'pending_remote_sync') return 'Sincronizando cambios...';
     if (reason === 'offline_online_only') return 'Este dispositivo necesita internet para guardar. Conéctate y vuelve a intentar.';
     if (reason === 'legacy_migration_required') return 'Estos datos están protegidos hasta completar una migración segura.';
     if (reason === 'sync_conflict') return 'Hay un conflicto de sincronización pendiente. Actualiza desde nube o respalda antes de continuar.';
@@ -119,7 +119,10 @@
       state.activeBusinessId = nextId;
 
       // 2. Persistir si el usuario es owner (mismo comportamiento que antes)
-      if (authUser().role === 'owner') save();
+      if (authUser().role === 'owner') {
+        window.click360ClearStaleSyncGuard?.({ reason: 'business_switch' });
+        save({ nonBlockingSync: true, operationId: uid('business-switch'), syncSource: 'business_switch' });
+      }
 
       // 3. Cerrar modal antes de renderizar
       closeModal();
@@ -567,7 +570,7 @@ function parseMoney(value) {
       lastWriteBlock = { ...gate, at: new Date().toISOString() };
       window.click360LastWriteBlock = lastWriteBlock;
       restoreLastPersistedState();
-      toast(writeBlockMessage(gate), 'err');
+      toast(writeBlockMessage(gate), gate.reason === 'pending_remote_sync' ? 'ok' : 'err');
       return false;
     }
     lastWriteBlock = null;
@@ -606,9 +609,13 @@ function parseMoney(value) {
       const snapshot = cloneState(state);
       const operationId = String(options.operationId || uid('persist'));
       const baseRevision = Number(window.click360DebugSyncIdentity?.().revision || 0);
+      const pendingRemoteSync = options.nonBlockingSync === true ? false : true;
+      const syncSource = String(options.syncSource || (pendingRemoteSync
+        ? (navigator.onLine ? 'local_change' : 'offline_pending')
+        : 'non_blocking_local_change'));
       const indexedPromise = queueIndexedSnapshot(snapshot, {
-        source: navigator.onLine ? 'local_change' : 'offline_pending',
-        pendingRemoteSync: true,
+        source: syncSource,
+        pendingRemoteSync,
         baseRevision,
         operationId,
         localPersisted
@@ -625,15 +632,17 @@ function parseMoney(value) {
       };
       if (localPersisted) {
         writeCacheMeta('localstorage', stateSizeBytes(serialized), {
-          pendingRemoteSync: true,
+          pendingRemoteSync,
           baseRevision,
           operationId,
-          updatedAtMs: Number(state.updatedAtMs || 0)
+          updatedAtMs: Number(state.updatedAtMs || 0),
+          pendingCreatedAtMs: pendingRemoteSync ? Date.now() : 0,
+          nonBlockingSync: options.nonBlockingSync === true
         });
         rememberPersistedState();
       }
       if (options.deferSync !== true && localPersisted) {
-        dispatchLocalStateSaved({ operationId, localPersisted, indexedPersisted: false });
+        dispatchLocalStateSaved({ operationId, localPersisted, indexedPersisted: false, pendingRemoteSync, syncSource });
       } else if (options.deferSync !== true && navigator.onLine) {
         indexedPromise.then((indexedPersisted) => {
           if (activeTenantContext !== context) return;
@@ -649,7 +658,7 @@ function parseMoney(value) {
             };
             onlineOnlyCommitCheckpoints.set(commitCheckpointKey(checkpoint), checkpoint);
           }
-          dispatchLocalStateSaved({ operationId, localPersisted: false, indexedPersisted });
+          dispatchLocalStateSaved({ operationId, localPersisted: false, indexedPersisted, pendingRemoteSync, syncSource });
         });
       }
       if (!localPersisted) toast('Guardando el cambio de forma segura...', 'ok');
@@ -1056,7 +1065,10 @@ function parseMoney(value) {
         baseRevision: Number(record.baseRevision || record.revision || 0),
         operationId: String(record.operationId || ''),
         payloadHash: String(record.payloadHash || ''),
+        materialHash: String(record.materialHash || ''),
         updatedAtMs: Number(record.updatedAtMs || candidate.updatedAtMs || 0),
+        pendingCreatedAtMs: Number(record.pendingCreatedAtMs || record.savedAtMs || 0),
+        savedAtMs: Number(record.savedAtMs || 0),
         source: String(record.source || 'indexeddb_cache')
       };
       tenantStateDeferred = false;
@@ -1089,12 +1101,26 @@ function parseMoney(value) {
   };
   window.click360MarkTenantCacheSynced = function(metadata = {}) {
     if (!activeTenantContext) return Promise.resolve(false);
+    indexedTenantCacheMeta = {
+      pendingRemoteSync: false,
+      baseRevision: Number(metadata.revision || 0),
+      revision: Number(metadata.revision || 0),
+      operationId: String(metadata.operationId || ''),
+      payloadHash: String(metadata.payloadHash || ''),
+      materialHash: String(metadata.materialHash || ''),
+      updatedAtMs: Number(state.updatedAtMs || 0),
+      pendingCreatedAtMs: 0,
+      savedAtMs: Date.now(),
+      source: 'cloud_confirmed'
+    };
     writeCacheMeta('cloud_confirmed', stateSizeBytes(state), {
       pendingRemoteSync: false,
       baseRevision: Number(metadata.revision || 0),
       revision: Number(metadata.revision || 0),
       operationId: String(metadata.operationId || ''),
-      payloadHash: String(metadata.payloadHash || '')
+      payloadHash: String(metadata.payloadHash || ''),
+      materialHash: String(metadata.materialHash || ''),
+      pendingCreatedAtMs: 0
     });
     return queueIndexedSnapshot(state, {
       source: 'cloud_confirmed',
@@ -1102,7 +1128,8 @@ function parseMoney(value) {
       baseRevision: Number(metadata.revision || 0),
       revision: Number(metadata.revision || 0),
       operationId: String(metadata.operationId || ''),
-      payloadHash: String(metadata.payloadHash || '')
+      payloadHash: String(metadata.payloadHash || ''),
+      materialHash: String(metadata.materialHash || '')
     });
   };
   window.click360GetTenantCacheStatus = function(context) {

@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-	  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r1';
+		  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r2';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -49,14 +49,15 @@
   let INITIAL_TENANT_SEED_REQUIRED = false;
   let REMOTE_UNSUBSCRIBE = null;
   let USER_STATUS_UNSUBSCRIBE = null;
-	  let ACCESS_UNSUBSCRIBE = null;
-	  let ACCESS_READ_ONLY = false;
-	  let ACCESS_EXPIRY_TIMER = null;
-	  let LOCAL_WRITE_PENDING_UNTIL = 0;
-	  let LAST_REMOTE_REVISION = 0;
-	  const PUSH_SCHEDULERS = new Map();
-		  let SYNC_CONFLICT_PENDING = false;
-		  let ONLINE_ONLY_SAFE = false;
+		  let ACCESS_UNSUBSCRIBE = null;
+		  let ACCESS_READ_ONLY = false;
+		  let ACCESS_EXPIRY_TIMER = null;
+		  let LOCAL_WRITE_PENDING_UNTIL = 0;
+		  let LAST_REMOTE_REVISION = 0;
+		  const PENDING_REMOTE_SYNC_GRACE_MS = 8000;
+		  const PUSH_SCHEDULERS = new Map();
+			  let SYNC_CONFLICT_PENDING = false;
+			  let ONLINE_ONLY_SAFE = false;
 
 			  const rawSetItem = (key, value) => window.localStorage.setItem(key, value);
 	  const PROFILE_CACHE_PREFIX = "CLICK360:V16:PROFILE:";
@@ -181,18 +182,18 @@
 	    return ['founder', 'lifetime', 'member'].includes(mode)
 	      || ['founder', 'founder_unlimited', 'lifetime'].includes(plan);
 	  }
-	  function writeGateStatus() {
-	    if (!AUTH_APPROVED) return { allowed: false, reason: 'auth_not_ready' };
-	    if (isEffectiveReadOnly()) return { allowed: false, reason: 'read_only' };
-	    if (legacyMigrationRequired()) return { allowed: false, reason: 'legacy_migration_required' };
-	    if (SYNC_CONFLICT_PENDING) return { allowed: false, reason: 'sync_conflict' };
-	    if (navigator.onLine && window.click360GetIndexedTenantCacheMeta?.()?.pendingRemoteSync === true) {
-	      return { allowed: false, reason: 'pending_remote_sync' };
-	    }
-	    if (!tenantGuard.canWrite(ACTIVE_CONTEXT)) return { allowed: false, reason: 'tenant_guard_not_ready' };
-	    if (ONLINE_ONLY_SAFE && !navigator.onLine) return { allowed: false, reason: 'offline_online_only' };
-	    return { allowed: true, reason: 'ok' };
-	  }
+		  function writeGateStatus() {
+		    if (!AUTH_APPROVED) return { allowed: false, reason: 'auth_not_ready' };
+		    if (isEffectiveReadOnly()) return { allowed: false, reason: 'read_only' };
+		    if (legacyMigrationRequired()) return { allowed: false, reason: 'legacy_migration_required' };
+		    const staleGuard = maybeClearStaleSyncGuard({ reason: 'write_gate' });
+		    if (SYNC_CONFLICT_PENDING && !staleGuard.clearedConflict) return { allowed: false, reason: 'sync_conflict' };
+		    const pendingGate = pendingRemoteSyncGateStatus();
+		    if (!pendingGate.allowed) return pendingGate;
+		    if (!tenantGuard.canWrite(ACTIVE_CONTEXT)) return { allowed: false, reason: 'tenant_guard_not_ready' };
+		    if (ONLINE_ONLY_SAFE && !navigator.onLine) return { allowed: false, reason: 'offline_online_only' };
+		    return { allowed: true, reason: 'ok' };
+		  }
 	  function publishAccessState(next = {}) {
 	    const source = next.source || 'approvedUsers';
       const previous = window.click360AccessState?.source === source ? window.click360AccessState : {};
@@ -732,11 +733,120 @@
 	    return true;
 	  }
 
-	  function snapshotString(obj) {
-	    try { return JSON.stringify(obj || {}); } catch (e) { return "{}"; }
-	  }
+		  function snapshotString(obj) {
+		    try { return JSON.stringify(obj || {}); } catch (e) { return "{}"; }
+		  }
 
-	  function buildBusinessPayload() {
+		  function materialPayloadHash(payload) {
+		    const clone = safeJsonParse(snapshotString(payload)) || {};
+		    if (clone.data && typeof clone.data === 'object') {
+		      delete clone.data.activeBusinessId;
+		      delete clone.data.updatedAt;
+		      delete clone.data.updatedAtMs;
+		    }
+		    return snapshotString(clone);
+		  }
+
+		  function currentPayloadHashes() {
+		    const payload = buildBusinessPayload();
+		    if (!payload) return { payload: null, payloadHash: '', materialHash: '' };
+		    return {
+		      payload,
+		      payloadHash: snapshotString(payload),
+		      materialHash: materialPayloadHash(payload)
+		    };
+		  }
+
+		  function rememberAppliedRemotePayload(context, payload, revision, metadata = {}) {
+		    const payloadHash = snapshotString(payload);
+		    const materialHash = materialPayloadHash(payload);
+		    safeStorageSet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'), payloadHash);
+		    safeStorageSet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_MATERIAL_HASH'), materialHash);
+		    if (Number(revision || 0) > 0) safeStorageSet(tenantStorageKeyFor(context, 'REMOTE_REVISION'), String(revision));
+		    window.click360MarkTenantCacheSynced?.({
+		      revision: Number(revision || LAST_REMOTE_REVISION || 0),
+		      payloadHash,
+		      materialHash,
+		      operationId: String(metadata.operationId || metadata.reason || '')
+		    }).catch?.(() => {});
+		    return { payloadHash, materialHash };
+		  }
+
+		  function localPendingSyncMeta() {
+		    const localCache = window.click360GetTenantCacheStatus?.(ACTIVE_CONTEXT) || null;
+		    const indexedMeta = window.click360GetIndexedTenantCacheMeta?.() || null;
+		    if (localCache?.pendingRemoteSync === true) return localCache;
+		    if (indexedMeta?.pendingRemoteSync === true) return indexedMeta;
+		    return null;
+		  }
+
+		  function activeSchedulerKey(context = ACTIVE_CONTEXT) {
+		    return context ? `${AUTH_EPOCH}:${context.authUid}:${context.tenantKey}` : '';
+		  }
+
+		  function materialMatchesLastApplied(hashes = currentPayloadHashes()) {
+		    if (!hashes.payload) return false;
+		    const lastFull = safeStorageGet(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'));
+		    const lastMaterial = safeStorageGet(tenantStorageKey('LAST_APPLIED_REMOTE_MATERIAL_HASH'));
+		    return (!!lastFull && hashes.payloadHash === lastFull)
+		      || (!!lastMaterial && hashes.materialHash === lastMaterial);
+		  }
+
+		  function clearLocalPendingSyncMetadata(reason, hashes = currentPayloadHashes()) {
+		    if (!hashes.payload) return false;
+		    safeStorageSet(tenantStorageKey('LAST_APPLIED_REMOTE_MATERIAL_HASH'), hashes.materialHash);
+		    window.click360MarkTenantCacheSynced?.({
+		      revision: LAST_REMOTE_REVISION || 0,
+		      payloadHash: hashes.payloadHash,
+		      materialHash: hashes.materialHash,
+		      operationId: reason
+		    }).catch?.(() => {});
+		    return true;
+		  }
+
+		  function maybeClearStaleSyncGuard({ reason = 'stale_sync_guard' } = {}) {
+		    const pendingMeta = localPendingSyncMeta();
+		    const hasConflict = SYNC_CONFLICT_PENDING === true;
+		    const hasPendingWindow = Date.now() < LOCAL_WRITE_PENDING_UNTIL;
+		    if (!ACTIVE_CONTEXT || (!pendingMeta && !hasConflict && !hasPendingWindow)) {
+		      return { clearedPending: false, clearedConflict: false, equivalent: false };
+		    }
+		    const hashes = currentPayloadHashes();
+		    const equivalent = materialMatchesLastApplied(hashes);
+		    if (!equivalent) return { clearedPending: false, clearedConflict: false, equivalent: false };
+		    let clearedPending = false;
+		    let clearedConflict = false;
+		    if (hasConflict) {
+		      clearSyncConflict();
+		      clearedConflict = true;
+		    }
+		    if (pendingMeta || hasPendingWindow) {
+		      LOCAL_WRITE_PENDING_UNTIL = 0;
+		      clearLocalPendingSyncMetadata(reason, hashes);
+		      setSyncStatus('synced', 'Datos locales y nube coinciden.', { reason, revision: LAST_REMOTE_REVISION || 0 });
+		      clearedPending = true;
+		    }
+		    return { clearedPending, clearedConflict, equivalent };
+		  }
+
+		  function pendingRemoteSyncGateStatus() {
+		    if (!navigator.onLine) return { allowed: true, reason: 'offline' };
+		    const pendingMeta = localPendingSyncMeta();
+		    if (!pendingMeta) return { allowed: true, reason: 'ok' };
+		    const staleGuard = maybeClearStaleSyncGuard({ reason: 'pending_remote_sync_gate' });
+		    if (staleGuard.clearedPending) return { allowed: true, reason: 'stale_pending_cleared' };
+		    const schedulerKey = activeSchedulerKey();
+		    if (!PUSH_SCHEDULERS.has(schedulerKey) && Date.now() >= LOCAL_WRITE_PENDING_UNTIL) {
+		      LOCAL_WRITE_PENDING_UNTIL = Date.now() + PENDING_REMOTE_SYNC_GRACE_MS;
+		      pushLocalToFirestore('pending_gate_recovery').catch(() => {});
+		      setSyncStatus('syncing', 'Sincronizando cambios...', { reason: 'pending_gate_recovery' });
+		    }
+		    return { allowed: false, reason: 'pending_remote_sync', pendingSinceMs: Number(pendingMeta.pendingCreatedAtMs || pendingMeta.savedAtMs || 0) };
+		  }
+
+		  window.click360ClearStaleSyncGuard = (details = {}) => maybeClearStaleSyncGuard(details);
+
+		  function buildBusinessPayload() {
 	    if (!activeIdentityIsValid() || typeof window.click360GetTenantState !== "function") return null;
 	    const state = window.click360GetTenantState();
 	    if (!state || !sameTenant(state.identity)) return null;
@@ -1534,15 +1644,17 @@
 	      quarantineIncident('blocked_push_identity', { reason });
 	      setSyncStatus('error', 'Se bloqueó una escritura porque la identidad o el contenido del tenant no coincide.');
 	      return false;
-	    }
-	    const payloadHash = snapshotString(payload);
-	    const lastAppliedHash = safeStorageGet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'));
-	    if (reason !== 'initial_tenant_seed' && payloadHash === lastAppliedHash && Number(LAST_REMOTE_REVISION || 0) > 0) {
-	      LOCAL_WRITE_PENDING_UNTIL = 0;
-	      window.click360MarkTenantCacheSynced?.({ revision: LAST_REMOTE_REVISION, payloadHash }).catch?.(() => {});
-	      setSyncStatus('synced', 'Datos locales y nube coinciden.', { reason: 'already_synced', revision: LAST_REMOTE_REVISION });
-	      return true;
-	    }
+		    }
+		    const payloadHash = snapshotString(payload);
+		    const materialHash = materialPayloadHash(payload);
+		    const lastAppliedHash = safeStorageGet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'));
+		    if (reason !== 'initial_tenant_seed' && payloadHash === lastAppliedHash && Number(LAST_REMOTE_REVISION || 0) > 0) {
+		      LOCAL_WRITE_PENDING_UNTIL = 0;
+		      safeStorageSet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_MATERIAL_HASH'), materialHash);
+		      window.click360MarkTenantCacheSynced?.({ revision: LAST_REMOTE_REVISION, payloadHash, materialHash }).catch?.(() => {});
+		      setSyncStatus('synced', 'Datos locales y nube coinciden.', { reason: 'already_synced', revision: LAST_REMOTE_REVISION });
+		      return true;
+		    }
 	    if (payloadBytes > MAX_CLOUD_PAYLOAD_BYTES) {
 	      setSyncStatus('error', `Los datos ocupan ${Math.ceil(payloadBytes / 1024)} KB y superan el límite seguro de sincronización. Reduce imágenes antes de continuar.`);
 	      return false;
@@ -1579,22 +1691,18 @@
 	        return false;
 	      }
 	      if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
-	      if (existingInitialRemote) {
-	        const existingRevision = Number(existingInitialRemote.revision || existingInitialRemote.updatedAtMs || 0);
-	        applyRemotePayload(existingInitialRemote.payload);
-	        safeStorageSet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'), snapshotString(existingInitialRemote.payload));
-	        safeStorageSet(tenantStorageKeyFor(context, 'REMOTE_REVISION'), String(existingRevision));
-	        LAST_REMOTE_REVISION = existingRevision;
-	        window.click360MarkTenantCacheSynced?.({ revision: existingRevision, payloadHash: snapshotString(existingInitialRemote.payload) }).catch?.(() => {});
-	        LOCAL_WRITE_PENDING_UNTIL = 0;
-	        setSyncStatus('synced', 'El negocio ya existia y fue cargado sin sobrescribirlo.', { reason: 'initial_tenant_existing', revision: existingRevision });
-	        return true;
-	      }
-	      safeStorageSet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'), payloadHash);
-	      safeStorageSet(tenantStorageKeyFor(context, 'REMOTE_REVISION'), String(documentData.revision));
-	      LAST_REMOTE_REVISION = documentData.revision;
-	      window.click360MarkTenantCacheSynced?.({ revision: documentData.revision, payloadHash }).catch?.(() => {});
-		      LOCAL_WRITE_PENDING_UNTIL = 0;
+		      if (existingInitialRemote) {
+		        const existingRevision = Number(existingInitialRemote.revision || existingInitialRemote.updatedAtMs || 0);
+		        applyRemotePayload(existingInitialRemote.payload);
+		        LAST_REMOTE_REVISION = existingRevision;
+		        rememberAppliedRemotePayload(context, existingInitialRemote.payload, existingRevision, { reason: 'initial_tenant_existing' });
+		        LOCAL_WRITE_PENDING_UNTIL = 0;
+		        setSyncStatus('synced', 'El negocio ya existia y fue cargado sin sobrescribirlo.', { reason: 'initial_tenant_existing', revision: existingRevision });
+		        return true;
+		      }
+		      LAST_REMOTE_REVISION = documentData.revision;
+		      rememberAppliedRemotePayload(context, payload, documentData.revision, { reason });
+			      LOCAL_WRITE_PENDING_UNTIL = 0;
 		      setSyncStatus('synced', 'Datos guardados en la nube.', { reason, revision: documentData.revision, payloadBytes });
 		      if (reason === 'initial_tenant_seed' || reason === 'manual' || reason === 'online_reconnect') {
 		        recordTelemetryOnce(`sync:${AUTH_EPOCH}:${context.tenantKey}:${reason}:${documentData.revision}`, 'sync', { mode: reason });
@@ -1776,12 +1884,12 @@
           localHash,
           remoteHash
         }) || { action: baseRevision === remoteRevision ? 'push_local' : 'conflict' };
-        if (recoveryDecision.action === 'already_synced') {
-          clearSyncConflict();
-          window.click360MarkTenantCacheSynced?.({ revision: remoteRevision, payloadHash: remoteHash }).catch?.(() => {});
-          setSyncStatus('synced', 'La copia pendiente ya coincide con la nube.', { revision: remoteRevision });
-          return false;
-        }
+	        if (recoveryDecision.action === 'already_synced') {
+	          clearSyncConflict();
+	          rememberAppliedRemotePayload(context, remotePayload, remoteRevision, { reason: 'indexeddb_recovery_already_synced' });
+	          setSyncStatus('synced', 'La copia pendiente ya coincide con la nube.', { revision: remoteRevision });
+	          return false;
+	        }
         if (recoveryDecision.action === 'conflict') {
           markSyncConflict({ path: stateDoc.path, remoteRevision, baseRevision, localUpdatedAtMs: localPayloadUpdatedAtMs(), source: 'indexeddb_recovery' });
           setSyncStatus('error', 'Hay una copia offline pendiente y la nube cambió. Ninguna versión fue sobrescrita.');
@@ -1796,10 +1904,9 @@
 	          setSyncStatus('error', 'Hay cambios locales y remotos simultáneos. No se sobrescribió ninguna versión.');
 	          return false;
 	        }
-		        applyRemotePayload(remotePayload);
-	        safeStorageSet(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'), remoteHash);
-	        window.click360MarkTenantCacheSynced?.({ revision: remoteRevision, payloadHash: remoteHash }).catch?.(() => {});
-	        if (force) clearSyncConflict();
+			        applyRemotePayload(remotePayload);
+		        rememberAppliedRemotePayload(context, remotePayload, remoteRevision, { reason: force ? 'forced_remote_refresh' : 'remote_hydrate' });
+		        if (force) clearSyncConflict();
 		        const storageMode = window.click360GetStorageState?.().mode;
 		        setSyncStatus(storageMode === 'online_only_safe' ? 'online_only_safe' : 'synced', storageMode === 'online_only_safe'
 		          ? 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.'
@@ -1808,8 +1915,11 @@
 	        if (reload && window.click360Route) window.click360Route(window.location.hash.replace('#','') || 'home');
 	      return true;
 	    }
-	    if (force || remoteHash === localHash) clearSyncConflict();
-	      setSyncStatus('synced', 'Datos locales y nube coinciden.', { revision: remoteRevision });
+		    if (force || remoteHash === localHash) {
+		      rememberAppliedRemotePayload(context, remotePayload, remoteRevision, { reason: 'remote_matches_local' });
+		      clearSyncConflict();
+		    }
+		      setSyncStatus('synced', 'Datos locales y nube coinciden.', { revision: remoteRevision });
 	      return false;
 	  } catch (error) {
 	    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
@@ -1869,11 +1979,10 @@
 	          markSyncConflict({ path: stateDoc.path, remoteRevision: LAST_REMOTE_REVISION, localUpdatedAtMs: localPayloadUpdatedAtMs(), source: 'listener' });
 	          setSyncStatus('error', 'Se detectaron cambios simultáneos. No se sobrescribió ninguna versión.');
 	          return;
-	        }
-	        applyRemotePayload(remotePayload);
-	        safeStorageSet(tenantStorageKey("LAST_APPLIED_REMOTE_HASH"), remoteHash);
-	        window.click360MarkTenantCacheSynced?.({ revision: LAST_REMOTE_REVISION, payloadHash: remoteHash }).catch?.(() => {});
-	        setSyncStatus("synced", "Cambios remotos aplicados.", { revision: LAST_REMOTE_REVISION });
+		        }
+		        applyRemotePayload(remotePayload);
+		        rememberAppliedRemotePayload(context, remotePayload, LAST_REMOTE_REVISION, { reason: 'listener_remote_applied' });
+		        setSyncStatus("synced", "Cambios remotos aplicados.", { revision: LAST_REMOTE_REVISION });
 	        console.log("CLICK360 recibió cambios remotos.");
 
         if (window.click360ReloadState) window.click360ReloadState();
@@ -2216,13 +2325,19 @@
 	    pushLocalToFirestore("local_change").catch(() => {});
 	  }, 1200);
 
-		  window.addEventListener('click360-local-state-saved', (event) => {
-		    if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE
-		      && event.detail?.tenantKey === ACTIVE_CONTEXT?.tenantKey) {
-		      LOCAL_WRITE_PENDING_UNTIL = Date.now() + 6000;
-		      setSyncStatus(navigator.onLine ? "pending" : "offline", navigator.onLine ? "Cambio local pendiente de nube." : "Cambio local guardado sin internet.");
-		      if (ONLINE_ONLY_SAFE || event.detail?.storageMode === 'online_only_safe') {
-		        ONLINE_ONLY_SAFE = true;
+			  window.addEventListener('click360-local-state-saved', (event) => {
+			    if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE
+			      && event.detail?.tenantKey === ACTIVE_CONTEXT?.tenantKey) {
+			      const pendingRemoteSync = event.detail?.pendingRemoteSync !== false;
+			      LOCAL_WRITE_PENDING_UNTIL = pendingRemoteSync ? Date.now() + PENDING_REMOTE_SYNC_GRACE_MS : 0;
+			      setSyncStatus(
+			        navigator.onLine ? (pendingRemoteSync ? "pending" : "syncing") : "offline",
+			        navigator.onLine
+			          ? (pendingRemoteSync ? "Cambio local pendiente de nube." : "Sincronizando cambios...")
+			          : "Cambio local guardado sin internet."
+			      );
+			      if (ONLINE_ONLY_SAFE || event.detail?.storageMode === 'online_only_safe') {
+			        ONLINE_ONLY_SAFE = true;
 		        const detail = {
               authUid: ACTIVE_CONTEXT.authUid,
               tenantKey: ACTIVE_CONTEXT.tenantKey,
