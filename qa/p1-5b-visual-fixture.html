@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 P1.5B Visual QA</title>
+  <link rel="icon" href="../assets/favicon.png">
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+  <main class="main">
+    <div class="pageHead">
+      <div><h1>P1.5B Visual QA</h1><p>Fixture sintético, sin Firebase.</p></div>
+      <div class="toolbar"><button class="btn">Editar plano</button><button class="btn primary">Nueva mesa</button></div>
+    </div>
+
+    <section class="modal labelEditorModal" data-label-mode="simple">
+      <div class="modalHeader"><div><h2>Estudio de etiquetas</h2><p class="fieldHint">Cantidad exacta y hoja completa.</p></div><button class="closeBtn">×</button></div>
+      <div class="labelModeSwitch"><button class="active">Modo simple</button><button>Modo experto</button></div>
+      <ol class="labelGuideSteps"><li><b>1</b><span>Qué quieres imprimir</span></li><li><b>2</b><span>Cantidad</span></li><li><b>3</b><span>Tipo de papel</span></li><li class="active"><b>4</b><span>Vista previa</span></li><li><b>5</b><span>Imprimir</span></li></ol>
+      <div class="labelCustomizerLayout">
+        <details class="labelPreviewDisclosure" open><summary>Vista previa</summary><div class="labelPreviewSticky"><canvas width="260" height="180" style="background:#fff"></canvas></div></details>
+        <div class="labelControls">
+          <section class="labelPrintContract"><div class="field"><label>Cantidad exacta</label><input type="number" value="7"></div><label class="consentCheck"><input type="checkbox"><span>Imprimir una etiqueta por cada unidad en stock</span></label></section>
+          <details class="settingsDisclosure" open><summary>Papel y alineación</summary><div class="labelAdvancedBody"><div class="formGrid"><div class="field"><label>Plantilla</label><select><option>Hoja A4 3 columnas</option></select></div><div class="field"><label>Orientación</label><select><option>Vertical</option></select></div></div></div></details>
+          <section class="labelSheetPreviewPanel"><div><b>Vista previa de hoja completa</b><p class="fieldHint">7 etiquetas · 3 columnas.</p></div><div class="labelSheetPreview" style="--label-columns:3"><span class="filled">1</span><span class="filled">2</span><span class="filled">3</span><span class="filled">4</span><span class="filled">5</span><span class="filled">6</span><span class="filled">7</span><span></span><span></span></div></section>
+          <div class="labelPrimaryActions"><button class="btn primary">Imprimir cantidad exacta</button><button class="btn">Guardar plantilla</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card tableMapShell">
+      <header><span><b>Distribución del local</b><small>Negocio QA</small></span><span class="tableMapLegend"><i></i> Libre <i class="busy"></i> Ocupada</span></header>
+      <div class="tableMap tableLayoutSurface">
+        <article class="tableMapItem round" style="--table-x:4%;--table-y:5%;--table-w:18%;--table-h:18%;--table-color:#d6aa2c"><button><b>Mesa 1</b><small>libre</small><strong>$0.00</strong></button></article>
+        <article class="tableMapItem rectangle ocupada" style="--table-x:34%;--table-y:28%;--table-w:24%;--table-h:18%;--table-color:#3d7ea6"><button><b>Terraza larga</b><small>ocupada</small><strong>$27.50</strong></button></article>
+        <article class="tableMapItem delivery por-cobrar" style="--table-x:68%;--table-y:58%;--table-w:20%;--table-h:18%;--table-color:#2f9d68"><button><b>Delivery</b><small>por cobrar</small><strong>$14.00</strong></button></article>
+      </div>
+    </section>
+
+    <section>
+      <div class="helpSearch"><span>⌕</span><input value="no puedo cerrar caja"></div>
+      <div class="helpSuggestions"><button>cerrar caja</button><button>imprimir 1 etiqueta</button><button>sin internet</button></div>
+      <div class="helpResults"><details class="card helpTopic" open><summary><span><small>Cierre de caja</small>¿Cómo cierro caja?</span></summary><ol><li>Revisa el resumen.</li><li>Cuenta el efectivo.</li><li>Confirma el cierre.</li></ol></details></div>
+    </section>
+  </main>
+  <script>
+    window.visualQa = () => ({
+      viewport: document.documentElement.clientWidth,
+      bodyWidth: document.body.scrollWidth,
+      overflow: document.body.scrollWidth > document.documentElement.clientWidth
+    });
+  </script>
+</body>
+</html>

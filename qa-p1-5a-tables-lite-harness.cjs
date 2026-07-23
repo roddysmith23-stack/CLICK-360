@@ -8,8 +8,8 @@ const styles = fs.readFileSync('styles.css', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
-const RELEASE = '1.0.4-p0';
-const ASSET = 'mvp-launch-v16-2-p1-5a-r1';
+const RELEASE = '1.0.4-p1';
+const ASSET = 'mvp-launch-v16-2-p1-5b-r1';
 
 function tablesForBusiness(state, businessId) {
   return state.tables.filter((table) => table.businessId === businessId);

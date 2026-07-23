@@ -170,8 +170,8 @@ assert(app.includes('Conflicto de sincronización'), 'UI shows conflict recovery
 assert(app.includes('Actualizar desde nube') && app.includes('Conservar mi versión local') && app.includes('Limpiar estado local de esta app'), 'UI exposes recovery actions');
 assert(app.includes('window.click360GetReliabilityDiagnostics'), 'UI exposes safe reliability diagnostics');
 assert(runtime.includes('reliability:') && runtime.includes('lockAgeMs') && runtime.includes('hasDirtyFields'), 'runtime reports sanitized reliability fields');
-assert(app.includes("const APP_RELEASE_VERSION = '1.0.4-p0'"), 'app version is P1.1c candidate');
-assert(runtime.includes("const APP_VERSION = '1.0.4-p0'"), 'runtime version is P1.1c candidate');
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-5a-r1'"), 'service worker cache is bumped for P1.1c');
+assert(app.includes("const APP_RELEASE_VERSION = '1.0.4-p1'"), 'app version is P1.1c candidate');
+assert(runtime.includes("const APP_VERSION = '1.0.4-p1'"), 'runtime version is P1.1c candidate');
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-5b-r1'"), 'service worker cache is bumped for P1.1c');
 
 console.log('PASS P1.1c reliability sync recovery harness: stale locks recover, real pending/conflicts stay protected');
