@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-			  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r4';
+			  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5a-r1';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -1077,10 +1077,20 @@
 	        auditLogs: Array.isArray(state.auditLogs) ? state.auditLogs : [],
 	        layaways: Array.isArray(state.layaways) ? state.layaways : [],
 	        cashSessions: Array.isArray(state.cashSessions) ? state.cashSessions : [],
+	        tables: Array.isArray(state.tables) ? state.tables : [],
+	        tableOrders: Array.isArray(state.tableOrders) ? state.tableOrders : [],
+	        labelPrintHistory: Array.isArray(state.labelPrintHistory) ? state.labelPrintHistory : [],
+	        finance: state.finance && typeof state.finance === 'object' && !Array.isArray(state.finance) ? {
+	          payments: Array.isArray(state.finance.payments) ? state.finance.payments : [],
+	          loans: Array.isArray(state.finance.loans) ? state.finance.loans : [],
+	          envelopes: Array.isArray(state.finance.envelopes) ? state.finance.envelopes : [],
+	          goals: Array.isArray(state.finance.goals) ? state.finance.goals : []
+	        } : { payments: [], loans: [], envelopes: [], goals: [] },
 	        notifications: Array.isArray(state.notifications) ? state.notifications : [],
 	        legalAcceptances: Array.isArray(state.legalAcceptances) ? state.legalAcceptances : [],
 	        settings: {
 	          labelTemplates: Array.isArray(settings.labelTemplates) ? settings.labelTemplates : [],
+	          labelProfiles: Array.isArray(settings.labelProfiles) ? settings.labelProfiles : [],
 	          workers: Array.isArray(settings.workers) ? settings.workers : [],
 	          userProfiles,
 	          customers: Array.isArray(settings.customers) ? settings.customers : [],

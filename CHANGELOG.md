@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.4-p0 - 2026-07-22
+
+- Añade escaneo desde cámara para QR, EAN, UPC y Code 128 con `BarcodeDetector`, fallback local ZXing y soporte de lectores físicos tipo teclado.
+- Separa cantidad exacta de etiquetas de la opción explícita por stock; incorpora código de barras, presets de rollo/hoja, forma circular simple y prueba de alineación.
+- Añade Mesas Lite para restaurantes, con stock reservado entre mesas, cobro integrado a la caja abierta y aislamiento por negocio.
+- Añade finanzas manuales para pagos, préstamos, sobres y metas sin credenciales ni conexión bancaria.
+- Añade Centro de ayuda interno, buscable y con soporte por WhatsApp.
+- Mantiene las estructuras nuevas opcionales, aisladas por `businessId` y compatibles con snapshots existentes.
+- Actualiza PWA, manifest, runtime y caché a `1.0.4-p0` / `mvp-launch-v16-2-p1-5a-r1`.
+
 ## 1.0.3-p4 - 2026-07-18
 
 - Endurece el cierre de caja con etapas explícitas de acceso, sesión, cálculo, persistencia, verificación y exportación.

@@ -68,6 +68,14 @@
     if (data.settings.reminders != null && !Array.isArray(data.settings.reminders)) return false;
     if (data.layaways != null && !Array.isArray(data.layaways)) return false;
     if (data.cashSessions != null && !Array.isArray(data.cashSessions)) return false;
+    if (data.tables != null && !Array.isArray(data.tables)) return false;
+    if (data.tableOrders != null && !Array.isArray(data.tableOrders)) return false;
+    if (data.labelPrintHistory != null && !Array.isArray(data.labelPrintHistory)) return false;
+    if (data.settings.labelProfiles != null && !Array.isArray(data.settings.labelProfiles)) return false;
+    if (data.finance != null) {
+      if (!data.finance || typeof data.finance !== 'object' || Array.isArray(data.finance)) return false;
+      if (!['payments','loans','envelopes','goals'].every((key) => Array.isArray(data.finance[key] || []))) return false;
+    }
     if (data.notifications != null && !Array.isArray(data.notifications)) return false;
     if (data.legalAcceptances != null && !Array.isArray(data.legalAcceptances)) return false;
     const businessIds = new Set(data.businesses.map((business) => business?.id).filter(Boolean));

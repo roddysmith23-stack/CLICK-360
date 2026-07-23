@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-r4';
-  const APP_RELEASE_VERSION = '1.0.3-p4';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5a-r1';
+  const APP_RELEASE_VERSION = '1.0.4-p0';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -157,6 +157,7 @@
   let scanStream = null;
   let scanTimer = null;
   let lastScanAt = 0;
+  let scannerGeneration = 0;
   let deferredInstallPrompt = null;
   let lastAutoSaveHash = '';
   let tenantStateDeferred = false;
@@ -1213,10 +1214,19 @@ function parseMoney(value) {
     out.deletedProducts ||= [];
     out.layaways ||= [];
     out.cashSessions ||= [];
+    out.tables ||= [];
+    out.tableOrders ||= [];
+    out.labelPrintHistory ||= [];
     out.notifications ||= [];
     out.legalAcceptances ||= [];
+    out.finance ||= {};
+    out.finance.payments ||= [];
+    out.finance.loans ||= [];
+    out.finance.envelopes ||= [];
+    out.finance.goals ||= [];
     out.settings ||= {};
     out.settings.labelTemplates ||= [];
+    out.settings.labelProfiles ||= [];
     out.settings.workers ||= [];
     out.settings.userProfiles ||= {};
     out.settings.customers ||= [];
@@ -1281,6 +1291,8 @@ function parseMoney(value) {
       const onlyBusinessId = out.businesses[0]?.id || '';
       out.settings.customers.forEach((customer) => { if (!customer.businessId) customer.businessId = onlyBusinessId; });
       out.settings.reminders.forEach((reminder) => { if (!reminder.businessId) reminder.businessId = onlyBusinessId; });
+      out.settings.labelTemplates.forEach((template) => { if (!template.businessId) template.businessId = onlyBusinessId; });
+      out.settings.labelProfiles.forEach((profile) => { if (!profile.businessId) profile.businessId = onlyBusinessId; });
     }
 
     // Migración para limpiar "sale_..." de movimientos antiguos
@@ -1309,9 +1321,13 @@ function parseMoney(value) {
       deletedProducts:[],
       layaways:[],
       cashSessions:[],
+      tables:[],
+      tableOrders:[],
+      labelPrintHistory:[],
+      finance:{ payments: [], loans: [], envelopes: [], goals: [] },
       notifications:[],
       legalAcceptances:[],
-      settings:{ workers: [], labelTemplates: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.2.0' }
+      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.2.0' }
     };
   }
 
@@ -1444,6 +1460,42 @@ function parseMoney(value) {
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
+  function tablesForBiz(bid=currentBusiness()?.id){ return (state.tables || []).filter(table=>table.businessId===bid); }
+  function tableOrdersForBiz(bid=currentBusiness()?.id){ return (state.tableOrders || []).filter(order=>order.businessId===bid); }
+  function financeForBiz(kind, bid=currentBusiness()?.id){ return (state.finance?.[kind] || []).filter(entry=>entry.businessId===bid); }
+  function labelTemplatesForBiz(bid=currentBusiness()?.id) {
+    const legacyBusinessId = state.settings?.legacyDataBusinessId;
+    return (state.settings?.labelTemplates || []).filter((template) => template.businessId === bid
+      || (!template.businessId && legacyBusinessId === bid));
+  }
+  function isRestaurantBusiness(business=currentBusiness()) {
+    return ['restaurante', 'cafeteria', 'bar'].includes(String(business?.type || '').toLowerCase());
+  }
+  function resolveLabelCopies(manualCopies, stock, useStock=false) {
+    const manual = Math.max(1, Math.min(500, Math.trunc(Number(manualCopies) || 1)));
+    if (!useStock) return manual;
+    return Math.max(0, Math.min(500, Math.trunc(Number(stock) || 0)));
+  }
+  window.click360ResolveLabelCopies = resolveLabelCopies;
+  const HELP_TOPICS = Object.freeze([
+    { id:'first-product', category:'Primeros pasos', title:'¿Cómo creo mi primer producto?', body:'Ve a Inventario, toca Nuevo, completa nombre, código, stock y precio, y guarda.' },
+    { id:'inventory-stock', category:'Inventario', title:'¿Cómo ajusto el stock de un producto?', body:'Abre Inventario, edita el producto y guarda la cantidad correcta. El cambio queda aislado en el negocio activo.' },
+    { id:'sell-product', category:'Ventas', title:'¿Cómo vendo un producto?', body:'Abre Caja, inicia la jornada y luego ve a Vender. Busca o escanea el producto, agrégalo al carrito y cobra.' },
+    { id:'open-cash', category:'Caja diaria', title:'¿Cómo abro caja?', body:'Ve a Caja, registra el efectivo inicial y confirma la apertura antes de vender.' },
+	    { id:'close-cash', category:'Cierre de caja', title:'¿Cómo cierro caja?', keywords:'cerrar caja cierre diario', body:'En Caja selecciona Cerrar día, revisa el resumen, cuenta el efectivo y confirma el cierre.' },
+    { id:'cash-history', category:'Cierre de caja', title:'¿Dónde veo el historial de cierres?', body:'Abre Caja y entra al historial de cierres para consultar cada resumen confirmado.' },
+    { id:'switch-business', category:'Primeros pasos', title:'¿Cómo cambio de negocio?', body:'Toca el selector de negocio de la parte superior y elige el negocio donde vas a trabajar.' },
+	    { id:'scan-code', category:'Código de barras / QR', title:'¿Cómo escaneo un código de barras?', keywords:'barcode lector escanear código de barras', body:'En Inventario o Vender toca Escanear y apunta la cámara al QR o código de barras. También puedes usar un lector físico que escriba el código y envíe Enter.' },
+    { id:'camera-help', category:'Código de barras / QR', title:'¿Qué hago si mi cámara no lee el código?', body:'Permite la cámara, mejora la luz y acerca el código. Si no funciona, usa la foto o escribe el código manualmente.' },
+	    { id:'print-label', category:'Etiquetas', title:'¿Cómo imprimo una etiqueta?', keywords:'etiqueta imprimir impresión', body:'En Inventario toca el icono QR del producto, elige plantilla, escribe la cantidad exacta y revisa la vista previa antes de imprimir.' },
+    { id:'label-stock', category:'Etiquetas', title:'¿Por qué pedí 1 etiqueta y no debe imprimir por stock?', body:'La cantidad manual es independiente del stock. Solo se imprimirá por existencias si activas expresamente “una etiqueta por cada unidad en stock”.' },
+	    { id:'create-table', category:'Mesas', title:'¿Cómo creo una mesa?', keywords:'mesa restaurante abrir mesa', body:'Configura el negocio como restaurante, cafetería o bar. Luego ve a Más, Mesas y toca Nueva mesa.' },
+    { id:'charge-table', category:'Mesas', title:'¿Cómo cobro una mesa?', body:'Abre la mesa, agrega productos y toca Cobrar mesa. La venta se registra en la caja abierta y la mesa queda libre.' },
+	    { id:'monthly-payment', category:'Finanzas', title:'¿Cómo registro un pago mensual?', keywords:'pago mensual registrar vencimiento', body:'Ve a Más, Finanzas, abre Pagos mensuales y registra nombre, categoría, monto y fecha.' },
+    { id:'local-state', category:'Nube y respaldo', title:'¿Qué significa limpiar estado local?', body:'Elimina bloqueos locales obsoletos y vuelve a leer la nube. No borra Firebase, negocios ni productos.' },
+    { id:'common-errors', category:'Errores comunes', title:'¿Qué hago si una acción no se completa?', body:'Comprueba internet, revisa el código visible y vuelve a intentar. Si continúa, copia el diagnóstico técnico y contacta soporte.' },
+    { id:'support', category:'Soporte', title:'¿Cómo contactar soporte?', body:'En Centro de ayuda toca Contactar soporte por WhatsApp. No compartas contraseñas ni códigos de acceso.' }
+  ]);
   function latestCashSession(businessId = currentBusiness()?.id, date = today()) {
     return (state.cashSessions || []).slice().reverse().find((session) =>
       session.businessId === businessId && session.date === date) || null;
@@ -1477,7 +1529,7 @@ function parseMoney(value) {
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-	    if (['home','more','access','legal','printing'].includes(section)) return ['worker','cashier','inventory'].includes(role);
+	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory'].includes(role);
     const permissions = window.click360User?.permissions || {};
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
     if (routeModule && Object.keys(permissions).length) return permissions[routeModule]?.view === true;
@@ -1542,7 +1594,7 @@ function parseMoney(value) {
 	    do { c = `${base}${Math.random().toString(36).slice(2,7).toUpperCase()}`; } while(codeExists(c));
 	    return c;
 	  }
-	  function codeExists(code, productId=null) { return state.products.some(p => p.code.toUpperCase() === String(code).toUpperCase() && p.id !== productId); }
+	  function codeExists(code, productId=null, businessId=currentBusiness()?.id) { return state.products.some(p => p.businessId === businessId && p.code.toUpperCase() === String(code).toUpperCase() && p.id !== productId); }
 	  function tombstoneProduct(product, reason='deleted') {
 	    if (!product) return;
 	    state.deletedProducts ||= [];
@@ -1734,7 +1786,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -1797,7 +1849,7 @@ function parseMoney(value) {
 
   function inventoryView() {
     const b=currentBusiness(), v=businessVocabulary(b.type), products=productsForBiz();
-    const templates = state.settings?.labelTemplates || [];
+    const templates = labelTemplatesForBiz();
 
     let templatesHtml = '';
     if (templates.length > 0) {
@@ -1833,12 +1885,9 @@ function parseMoney(value) {
       `;
     }
 
-    return `<div class="pageHead"><div><h1>Inventario</h1><p>Registra, controla y genera etiquetas.</p></div><div class="toolbar"><button class="btn primary" id="newProduct">＋ Nuevo</button></div></div>
+    return `<div class="pageHead"><div><h1>Inventario</h1><p>Registra, controla y genera etiquetas.</p></div><div class="toolbar"><button class="btn silver" id="openCamera">${icon('scan-line')} Escanear</button><button class="btn primary" id="newProduct">＋ Nuevo</button></div></div>
       <div class="searchBox" style="display:flex; gap:10px;">
-         <input id="productSearch" placeholder="Buscar por nombre o código..." style="flex:1;" />
-         <button type="button" class="iconBtn" id="openCamera" title="Escanear QR">
-           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
-         </button>
+         <input id="productSearch" data-scanner-input placeholder="Buscar por nombre o código..." style="flex:1;" />
       </div>
       <div id="cameraPanel" class="cameraPanel" style="margin-bottom:14px;"><video id="scanVideo" playsinline muted></video><div id="cameraStatus" class="cameraStatus">Listo para cámara.</div></div>
       <section id="productList" class="productList" style="margin-top:14px">${productList(products,v)}</section>
@@ -1886,12 +1935,12 @@ function parseMoney(value) {
           <div class="scanRows">
             <div class="searchBox"><input id="sellSearch" placeholder="Buscar por nombre o código..." /></div>
             <div class="manualRow">
-               <input id="manualCode" placeholder="Código manual" />
+               <input id="manualCode" data-scanner-input autocomplete="off" placeholder="Código manual o lector físico" />
                <button type="button" class="btn silver" id="addCode" title="Agregar a carrito">
                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                </button>
-               <button type="button" class="iconBtn" id="openCamera" title="Escanear QR">
-                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+               <button type="button" class="iconBtn" id="openCamera" title="Escanear QR o código de barras" aria-label="Escanear QR o código de barras">
+                 ${icon('scan-line')}
                </button>
             </div>
             <div id="quickProducts" class="productList"></div>
@@ -2536,11 +2585,294 @@ function parseMoney(value) {
 	    };
 	  }
 
-		  function moreView(){
+	  function activeTableOrder(tableId) {
+	    return tableOrdersForBiz().find((order) => order.tableId === tableId && order.status === 'open') || null;
+	  }
+	  function tableElapsedLabel(order) {
+	    if (!order?.openedAtMs) return 'Sin cuenta abierta';
+	    const minutes = Math.max(0, Math.floor((Date.now() - Number(order.openedAtMs)) / 60000));
+	    if (minutes < 60) return `${minutes} min abierta`;
+	    return `${Math.floor(minutes / 60)} h ${minutes % 60} min abierta`;
+	  }
+	  function tableOrderTotal(order) {
+	    return (order?.items || []).reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
+	  }
+	  function tableReservedQuantity(productId, excludedOrderId = '') {
+	    return tableOrdersForBiz()
+	      .filter((order) => order.status === 'open' && order.id !== excludedOrderId)
+	      .flatMap((order) => order.items || [])
+	      .filter((item) => item.id === productId)
+	      .reduce((total, item) => total + Number(item.qty || 0), 0);
+	  }
+	  function tablesView() {
+	    if (!isRestaurantBusiness()) {
+	      return `<div class="pageHead"><div><h1>Mesas</h1><p>Activa este módulo desde el tipo de negocio.</p></div></div>
+	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">En Ajustes selecciona Restaurante / cafetería / bar para usar Mesas Lite.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
+	    }
+	    const tables = tablesForBiz();
+	    return `<div class="pageHead"><div><h1>Mesas Lite</h1><p>${escapeHtml(currentBusiness().name)}</p></div><div class="toolbar"><button class="btn primary" id="newTableBtn">${icon('plus')} Nueva mesa</button></div></div>
+	      <section class="tableGrid">${tables.length ? tables.map((table) => {
+	        const order = activeTableOrder(table.id);
+	        const status = order ? (order.readyToCharge ? 'por cobrar' : 'ocupada') : 'libre';
+	        return `<article class="card tableCard ${status.replace(' ', '-')}">
+	          <div class="tableCardHead"><span>${icon(order ? 'utensils' : 'armchair')}<b>${escapeHtml(table.name)}</b></span><span class="badge ${order ? 'gold' : ''}">${escapeHtml(status)}</span></div>
+	          <p>${escapeHtml(tableElapsedLabel(order))}</p>
+	          <strong>${fmt(tableOrderTotal(order))}</strong>
+	          <div class="tableActions"><button class="btn ${order ? 'primary' : 'silver'}" data-table-open="${actionId(table.id)}">${order ? 'Ver cuenta' : 'Abrir mesa'}</button><button class="iconBtn" data-table-rename="${actionId(table.id)}" title="Editar nombre" aria-label="Editar nombre">${icon('pencil')}</button><button class="iconBtn danger" data-table-delete="${actionId(table.id)}" title="Eliminar mesa" aria-label="Eliminar mesa">${icon('trash-2')}</button></div>
+	        </article>`;
+	      }).join('') : '<div class="card empty">Crea Mesa 1, Barra, Patio, Delivery o cualquier espacio que uses.</div>'}</section>`;
+	  }
+	  function openTableNameModal(tableId = '') {
+	    const table = tablesForBiz().find((item) => item.id === tableId);
+	    showModal(`<div class="modalHeader"><h2>${table ? 'Editar' : 'Nueva'} mesa</h2><button class="closeBtn" data-close>×</button></div>
+	      <form id="tableNameForm" class="formGrid"><div class="field full"><label>Nombre</label><input id="tableName" maxlength="40" required value="${escapeHtml(table?.name || '')}" placeholder="Mesa 1, Barra, Patio..."></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar mesa</button></form>`);
+	    $('#tableNameForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const name = $('#tableName').value.trim();
+	      if (!name) return toast('Escribe un nombre para la mesa.', 'err');
+	      if (table) Object.assign(table, { name, updatedAt: new Date().toISOString() });
+	      else state.tables.push({ id: uid('table'), businessId: currentBusiness().id, name, createdAt: new Date().toISOString(), status: 'free' });
+	      addAudit(table ? 'table_renamed' : 'table_created', { tableId: table?.id || state.tables.at(-1)?.id });
+	      if (!save()) return;
+	      closeModal(); renderApp('tables'); toast('Mesa guardada');
+	    };
+	  }
+	  function openTableOrderModal(tableId) {
+	    const table = tablesForBiz().find((item) => item.id === tableId);
+	    if (!table) return toast('Mesa no encontrada.', 'err');
+	    let order = activeTableOrder(table.id);
+	    if (!order) {
+	      order = { id: uid('tableorder'), tableId: table.id, businessId: currentBusiness().id, items: [], status: 'open', openedAt: new Date().toISOString(), openedAtMs: Date.now(), updatedAtMs: Date.now() };
+	      state.tableOrders.push(order);
+	      table.status = 'occupied';
+	      addAudit('table_opened', { tableId: table.id, orderId: order.id });
+	      if (!save()) return;
+	    }
+	    const render = () => {
+	      const productOptions = productsForBiz().map((product) => ({
+	        product,
+	        available: Math.max(0, Number(product.qty || 0) - tableReservedQuantity(product.id, order.id))
+	      })).filter(({ available }) => available > 0).map(({ product, available }) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${fmt(product.price)} · ${available} disp.</option>`).join('');
+	      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(table.name)}</h2><p class="fieldHint">${escapeHtml(tableElapsedLabel(order))}</p></div><button class="closeBtn" data-close>×</button></div>
+	        <section class="tableOrderSummary">${(order.items || []).length ? order.items.map((item) => `<div class="movement"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><span><b>${fmt(item.qty * item.price)}</b><button class="iconBtn danger" data-table-item-remove="${actionId(item.id)}" aria-label="Quitar producto">${icon('trash-2')}</button></span></div>`).join('') : '<p class="empty">La mesa todavía no tiene productos.</p>'}</section>
+	        <form id="tableAddItemForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="tableProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin productos con stock</option>'}</select></div><div class="field"><label>Cantidad</label><input id="tableQty" type="number" min="1" max="99" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>${icon('plus')} Agregar</button></form>
+	        <div class="tableOrderTotal"><span>Total</span><strong>${fmt(tableOrderTotal(order))}</strong></div>
+	        <div class="tableCheckoutActions"><button class="btn" type="button" id="tableReadyBtn">${order.readyToCharge ? 'Seguir agregando' : 'Marcar por cobrar'}</button><button class="btn primary" type="button" id="tableChargeBtn" ${(order.items || []).length ? '' : 'disabled'}>Cobrar mesa</button></div>`);
+	      $$('[data-table-item-remove]').forEach((button) => button.onclick = () => {
+	        order.items = order.items.filter((item) => item.id !== decodeActionId(button.dataset.tableItemRemove));
+	        order.updatedAtMs = Date.now();
+	        if (!save()) return;
+	        render();
+	      });
+	      $('#tableAddItemForm').onsubmit = (event) => {
+	        event.preventDefault();
+	        const productId = decodeActionId($('#tableProduct').value);
+	        const product = productsForBiz().find((item) => item.id === productId);
+	        const qty = Math.max(1, Math.min(99, Math.trunc(Number($('#tableQty').value || 1))));
+	        const existing = order.items.find((item) => item.id === productId);
+	        const requested = qty + Number(existing?.qty || 0);
+	        const available = Number(product?.qty || 0) - tableReservedQuantity(productId, order.id);
+	        if (!product || requested > available) return toast('No hay stock suficiente.', 'err');
+	        if (existing) existing.qty = requested;
+	        else order.items.push({ id: product.id, name: product.name, code: product.code, price: product.price, cardPrice: product.cardPrice || product.price, taxMode: product.taxMode || 'inherit', qty });
+	        order.readyToCharge = false;
+	        order.updatedAtMs = Date.now();
+	        if (!save()) return;
+	        render();
+	      };
+	      $('#tableReadyBtn').onclick = () => {
+	        order.readyToCharge = !order.readyToCharge;
+	        order.updatedAtMs = Date.now();
+	        if (!save()) return;
+	        render();
+	      };
+	      $('#tableChargeBtn').onclick = () => chargeTableOrder(table, order);
+	      refreshIcons();
+	    };
+	    render();
+	  }
+	  async function chargeTableOrder(table, order) {
+	    if (!isDayStarted() || isDayClosed()) return toast('Abre una caja activa antes de cobrar la mesa.', 'err');
+	    const method = prompt('Método de pago: Efectivo, Tarjeta o Transferencia', 'Efectivo');
+	    if (!method || !['Efectivo','Tarjeta','Transferencia'].includes(method)) return toast('Método de pago no válido.', 'err');
+	    const previousState = cloneState(state);
+	    const businessId = currentBusiness().id;
+	    const tax = businessTaxConfig();
+	    const lines = order.items.map((item) => ({ ...item, unitPrice: method === 'Tarjeta' ? item.cardPrice : item.price }));
+	    const calculation = window.CLICK360_V16_DOMAIN?.calculateCart(lines, 0, tax);
+	    const total = Number(calculation?.total ?? tableOrderTotal(order));
+	    for (const item of order.items) {
+	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
+	      if (!product || product.qty < item.qty) return toast(`Stock insuficiente: ${item.name}`, 'err');
+	    }
+	    const saleId = uid('sale');
+	    const sale = {
+	      id: saleId, operationId: uid('table-sale'), cashSessionId: currentOpenCashSession()?.id || '',
+	      businessId, tableId: table.id, tableOrderId: order.id, date: today(), when: nowLabel(),
+	      items: (calculation?.lines || lines).map((item) => ({ id:item.id, name:item.name, code:item.code, qty:item.qty, price:item.unitPrice || item.price, taxMode:item.taxMode || 'inherit', taxBase:item.base || 0, tax:item.tax || 0, total:item.total || item.qty * item.price })),
+	      subtotal: Number(calculation?.subtotal || total), iva: Number(calculation?.tax || 0), discount: 0, total, method,
+	      status:'paid', received:total, tendered:total, change:0, balance:0, user:authUser().name,
+	      createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name
+	    };
+	    state.sales.push(sale);
+	    order.items.forEach((item) => {
+	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
+	      product.qty -= item.qty;
+	      product.updatedAtMs = Date.now();
+	      product.updatedAt = new Date().toISOString();
+	    });
+	    state.movements.push({ id:uid('mov'), businessId, date:today(), when:nowLabel(), kind:'ingreso', amount:total, note:`Venta ${table.name}`, user:authUser().name, saleId, paymentMethod:method, cashSessionId:sale.cashSessionId, createdAtMs:Date.now(), createdBy:authUser().name });
+	    Object.assign(order, { status:'paid', closedAt:new Date().toISOString(), closedAtMs:Date.now(), saleId, readyToCharge:false });
+	    Object.assign(table, { status:'free', updatedAt:new Date().toISOString() });
+	    addAudit('table_charged', { tableId: table.id, orderId: order.id, saleId, total });
+	    const committed = await commitCriticalMutation(previousState, 'table_charged', (next) =>
+	      next.sales.some((item) => item.id === saleId && item.businessId === businessId)
+	      && next.tableOrders.some((item) => item.id === order.id && item.status === 'paid'));
+	    if (!committed.ok) return renderApp('tables');
+	    closeModal(); renderApp('tables'); toast(committed.pending ? 'Mesa cobrada; sincronización pendiente.' : 'Mesa cobrada y liberada');
+	  }
+	  function bindTables() {
+	    $('#newTableBtn')?.addEventListener('click', () => openTableNameModal());
+	    $$('[data-table-open]').forEach((button) => button.onclick = () => openTableOrderModal(decodeActionId(button.dataset.tableOpen)));
+	    $$('[data-table-rename]').forEach((button) => button.onclick = () => openTableNameModal(decodeActionId(button.dataset.tableRename)));
+	    $$('[data-table-delete]').forEach((button) => button.onclick = () => {
+	      const tableId = decodeActionId(button.dataset.tableDelete);
+	      if (activeTableOrder(tableId)) return toast('Cobra o vacía la cuenta antes de eliminar la mesa.', 'err');
+	      const table = tablesForBiz().find((item) => item.id === tableId);
+	      if (!table || !confirm(`¿Eliminar ${table.name}?`)) return;
+	      state.tables = state.tables.filter((item) => item.id !== tableId || item.businessId !== currentBusiness().id);
+	      addAudit('table_deleted', { tableId });
+	      if (!save()) return;
+	      renderApp('tables'); toast('Mesa eliminada');
+	    });
+	  }
+
+	  const FINANCE_CONFIG = Object.freeze({
+	    payments: { title:'Pagos mensuales', icon:'calendar-clock', fields:['name','category','amount','dueDate','notes'] },
+	    loans: { title:'Bancos / préstamos manuales', icon:'landmark', fields:['name','amount','monthlyAmount','dueDate','status','notes'] },
+	    envelopes: { title:'Sobres de dinero', icon:'mail', fields:['name','targetAmount','savedAmount','category','notes'] },
+	    goals: { title:'Metas / sueños / ahorros', icon:'target', fields:['name','targetAmount','savedAmount','dueDate','notes'] }
+	  });
+	  function financeEntryStatus(kind, entry) {
+	    if (kind === 'payments' && entry.status !== 'paid' && entry.dueDate && entry.dueDate < today()) return 'atrasado';
+	    if (entry.status === 'paid') return 'pagado';
+	    return entry.status === 'pending' ? 'pendiente' : 'activo';
+	  }
+	  function financeView() {
+	    const sections = Object.entries(FINANCE_CONFIG).map(([kind, config]) => {
+	      const entries = financeForBiz(kind);
+	      const total = entries.reduce((sum, entry) => sum + Number(entry.amount || entry.targetAmount || 0), 0);
+	      return `<section class="card financeCard"><header><span>${icon(config.icon)}<b>${escapeHtml(config.title)}</b></span><button class="iconBtn gold" data-finance-add="${kind}" title="Agregar" aria-label="Agregar">${icon('plus')}</button></header><strong>${fmt(total)}</strong>
+	        <div class="financeList">${entries.length ? entries.map((entry) => {
+	          const progress = kind === 'goals' && Number(entry.targetAmount) > 0 ? ` · ${Math.min(100, Math.round(Number(entry.savedAmount || 0) / Number(entry.targetAmount) * 100))}%` : '';
+	          const status = financeEntryStatus(kind, entry);
+	          return `<article class="financeEntry"><div><b>${escapeHtml(entry.name)}</b><small>${escapeHtml(entry.category || '')}${entry.dueDate ? ` · ${escapeHtml(entry.dueDate)}` : ''}${progress}</small></div><span><em class="${entry.status === 'paid' ? 'paid' : ''}">${escapeHtml(status)}</em>${kind === 'payments' ? `<button class="iconBtn" data-finance-toggle="${kind}:${actionId(entry.id)}" title="Cambiar estado">${icon('check')}</button>` : ''}<button class="iconBtn danger" data-finance-delete="${kind}:${actionId(entry.id)}" title="Eliminar">${icon('trash-2')}</button></span></article>`;
+	        }).join('') : '<p class="empty">Sin registros.</p>'}</div></section>`;
+	    }).join('');
+	    return `<div class="pageHead"><div><h1>Finanzas</h1><p>Organización manual. No conecta cuentas bancarias ni modifica caja.</p></div></div><section class="financeGrid">${sections}</section><p class="financeSecurity">${icon('shield-check')} CLICK 360 no solicita usuarios, claves ni tokens bancarios.</p>`;
+	  }
+	  function openFinanceModal(kind) {
+	    const config = FINANCE_CONFIG[kind];
+	    if (!config) return;
+	    const labels = { name:'Nombre', category:'Categoría', amount:'Monto / saldo', monthlyAmount:'Cuota mensual', targetAmount:'Monto objetivo', savedAmount:'Monto separado / ahorrado', dueDate:'Fecha de pago u objetivo', status:'Estado', notes:'Notas' };
+	    const fieldsHtml = config.fields.map((field) => {
+	      let control;
+	      if (field === 'notes') control = `<textarea id="finance-${field}"></textarea>`;
+	      else if (field === 'category' && kind === 'payments') {
+	        control = `<select id="finance-${field}"><option>Arriendo</option><option>Luz</option><option>Agua</option><option>Internet</option><option>Proveedor</option><option>Sueldo</option><option>Banco</option><option>Tarjeta</option><option>Préstamo</option><option>Otro</option></select>`;
+	      } else if (field === 'status') {
+	        control = `<select id="finance-${field}"><option value="active">Activo</option><option value="pending">Pendiente</option><option value="paid">Pagado</option></select>`;
+	      } else {
+	        control = `<input id="finance-${field}" ${['amount','monthlyAmount','targetAmount','savedAmount'].includes(field) ? 'inputmode="decimal"' : ''} ${field === 'dueDate' ? 'type="date"' : ''} ${field === 'name' ? 'required' : ''}>`;
+	      }
+	      return `<div class="field ${field === 'notes' ? 'full' : ''}"><label>${labels[field]}</label>${control}</div>`;
+	    }).join('');
+	    showModal(`<div class="modalHeader"><h2>${escapeHtml(config.title)}</h2><button class="closeBtn" data-close>×</button></div><form id="financeForm" class="formGrid">${fieldsHtml}<button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button></form>`);
+	    $('#financeForm').onsubmit = async (event) => {
+	      event.preventDefault();
+	      const previousState = cloneState(state);
+	      const businessId = currentBusiness().id;
+	      const entry = { id:uid(`finance-${kind}`), operationId:uid('financeop'), businessId, status:kind === 'payments' ? 'pending' : 'active', createdAt:new Date().toISOString() };
+	      config.fields.forEach((field) => {
+	        const value = $(`#finance-${field}`).value.trim();
+	        entry[field] = ['amount','monthlyAmount','targetAmount','savedAmount'].includes(field) ? Math.max(0, parseMoney(value) || 0) : value;
+	      });
+	      if (!entry.name) return toast('Escribe un nombre.', 'err');
+	      state.finance[kind].push(entry);
+	      addAudit('finance_entry_created', { kind, entryId:entry.id });
+	      const committed = await commitCriticalMutation(previousState, 'finance_entry_created', (next) =>
+	        next.finance?.[kind]?.some((item) => item.id === entry.id && item.businessId === businessId));
+	      if (!committed.ok) return;
+	      closeModal(); renderApp('finance'); toast('Registro financiero guardado');
+	    };
+	  }
+	  function bindFinance() {
+	    $$('[data-finance-add]').forEach((button) => button.onclick = () => openFinanceModal(button.dataset.financeAdd));
+	    $$('[data-finance-toggle]').forEach((button) => button.onclick = async () => {
+	      const [kind, encodedId] = button.dataset.financeToggle.split(':');
+	      const entry = financeForBiz(kind).find((item) => item.id === decodeActionId(encodedId));
+	      if (!entry) return;
+	      const previousState = cloneState(state);
+	      const businessId = currentBusiness().id;
+	      entry.status = entry.status === 'paid' ? 'pending' : 'paid';
+	      entry.paidAt = entry.status === 'paid' ? new Date().toISOString() : null;
+	      const expectedStatus = entry.status;
+	      const committed = await commitCriticalMutation(previousState, 'finance_payment_status_changed', (next) =>
+	        next.finance?.[kind]?.some((item) => item.id === entry.id && item.businessId === businessId && item.status === expectedStatus));
+	      if (!committed.ok) return;
+	      renderApp('finance');
+	    });
+	    $$('[data-finance-delete]').forEach((button) => button.onclick = async () => {
+	      const [kind, encodedId] = button.dataset.financeDelete.split(':');
+	      const entryId = decodeActionId(encodedId);
+	      if (!FINANCE_CONFIG[kind] || !confirm('¿Eliminar este registro financiero manual?')) return;
+	      const previousState = cloneState(state);
+	      const businessId = currentBusiness().id;
+	      state.finance[kind] = state.finance[kind].filter((item) => item.id !== entryId || item.businessId !== businessId);
+	      const committed = await commitCriticalMutation(previousState, 'finance_entry_deleted', (next) =>
+	        !next.finance?.[kind]?.some((item) => item.id === entryId && item.businessId === businessId));
+	      if (!committed.ok) return;
+	      renderApp('finance');
+	    });
+	  }
+
+	  function helpView() {
+	    const categories = [...new Set(HELP_TOPICS.map((topic) => topic.category))];
+	    return `<div class="pageHead"><div><h1>Centro de ayuda</h1><p>Respuestas claras para trabajar con CLICK 360.</p></div></div>
+	      <div class="helpSearch"><span>${icon('search')}</span><input id="helpSearchInput" type="search" placeholder="Buscar: cerrar caja, etiqueta, mesa..."></div>
+	      <div class="helpCategories">${categories.map((category) => `<button type="button" data-help-category="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div>
+	      <section id="helpResults" class="helpResults">${helpTopicCards(HELP_TOPICS)}</section>
+	      <a class="btn whatsapp block helpSupport" href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito ayuda')}" target="_blank" rel="noopener noreferrer">${icon('message-circle')} Contactar soporte por WhatsApp</a>`;
+	  }
+	  function helpTopicCards(topics) {
+	    return topics.length ? topics.map((topic) => `<details class="card helpTopic"><summary><span><small>${escapeHtml(topic.category)}</small>${escapeHtml(topic.title)}</span>${icon('chevron-down')}</summary><p>${escapeHtml(topic.body)}</p></details>`).join('') : '<div class="card empty">No encontramos una guía con esas palabras.</div>';
+	  }
+	  function bindHelp() {
+	    const input = $('#helpSearchInput');
+	    const filter = (category = '') => {
+	      const query = String(input?.value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+	      const topics = HELP_TOPICS.filter((topic) => {
+		        const haystack = `${topic.category} ${topic.title} ${topic.keywords || ''} ${topic.body}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+	        return (!category || topic.category === category) && (!query || haystack.includes(query));
+	      });
+	      $('#helpResults').innerHTML = helpTopicCards(topics);
+	      refreshIcons($('#helpResults'));
+	    };
+	    input?.addEventListener('input', () => filter());
+	    $$('[data-help-category]').forEach((button) => button.onclick = () => {
+	      const active = button.classList.toggle('active');
+	      $$('[data-help-category]').forEach((candidate) => { if (candidate !== button) candidate.classList.remove('active'); });
+	      filter(active ? button.dataset.helpCategory : '');
+	    });
+	  }
+
+		function moreView(){
 		    const ownerTools = isOwnerUser() ? `
 		      <button class="card bigRow" data-more="reports"><span>${icon('chart-no-axes-combined')} Reportes</span>${icon('chevron-right')}</button>
-		      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
-		      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
+	      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
+	      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
+	      ${isRestaurantBusiness() ? `<button class="card bigRow" data-more="tables"><span>${icon('utensils')} Mesas / Restaurante</span>${icon('chevron-right')}</button>` : ''}
+	      <button class="card bigRow" data-more="finance"><span>${icon('wallet-cards')} Finanzas</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
@@ -2553,7 +2885,7 @@ function parseMoney(value) {
 		      <button class="card bigRow" data-more="legal"><span>${icon('shield-check')} Términos y privacidad</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" id="calculatorMoreBtn"><span>${icon('calculator')} Calculadora</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" id="installAppBtn"><span>${icon('smartphone')} Instalar CLICK 360 como app</span>${icon('chevron-right')}</button>
-		      <button class="card bigRow" id="helpBtn"><span>${icon('circle-help')} Cómo funciona CLICK 360</span>${icon('chevron-right')}</button>
+	      <button class="card bigRow" data-more="help"><span>${icon('circle-help')} Centro de ayuda</span>${icon('chevron-right')}</button>
 		      <button class="btn block" id="logoutMore">Cerrar sesión</button>
 			    </section>`;
 			  }
@@ -2745,7 +3077,16 @@ function parseMoney(value) {
         <p style="font-size:11px; color:#888; line-height:1.4;">Al usar el sistema, aceptas los <a href="#" id="showTerms" style="color:var(--gold); text-decoration:underline;">Términos y Condiciones</a>.</p>
       </section>`;
   }
-  function typeOptions(selected){ return [['ropa','Ropa'],['restaurante','Restaurante'],['barberia','Barbería'],['ganaderia','Ganadería'],['ferreteria','Ferretería'],['otro','Otro']].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
+  function typeOptions(selected){ return [
+    ['ropa','Tienda / bazar / perfumes / ropa'],
+    ['minimarket','Minimarket / licorería / farmacia'],
+    ['restaurante','Restaurante / cafetería / bar'],
+    ['servicios','Servicios'],
+    ['barberia','Barbería'],
+    ['ganaderia','Ganadería'],
+    ['ferreteria','Ferretería'],
+    ['otro','Otro']
+  ].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
 
   function bindView(r){
     if(r==='inventory') bindInventory();
@@ -2759,19 +3100,34 @@ function parseMoney(value) {
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
     if(r==='reminders') bindReminders();
+    if(r==='tables') bindTables();
+    if(r==='finance') bindFinance();
+    if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();
 	    if(r==='printing') bindPrinting();
 	  }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
     $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>x.name.toLowerCase().includes(q)||x.code.toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
+    $('#productSearch').onkeydown=(event)=>{
+      if(event.key!=='Enter') return;
+      event.preventDefault();
+      const code=normalizeCode(event.currentTarget.value);
+      const product=productsForBiz().find((item)=>normalizeCode(item.code)===code);
+      if(product) return openProductModal(product);
+      if(code && confirm(`No existe el código ${code}. ¿Crear producto?`)) openProductModal(null, code);
+    };
     if ($('#openCamera')) {
        $('#openCamera').onclick=()=>startScanner((code) => {
-          $('#productSearch').value = code;
-          $('#productSearch').dispatchEvent(new Event('input'));
+          const normalized = normalizeCode(code);
+          const product = productsForBiz().find((item) => normalizeCode(item.code) === normalized);
           stopScanner();
-          $('#cameraPanel').classList.remove('show');
-          toast('Buscando: ' + code);
+          $('#cameraPanel')?.classList.remove('show');
+          if (product) {
+            openProductModal(product);
+            return toast(`Producto encontrado: ${product.name}`);
+          }
+          if (normalized && confirm(`Código ${normalized} no registrado. ¿Crear producto?`)) openProductModal(null, normalized);
        });
     }
 
@@ -2779,7 +3135,7 @@ function parseMoney(value) {
     const labelSample = productsForBiz()[0] || { id: 'sample', businessId: currentBusiness().id, code: 'CLICK360', category: 'Ejemplo', name: 'Producto de ejemplo', qty: 1, price: 10, cardPrice: 10, taxMode: 'inherit', imageData: '' };
     $$('[data-edit-tpl]').forEach((button) => button.onclick = () => openLabelModal(labelSample, button.dataset.editTpl));
     $$('[data-rename-tpl]').forEach((button) => button.onclick = () => {
-      const template = state.settings.labelTemplates.find((item) => item.id === button.dataset.renameTpl);
+      const template = labelTemplatesForBiz().find((item) => item.id === button.dataset.renameTpl);
       if (!template) return;
       const name = prompt('Nuevo nombre de la plantilla:', template.name);
       if (!name?.trim()) return;
@@ -2790,7 +3146,7 @@ function parseMoney(value) {
       toast('Plantilla renombrada');
     });
     $$('[data-duplicate-tpl]').forEach((button) => button.onclick = () => {
-      const template = state.settings.labelTemplates.find((item) => item.id === button.dataset.duplicateTpl);
+      const template = labelTemplatesForBiz().find((item) => item.id === button.dataset.duplicateTpl);
       if (!template) return;
       const copy = JSON.parse(JSON.stringify(template));
       copy.id = uid('tpl');
@@ -2804,7 +3160,7 @@ function parseMoney(value) {
       toast('Plantilla duplicada');
     });
     $$('[data-default-tpl]').forEach((button) => button.onclick = () => {
-      state.settings.labelTemplates.forEach((template) => { template.isDefault = template.id === button.dataset.defaultTpl; });
+      labelTemplatesForBiz().forEach((template) => { template.isDefault = template.id === button.dataset.defaultTpl; });
       if (!save()) return;
       renderApp('inventory');
       toast('Plantilla predeterminada actualizada');
@@ -2815,7 +3171,8 @@ function parseMoney(value) {
              const tplId = btn.dataset.delTpl;
              state.settings ||= {};
              state.settings.labelTemplates = (state.settings.labelTemplates || []).filter(t => t.id !== tplId);
-             if (state.settings.labelTemplates.length && !state.settings.labelTemplates.some((template) => template.isDefault)) state.settings.labelTemplates[0].isDefault = true;
+             const remainingTemplates = labelTemplatesForBiz();
+             if (remainingTemplates.length && !remainingTemplates.some((template) => template.isDefault)) remainingTemplates[0].isDefault = true;
              if(!save()) return;
              renderApp('inventory');
              toast('Plantilla eliminada');
@@ -2830,9 +3187,9 @@ function parseMoney(value) {
     $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
   }
-  function openProductModal(product=null){
+  function openProductModal(product=null, initialCode=''){
     const b=currentBusiness(), v=businessVocabulary(b.type);
-    const p=product || {id:null,code:'',category:'',name:'',qty:0,cost:0,price:0,taxMode:'inherit',notes:'',imageData:''};
+    const p=product || {id:null,code:normalizeCode(initialCode),category:'',name:'',qty:0,cost:0,price:0,taxMode:'inherit',notes:'',imageData:''};
     const productImage = safeImageSrc(p.imageData);
     showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
       <form id="productForm" class="formGrid">
@@ -3025,7 +3382,12 @@ function parseMoney(value) {
         const possible = String(input||'').toUpperCase().match(/[A-Z0-9_-]{3,17}/g) || [];
         p = productsForBiz().find(x=>possible.includes(normalizeCode(x.code)));
       }
-      if(!p){ beep('err'); return toast(`Producto no encontrado: ${code || 'sin código'}`,'err'); }
+      if(!p){
+        beep('err');
+        if (code && confirm(`Producto no encontrado: ${code}. ¿Crear este producto?`)) openProductModal(null, code);
+        else toast(`Producto no encontrado: ${code || 'sin código'}`,'err');
+        return;
+      }
       if(p.qty<=0){ beep('err'); return toast('Sin stock disponible','err'); }
       const it=cart.find(x=>x.id===p.id);
       if(it){ if(it.qty>=p.qty){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
@@ -3351,8 +3713,22 @@ function parseMoney(value) {
   }
 
   let currentFacingMode = 'environment';
+  const BARCODE_FORMATS = Object.freeze(['qr_code','ean_13','ean_8','upc_a','upc_e','code_128','code_39','codabar','itf']);
+  async function createBarcodeDetector() {
+    if (!('BarcodeDetector' in window)) return null;
+    try {
+      const supported = typeof BarcodeDetector.getSupportedFormats === 'function'
+        ? await BarcodeDetector.getSupportedFormats() : BARCODE_FORMATS;
+      const formats = BARCODE_FORMATS.filter((format) => supported.includes(format));
+      return new BarcodeDetector({ formats: formats.length ? formats : ['qr_code'] });
+    } catch {
+      try { return new BarcodeDetector({ formats:['qr_code'] }); } catch { return null; }
+    }
+  }
   async function startScanner(onCode, toggleMode=false){
     if(toggleMode) currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+    stopScanner(false);
+    const generation = ++scannerGeneration;
     const panel=$('#cameraPanel'), video=$('#scanVideo'), status=$('#cameraStatus');
     panel.classList.add('show');
     if(!$('#scanUpload')){
@@ -3390,34 +3766,44 @@ function parseMoney(value) {
       btnRow.appendChild(stopBtn);
       panel.appendChild(btnRow);
 
-      input.onchange=e=>scanImageFile(e.target.files?.[0], onCode);
+      input.onchange=e=>{ const file=e.target.files?.[0]; e.target.value=''; scanImageFile(file, onCode); };
     }
     status.textContent='Solicitando permiso de cámara...';
     try{
-      stopScanner(false);
       if(!navigator.mediaDevices?.getUserMedia) throw new Error('camera unavailable');
       try {
-        scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:currentFacingMode}});
+        scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:currentFacingMode}}});
       } catch(e) {
         scanStream=await navigator.mediaDevices.getUserMedia({video:true});
       }
+      if (generation !== scannerGeneration) {
+        scanStream?.getTracks?.().forEach((track) => track.stop());
+        scanStream = null;
+        return;
+      }
       video.srcObject=scanStream; await video.play();
-      status.textContent='Apunta al QR de la etiqueta. Si no lo lee, escribe el código que aparece debajo.';
+      status.textContent='Apunta al QR o código de barras. También puedes escribir el código.';
       const canvas=document.createElement('canvas');
       const ctx=canvas.getContext('2d', { willReadFrequently:true });
 
-      if('BarcodeDetector' in window){
-        const detector=new BarcodeDetector({formats:['qr_code']});
+      const detector = await createBarcodeDetector();
+      if(detector){
+        let detectInFlight = false;
         scanTimer=setInterval(async()=>{
-          if(!video.videoWidth || Date.now()-lastScanAt<1000) return;
-          const codes=await detector.detect(video).catch(()=>[]);
-          if(codes?.length){
-            lastScanAt=Date.now();
-            const raw=codes[0].rawValue||'';
-            onCode(raw);
-          }
+          if(detectInFlight || generation !== scannerGeneration || !video.videoWidth || Date.now()-lastScanAt<1000) return;
+          detectInFlight = true;
+          try {
+            const codes=await detector.detect(video).catch(()=>[]);
+            if(codes?.length){
+              lastScanAt=Date.now();
+              const raw=codes[0].rawValue||'';
+              onCode(raw);
+            }
+          } finally { detectInFlight = false; }
         },420);
       } else {
+        const zxingReader = window.ZXingBrowser?.BrowserMultiFormatReader
+          ? new window.ZXingBrowser.BrowserMultiFormatReader() : null;
         scanTimer=setInterval(()=>{
           if(!video.videoWidth || Date.now()-lastScanAt<1000) return;
           canvas.width=video.videoWidth; canvas.height=video.videoHeight;
@@ -3429,16 +3815,24 @@ function parseMoney(value) {
             raw=qr?.data||null;
           }
           if(!raw) raw=decodeLocalC360QR(img);
+          if(!raw && zxingReader) {
+            try { raw = zxingReader.decodeFromCanvas(canvas)?.getText?.() || null; } catch {}
+          }
           if(raw){
             lastScanAt=Date.now();
             onCode(raw);
           }
         },300);
-        status.textContent='Apunta al QR de la etiqueta. También puedes escribir el código debajo del QR.';
+        status.textContent=zxingReader ? 'Apunta al QR o código de barras.' : 'Este navegador usa lectura QR compatible. Para códigos de barras usa el código manual o un lector físico.';
       }
     }catch(e){
-      status.textContent='No se pudo activar la cámara. Escribe el código que aparece debajo del QR.';
-      toast('No se pudo activar la cámara. Usa el código manual.','err');
+      const messages = {
+        NotAllowedError:'Permiso de cámara denegado. Habilítalo en el navegador o usa el código manual.',
+        NotFoundError:'No encontramos una cámara disponible. Usa el código manual o un lector físico.',
+        NotReadableError:'La cámara está ocupada por otra aplicación. Ciérrala e intenta nuevamente.'
+      };
+      status.textContent=messages[e?.name] || 'No se pudo activar la cámara. Escribe el código manualmente.';
+      toast(status.textContent,'err');
     }
   }
 
@@ -3460,8 +3854,15 @@ function parseMoney(value) {
           }
           const localRaw=decodeLocalC360QR(data);
           if(localRaw){ onCode(localRaw); status.textContent='QR leído desde foto.'; return; }
-          if('BarcodeDetector' in window){
-            const detector=new BarcodeDetector({formats:['qr_code']});
+          if(window.ZXingBrowser?.BrowserMultiFormatReader){
+            try {
+              const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
+              const result = reader.decodeFromCanvas(canvas);
+              if(result?.getText?.()){ onCode(result.getText()); status.textContent='Código leído desde foto.'; return; }
+            } catch {}
+          }
+          const detector=await createBarcodeDetector();
+          if(detector){
             const codes=await detector.detect(img).catch(()=>[]);
             if(codes?.length){ onCode(codes[0].rawValue); status.textContent='QR leído desde foto.'; return; }
           }
@@ -3476,7 +3877,7 @@ function parseMoney(value) {
     };
     reader.readAsDataURL(file);
 	  }
-	  function stopScanner(hide=true){ if(scanTimer) clearInterval(scanTimer); scanTimer=null; if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } const p=$('#cameraPanel'); if(p&&hide)p.classList.remove('show'); }
+	  function stopScanner(hide=true){ scannerGeneration += 1; if(scanTimer) clearInterval(scanTimer); scanTimer=null; if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; } const p=$('#cameraPanel'); if(p&&hide)p.classList.remove('show'); }
 
 	  function cashCloseDisplayMode() {
 	    return window.matchMedia?.('(display-mode: standalone)')?.matches === true || navigator.standalone === true ? 'standalone' : 'browser';
@@ -4812,15 +5213,16 @@ function parseMoney(value) {
       logo: { x: 15, y: 14, width: 38, height: 38, visible: false, locked: false, z: 3 },
       image: { x: 204, y: 14, width: 42, height: 42, visible: false, locked: false, z: 3 },
       qr: { x: 45, y: 60, width: 170, height: 170, visible: true, locked: false, z: 1 },
-      code: { x: 130, y: 250, width: 230, size: 10, visible: true, locked: false, z: 2 },
-      name: { x: 130, y: 278, width: 235, size: 16, visible: true, locked: false, z: 2 },
-      variant: { x: 130, y: 300, width: 235, size: 10, visible: false, locked: false, z: 2 },
+      barcode: { x: 20, y: 235, width: 220, height: 34, visible: true, locked: false, z: 2 },
+      code: { x: 130, y: 278, width: 230, size: 10, visible: true, locked: false, z: 2 },
+      name: { x: 130, y: 302, width: 235, size: 16, visible: true, locked: false, z: 2 },
+      variant: { x: 130, y: 320, width: 235, size: 10, visible: false, locked: false, z: 2 },
       price: { x: 130, y: 326, width: 235, size: 18, visible: true, locked: false, z: 2 },
       tax: { x: 130, y: 345, width: 235, size: 9, visible: true, locked: false, z: 2 },
       social: { x: 130, y: 363, width: 235, size: 9, visible: true, locked: false, z: 2 },
       phone: { x: 58, y: 363, width: 110, size: 8, visible: false, locked: false, z: 2 },
       stock: { x: 202, y: 363, width: 90, size: 8, visible: false, locked: false, z: 2 },
-      customText: { x: 130, y: 235, width: 235, size: 8, visible: false, locked: false, z: 2 }
+      customText: { x: 130, y: 232, width: 235, size: 8, visible: false, locked: false, z: 2 }
     };
   }
   function normalizedLabelLayout(layout = {}) {
@@ -4865,6 +5267,7 @@ function parseMoney(value) {
 	    const baseWidth = Math.round(widthMm * (260 / 60));
 	    const baseHeight = Math.round(heightMm * (380 / 88));
 	    const layout = normalizedLabelLayout(options.layout);
+	    layout.barcode.visible = options.showBarcode !== false && layout.barcode.visible !== false;
 	    const yOffset = Number(options.yOffsetAdj || 0);
 	    if (yOffset) Object.entries(layout).forEach(([key, element]) => {
 	      if (!['qr', 'logo', 'image'].includes(key)) element.y = Number(element.y || 0) + yOffset;
@@ -4877,10 +5280,17 @@ function parseMoney(value) {
     canvas.height = h;
     canvas.dataset.baseWidth = String(baseWidth);
     canvas.dataset.baseHeight = String(baseHeight);
-    const ctx = canvas.getContext('2d');
-    ctx.save();
-    ctx.fillStyle = safeColor(options.bgColor, '#ffffff');
-    roundRect(ctx, 0, 0, w, h, 12 * scale, true, false);
+	    const ctx = canvas.getContext('2d');
+	    ctx.save();
+	    ctx.fillStyle = safeColor(options.bgColor, '#ffffff');
+	    if (options.shape === 'circle') {
+	      ctx.beginPath();
+	      ctx.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+	      ctx.clip();
+	      ctx.fillRect(0, 0, w, h);
+	    } else {
+	      roundRect(ctx, 0, 0, w, h, options.shape === 'square' ? 0 : 12 * scale, true, false);
+	    }
     const fg = safeColor(options.fgColor, '#000000');
     ctx.fillStyle = fg;
     ctx.textAlign = 'center';
@@ -4896,6 +5306,13 @@ function parseMoney(value) {
         const qrCanvas = document.createElement('canvas');
         QR.draw(qrCanvas, productPayload(product), size * scale, Math.max(2, Number(options.qrMargin || 5)), fg, safeColor(options.qrBgColor || options.bgColor, '#ffffff'));
         ctx.drawImage(qrCanvas, x * scale, y * scale, size * scale, size * scale);
+      } else if (key === 'barcode') {
+        if (typeof window.JsBarcode !== 'function' || !String(product.code || '').trim()) continue;
+        try {
+          const barcodeCanvas = document.createElement('canvas');
+          window.JsBarcode(barcodeCanvas, String(product.code).trim(), { format:'CODE128', displayValue:false, margin:0, background:safeColor(options.bgColor, '#ffffff'), lineColor:fg, height:Math.max(20, Number(element.height || 34) * scale) });
+          ctx.drawImage(barcodeCanvas, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 220) * scale, Number(element.height || 34) * scale);
+        } catch {}
       } else if (key === 'logo' || key === 'image') {
         const source = key === 'logo' ? currentBusiness()?.settings?.logoUrl : product.imageData;
         const image = await loadCanvasImage(source);
@@ -4925,12 +5342,13 @@ function parseMoney(value) {
     const bizSettings = currentBusiness().settings || {};
     const address = bizSettings.address || '';
 
-    const templates = state.settings?.labelTemplates || [];
+    const templates = labelTemplatesForBiz();
     const templateOptions = templates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
     const initialTemplate = templates.find((template) => template.id === initialTemplateId)
       || templates.find((template) => template.isDefault) || null;
-    let activeTemplateId = initialTemplate?.id || '';
-    let editorLayout = normalizedLabelLayout(initialTemplate?.layout);
+	    let activeTemplateId = initialTemplate?.id || '';
+	    let editorLayout = normalizedLabelLayout(initialTemplate?.layout);
+	    const initialPaperType = initialTemplate?.paperType || 'custom';
     if (initialTemplate && !initialTemplate.layout) {
       const legacyOffset = Number(initialTemplate.yOffsetAdj || 0);
       Object.values(editorLayout).forEach((element) => { element.y = Number(element.y || 0) + legacyOffset; });
@@ -4945,7 +5363,7 @@ function parseMoney(value) {
 		          <div class="field"><label for="applyTemplateSelect">Plantilla</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
 	          <section class="labelPresetPanel"><b>Diseños rápidos</b><div class="labelPresetGrid"><button type="button" data-label-preset="small">Pequeña</button><button type="button" data-label-preset="medium">Mediana</button><button type="button" data-label-preset="large">Grande</button><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-price">QR + precio</button><button type="button" data-label-preset="business">QR + negocio</button></div></section>
 	          <section class="labelElementPanel">
-		            <div class="field"><label for="labelElementSelect">Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
+		            <div class="field"><label for="labelElementSelect">Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="barcode">Código de barras</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
 	            <div class="labelQuickControls"><button type="button" id="labelSizeDown" title="Reducir">${icon('minus')}</button><button type="button" id="labelSizeUp" title="Aumentar">${icon('plus')}</button><button type="button" id="labelCenter" title="Centrar">${icon('align-center')}<span>Centrar</span></button><button type="button" id="labelToggleVisibility" title="Mostrar u ocultar">${icon('eye')}<span>Ocultar</span></button><button type="button" id="labelToggleLock" title="Bloquear posición">${icon('lock-open')}<span>Bloquear</span></button><button type="button" id="labelResetElement" title="Restablecer elemento">${icon('rotate-ccw')}<span>Restablecer</span></button></div>
 	            <p id="labelQrWarning" class="fieldHint"></p>
 	          </section>
@@ -4958,9 +5376,10 @@ function parseMoney(value) {
 	            <div class="labelLayerButtons"><button type="button" class="btn" id="labelLayerDown">Enviar atrás</button><button type="button" class="btn" id="labelLayerUp">Traer al frente</button></div>
 	            <div class="field"><label>Mover textos <span id="yOffsetVal">0px</span></label><input type="range" id="labelYOffset" min="-50" max="50" value="0"></div><div class="formGrid"><div class="field"><label>Tamaño nombre <span id="nameScaleVal">1.0x</span></label><input type="range" id="labelNameScale" min="0.6" max="1.4" step="0.1" value="1.0"></div><div class="field"><label>Tamaño precio <span id="priceScaleVal">1.0x</span></label><input type="range" id="labelPriceScale" min="0.6" max="1.4" step="0.1" value="1.0"></div></div>
 	          </div></details>
-	          <div class="field"><label>Cantidad de copias</label><input type="number" id="labelCopies" min="1" value="1"></div>
-	          <div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('printer')} Imprimir prueba</button><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar plantilla</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nueva</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
-	          <details class="settingsDisclosure"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printStock">${icon('printer')} Imprimir stock (${product.qty})</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
+	          <section class="labelPrintContract"><div class="field"><label>Cantidad exacta</label><input type="number" id="labelCopies" min="1" max="500" value="1"></div><label class="consentCheck"><input type="checkbox" id="labelUseStock"><span>Imprimir una etiqueta por cada unidad en stock (${product.qty})</span></label><p id="labelQuantitySummary" class="fieldHint">Se imprimirá 1 etiqueta. El stock no cambia esta cantidad.</p></section>
+	          <details class="settingsDisclosure"><summary>Papel y alineación</summary><div class="labelAdvancedBody"><div class="formGrid"><div class="field"><label>Plantilla de papel</label><select id="labelPaperType"><option value="roll-4x2" ${initialPaperType === 'roll-4x2' ? 'selected' : ''}>Rollo térmico 4x2 pulgadas / 203 DPI</option><option value="roll-small" ${initialPaperType === 'roll-small' ? 'selected' : ''}>Rollo térmico etiqueta pequeña</option><option value="sheet-2" ${initialPaperType === 'sheet-2' ? 'selected' : ''}>Hoja 2 columnas</option><option value="sheet-3" ${initialPaperType === 'sheet-3' ? 'selected' : ''}>Hoja 3 columnas</option><option value="custom" ${initialPaperType === 'custom' ? 'selected' : ''}>Personalizada</option></select></div><div class="field"><label>Forma visual</label><select id="labelShape"><option value="rounded" ${!['square','circle'].includes(initialTemplate?.shape) ? 'selected' : ''}>Rectangular redondeada</option><option value="square" ${initialTemplate?.shape === 'square' ? 'selected' : ''}>Rectangular / cuadrada</option><option value="circle" ${initialTemplate?.shape === 'circle' ? 'selected' : ''}>Circular</option></select></div><div class="field"><label>Columnas</label><input id="labelColumns" type="number" min="1" max="6" value="${numericInputValue(initialTemplate?.columns || 1)}"></div><div class="field"><label>Filas por hoja</label><input id="labelRows" type="number" min="1" max="20" value="${numericInputValue(initialTemplate?.rows || 1)}"></div><div class="field"><label>Margen superior (mm)</label><input id="labelMarginTop" type="number" min="0" max="50" value="${numericInputValue(initialTemplate?.marginTopMm || 0)}"></div><div class="field"><label>Margen izquierdo (mm)</label><input id="labelMarginLeft" type="number" min="0" max="50" value="${numericInputValue(initialTemplate?.marginLeftMm || 0)}"></div><div class="field"><label>Separación horizontal (mm)</label><input id="labelGapX" type="number" min="0" max="30" value="${numericInputValue(initialTemplate?.gapXmm ?? 2)}"></div><div class="field"><label>Separación vertical (mm)</label><input id="labelGapY" type="number" min="0" max="30" value="${numericInputValue(initialTemplate?.gapYmm ?? 2)}"></div><div class="field"><label>DPI</label><select id="labelDpi"><option value="203" ${Number(initialTemplate?.dpi || 203) === 203 ? 'selected' : ''}>203 DPI</option><option value="300" ${Number(initialTemplate?.dpi) === 300 ? 'selected' : ''}>300 DPI</option></select></div><div class="field"><label>Orientación</label><select id="labelOrientation"><option value="portrait" ${initialTemplate?.orientation !== 'landscape' ? 'selected' : ''}>Vertical</option><option value="landscape" ${initialTemplate?.orientation === 'landscape' ? 'selected' : ''}>Horizontal</option></select></div></div><label class="consentCheck"><input type="checkbox" id="labelShowBarcode" ${initialTemplate?.showBarcode === false ? '' : 'checked'}><span>Mostrar código de barras cuando el código sea compatible</span></label><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Prueba de alineación</button></div></details>
+	          <div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('printer')} Imprimir cantidad exacta</button><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar plantilla</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nueva</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
+	          <details class="settingsDisclosure"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
 	        </div>
 	      </div>`);
 
@@ -4986,7 +5405,18 @@ function parseMoney(value) {
           qrMargin: Math.max(2, Math.min(12, Number($('#labelQrMargin').value || 5))),
           widthMm: Math.max(25, Math.min(120, Number($('#labelWidthMm').value || 60))),
           heightMm: Math.max(25, Math.min(180, Number($('#labelHeightMm').value || 88))),
-          layout: normalizedLabelLayout(editorLayout),
+          paperType: $('#labelPaperType')?.value || 'roll-4x2',
+          columns: Math.max(1, Math.min(6, Number($('#labelColumns')?.value || 1))),
+          rows: Math.max(1, Math.min(20, Number($('#labelRows')?.value || 1))),
+          marginTopMm: Math.max(0, Math.min(50, Number($('#labelMarginTop')?.value || 0))),
+          marginLeftMm: Math.max(0, Math.min(50, Number($('#labelMarginLeft')?.value || 0))),
+          gapXmm: Math.max(0, Math.min(30, Number($('#labelGapX')?.value || 0))),
+          gapYmm: Math.max(0, Math.min(30, Number($('#labelGapY')?.value || 0))),
+          dpi: Number($('#labelDpi')?.value || 203) === 300 ? 300 : 203,
+          orientation: $('#labelOrientation')?.value === 'landscape' ? 'landscape' : 'portrait',
+	          showBarcode: $('#labelShowBarcode')?.checked !== false,
+	          shape: ['square','circle'].includes($('#labelShape')?.value) ? $('#labelShape').value : 'rounded',
+	          layout: normalizedLabelLayout(editorLayout),
           yOffsetAdj: parseFloat($('#labelYOffset').value || '0'),
           nameScale: parseFloat($('#labelNameScale').value || '1.0'),
           priceScale: parseFloat($('#labelPriceScale').value || '1.0')
@@ -5055,7 +5485,7 @@ function parseMoney(value) {
       $('#labelElementX').value = Math.round(Number(element.x || 0));
       $('#labelElementY').value = Math.round(Number(element.y || 0));
 	      $('#labelElementWidth').value = Math.round(Number(element.width || 20));
-	      $('#labelElementHeight').value = Math.round(Number(['qr','logo','image'].includes(key) ? (element.height || element.width || 20) : (element.size || 10)));
+	      $('#labelElementHeight').value = Math.round(Number(['qr','barcode','logo','image'].includes(key) ? (element.height || element.width || 20) : (element.size || 10)));
 	      $('#labelToggleVisibility span').textContent = element.visible === false ? 'Mostrar' : 'Ocultar';
 	      $('#labelToggleLock span').textContent = element.locked === true ? 'Desbloquear' : 'Bloquear';
 	    };
@@ -5068,7 +5498,7 @@ function parseMoney(value) {
       element.x = Number($('#labelElementX').value || 0);
       element.y = Number($('#labelElementY').value || 0);
       element.width = Math.max(8, Number($('#labelElementWidth').value || element.width || 20));
-      if (['qr','logo','image'].includes(key)) element.height = Math.max(key === 'qr' ? 90 : 8, Number($('#labelElementHeight').value || element.height || element.width));
+      if (['qr','barcode','logo','image'].includes(key)) element.height = Math.max(key === 'qr' ? 90 : 8, Number($('#labelElementHeight').value || element.height || element.width));
       else element.size = Math.max(6, Number($('#labelElementHeight').value || element.size || 10));
       updatePreview();
     };
@@ -5084,7 +5514,7 @@ function parseMoney(value) {
 	      const key = elementSelect.value;
 	      const element = editorLayout[key];
 	      if (!element || element.locked) return toast('Desbloquea el elemento para cambiarlo.', 'err');
-	      if (['qr','logo','image'].includes(key)) {
+	      if (['qr','barcode','logo','image'].includes(key)) {
 	        const minimum = key === 'qr' ? 90 : 20;
 	        element.width = Math.max(minimum, Number(element.width || minimum) + delta * 10);
 	        element.height = Math.max(minimum, Number(element.height || element.width) + delta * 10);
@@ -5098,7 +5528,7 @@ function parseMoney(value) {
 	      const key = elementSelect.value;
 	      const element = editorLayout[key];
 	      const baseWidth = Number(canvas.dataset.baseWidth || 260);
-	      if (['qr','logo','image'].includes(key)) element.x = Math.max(0, (baseWidth - Number(element.width || 0)) / 2);
+	      if (['qr','barcode','logo','image'].includes(key)) element.x = Math.max(0, (baseWidth - Number(element.width || 0)) / 2);
 	      else element.x = baseWidth / 2;
 	      syncElementControls(); updatePreview();
 	    };
@@ -5147,7 +5577,7 @@ function parseMoney(value) {
 	    };
 
     const hitBounds = (key, element) => {
-      if (['qr','logo','image'].includes(key)) return { left: element.x, top: element.y, right: element.x + element.width, bottom: element.y + (element.height || element.width) };
+      if (['qr','barcode','logo','image'].includes(key)) return { left: element.x, top: element.y, right: element.x + element.width, bottom: element.y + (element.height || element.width) };
       const half = Number(element.width || 100) / 2;
       return { left: element.x - half, top: element.y - Number(element.size || 10) * 1.3, right: element.x + half, bottom: element.y + 5 };
     };
@@ -5211,7 +5641,7 @@ function parseMoney(value) {
 	        const dx = point.x - dragState.startX;
 	        const dy = point.y - dragState.startY;
 	        element.width = Math.max(dragState.key === 'qr' ? 90 : 20, Math.round((dragState.width + dx) / snap) * snap);
-	        if (['qr','logo','image'].includes(dragState.key)) {
+	        if (['qr','barcode','logo','image'].includes(dragState.key)) {
 	          element.height = Math.max(dragState.key === 'qr' ? 90 : 20, Math.round((dragState.height + dy) / snap) * snap);
 	          if (dragState.key === 'qr') element.width = element.height = Math.max(element.width, element.height);
 	        } else {
@@ -5239,7 +5669,7 @@ function parseMoney(value) {
 	    $('#applyTemplateSelect').onchange = (e) => {
 	       const tplId = e.target.value;
 	       if (!tplId) { activeTemplateId = ''; $('#deleteTemplateBtn').disabled = true; return; }
-       const tpl = (state.settings.labelTemplates || []).find(t => t.id === tplId);
+       const tpl = labelTemplatesForBiz().find(t => t.id === tplId);
 	       if (tpl) {
 	          activeTemplateId = tpl.id;
 	          $('#deleteTemplateBtn').disabled = false;
@@ -5260,6 +5690,17 @@ function parseMoney(value) {
 	          $('#labelPriceScale').value = tpl.layout ? (tpl.priceScale || 1.0) : 1.0;
           $('#labelWidthMm').value = tpl.widthMm || 60;
           $('#labelHeightMm').value = tpl.heightMm || 88;
+          $('#labelPaperType').value = tpl.paperType || 'roll-4x2';
+          $('#labelColumns').value = tpl.columns || 1;
+          $('#labelRows').value = tpl.rows || 1;
+          $('#labelMarginTop').value = tpl.marginTopMm || 0;
+          $('#labelMarginLeft').value = tpl.marginLeftMm || 0;
+          $('#labelGapX').value = tpl.gapXmm ?? 2;
+          $('#labelGapY').value = tpl.gapYmm ?? 2;
+          $('#labelDpi').value = tpl.dpi || 203;
+          $('#labelOrientation').value = tpl.orientation || 'portrait';
+	          $('#labelShowBarcode').checked = tpl.showBarcode !== false;
+	          $('#labelShape').value = ['square','circle'].includes(tpl.shape) ? tpl.shape : 'rounded';
           $('#labelTaxDisplay').value = tpl.taxDisplay || 'inherit';
           $('#labelQrMargin').value = tpl.qrMargin || 5;
           $('#labelCustomText').value = tpl.customText || '';
@@ -5273,13 +5714,13 @@ function parseMoney(value) {
     };
 
 	    const refreshTemplateSelect = () => {
-	      const updatedTemplates = state.settings?.labelTemplates || [];
+	      const updatedTemplates = labelTemplatesForBiz();
 	      $('#applyTemplateSelect').innerHTML = `<option value="">Nueva plantilla</option>` + updatedTemplates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('');
 	      $('#applyTemplateSelect').value = activeTemplateId;
 	      $('#deleteTemplateBtn').disabled = !activeTemplateId;
 	    };
 	    const persistTemplate = ({ forceNew = false, suggestedName = '' } = {}) => {
-	       const existing = forceNew ? null : state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
+	       const existing = forceNew ? null : labelTemplatesForBiz().find((template) => template.id === activeTemplateId);
 	       const name = prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
 	       if (!name?.trim()) return null;
 	       const currentOpts = getOptions();
@@ -5296,6 +5737,18 @@ function parseMoney(value) {
           qrMargin: currentOpts.qrMargin,
           widthMm: currentOpts.widthMm,
           heightMm: currentOpts.heightMm,
+          paperType: currentOpts.paperType,
+          columns: currentOpts.columns,
+          rows: currentOpts.rows,
+          marginTopMm: currentOpts.marginTopMm,
+          marginLeftMm: currentOpts.marginLeftMm,
+          gapXmm: currentOpts.gapXmm,
+          gapYmm: currentOpts.gapYmm,
+          dpi: currentOpts.dpi,
+          orientation: currentOpts.orientation,
+	          showBarcode: currentOpts.showBarcode,
+	          shape: currentOpts.shape,
+          businessId: currentBusiness().id,
           layout: currentOpts.layout,
           yOffsetAdj: currentOpts.yOffsetAdj,
           nameScale: currentOpts.nameScale,
@@ -5323,11 +5776,11 @@ function parseMoney(value) {
 	    $('#saveTemplateBtn').onclick = () => persistTemplate();
 	    $('#saveTemplateAsNewBtn').onclick = () => persistTemplate({ forceNew: true });
 	    $('#duplicateTemplateBtn').onclick = () => {
-	      const current = state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
+	      const current = labelTemplatesForBiz().find((template) => template.id === activeTemplateId);
 	      persistTemplate({ forceNew: true, suggestedName: `${current?.name || 'Mi Plantilla QR'} - copia` });
 	    };
 	    $('#deleteTemplateBtn').onclick = () => {
-	      const current = state.settings?.labelTemplates?.find((template) => template.id === activeTemplateId);
+	      const current = labelTemplatesForBiz().find((template) => template.id === activeTemplateId);
 	      if (!current || !confirm(`¿Eliminar la plantilla "${current.name}"?`)) return;
 	      state.settings.labelTemplates = state.settings.labelTemplates.filter((template) => template.id !== activeTemplateId);
 	      addAudit('label_template_deleted', { templateId: activeTemplateId, name: current.name });
@@ -5340,15 +5793,59 @@ function parseMoney(value) {
 
     updatePreview();
 
-    $('#printOne').onclick = () => {
-       const copies = parseInt($('#labelCopies').value || '1', 10) || 1;
-       printLabels([{ product, copies }], getOptions());
+    const updateQuantitySummary = () => {
+      const useStock = $('#labelUseStock').checked;
+	      const copies = resolveLabelCopies($('#labelCopies').value, product.qty, useStock);
+	      $('#labelCopies').disabled = useStock;
+	      $('#printOne').disabled = copies < 1;
+	      $('#labelQuantitySummary').textContent = useStock
+	        ? (copies ? `Se imprimirán ${copies} etiquetas porque activaste la opción por stock.` : 'El producto no tiene stock; no se imprimirá ninguna etiqueta.')
+	        : `Se imprimirán ${copies} etiquetas exactas. El stock no cambia esta cantidad.`;
+    };
+    $('#labelCopies').oninput = updateQuantitySummary;
+    $('#labelUseStock').onchange = updateQuantitySummary;
+    updateQuantitySummary();
+
+    const applyPaperType = () => {
+      const presets = {
+        'roll-4x2': { width:101.6, height:50.8, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'landscape' },
+        'roll-small': { width:50, height:30, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'landscape' },
+        'sheet-2': { width:90, height:45, columns:2, rows:5, gapX:4, gapY:4, dpi:300, orientation:'portrait' },
+        'sheet-3': { width:60, height:35, columns:3, rows:7, gapX:3, gapY:3, dpi:300, orientation:'portrait' }
+      };
+      const preset = presets[$('#labelPaperType').value];
+      if (!preset) return;
+      $('#labelWidthMm').value = preset.width;
+      $('#labelHeightMm').value = preset.height;
+      $('#labelColumns').value = preset.columns;
+      $('#labelRows').value = preset.rows;
+      $('#labelGapX').value = preset.gapX;
+      $('#labelGapY').value = preset.gapY;
+      $('#labelDpi').value = preset.dpi;
+      $('#labelOrientation').value = preset.orientation;
+      editorLayout = scaledDefaultLayout(preset.width, preset.height);
+      syncElementControls();
+      updatePreview();
+    };
+	    $('#labelPaperType').onchange = applyPaperType;
+	    $('#labelShape').onchange = updatePreview;
+    $('#labelAlignmentTest').onclick = () => {
+      const options = getOptions();
+      const cells = Array.from({ length: Math.max(1, options.columns * Math.min(options.rows, 3)) }, (_, index) => `<div class="alignmentCell"><b>CLICK 360</b><span>${index + 1}</span><small>${options.widthMm} × ${options.heightMm} mm</small></div>`).join('');
+      handoffPrint({
+        media:'label',
+        widthMm:options.widthMm,
+        heightMm:options.heightMm,
+        filename:'CLICK360_prueba_alineacion.pdf',
+        html:`<section class="alignmentGrid" style="display:grid;grid-template-columns:repeat(${options.columns},${options.widthMm}mm);gap:${options.gapYmm}mm ${options.gapXmm}mm;padding:${options.marginTopMm}mm 0 0 ${options.marginLeftMm}mm">${cells}</section>`
+      }).catch((error) => toast(error.message || 'No se pudo preparar la prueba.', 'err'));
     };
 
-    $('#printStock').onclick = () => {
-       const copies = Math.max(1, product.qty);
-       printLabels([{ product, copies }], getOptions());
-    };
+	    $('#printOne').onclick = () => {
+	       const copies = resolveLabelCopies($('#labelCopies').value, product.qty, $('#labelUseStock').checked);
+	       if (!copies) return toast('No hay unidades en stock para imprimir.', 'err');
+	       printLabels([{ product, copies }], getOptions());
+	    };
 
     $('#printAll').onclick = () => {
        printLabels(productsForBiz().map(p => ({ product: p, copies: 1 })), getOptions());
@@ -5371,18 +5868,41 @@ function parseMoney(value) {
     };
   }
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
+  function buildLabelPrintPlan(groups, options = {}) {
+    const items = [];
+    (groups || []).forEach((group) => {
+	      const requested = group?.copies == null ? 1 : Math.trunc(Number(group.copies) || 0);
+	      const copies = Math.max(0, Math.min(500, requested));
+      for (let index = 0; index < copies; index += 1) items.push({ product:group.product, copy:index + 1 });
+    });
+    return {
+      items,
+      count:items.length,
+      columns:Math.max(1, Math.min(6, Number(options.columns || 1))),
+      rows:Math.max(1, Math.min(20, Number(options.rows || 1)))
+    };
+  }
+  window.click360BuildLabelPrintPlan = buildLabelPrintPlan;
   async function printLabels(groups, options = {}){
     const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
     root.innerHTML='<div class="printLabels"></div>';
     const wrap=$('.printLabels',root);
     const widthMm = Math.max(25, Math.min(120, Number(options.widthMm || 60)));
     const heightMm = Math.max(25, Math.min(180, Number(options.heightMm || 88)));
-    wrap.style.gridTemplateColumns = `repeat(auto-fill, ${widthMm}mm)`;
-    for(const g of groups) for(let i=0;i<Math.max(1,g.copies);i++){
+    const plan = buildLabelPrintPlan(groups, options);
+    wrap.style.gridTemplateColumns = `repeat(${plan.columns}, ${widthMm}mm)`;
+    wrap.style.gap = `${Math.max(0, Number(options.gapYmm || 0))}mm ${Math.max(0, Number(options.gapXmm || 0))}mm`;
+    wrap.style.padding = `${Math.max(0, Number(options.marginTopMm || 0))}mm 0 0 ${Math.max(0, Number(options.marginLeftMm || 0))}mm`;
+    wrap.dataset.paper = String(options.paperType || 'custom');
+    root.dataset.labelCount = String(plan.count);
+    root.dataset.labelPaper = String(options.paperType || 'custom');
+    for(const planned of plan.items){
        const item=document.createElement('div');
        item.className='printLabel';
-       item.style.width = `${widthMm}mm`;
-       item.style.height = `${heightMm}mm`;
+	       item.style.width = `${widthMm}mm`;
+	       item.style.height = `${heightMm}mm`;
+	       item.style.borderRadius = options.shape === 'circle' ? '50%' : (options.shape === 'square' ? '0' : '6px');
+	       item.style.overflow = 'hidden';
        const canvas=document.createElement('canvas');
        canvas.style.width = `${widthMm}mm`;
        canvas.style.height = `${heightMm}mm`;
@@ -5400,10 +5920,18 @@ function parseMoney(value) {
           widthMm,
           heightMm
        };
-       await drawLabelOnCanvas(canvas, g.product, opt);
+       await drawLabelOnCanvas(canvas, planned.product, opt);
+       const renderedImage = document.createElement('img');
+       renderedImage.src = canvas.toDataURL('image/png');
+       renderedImage.alt = `Etiqueta ${planned.copy} de ${planned.product?.name || 'producto'}`;
+       renderedImage.style.width = `${widthMm}mm`;
+       renderedImage.style.height = `${heightMm}mm`;
+       renderedImage.style.display = 'block';
+       canvas.replaceWith(renderedImage);
     }
 	    const printable = wrap.cloneNode(true);
-	    await handoffPrint({ node: printable, media: 'label', widthMm, heightMm, copiesHandled: true, filename: `CLICK360_etiquetas_${today()}.pdf` });
+	    await handoffPrint({ node: printable, media: plan.columns > 1 ? 'a4' : 'label', widthMm, heightMm, copiesHandled: true, filename: `CLICK360_etiquetas_${today()}.pdf` });
+	    return { count:plan.count, columns:plan.columns, rows:plan.rows };
 	  }
 
   function createBackupSnapshot(reason='manual') {
@@ -6488,7 +7016,8 @@ function parseMoney(value) {
   window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR};
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
-	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing'].includes(h)) renderApp(h); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','finance','help'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();

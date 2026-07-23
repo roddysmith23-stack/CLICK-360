@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-launch-v16-2-p1-r4';
+const CACHE = 'click360-mvp-launch-v16-2-p1-5a-r1';
 const ASSETS = [
   './',
   './index.html',
@@ -16,7 +16,9 @@ const ASSETS = [
 	'./robots.txt',
 	'./sitemap.xml',
   './vendor/qrcode-generator.js',
+  './vendor/jsbarcode.min.js',
   './vendor/jsQR.js',
+  './vendor/zxing-browser.min.js',
 	'./vendor/lucide.min.js',
   './vendor/html2pdf.bundle.min.js',
   './vendor/html2canvas.min.js',
