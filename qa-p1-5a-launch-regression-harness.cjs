@@ -8,8 +8,8 @@ const styles = fs.readFileSync('styles.css', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
-const RELEASE = '1.0.4-p0';
-const ASSET = 'mvp-launch-v16-2-p1-5a-r1';
+const RELEASE = '1.0.4-p1';
+const ASSET = 'mvp-launch-v16-2-p1-5b-r1';
 
 function normalizeP15AState(input) {
   const state = structuredClone(input);
@@ -200,7 +200,7 @@ assert.match(html, /manifest\.webmanifest/, 'PWA manifest remains linked');
 assert.match(html, /firebase-auth|firebase-auth-compat/, 'Google/Firebase login bundle remains linked');
 assert.match(worker, /activate|caches\.keys/, 'service worker activates and manages old caches');
 
-assert(app.includes(`const APP_RELEASE_VERSION = '${RELEASE}'`), 'app has release 1.0.4-p0');
+assert(app.includes(`const APP_RELEASE_VERSION = '${RELEASE}'`), 'app has release 1.0.4-p1');
 assert(app.includes(`const APP_ASSET_VERSION = '${ASSET}'`), 'app has the P1.5A asset version');
 assert(html.includes(ASSET), 'all public HTML assets use the P1.5A cache version');
 assert(styles.includes(ASSET), 'CSS image assets use the P1.5A cache version');
