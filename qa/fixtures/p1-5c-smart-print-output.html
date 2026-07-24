@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CLICK 360 P1.5C Synthetic Print Output</title>
+  <link rel="icon" type="image/png" href="../../assets/favicon.png">
+  <link rel="stylesheet" href="../../styles.css">
+  <script src="../../smart-print-core.js"></script>
+  <style>
+    html, body { min-height: 100%; background: #ddd; }
+    body { margin: 0; padding: 18px; }
+    #fixtureHeading { max-width: 900px; margin: 0 auto 16px; color: #111; font: 700 14px/1.4 system-ui, sans-serif; text-align: center; }
+    #click360PrintPortal { display: block !important; width: max-content; max-width: 100%; margin: 0 auto; background: #fff; box-shadow: 0 4px 24px rgba(0,0,0,.2); }
+    .syntheticLabel { display: grid; place-items: center; align-content: center; gap: 1mm; border: .25mm solid #111; color: #000; background: #fff; font: 700 10pt/1 system-ui, sans-serif; box-sizing: border-box; }
+    .syntheticLabel i { display: block; width: 8mm; height: 8mm; border: .4mm solid #000; background: repeating-linear-gradient(45deg,#000 0 1mm,#fff 1mm 2mm); }
+    @media print {
+      body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+      #fixtureHeading { display: none !important; }
+      #click360PrintPortal { box-shadow: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header id="fixtureHeading">Salida sintética P1.5C. No contiene datos reales ni certifica hardware físico.</header>
+  <main id="click360PrintPortal" class="printSheet click360PrintPortal" aria-label="Salida imprimible sintética"></main>
+  <script>
+    (() => {
+      const core = window.CLICK360_SMART_PRINT;
+      const caseId = new URLSearchParams(location.search).get('case') || 'sheet3';
+      const cases = {
+        sheet3: {
+          paper:core.normalizePaperProfile({ presetId:'sheet-3' }),
+          groups:[{ product:{ id:'synthetic-a4' }, copies:7 }],
+          options:{ startSlot:1 }
+        },
+        roll2: {
+          paper:core.normalizePaperProfile({
+            id:'synthetic-roll-2',
+            mediaType:'roll-2',
+            labelWidthMm:40,
+            labelHeightMm:60,
+            mediaWidthMm:82,
+            mediaHeightMm:60,
+            columns:2,
+            rows:1,
+            gapHorizontalMm:2,
+            nominalDpi:203,
+            status:'verified',
+            measurementsConfirmed:true
+          }),
+          groups:[{ product:{ id:'synthetic-roll' }, copies:3 }],
+          options:{ startSlot:2 }
+        }
+      };
+      const selected = cases[caseId] || cases.sheet3;
+      const validation = core.validatePaperProfile(selected.paper);
+      const plan = core.buildSheetPlan(selected.groups, selected.paper, selected.options);
+      const root = document.getElementById('click360PrintPortal');
+      const wrap = document.createElement('div');
+      wrap.className = 'printLabels';
+      wrap.dataset.paper = caseId;
+      root.appendChild(wrap);
+      for (const page of plan.pages) {
+        const pageElement = document.createElement('section');
+        pageElement.className = 'labelPrintPage';
+        pageElement.dataset.page = String(page.index + 1);
+        pageElement.style.width = `${selected.paper.mediaWidthMm}mm`;
+        pageElement.style.height = `${selected.paper.mediaHeightMm}mm`;
+        for (const cell of page.cells) {
+          const cellElement = document.createElement('div');
+          cellElement.className = `labelPrintCell ${cell.status}`;
+          cellElement.dataset.slot = String(cell.slot);
+          cellElement.style.left = `${cell.xMm}mm`;
+          cellElement.style.top = `${cell.yMm}mm`;
+          cellElement.style.width = `${selected.paper.labelWidthMm}mm`;
+          cellElement.style.height = `${selected.paper.labelHeightMm}mm`;
+          if (cell.status === 'filled') {
+            cellElement.classList.add('printLabel', 'syntheticLabel');
+            cellElement.innerHTML = `<i aria-hidden="true"></i><b>QA ${cell.item.copy}</b><small>${selected.paper.labelWidthMm} × ${selected.paper.labelHeightMm} mm</small>`;
+          } else {
+            cellElement.setAttribute('aria-hidden', 'true');
+          }
+          pageElement.appendChild(cellElement);
+        }
+        wrap.appendChild(pageElement);
+      }
+      const style = document.createElement('style');
+      style.textContent = `@page{size:${selected.paper.mediaWidthMm}mm ${selected.paper.mediaHeightMm}mm;margin:0}`;
+      document.head.appendChild(style);
+      const filled = plan.pages.reduce((total, page) => total + page.occupied, 0);
+      const pass = validation.valid && plan.valid && filled === 3 + (caseId === 'sheet3' ? 4 : 0);
+      document.documentElement.dataset.corePass = String(pass);
+      window.__CLICK360_P15C_PRINT_QA__ = Object.freeze({
+        pass,
+        caseId,
+        pages:plan.pages.length,
+        filled,
+        fingerprint:core.paperGeometryFingerprint(selected.paper)
+      });
+    })();
+  </script>
+</body>
+</html>

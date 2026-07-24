@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 P1.5C Visual QA</title>
+  <link rel="icon" type="image/png" href="../../assets/favicon.png">
+  <link rel="stylesheet" href="../../styles.css">
+  <script src="../../smart-print-core.js"></script>
+</head>
+<body>
+  <main class="modalOverlay show">
+    <section class="modal labelEditorModal" role="dialog" aria-modal="true" aria-labelledby="fixture-title" data-label-mode="simple">
+      <div class="modalHeader"><div><h2 id="fixture-title">Asistente de impresión</h2><p class="fieldHint">Fixture sintético sin datos reales.</p></div><button class="closeBtn" aria-label="Cerrar">×</button></div>
+      <div class="labelModeSwitch"><button class="active">Modo simple</button><button>Modo experto</button></div>
+      <div class="smartPrintProgress"><span>Paso 7 de 9</span><progress max="9" value="7"></progress></div>
+      <ol class="labelGuideSteps smartPrintSteps">
+        <li class="complete"><b>1</b><span>Salida</span></li><li class="complete"><b>2</b><span>Papel</span></li><li class="complete"><b>3</b><span>Medidas</span></li><li class="complete"><b>4</b><span>Contenido</span></li><li class="complete"><b>5</b><span>Cantidad</span></li><li class="complete"><b>6</b><span>Inicio</span></li><li class="active"><b>7</b><span>Vista</span></li><li><b>8</b><span>Revisión</span></li><li><b>9</b><span>Imprimir</span></li>
+      </ol>
+      <div class="labelCustomizerLayout">
+        <details class="labelPreviewDisclosure" open><summary>Vista previa del sticker</summary><div class="labelPreviewSticky"><canvas width="260" height="173" aria-label="Etiqueta sintética"></canvas><button class="btn">Ver grande</button></div></details>
+        <div class="labelControls">
+          <section class="labelSheetPreviewPanel"><div><h3>Así quedará tu papel completo</h3><p class="fieldHint">7 etiquetas · 3 columnas · 1 hoja.</p><p class="fieldHint">60 mm × 35 mm por sticker · A4.</p></div>
+            <div class="labelSheetPreview">
+              <section class="labelPreviewPage" style="--media-aspect:.707"><header>Hoja 1</header><div class="labelPreviewCells">
+                <span class="filled start" style="left:3.33%;top:2.36%;width:28.57%;height:11.78%">1</span>
+                <span class="filled" style="left:33.33%;top:2.36%;width:28.57%;height:11.78%">2</span>
+                <span class="filled" style="left:63.33%;top:2.36%;width:28.57%;height:11.78%">3</span>
+                <span class="filled" style="left:3.33%;top:15.15%;width:28.57%;height:11.78%">4</span>
+                <span class="filled" style="left:33.33%;top:15.15%;width:28.57%;height:11.78%">5</span>
+                <span class="filled" style="left:63.33%;top:15.15%;width:28.57%;height:11.78%">6</span>
+                <span class="filled" style="left:3.33%;top:27.94%;width:28.57%;height:11.78%">7</span>
+              </div></section>
+            </div>
+          </section>
+          <section class="smartPrintPanel smartPreflight"><h3>Revisión antes de imprimir</h3><div class="smartPreflightList"><div class="pass"><span>✓</span><p>Perfil de papel válido</p></div><div class="warning"><span>!</span><p>En Chrome usa escala 100 %.</p></div></div></section>
+        </div>
+      </div>
+      <footer class="smartWizardFooter"><button class="btn">Atrás</button><button class="btn">Ayuda de este paso</button><button class="btn primary">Continuar</button></footer>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const core = window.CLICK360_SMART_PRINT;
+      const paper = core.normalizePaperProfile({ presetId:'sheet-3' });
+      const plan = core.buildSheetPlan([{ product:{ id:'synthetic-product' }, copies:7 }], paper, { startSlot:1 });
+      const pass = plan.valid === true
+        && plan.count === 7
+        && plan.columns === 3
+        && plan.pages.length === 1
+        && plan.pages[0].cells.filter((cell) => cell.status === 'filled').length === 7;
+      document.documentElement.dataset.corePass = String(pass);
+      window.__CLICK360_P15C_VISUAL_QA__ = Object.freeze({
+        pass,
+        coreVersion:core.VERSION,
+        copies:plan.count,
+        columns:plan.columns,
+        pages:plan.pages.length
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -17,24 +17,24 @@
   }
 
   function printRoot() {
-    let element = document.getElementById('printRoot');
+    let element = document.getElementById('click360PrintPortal');
     if (!element) {
       element = document.createElement('div');
-      element.id = 'printRoot';
-      element.className = 'printSheet';
+      element.id = 'click360PrintPortal';
+      element.className = 'printSheet click360PrintPortal';
       document.body.appendChild(element);
     }
     return element;
   }
 
   function pageCss(job = {}) {
-    const width = Math.max(25, Math.min(120, Number(job.widthMm || 0)));
-    const height = Math.max(25, Math.min(300, Number(job.heightMm || 0)));
+    const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
+    const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));
     const pageSize = job.media === 'label' && width && height
       ? `${width}mm ${height}mm`
       : job.media === 'receipt-80' ? '80mm auto'
         : job.media === 'receipt-57' ? '57mm auto' : 'A4';
-    const margin = job.media === 'a4' || !job.media ? '8mm' : '2mm';
+    const margin = job.media === 'a4' || !job.media ? '8mm' : '0';
     return `@page{size:${pageSize};margin:${margin}}`;
   }
 
@@ -78,7 +78,7 @@
   }
 
   function cleanupJob() {
-    const element = document.getElementById('printRoot');
+    const element = document.getElementById('click360PrintPortal');
     if (element) {
       element.replaceChildren();
       delete element.dataset.printMedia;
@@ -140,14 +140,14 @@
       if (!this.isSupported()) throw Object.assign(new Error('PDF no disponible.'), { code: 'pdf-unavailable' });
       const element = mountJob(job);
       await waitForResources(element);
-      const width = Math.max(25, Math.min(120, Number(job.widthMm || 0)));
-      const height = Math.max(25, Math.min(300, Number(job.heightMm || 0)));
+      const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
+      const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));
       const format = job.media === 'label' ? [width, height]
         : job.media === 'receipt-80' ? [80, 220]
           : job.media === 'receipt-57' ? [57, 220] : 'a4';
       try {
         await root.html2pdf().set({
-          margin: job.media?.startsWith('receipt') ? 2 : 8,
+          margin: job.media === 'label' ? 0 : job.media?.startsWith('receipt') ? 2 : 8,
           filename: String(job.filename || 'CLICK360.pdf').replace(/[^a-z0-9_.-]/gi, '_'),
           image: { type: 'jpeg', quality: 0.96 },
           html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },

@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "artifactType": "click360-p1-5c-synthetic-print-plans",
+  "hardwareCertified": false,
+  "generatedFor": "P1.5C Smart Print Wizard Universal",
+  "notes": "Synthetic, reproducible QA evidence only. It does not certify any physical printer, driver or paper stock.",
+  "cases": [
+    {
+      "id": "exact-one-stock-seven",
+      "description": "Exact quantity remains one even when product stock is seven.",
+      "mediaType": "roll-1",
+      "columns": 1,
+      "copies": 1,
+      "stock": 7
+    },
+    {
+      "id": "roll-two-start-right",
+      "description": "Two-column roll starts at the right-hand slot and continues deterministically.",
+      "mediaType": "roll-2",
+      "labelWidthMm": 40,
+      "labelHeightMm": 60,
+      "mediaWidthMm": 82,
+      "columns": 2,
+      "gapHorizontalMm": 2,
+      "startSlot": 2,
+      "copies": 3
+    },
+    {
+      "id": "roll-three-exact-four",
+      "description": "Three-column roll prints exactly four labels across two physical rows.",
+      "mediaType": "roll-3",
+      "columns": 3,
+      "copies": 4
+    },
+    {
+      "id": "sheet-two-start-five-used-six",
+      "description": "Two-column sheet starts at slot five while preserving slot six as already used.",
+      "mediaType": "sheet",
+      "columns": 2,
+      "startSlot": 5,
+      "usedSlots": [6],
+      "copies": 3
+    },
+    {
+      "id": "sheet-three-seven",
+      "description": "A4 three-column sheet renders seven occupied labels and remaining empty cells.",
+      "mediaType": "sheet",
+      "mediaWidthMm": 210,
+      "mediaHeightMm": 297,
+      "columns": 3,
+      "rows": 7,
+      "copies": 7
+    },
+    {
+      "id": "orientation-40x60",
+      "description": "Physical label is 40 mm wide by 60 mm high with unrotated content.",
+      "labelWidthMm": 40,
+      "labelHeightMm": 60,
+      "contentRotation": 0
+    },
+    {
+      "id": "orientation-60x40",
+      "description": "Physical label is 60 mm wide by 40 mm high with independent content rotation.",
+      "labelWidthMm": 60,
+      "labelHeightMm": 40,
+      "contentRotation": 90
+    },
+    {
+      "id": "design-qr-only",
+      "description": "QR-only protected layout with long URL text hidden.",
+      "designPreset": "qr-only",
+      "showUrl": false
+    },
+    {
+      "id": "design-complete-compact",
+      "description": "Compact protected layout fits supported elements inside the safe area.",
+      "designPreset": "compact",
+      "showUrl": false
+    },
+    {
+      "id": "numbered-test-3x3",
+      "description": "Numbered 3x3 calibration grid contains slots one through nine.",
+      "calibrationGrid": [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    },
+    {
+      "id": "roll-one-exact-three",
+      "description": "Single-column roll prints exactly three labels without stock multiplication.",
+      "mediaType": "roll-1",
+      "columns": 1,
+      "copies": 3
+    },
+    {
+      "id": "round-label-50",
+      "description": "Circular 50 mm label remains inside a 50 mm physical safe area.",
+      "mediaType": "roll-1",
+      "shape": "circle",
+      "labelWidthMm": 50,
+      "labelHeightMm": 50,
+      "copies": 1
+    },
+    {
+      "id": "custom-sheet-two-columns",
+      "description": "Custom two-column sheet preserves explicit margins and gaps in millimetres.",
+      "mediaType": "sheet",
+      "columns": 2,
+      "marginTopMm": 8,
+      "marginLeftMm": 8,
+      "gapHorizontalMm": 4,
+      "gapVerticalMm": 4,
+      "copies": 4
+    }
+  ]
+}

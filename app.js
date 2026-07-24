@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5b-r1';
-  const APP_RELEASE_VERSION = '1.0.4-p1';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5c-r1';
+  const APP_RELEASE_VERSION = '1.0.4-p2';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -328,7 +328,10 @@
       const root = $('#printRoot') || document.createElement('div');
       root.id = 'printRoot'; root.className = 'printSheet';
       if (!root.isConnected) document.body.appendChild(root);
-      root.innerHTML = String(preparedJob.html || '');
+      root.replaceChildren();
+      if (preparedJob.node instanceof Node) root.appendChild(preparedJob.node.cloneNode(true));
+      else if (preparedJob.html) root.innerHTML = String(preparedJob.html);
+      else throw Object.assign(new Error('No hay contenido imprimible preparado.'), { code:'empty-print-job' });
       window.print();
       return { status: 'handed_off', provider: 'legacy-system' };
     } catch (error) {
@@ -1468,13 +1471,67 @@ function parseMoney(value) {
     return (state.settings?.labelTemplates || []).filter((template) => template.businessId === bid
       || (!template.businessId && legacyBusinessId === bid));
   }
+  function labelProfilesForBiz(bid=currentBusiness()?.id) {
+    const legacyBusinessId = state.settings?.legacyDataBusinessId;
+    return (state.settings?.labelProfiles || []).filter((profile) => profile.businessId === bid
+      || (!profile.businessId && legacyBusinessId === bid));
+  }
+  const printDeviceMemory = new Map();
+  function printDeviceStorageKey(businessId=currentBusiness()?.id) {
+    const identity = window.click360DebugSyncIdentity?.() || {};
+    return window.CLICK360_SMART_PRINT?.localDeviceStorageKey({
+      uid:identity.uid,
+      tenantKey:activeTenantContext?.tenantKey,
+      businessId,
+      deviceId:identity.deviceId
+    }) || '';
+  }
+  function loadPrintDeviceState(businessId=currentBusiness()?.id) {
+    const key = printDeviceStorageKey(businessId);
+    if (!key) return {};
+    if (printDeviceMemory.has(key)) return JSON.parse(JSON.stringify(printDeviceMemory.get(key)));
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || '{}');
+      const identity = window.click360DebugSyncIdentity?.() || {};
+      const normalized = window.CLICK360_SMART_PRINT?.normalizeLocalDeviceState(parsed, {
+        uid:identity.uid,
+        tenantKey:activeTenantContext?.tenantKey,
+        businessId,
+        deviceId:identity.deviceId
+      }) || (parsed && typeof parsed === 'object' ? parsed : {});
+      printDeviceMemory.set(key, normalized);
+      return JSON.parse(JSON.stringify(normalized));
+    } catch {
+      return {};
+    }
+  }
+  function savePrintDeviceState(next, businessId=currentBusiness()?.id) {
+    const key = printDeviceStorageKey(businessId);
+    if (!key) return {};
+    const identity = window.click360DebugSyncIdentity?.() || {};
+    const safe = window.CLICK360_SMART_PRINT?.normalizeLocalDeviceState(next, {
+      uid:identity.uid,
+      tenantKey:activeTenantContext?.tenantKey,
+      businessId,
+      deviceId:identity.deviceId
+    }) || (next && typeof next === 'object' ? JSON.parse(JSON.stringify(next)) : {});
+    printDeviceMemory.set(key, safe);
+    try { localStorage.setItem(key, JSON.stringify(safe)); } catch {}
+    return safe;
+  }
   function isRestaurantBusiness(business=currentBusiness()) {
     return ['restaurante', 'cafeteria', 'bar'].includes(String(business?.type || '').toLowerCase());
   }
+  function resolveLabelCopyResult(manualCopies, stock, useStock=false) {
+    return window.CLICK360_SMART_PRINT?.resolveCopies(manualCopies, useStock, stock)
+      || (() => {
+        const parsed = Number(useStock ? stock : manualCopies);
+        const valid = Number.isInteger(parsed) && parsed >= (useStock ? 0 : 1) && parsed <= 500;
+        return { valid, count:valid ? parsed : 0, mode:useStock ? 'stock' : 'exact', error:valid ? '' : 'La cantidad debe ser un numero entero valido.' };
+      })();
+  }
   function resolveLabelCopies(manualCopies, stock, useStock=false) {
-    const manual = Math.max(1, Math.min(500, Math.trunc(Number(manualCopies) || 1)));
-    if (!useStock) return manual;
-    return Math.max(0, Math.min(500, Math.trunc(Number(stock) || 0)));
+    return resolveLabelCopyResult(manualCopies, stock, useStock).count;
   }
   window.click360ResolveLabelCopies = resolveLabelCopies;
   const HELP_TOPICS = Object.freeze([
@@ -1490,6 +1547,17 @@ function parseMoney(value) {
     { id:'print-label', category:'Etiquetas', title:'¿Cómo imprimo una etiqueta?', keywords:'etiqueta imprimir impresión plantilla papel térmica', steps:['En Inventario abre la etiqueta del producto.','Elige tamaño, cantidad y papel.','Revisa la hoja completa y toca Imprimir.'] },
     { id:'label-stock', category:'Etiquetas', title:'¿Cómo imprimo exactamente una etiqueta?', keywords:'cantidad exacta stock una copia copias', steps:['Escribe 1 en Cantidad exacta.','Deja desactivada la opción por stock.','La vista previa debe indicar 1 etiqueta.'] },
     { id:'label-alignment', category:'Etiquetas', title:'La etiqueta sale cortada o desalineada', keywords:'margen corte impresora dpi hoja columnas', steps:['Elige el tamaño real del papel.','Ejecuta Prueba de alineación.','Ajusta márgenes y separación antes de imprimir el catálogo.'] },
+    { id:'label-measure', category:'Etiquetas', title:'¿Cómo mido un sticker?', keywords:'medir sticker ancho alto milimetros regla', steps:['Mide un sticker individual de borde a borde.','Anota primero el ancho y luego el alto en milímetros.','Mide aparte el ancho total del rollo o de la hoja.'] },
+    { id:'label-media-width', category:'Etiquetas', title:'Sticker y ancho total del rollo no son lo mismo', keywords:'ancho total rollo sticker soporte dos columnas', steps:['El sticker es una sola etiqueta.','El soporte incluye todas las columnas, separaciones y márgenes.','Para varias columnas CLICK necesita ambas medidas.'] },
+    { id:'label-columns', category:'Etiquetas', title:'¿Cómo sé cuántas columnas tiene mi rollo?', keywords:'una dos tres columnas rollo etiquetas', steps:['Observa una fila horizontal del material.','Cuenta cuántos stickers aparecen lado a lado.','Selecciona esa cantidad en el Asistente de impresión.'] },
+    { id:'label-gap', category:'Etiquetas', title:'¿Qué significa gap?', keywords:'gap espacio separación horizontal vertical sensor', steps:['El gap es el espacio físico entre stickers.','Mídelo en milímetros sin incluir el sticker.','En el driver selecciona etiquetas con espacios o Gap.'] },
+    { id:'label-browser-headers', category:'Etiquetas', title:'¿Cómo quito la URL y los encabezados al imprimir?', keywords:'url encabezado pie pagina chrome navegador', steps:['Abre el diálogo de impresión.','Desactiva Encabezados y pies de página.','Usa Márgenes: ninguno y Escala: 100 % o Tamaño real.'] },
+    { id:'label-partial-sheet', category:'Etiquetas', title:'¿Cómo reutilizo una hoja parcialmente usada?', keywords:'casilla inicio hoja usada reutilizar columna derecha', steps:['En el paso Desde dónde empezar marca las casillas ya usadas.','Elige la primera casilla disponible.','Comprueba los espacios grises en la vista física.'] },
+    { id:'label-rotated', category:'Etiquetas', title:'La impresión sale girada', keywords:'sale girada rotacion orientación 90 grados', steps:['Confirma ancho y alto del sticker.','Cambia Rotación del contenido, no las medidas físicas.','Imprime una prueba de alineación antes del lote.'] },
+    { id:'label-multiple', category:'Etiquetas', title:'La impresora genera varias copias', keywords:'imprime varias copias cantidad stock duplicadas', steps:['Comprueba Cantidad exacta.','Deja desactivado Imprimir por stock.','En Chrome y en el driver usa Copias: 1.'] },
+    { id:'label-two-column', category:'Etiquetas', title:'Una columna funciona y otra no', keywords:'dos columnas izquierda derecha desplazada segunda columna', steps:['Confirma el ancho total del soporte.','Mide gap horizontal y márgenes.','Imprime la cuadrícula numerada y calibra X/Y.'] },
+    { id:'label-driver', category:'Etiquetas', title:'¿El problema es CLICK o el driver?', keywords:'driver windows click vista previa papel fisico sensor', steps:['Si la vista física ya está cortada, corrige el perfil en CLICK.','Si la vista está bien pero el papel sale mal, revisa tamaño, escala, gap y sensor en Windows.','Comparte el diagnóstico sanitizado con soporte.'] },
+    { id:'label-diagnostic', category:'Etiquetas', title:'¿Cómo comparto un diagnóstico de impresión?', keywords:'diagnostico soporte copiar json perfil', steps:['Abre el Asistente de impresión.','En Revisión toca Copiar diagnóstico.','El reporte no incluye correos, clientes, ventas ni productos.'] },
     { id:'create-table', category:'Mesas', title:'¿Cómo creo y organizo una mesa?', keywords:'mesa restaurante abrir plano mover color forma', steps:['Configura el negocio como restaurante, cafetería o bar.','Ve a Mesas y toca Nueva mesa.','Activa Editar plano para moverla o cambiar su forma.'] },
     { id:'charge-table', category:'Mesas', title:'¿Cómo cobro una mesa?', keywords:'cuenta restaurante liberar mesa pago', steps:['Abre la mesa y agrega productos.','Marca por cobrar si necesitas avisar a caja.','Toca Cobrar mesa; la venta queda en la caja activa.'] },
     { id:'monthly-payment', category:'Finanzas', title:'¿Cómo registro un pago mensual?', keywords:'pago mensual registrar vencimiento arriendo luz', steps:['Ve a Más y abre Finanzas.','En Pagos mensuales toca Agregar.','Completa monto, fecha y guarda.'] },
@@ -2956,17 +3024,15 @@ function parseMoney(value) {
 	  function helpTopicCards(topics) {
 	    return topics.length ? topics.map((topic) => `<details class="card helpTopic"><summary><span><small>${escapeHtml(topic.category)}</small>${escapeHtml(topic.title)}</span>${icon('chevron-down')}</summary><ol>${(topic.steps || [topic.body]).filter(Boolean).map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol></details>`).join('') : '<div class="card empty">No encontramos una guía con esas palabras. Prueba “cerrar caja”, “etiqueta” o “sin internet”.</div>';
 	  }
-	  function bindHelp() {
-	    const input = $('#helpSearchInput');
-	    const filter = (category = '') => {
-	      const query = String(input?.value || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-	      const words = query.split(/\s+/).filter(Boolean);
-	      const topics = HELP_TOPICS.map((topic) => {
-	        const haystack = `${topic.category} ${topic.title} ${topic.keywords || ''} ${(topic.steps || []).join(' ')} ${topic.body || ''}`.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-	        return { topic, score:words.reduce((score, word) => score + (haystack.includes(word) ? 1 : 0), 0) };
-	      }).filter(({ topic, score }) => (!category || topic.category === category) && (!words.length || score > 0))
-	        .sort((a, b) => b.score - a.score).map(({ topic }) => topic);
-	      $('#helpResults').innerHTML = helpTopicCards(topics);
+		  function bindHelp() {
+		    const input = $('#helpSearchInput');
+		    const filter = (category = '') => {
+		      const query = String(input?.value || '').trim();
+		      const available = HELP_TOPICS.filter((topic) => !category || topic.category === category);
+		      const topics = query
+		        ? (window.CLICK360_SMART_PRINT?.searchHelp(available, query) || [])
+		        : available;
+		      $('#helpResults').innerHTML = helpTopicCards(topics);
 	      refreshIcons($('#helpResults'));
 	    };
 	    input?.addEventListener('input', () => filter());
@@ -3006,10 +3072,11 @@ function parseMoney(value) {
 			    </section>`;
 			  }
 
-		  function printingPreferencesKey() {
-		    return activeTenantContext?.authUid && activeTenantContext?.tenantKey
-		      ? `CLICK360:V16:PRINTING:${activeTenantContext.authUid}:${activeTenantContext.tenantKey}` : '';
-		  }
+			  function printingPreferencesKey() {
+			    const identity = window.click360DebugSyncIdentity?.() || {};
+			    return activeTenantContext?.authUid && activeTenantContext?.tenantKey && currentBusiness()?.id && identity.deviceId
+			      ? `CLICK360:V16:PRINTING:${activeTenantContext.authUid}:${activeTenantContext.tenantKey}:${currentBusiness().id}:${identity.deviceId}` : '';
+			  }
 		  function printingPreferences() {
 		    try {
 		      const parsed = JSON.parse(localStorage.getItem(printingPreferencesKey()) || '{}');
@@ -5352,16 +5419,22 @@ function parseMoney(value) {
     return defaults;
   }
   const LABEL_PAPER_PRESETS = Object.freeze({
-    'thermal-40x30': { label:'Rollo térmico 40x30 mm', width:40, height:30, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'landscape' },
-    'thermal-50x30': { label:'Rollo térmico etiqueta pequeña · Rollo térmico 50x30 mm', width:50, height:30, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'landscape' },
-    'thermal-60x40': { label:'Rollo térmico 60x40 mm', width:60, height:40, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'landscape' },
-    'thermal-80x50': { label:'Rollo térmico 80x50 mm', width:80, height:50, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'landscape' },
-    'thermal-108': { label:'Rollo térmico 4x2 · 4 pulgadas / 108 mm', width:108, height:60, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'landscape' },
-    'sheet-2': { label:'Hoja 2 columnas · Hoja A4 2 columnas', width:90, height:45, columns:2, rows:5, gapX:4, gapY:4, dpi:300, orientation:'portrait', marginTop:8, marginLeft:8 },
-    'sheet-3': { label:'Hoja 3 columnas · Hoja A4 3 columnas', width:60, height:35, columns:3, rows:7, gapX:3, gapY:3, dpi:300, orientation:'portrait', marginTop:7, marginLeft:7 },
-    'sheet-small': { label:'Hoja A4 stickers pequeños', width:38, height:25, columns:4, rows:10, gapX:2, gapY:2, dpi:300, orientation:'portrait', marginTop:6, marginLeft:6 },
-    'square-50': { label:'Etiqueta cuadrada 50x50 mm', width:50, height:50, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'portrait', shape:'square' },
-    'round-50': { label:'Etiqueta redonda 50 mm', width:50, height:50, columns:1, rows:1, gapX:0, gapY:0, dpi:203, orientation:'portrait', shape:'circle' },
+    'thermal-40x30': { label:'Rollo térmico 40x30 mm', mediaType:'roll-1', width:40, height:30, mediaWidth:40, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
+    'thermal-50x30': { label:'Rollo térmico etiqueta pequeña · Rollo térmico 50x30 mm', mediaType:'roll-1', width:50, height:30, mediaWidth:50, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
+    'thermal-60x40': { label:'Rollo térmico 60x40 mm', mediaType:'roll-1', width:60, height:40, mediaWidth:60, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
+    'thermal-80x50': { label:'Rollo térmico 80x50 mm', mediaType:'roll-1', width:80, height:50, mediaWidth:80, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
+    'thermal-108': { label:'Rollo térmico 4x2 · 4 pulgadas / 108 mm', mediaType:'roll-1', width:108, height:60, mediaWidth:108, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
+    'roll-2-custom': { label:'Rollo de 2 columnas · confirmar medidas', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:2, gapY:2, dpi:203, provisional:true },
+    'roll-3-custom': { label:'Rollo de 3 columnas · confirmar medidas', mediaType:'roll-3', width:30, height:40, mediaWidth:0, columns:3, rows:1, gapX:2, gapY:2, dpi:203, provisional:true },
+    'shary-ltt214-2col': { label:'Shary · 3nStar LTT214 · 2 columnas (provisional)', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:0, gapY:0, dpi:203, provisional:true, requiresMeasurement:true },
+    'sheet-2': { label:'Hoja 2 columnas · Hoja A4 2 columnas', mediaType:'sheet', width:90, height:45, mediaWidth:210, mediaHeight:297, columns:2, rows:5, gapX:4, gapY:4, dpi:300, marginTop:8, marginRight:8, marginBottom:8, marginLeft:8 },
+    'sheet-3': { label:'Hoja 3 columnas · Hoja A4 3 columnas', mediaType:'sheet', width:60, height:35, mediaWidth:210, mediaHeight:297, columns:3, rows:7, gapX:3, gapY:3, dpi:300, marginTop:7, marginRight:7, marginBottom:7, marginLeft:7 },
+    'sheet-small': { label:'Hoja A4 stickers pequeños', mediaType:'sheet', width:38, height:25, mediaWidth:210, mediaHeight:297, columns:4, rows:10, gapX:2, gapY:2, dpi:300, marginTop:6, marginRight:6, marginBottom:6, marginLeft:6 },
+    'square-50': { label:'Etiqueta cuadrada 50x50 mm', mediaType:'square', width:50, height:50, mediaWidth:50, columns:1, rows:1, gapX:0, gapY:0, dpi:203, shape:'square' },
+    'round-50': { label:'Etiqueta redonda 50 mm', mediaType:'round', width:50, height:50, mediaWidth:50, columns:1, rows:1, gapX:0, gapY:0, dpi:203, shape:'circle' },
+    'ticket-80': { label:'Ticket térmico 80 mm', mediaType:'receipt', width:80, height:120, mediaWidth:80, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
+    continuous: { label:'Papel continuo', mediaType:'continuous', width:60, height:40, mediaWidth:60, columns:1, rows:1, gapX:0, gapY:0, dpi:203, provisional:true },
+    unsure: { label:'No estoy seguro · guía de medición', mediaType:'unsure', width:60, height:40, mediaWidth:0, columns:1, rows:1, gapX:0, gapY:0, dpi:203, provisional:true },
     custom: { label:'Personalizada' }
   });
   function labelPaperOptions(selected = 'custom') {
@@ -5386,25 +5459,52 @@ function parseMoney(value) {
     const rows = Number(options.rows || 1);
     const errors = [];
     const warnings = [];
-    if (widthMm < 25 || widthMm > 120 || heightMm < 25 || heightMm > 180) errors.push('El tamaño de etiqueta no es válido.');
+    if (widthMm < 10 || widthMm > 250 || heightMm < 10 || heightMm > 400) errors.push('El tamaño de etiqueta no es válido.');
     if (copies < 1 || copies > 500) errors.push('La cantidad debe estar entre 1 y 500.');
     if (columns < 1 || columns > 6 || rows < 1 || rows > 20) errors.push('La cuadrícula de papel no es válida.');
-    const baseWidth = Math.round(Math.max(25, widthMm) * (260 / 60));
-    const baseHeight = Math.round(Math.max(25, heightMm) * (380 / 88));
+    const paperValidation = window.CLICK360_SMART_PRINT?.validatePaperProfile({
+      id:options.paperType,
+      mediaType:options.mediaType,
+      labelWidthMm:widthMm,
+      labelHeightMm:heightMm,
+      mediaWidthMm:options.mediaWidthMm,
+      mediaHeightMm:options.mediaHeightMm,
+      columns,
+      rows,
+      gapHorizontalMm:options.gapXmm,
+      gapVerticalMm:options.gapYmm,
+      marginTopMm:options.marginTopMm,
+      marginRightMm:options.marginRightMm,
+      marginBottomMm:options.marginBottomMm,
+      marginLeftMm:options.marginLeftMm,
+      shape:options.shape,
+      contentRotation:options.contentRotation,
+      status:options.profileStatus,
+      measurementsConfirmed:options.measurementsConfirmed
+    });
+    if (paperValidation && !paperValidation.valid) errors.push(...paperValidation.errors);
+    if (paperValidation) warnings.push(...paperValidation.warnings);
+    const baseWidth = Math.round(Math.max(10, widthMm) * (260 / 60));
+    const baseHeight = Math.round(Math.max(10, heightMm) * (380 / 88));
     Object.entries(normalizedLabelLayout(layout)).forEach(([key, element]) => {
       if (element.visible === false) return;
       const bounds = labelElementBounds(key, element);
-      if (bounds.left < 0 || bounds.top < 0 || bounds.right > baseWidth || bounds.bottom > baseHeight) warnings.push(`${key} queda fuera de margen.`);
+      if (bounds.left < 0 || bounds.top < 0 || bounds.right > baseWidth || bounds.bottom > baseHeight) {
+        const target = ['qr','barcode'].includes(key) ? errors : warnings;
+        target.push(`${key} queda fuera de la zona segura.`);
+      }
     });
     const qr = normalizedLabelLayout(layout).qr;
-    if (qr.visible !== false && Math.min(Number(qr.width || 0), Number(qr.height || qr.width || 0)) < 90) warnings.push('El QR es demasiado pequeño y puede resultar difícil de leer.');
+    if (qr.visible !== false && Math.min(Number(qr.width || 0), Number(qr.height || qr.width || 0)) < 90) errors.push('El QR es demasiado pequeño para una lectura segura.');
     const visible = Object.entries(normalizedLabelLayout(layout)).filter(([, element]) => element.visible !== false);
     for (let first = 0; first < visible.length; first += 1) {
       for (let second = first + 1; second < visible.length; second += 1) {
         const a = labelElementBounds(visible[first][0], visible[first][1]);
         const b = labelElementBounds(visible[second][0], visible[second][1]);
         if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) {
-          warnings.push(`Hay elementos superpuestos: ${visible[first][0]} y ${visible[second][0]}.`);
+          const keys = [visible[first][0], visible[second][0]];
+          const target = keys.some((key) => ['qr','barcode'].includes(key)) ? errors : warnings;
+          target.push(`Hay elementos superpuestos: ${keys[0]} y ${keys[1]}.`);
         }
       }
     }
@@ -5445,8 +5545,8 @@ function parseMoney(value) {
   }
   async function drawLabelOnCanvas(canvas, product, options = {}) {
     const scale = options.scale || 3;
-    const widthMm = Math.max(25, Math.min(120, Number(options.widthMm || 60)));
-    const heightMm = Math.max(25, Math.min(180, Number(options.heightMm || 88)));
+    const widthMm = Math.max(10, Math.min(250, Number(options.widthMm || 60)));
+    const heightMm = Math.max(10, Math.min(400, Number(options.heightMm || 88)));
 	    const baseWidth = Math.round(widthMm * (260 / 60));
 	    const baseHeight = Math.round(heightMm * (380 / 88));
 	    const layout = normalizedLabelLayout(options.layout);
@@ -5497,12 +5597,12 @@ function parseMoney(value) {
           ctx.drawImage(barcodeCanvas, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 220) * scale, Number(element.height || 34) * scale);
         } catch {}
       } else if (key === 'logo' || key === 'image') {
-        const source = key === 'logo' ? currentBusiness()?.settings?.logoUrl : product.imageData;
+        const source = key === 'logo' ? options.businessLogo : product.imageData;
         const image = await loadCanvasImage(source);
         if (image) ctx.drawImage(image, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 40) * scale, Number(element.height || 40) * scale);
       } else {
         const values = {
-          business: currentBusiness().name.toUpperCase(),
+          business: String(options.businessName || 'CLICK 360').toUpperCase(),
           address: options.address,
           code: product.code,
           name: product.name,
@@ -5510,7 +5610,7 @@ function parseMoney(value) {
           price: product.cardPrice && product.cardPrice !== product.price ? `Efectivo ${fmt(product.price)} · Tarjeta ${fmt(product.cardPrice)}` : fmt(product.price),
           tax: resolvedTaxLegend(product, options),
           social: options.social,
-          phone: options.phone || currentBusiness()?.settings?.phone || '',
+          phone: options.phone || '',
           stock: `Stock ${product.qty}`,
           customText: options.customText || ''
         };
@@ -5518,18 +5618,50 @@ function parseMoney(value) {
       }
     }
     ctx.restore();
+    const contentRotation = [90, 180, 270].includes(Number(options.contentRotation))
+      ? Number(options.contentRotation) : 0;
+    if (contentRotation) {
+      const rendered = document.createElement('canvas');
+      rendered.width = w;
+      rendered.height = h;
+      rendered.getContext('2d').drawImage(canvas, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = safeColor(options.bgColor, '#ffffff');
+      ctx.fillRect(0, 0, w, h);
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+      ctx.rotate(contentRotation * Math.PI / 180);
+      if (contentRotation === 90 || contentRotation === 270) {
+        ctx.drawImage(rendered, -h / 2, -w / 2, h, w);
+      } else {
+        ctx.drawImage(rendered, -w / 2, -h / 2, w, h);
+      }
+      ctx.restore();
+    }
     return { widthMm, heightMm, baseWidth, baseHeight, layout };
   }
 
   async function openLabelModal(product, initialTemplateId = ''){
-    const bizSettings = currentBusiness().settings || {};
+    const editorBusiness = currentBusiness();
+    const editorBusinessId = editorBusiness?.id || '';
+    if (!editorBusinessId || (product?.businessId && product.businessId !== editorBusinessId)) {
+      return toast('El producto no pertenece al negocio activo.', 'err');
+    }
+    const bizSettings = editorBusiness.settings || {};
     const address = bizSettings.address || '';
 
-    const templates = labelTemplatesForBiz();
+    const templates = labelTemplatesForBiz(editorBusinessId);
     const templateOptions = templates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+    const printProfiles = labelProfilesForBiz(editorBusinessId);
+    const printProfileOptions = printProfiles.map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name || 'Perfil de impresión')}</option>`).join('');
     const initialTemplate = templates.find((template) => template.id === initialTemplateId)
       || templates.find((template) => template.isDefault) || null;
 	    let activeTemplateId = initialTemplate?.id || '';
+	    let printDeviceState = loadPrintDeviceState(editorBusinessId);
+	    let activePrintProfileId = printProfiles.some((profile) => profile.id === printDeviceState.selectedProfileId)
+	      ? printDeviceState.selectedProfileId : '';
+	    let usedPrintSlots = new Set();
+	    let smartPrintStep = 1;
 	    let editorLayout = normalizedLabelLayout(initialTemplate?.layout);
 	    const legacyPaperMap = { 'roll-4x2':'thermal-108', 'roll-small':'thermal-50x30' };
 	    const initialPaperType = legacyPaperMap[initialTemplate?.paperType] || initialTemplate?.paperType || 'thermal-60x40';
@@ -5540,14 +5672,18 @@ function parseMoney(value) {
       editorLayout.price.size *= Number(initialTemplate.priceScale || 1);
     }
 
-	    showModal(`<div class="modalHeader"><div><h2>Estudio de etiquetas</h2><p class="fieldHint">Prepara una cantidad exacta y revisa la hoja antes de imprimir.</p></div><button class="closeBtn" data-close>×</button></div>
+	    showModal(`<div class="modalHeader"><div><h2>Asistente de impresión</h2><p class="fieldHint">Label Studio · configura papel, diseño y cantidad sin cambiar opciones técnicas del sistema.</p></div><button class="closeBtn" data-close>×</button></div>
 	      <div class="labelModeSwitch" role="group" aria-label="Modo del estudio"><button type="button" class="active" data-label-mode="simple">Modo simple</button><button type="button" data-label-mode="expert">Modo experto</button></div>
-	      <ol class="labelGuideSteps"><li><b>1</b><span>Qué quieres imprimir</span></li><li><b>2</b><span>Cantidad</span></li><li><b>3</b><span>Tipo de papel</span></li><li class="active"><b>4</b><span>Vista previa</span></li><li><b>5</b><span>Imprimir</span></li></ol>
+	      <div class="smartPrintProgress"><span id="smartPrintStepText">Paso 1 de 9</span><progress id="smartPrintProgress" max="9" value="1">1 de 9</progress></div>
+	      <ol class="labelGuideSteps smartPrintSteps"><li class="active" data-smart-step-nav="1"><b>1</b><span>Salida</span></li><li data-smart-step-nav="2"><b>2</b><span>Papel</span></li><li data-smart-step-nav="3"><b>3</b><span>Medidas</span></li><li data-smart-step-nav="4"><b>4</b><span>Contenido</span></li><li data-smart-step-nav="5"><b>5</b><span>Cantidad</span></li><li data-smart-step-nav="6"><b>6</b><span>Inicio</span></li><li data-smart-step-nav="7"><b>7</b><span>Vista</span></li><li data-smart-step-nav="8"><b>8</b><span>Revisión</span></li><li data-smart-step-nav="9"><b>9</b><span>Imprimir</span></li></ol>
 	      <div class="labelCustomizerLayout">
-		        <details class="labelPreviewDisclosure" open><summary>Vista previa</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Editor visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
+		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Editor visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
-		          <div class="field"><label for="applyTemplateSelect">Plantilla</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
-	          <section class="labelPresetPanel"><b>Diseños rápidos</b><div class="labelPresetGrid"><button type="button" data-label-preset="small">Pequeña</button><button type="button" data-label-preset="medium">Mediana</button><button type="button" data-label-preset="large">Grande</button><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-price">QR + precio</button><button type="button" data-label-preset="business">QR + negocio</button></div></section>
+		          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="system" checked><span>${icon('printer')}<b>Impresora instalada</b><small>CLICK abrirá el diálogo de Chrome o Windows.</small></span></label><label><input type="radio" name="smartPrintOutput" value="pdf"><span>${icon('file-down')}<b>Guardar como PDF</b><small>Genera un archivo con la misma geometría.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
+		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
+		          <div class="field" data-smart-step="1"><label for="applyTemplateSelect">Diseño guardado</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
+		          <section class="smartPrintPanel" data-smart-step="2"><h3>¿Qué tipo de papel tienes?</h3><div class="smartMediaGrid"><button type="button" data-smart-paper="thermal-60x40">${icon('rectangle-horizontal')}<b>Rollo · 1 columna</b></button><button type="button" data-smart-paper="roll-2-custom">${icon('columns-2')}<b>Rollo · 2 columnas</b></button><button type="button" data-smart-paper="roll-3-custom">${icon('columns-3')}<b>Rollo · 3 columnas</b></button><button type="button" data-smart-paper="sheet-2">${icon('file-spreadsheet')}<b>Hoja con stickers</b></button><button type="button" data-smart-paper="round-50">${icon('circle')}<b>Redondas</b></button><button type="button" data-smart-paper="square-50">${icon('square')}<b>Cuadradas</b></button><button type="button" data-smart-paper="ticket-80">${icon('receipt')}<b>Ticket térmico</b></button><button type="button" data-smart-paper="continuous">${icon('scroll-text')}<b>Papel continuo</b></button><button type="button" data-smart-paper="unsure">${icon('circle-help')}<b>No estoy seguro</b></button><button type="button" data-smart-paper="custom">${icon('ruler')}<b>Personalizado</b></button></div><p id="smartPaperHint" class="wizardHelp">Elige el dibujo que más se parece a tu material.</p></section>
+	          <section class="labelPresetPanel" data-smart-step="4"><h3>¿Qué quieres mostrar?</h3><div class="labelPresetGrid"><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-name">QR + nombre</button><button type="button" data-label-preset="qr-price">QR + nombre + precio</button><button type="button" data-label-preset="barcode-price">Código de barras + precio</button><button type="button" data-label-preset="name-price-sku">Nombre + precio + SKU</button><button type="button" data-label-preset="compact">Completa compacta</button><button type="button" data-label-preset="custom">Personalizada segura</button></div><label class="consentCheck"><input type="checkbox" id="labelShowUrl"><span>Mostrar también el contenido del QR como texto</span></label></section>
 	          <section class="labelElementPanel expertOnly">
 		            <div class="field"><label for="labelElementSelect">Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="barcode">Código de barras</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
 	            <div class="labelQuickControls"><button type="button" id="labelSizeDown" title="Reducir">${icon('minus')}</button><button type="button" id="labelSizeUp" title="Aumentar">${icon('plus')}</button><button type="button" id="labelCenter" title="Centrar">${icon('align-center')}<span>Centrar</span></button><button type="button" id="labelToggleVisibility" title="Mostrar u ocultar">${icon('eye')}<span>Ocultar</span></button><button type="button" id="labelToggleLock" title="Bloquear posición">${icon('lock-open')}<span>Bloquear</span></button><button type="button" id="labelResetElement" title="Restablecer elemento">${icon('rotate-ccw')}<span>Restablecer</span></button></div>
@@ -5556,30 +5692,88 @@ function parseMoney(value) {
 	          <div class="formGrid expertOnly"><div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Usar configuración de IVA del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div><div class="field"><label>Red social / contacto</label><input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}"></div><div class="field full"><label>Dirección del local</label><input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}"></div><div class="field full"><label>Texto libre</label><input id="labelCustomText" maxlength="80" value="${escapeHtml(initialTemplate?.customText || '')}"></div></div>
 	          <details class="settingsDisclosure labelAdvanced expertOnly"><summary>Ajustes avanzados</summary><div class="labelAdvancedBody">
 	            <div class="labelColorGrid"><div class="field"><label>Fondo etiqueta</label><input type="color" id="labelBgColor" value="${safeColor(initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Fondo QR</label><input type="color" id="qrBgColor" value="${safeColor(initialTemplate?.qrBgColor || initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Texto / QR</label><input type="color" id="labelFgColor" value="${safeColor(initialTemplate?.fgColor, '#000000')}"></div></div>
-	            <div class="formGrid labelSizeGrid"><div class="field"><label>Ancho (mm)</label><input type="number" min="25" max="120" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div><div class="field"><label>Alto (mm)</label><input type="number" min="25" max="180" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 88)}"></div><div class="field"><label>Margen QR</label><input type="number" min="2" max="12" id="labelQrMargin" value="${numericInputValue(initialTemplate?.qrMargin || 5)}"></div><label class="consentCheck"><input type="checkbox" id="labelSnap" checked><span>Ajustar a cuadrícula</span></label></div>
+	            <div class="formGrid labelSizeGrid"><div class="field"><label>Margen QR</label><input type="number" min="2" max="12" id="labelQrMargin" value="${numericInputValue(initialTemplate?.qrMargin || 5)}"></div><label class="consentCheck"><input type="checkbox" id="labelSnap" checked><span>Ajustar a cuadrícula</span></label></div>
 	            <div class="formGrid"><div class="field"><label>X</label><input id="labelElementX" type="number"></div><div class="field"><label>Y</label><input id="labelElementY" type="number"></div><div class="field"><label>Ancho</label><input id="labelElementWidth" type="number" min="8"></div><div class="field"><label>Alto / tamaño</label><input id="labelElementHeight" type="number" min="6"></div></div>
 	            <div class="labelElementToggles"><label><input type="checkbox" id="labelElementVisible"> Visible</label><label><input type="checkbox" id="labelElementLocked"> Bloqueado</label></div>
 	            <div class="labelLayerButtons"><button type="button" class="btn" id="labelLayerDown">Enviar atrás</button><button type="button" class="btn" id="labelLayerUp">Traer al frente</button></div>
 	            <div class="field"><label>Mover textos <span id="yOffsetVal">0px</span></label><input type="range" id="labelYOffset" min="-50" max="50" value="0"></div><div class="formGrid"><div class="field"><label>Tamaño nombre <span id="nameScaleVal">1.0x</span></label><input type="range" id="labelNameScale" min="0.6" max="1.4" step="0.1" value="1.0"></div><div class="field"><label>Tamaño precio <span id="priceScaleVal">1.0x</span></label><input type="range" id="labelPriceScale" min="0.6" max="1.4" step="0.1" value="1.0"></div></div>
 	          </div></details>
-	          <section class="labelPrintContract"><div class="field"><label>Cantidad exacta</label><input type="number" id="labelCopies" min="1" max="500" value="1"></div><label class="consentCheck"><input type="checkbox" id="labelUseStock"><span>Imprimir una etiqueta por cada unidad en stock (${product.qty})</span></label><p id="labelQuantitySummary" class="fieldHint">Se imprimirá 1 etiqueta. El stock no cambia esta cantidad.</p></section>
-	          <details class="settingsDisclosure" open><summary>Papel y alineación</summary><div class="labelAdvancedBody"><div class="formGrid"><div class="field"><label>Plantilla de papel</label><select id="labelPaperType">${labelPaperOptions(initialPaperType)}</select></div><div class="field"><label>Forma visual</label><select id="labelShape"><option value="rounded" ${!['square','circle'].includes(initialTemplate?.shape) ? 'selected' : ''}>Rectangular redondeada</option><option value="square" ${initialTemplate?.shape === 'square' ? 'selected' : ''}>Rectangular / cuadrada</option><option value="circle" ${initialTemplate?.shape === 'circle' ? 'selected' : ''}>Circular</option></select></div><div class="field"><label>Columnas</label><input id="labelColumns" type="number" min="1" max="6" value="${numericInputValue(initialTemplate?.columns || 1)}"></div><div class="field"><label>Filas por hoja</label><input id="labelRows" type="number" min="1" max="20" value="${numericInputValue(initialTemplate?.rows || 1)}"></div><div class="field"><label>Margen superior (mm)</label><input id="labelMarginTop" type="number" min="0" max="50" value="${numericInputValue(initialTemplate?.marginTopMm || 0)}"></div><div class="field"><label>Margen izquierdo (mm)</label><input id="labelMarginLeft" type="number" min="0" max="50" value="${numericInputValue(initialTemplate?.marginLeftMm || 0)}"></div><div class="field"><label>Separación horizontal (mm)</label><input id="labelGapX" type="number" min="0" max="30" value="${numericInputValue(initialTemplate?.gapXmm ?? 2)}"></div><div class="field"><label>Separación vertical (mm)</label><input id="labelGapY" type="number" min="0" max="30" value="${numericInputValue(initialTemplate?.gapYmm ?? 2)}"></div><div class="field"><label>DPI</label><select id="labelDpi"><option value="203" ${Number(initialTemplate?.dpi || 203) === 203 ? 'selected' : ''}>203 DPI</option><option value="300" ${Number(initialTemplate?.dpi) === 300 ? 'selected' : ''}>300 DPI</option></select></div><div class="field"><label>Orientación</label><select id="labelOrientation"><option value="portrait" ${initialTemplate?.orientation !== 'landscape' ? 'selected' : ''}>Vertical</option><option value="landscape" ${initialTemplate?.orientation === 'landscape' ? 'selected' : ''}>Horizontal</option></select></div></div><label class="consentCheck expertOnly"><input type="checkbox" id="labelShowBarcode" ${initialTemplate?.showBarcode === false ? '' : 'checked'}><span>Mostrar código de barras cuando el código sea compatible</span></label><button type="button" class="btn expertOnly" id="labelAlignmentTest">${icon('ruler')} Prueba de alineación</button></div></details>
-	          <section class="labelSheetPreviewPanel"><div><b>Vista previa de la hoja completa</b><p id="labelValidationSummary" class="fieldHint"></p></div><div id="labelSheetPreview" class="labelSheetPreview" aria-label="Distribución de etiquetas en la hoja"></div></section>
-	          <div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('printer')} Imprimir cantidad exacta</button><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar plantilla</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nueva</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
-	          <details class="settingsDisclosure"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
+	          <section class="labelPrintContract" data-smart-step="5"><h3>¿Cuántas etiquetas necesitas?</h3><div class="field"><label>Cantidad exacta</label><input type="number" id="labelCopies" min="1" max="500" step="1" inputmode="numeric" value="1"></div><label class="consentCheck"><input type="checkbox" id="labelUseStock"><span>Imprimir una etiqueta por cada unidad en stock (${product.qty})</span></label><p id="labelQuantitySummary" class="fieldHint">Se imprimirá 1 etiqueta. El stock no cambia esta cantidad.</p></section>
+	          <details class="settingsDisclosure" data-smart-step="3" open><summary>Medidas del sticker y del soporte</summary><div class="labelAdvancedBody"><div class="formGrid"><div class="field full"><label>Perfil de papel</label><select id="labelPaperType">${labelPaperOptions(initialPaperType)}</select></div><div class="field"><label>Ancho de cada sticker (mm)</label><input type="number" min="10" max="250" step="0.1" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div><div class="field"><label>Alto de cada sticker (mm)</label><input type="number" min="10" max="400" step="0.1" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 40)}"></div><div class="field"><label>Ancho total del rollo/hoja (mm)</label><input id="labelMediaWidth" type="number" min="0" max="1000" step="0.1" value="${numericInputValue(initialTemplate?.mediaWidthMm || 0)}"></div><div class="field"><label>Alto total de hoja/tramo (mm)</label><input id="labelMediaHeight" type="number" min="0" max="2000" step="0.1" value="${numericInputValue(initialTemplate?.mediaHeightMm || 0)}"></div><div class="field"><label>Columnas</label><input id="labelColumns" type="number" min="1" max="6" step="1" value="${numericInputValue(initialTemplate?.columns || 1)}"></div><div class="field"><label>Filas por hoja/tramo</label><input id="labelRows" type="number" min="1" max="20" step="1" value="${numericInputValue(initialTemplate?.rows || 1)}"></div><div class="field"><label>Separación horizontal (mm)</label><input id="labelGapX" type="number" min="0" max="100" step="0.1" value="${numericInputValue(initialTemplate?.gapXmm ?? 0)}"></div><div class="field"><label>Separación vertical / gap (mm)</label><input id="labelGapY" type="number" min="0" max="100" step="0.1" value="${numericInputValue(initialTemplate?.gapYmm ?? 0)}"></div></div><label class="consentCheck"><input type="checkbox" id="labelMeasurementsConfirmed"><span>Confirmé estas medidas con el material físico</span></label><p id="smartMeasurementHint" class="wizardHelp">Sticker individual y soporte completo son medidas distintas.</p><div class="formGrid expertOnly"><div class="field"><label>Margen superior (mm)</label><input id="labelMarginTop" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginTopMm || 0)}"></div><div class="field"><label>Margen derecho (mm)</label><input id="labelMarginRight" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginRightMm || 0)}"></div><div class="field"><label>Margen inferior (mm)</label><input id="labelMarginBottom" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginBottomMm || 0)}"></div><div class="field"><label>Margen izquierdo (mm)</label><input id="labelMarginLeft" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginLeftMm || 0)}"></div><div class="field"><label>Forma física</label><select id="labelShape"><option value="rounded" ${!['square','circle'].includes(initialTemplate?.shape) ? 'selected' : ''}>Rectangular redondeada</option><option value="square" ${initialTemplate?.shape === 'square' ? 'selected' : ''}>Rectangular / cuadrada</option><option value="circle" ${initialTemplate?.shape === 'circle' ? 'selected' : ''}>Circular</option></select></div><div class="field"><label>Rotación del contenido</label><select id="labelContentRotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></div><div class="field"><label>DPI nominal (referencia del driver)</label><select id="labelDpi"><option value="203" ${Number(initialTemplate?.dpi || 203) === 203 ? 'selected' : ''}>203 DPI</option><option value="300" ${Number(initialTemplate?.dpi) === 300 ? 'selected' : ''}>300 DPI</option><option value="600" ${Number(initialTemplate?.dpi) === 600 ? 'selected' : ''}>600 DPI</option></select></div></div><label class="consentCheck expertOnly"><input type="checkbox" id="labelShowBarcode" ${initialTemplate?.showBarcode === false ? '' : 'checked'}><span>Mostrar código de barras cuando sea compatible</span></label></div></details>
+	          <section class="smartPrintPanel" data-smart-step="6"><h3>¿Desde dónde quieres empezar?</h3><div class="formGrid"><div class="field"><label>Primera casilla</label><input id="labelStartSlot" type="number" min="1" max="120" step="1" value="1"></div><div class="field"><label>Acceso rápido</label><select id="labelStartPreset"><option value="first">Primera disponible</option><option value="left">Columna izquierda</option><option value="right">Columna derecha</option><option value="custom">Casilla específica</option></select></div></div><p class="wizardHelp">Toca casillas para marcarlas como ya usadas. Se mostrarán en gris y CLICK no imprimirá sobre ellas.</p><div id="labelStartGrid" class="labelStartGrid" aria-label="Selector de casilla inicial"></div></section>
+	          <section class="labelSheetPreviewPanel" data-smart-step="7"><div><h3>Así quedará tu papel completo</h3><p id="labelValidationSummary" class="fieldHint"></p><p id="labelPhysicalSummary" class="fieldHint"></p></div><div id="labelSheetPreview" class="labelSheetPreview" aria-label="Distribución física de etiquetas"></div></section>
+	          <section class="smartPrintPanel smartPreflight" data-smart-step="8"><h3>Revisión antes de imprimir</h3><div id="labelPreflightList" class="smartPreflightList" role="status" aria-live="polite"></div><div class="labelPrimaryActions"><button type="button" class="btn" id="labelAutoCorrect">${icon('wand-sparkles')} Corregir automáticamente</button><button type="button" class="btn" id="labelUseCompact">${icon('layout-template')} Usar diseño compacto</button><button type="button" class="btn" id="copyPrintDiagnostic">${icon('clipboard-copy')} Copiar diagnóstico</button></div></section>
+	          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><div class="systemPrintChecklist"><b>Revisa en Chrome, Windows o el driver:</b><ul><li>Copias: 1</li><li>Escala: 100 % o Tamaño real</li><li>Páginas por hoja: 1</li><li>Márgenes: ninguno</li><li>Encabezados y pies: desactivados</li><li>Ajustar a página: desactivado</li></ul><p>Para rollos: Térmica directa · Etiquetas con espacios/Gap · DPI y tamaño personalizado correctos.</p></div><div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('printer')} Abrir impresión</button><button type="button" class="btn" id="savePdfBtn">${icon('file-down')} Guardar PDF</button><button type="button" class="btn" id="savePrintProfileBtn">${icon('save')} Guardar perfil</button><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Imprimir prueba de alineación</button><button type="button" class="btn" id="openCalibrationBtn">${icon('crosshair')} Calibrar X/Y</button></div><section id="labelCalibrationPanel" class="labelCalibrationPanel" hidden><h4>Calibración guiada X/Y</h4><p>Imprime la cuadrícula y toca el número que quedó mejor centrado. CLICK guardará el ajuste solo en este dispositivo y negocio.</p><div class="formGrid"><div class="field"><label>Ajuste X actual (mm)</label><input id="labelXOffset" value="0" readonly></div><div class="field"><label>Ajuste Y actual (mm)</label><input id="labelYOffsetMm" value="0" readonly></div></div><div id="labelCalibrationGrid" class="labelCalibrationGrid" aria-label="Casilla centrada"></div><p id="labelCalibrationStatus" class="fieldHint">Estado provisional hasta comprobar una prueba física.</p><div class="labelPrimaryActions"><button type="button" class="btn" id="resetCalibrationBtn">${icon('rotate-ccw')} Restablecer calibración</button><button type="button" class="btn" id="repeatCalibrationBtn">${icon('repeat-2')} Repetir prueba</button></div></section><div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="duplicatePrintProfileBtn">${icon('copy')} Duplicar perfil</button><button type="button" class="btn danger" id="deletePrintProfileBtn">${icon('trash-2')} Eliminar perfil</button></div></section>
+	          <div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar diseño</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nuevo</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
+	          <details class="settingsDisclosure expertOnly"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
 	        </div>
-	      </div>`);
+	      </div>
+	      <footer class="smartWizardFooter"><button type="button" class="btn" id="smartPrintBack">${icon('arrow-left')} Atrás</button><button type="button" class="btn" id="smartPrintHelp">${icon('circle-help')} Ayuda de este paso</button><button type="button" class="btn primary" id="smartPrintNext">Continuar ${icon('arrow-right')}</button></footer>`);
 
     $('#modalRoot .modal')?.classList.add('labelEditorModal');
     const labelEditorModal = $('#modalRoot .labelEditorModal');
     labelEditorModal.dataset.labelMode = 'simple';
+    let latestSmartPreflight = null;
+    const editorBusinessIsActive = () => currentBusiness()?.id === editorBusinessId;
+    const smartStepHelp = {
+      1:'CLICK abre el diálogo del navegador; la impresora se elige allí.',
+      2:'Cuenta cuántos stickers aparecen lado a lado en una fila.',
+      3:'Mide por separado un sticker y el ancho total del soporte.',
+      4:'La URL queda oculta porque el QR ya contiene el enlace.',
+      5:'Cantidad exacta nunca se reemplaza por stock sin activar la opción.',
+      6:'Marca las casillas ya usadas para no desperdiciar material.',
+      7:'La vista usa la misma geometría que la salida imprimible.',
+      8:'Los errores rojos deben corregirse; las advertencias explican el driver.',
+      9:'Usa escala 100 %, márgenes ninguno y encabezados desactivados.'
+    };
+    const showSmartPrintStep = (requestedStep) => {
+      smartPrintStep = Math.max(1, Math.min(9, Number(requestedStep) || 1));
+      const simple = labelEditorModal.dataset.labelMode === 'simple';
+      $$('[data-smart-step]', labelEditorModal).forEach((panel) => {
+        panel.hidden = simple && Number(panel.dataset.smartStep) !== smartPrintStep;
+      });
+      $$('[data-smart-step-nav]', labelEditorModal).forEach((item) => {
+        const step = Number(item.dataset.smartStepNav);
+        item.classList.toggle('active', step === smartPrintStep);
+        item.classList.toggle('complete', step < smartPrintStep);
+        item.setAttribute('aria-current', step === smartPrintStep ? 'step' : 'false');
+      });
+      $('#smartPrintStepText').textContent = `Paso ${smartPrintStep} de 9`;
+      $('#smartPrintProgress').value = smartPrintStep;
+      $('#smartPrintBack').disabled = smartPrintStep === 1;
+      $('#smartPrintNext').hidden = !simple || smartPrintStep === 9;
+      $('#smartPrintNext').innerHTML = `Continuar ${icon('arrow-right')}`;
+      labelEditorModal.querySelector(`[data-smart-step="${smartPrintStep}"]`)?.scrollIntoView({ block:'nearest' });
+    };
     $$('[data-label-mode]', labelEditorModal).forEach((button) => button.onclick = () => {
       labelEditorModal.dataset.labelMode = button.dataset.labelMode;
       $$('[data-label-mode]', labelEditorModal).forEach((candidate) => candidate.classList.toggle('active', candidate === button));
+      showSmartPrintStep(smartPrintStep);
     });
-    const canvas = $('#labelPreviewCanvas');
-    $('#applyTemplateSelect').value = activeTemplateId;
-    $('#labelTaxDisplay').value = initialTemplate?.taxDisplay || 'inherit';
+    $$('[data-smart-step-nav]', labelEditorModal).forEach((item) => {
+      item.tabIndex = 0;
+      item.onclick = () => showSmartPrintStep(Number(item.dataset.smartStepNav));
+      item.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.click(); } };
+    });
+    $('#smartPrintBack').onclick = () => showSmartPrintStep(smartPrintStep - 1);
+    $('#smartPrintNext').onclick = () => {
+      if (smartPrintStep === 3 && latestSmartPreflight?.paper && latestSmartPreflight.paper.valid === false) {
+        return toast(latestSmartPreflight.paper.errors[0], 'err');
+      }
+      if (smartPrintStep === 5 && latestSmartPreflight?.quantity?.valid === false) {
+        return toast(latestSmartPreflight.quantity.error, 'err');
+      }
+      if (smartPrintStep === 8 && latestSmartPreflight?.blocking) {
+        return toast('Corrige los errores rojos antes de imprimir.', 'err');
+      }
+      showSmartPrintStep(smartPrintStep + 1);
+    };
+    $('#smartPrintHelp').onclick = () => toast(smartStepHelp[smartPrintStep], 'ok');
+    showSmartPrintStep(1);
+	    const canvas = $('#labelPreviewCanvas');
+	    $('#applyTemplateSelect').value = activeTemplateId;
+	    $('#labelProfileSelect').value = activePrintProfileId;
+	    $('#labelTaxDisplay').value = initialTemplate?.taxDisplay || 'inherit';
 	    $('#labelYOffset').value = initialTemplate?.layout ? (initialTemplate?.yOffsetAdj || 0) : 0;
 	    $('#labelNameScale').value = initialTemplate?.layout ? (initialTemplate?.nameScale || 1) : 1;
 	    $('#labelPriceScale').value = initialTemplate?.layout ? (initialTemplate?.priceScale || 1) : 1;
@@ -5591,50 +5785,177 @@ function parseMoney(value) {
           qrBgColor: safeColor($('#qrBgColor').value, '#ffffff'),
           fgColor: safeColor($('#labelFgColor').value, '#000000'),
           social: $('#labelSocial').value.trim(),
-          address: $('#labelAddress').value.trim(),
-          phone: currentBusiness()?.settings?.phone || '',
-          customText: $('#labelCustomText').value.trim(),
+	          address: $('#labelAddress').value.trim(),
+	          phone: editorBusiness.settings?.phone || '',
+	          businessName:editorBusiness.name,
+	          businessLogo:editorBusiness.settings?.logoUrl || '',
+	          customText: $('#labelShowUrl')?.checked ? productPayload(product) : $('#labelCustomText').value.trim(),
           taxDisplay: $('#labelTaxDisplay').value,
           qrMargin: Math.max(2, Math.min(12, Number($('#labelQrMargin').value || 5))),
-          widthMm: Math.max(25, Math.min(120, Number($('#labelWidthMm').value || 60))),
-          heightMm: Math.max(25, Math.min(180, Number($('#labelHeightMm').value || 88))),
+          widthMm: Math.max(10, Math.min(250, Number($('#labelWidthMm').value || 60))),
+          heightMm: Math.max(10, Math.min(400, Number($('#labelHeightMm').value || 40))),
           paperType: $('#labelPaperType')?.value || 'roll-4x2',
+          mediaType: LABEL_PAPER_PRESETS[$('#labelPaperType')?.value]?.mediaType || ($('#labelColumns')?.value > 1 ? `roll-${Math.min(3, Number($('#labelColumns').value))}` : 'roll-1'),
+          mediaWidthMm: Math.max(0, Math.min(1000, Number($('#labelMediaWidth')?.value || 0))),
+          mediaHeightMm: Math.max(0, Math.min(2000, Number($('#labelMediaHeight')?.value || 0))),
           columns: Math.max(1, Math.min(6, Number($('#labelColumns')?.value || 1))),
           rows: Math.max(1, Math.min(20, Number($('#labelRows')?.value || 1))),
-          marginTopMm: Math.max(0, Math.min(50, Number($('#labelMarginTop')?.value || 0))),
-          marginLeftMm: Math.max(0, Math.min(50, Number($('#labelMarginLeft')?.value || 0))),
-          gapXmm: Math.max(0, Math.min(30, Number($('#labelGapX')?.value || 0))),
-          gapYmm: Math.max(0, Math.min(30, Number($('#labelGapY')?.value || 0))),
-          dpi: Number($('#labelDpi')?.value || 203) === 300 ? 300 : 203,
-          orientation: $('#labelOrientation')?.value === 'landscape' ? 'landscape' : 'portrait',
+          marginTopMm: Math.max(0, Math.min(200, Number($('#labelMarginTop')?.value || 0))),
+          marginRightMm: Math.max(0, Math.min(200, Number($('#labelMarginRight')?.value || 0))),
+          marginBottomMm: Math.max(0, Math.min(200, Number($('#labelMarginBottom')?.value || 0))),
+          marginLeftMm: Math.max(0, Math.min(200, Number($('#labelMarginLeft')?.value || 0))),
+          gapXmm: Math.max(0, Math.min(100, Number($('#labelGapX')?.value || 0))),
+          gapYmm: Math.max(0, Math.min(100, Number($('#labelGapY')?.value || 0))),
+          dpi: [203,300,600].includes(Number($('#labelDpi')?.value)) ? Number($('#labelDpi').value) : 203,
+	          contentRotation: [0,90,180,270].includes(Number($('#labelContentRotation')?.value)) ? Number($('#labelContentRotation').value) : 0,
+	          xOffsetMm:Math.max(-10, Math.min(10, Number($('#labelXOffset')?.value || 0))),
+	          yOffsetMm:Math.max(-10, Math.min(10, Number($('#labelYOffsetMm')?.value || 0))),
+          measurementsConfirmed: $('#labelMeasurementsConfirmed')?.checked === true,
+          profileStatus: activePrintProfileId ? (labelProfilesForBiz(editorBusinessId).find(profile => profile.id === activePrintProfileId)?.status || 'provisional') : 'provisional',
+          outputMode: $$('input[name="smartPrintOutput"]', labelEditorModal).find(input => input.checked)?.value || 'system',
+          startSlot: Math.max(1, Number($('#labelStartSlot')?.value || 1)),
+          usedSlots: [...usedPrintSlots],
+          showUrl: $('#labelShowUrl')?.checked === true,
 	          showBarcode: $('#labelShowBarcode')?.checked !== false,
 	          shape: ['square','circle'].includes($('#labelShape')?.value) ? $('#labelShape').value : 'rounded',
 	          layout: normalizedLabelLayout(editorLayout),
           yOffsetAdj: parseFloat($('#labelYOffset').value || '0'),
           nameScale: parseFloat($('#labelNameScale').value || '1.0'),
-          priceScale: parseFloat($('#labelPriceScale').value || '1.0')
+          priceScale: parseFloat($('#labelPriceScale').value || '1.0'),
+          businessId:editorBusinessId
        };
     };
 
+	    const smartPaperFromOptions = (options) => ({
+      id:options.paperType,
+      businessId:editorBusinessId,
+      name:LABEL_PAPER_PRESETS[options.paperType]?.label || 'Perfil personalizado',
+      mediaType:options.mediaType,
+      labelWidthMm:options.widthMm,
+      labelHeightMm:options.heightMm,
+      mediaWidthMm:options.mediaWidthMm,
+      mediaHeightMm:options.mediaHeightMm,
+      columns:options.columns,
+      rows:options.rows,
+      gapHorizontalMm:options.gapXmm,
+      gapVerticalMm:options.gapYmm,
+      marginTopMm:options.marginTopMm,
+      marginRightMm:options.marginRightMm,
+      marginBottomMm:options.marginBottomMm,
+      marginLeftMm:options.marginLeftMm,
+      shape:options.shape,
+      contentRotation:options.contentRotation,
+      xOffsetMm:options.xOffsetMm || 0,
+      yOffsetMm:options.yOffsetMm || 0,
+      nominalDpi:options.dpi,
+      status:options.profileStatus,
+	      measurementsConfirmed:options.measurementsConfirmed
+	    });
+	    const calibrationKeyFor = (options) => {
+	      const fingerprint = window.CLICK360_SMART_PRINT?.paperGeometryFingerprint(smartPaperFromOptions(options))
+	        || `${options.paperType}|${options.widthMm}|${options.heightMm}|${options.columns}|${options.rows}`;
+	      return `${activePrintProfileId || options.paperType}:${fingerprint}`.replace(/[^a-zA-Z0-9:_-]/g, '_').slice(0, 120);
+	    };
+	    const loadCalibrationIntoForm = () => {
+	      const options = getOptions();
+	      const key = calibrationKeyFor(options);
+	      const fingerprint = window.CLICK360_SMART_PRINT?.paperGeometryFingerprint(smartPaperFromOptions(options)) || '';
+	      const calibration = printDeviceState.calibrations?.[key];
+	      const compatible = calibration && calibration.geometryFingerprint === fingerprint;
+	      $('#labelXOffset').value = compatible ? String(calibration.xOffsetMm || 0) : '0';
+	      $('#labelYOffsetMm').value = compatible ? String(calibration.yOffsetMm || 0) : '0';
+	      $('#labelCalibrationStatus').textContent = compatible
+	        ? `Calibración ${calibration.status === 'verified' ? 'verificada' : 'provisional'} en este dispositivo.`
+	        : 'Estado provisional hasta comprobar una prueba física.';
+	    };
     const updateSheetPreview = () => {
       const options = getOptions();
       const useStock = $('#labelUseStock')?.checked === true;
-      const copies = resolveLabelCopies($('#labelCopies')?.value || 1, product.qty, useStock);
+      const quantity = resolveLabelCopyResult($('#labelCopies')?.value, product.qty, useStock);
+      const copies = quantity.count;
       const validation = validateLabelPrintSetup(options, editorLayout, copies);
-      const sheetPlan = buildLabelSheetPlan([{ product, copies }], options);
-      const capacity = sheetPlan.capacity;
-      const visibleCells = Math.min(60, Math.max(capacity, Math.min(copies, capacity * 2)));
-      const preview = $('#labelSheetPreview');
-      preview.style.setProperty('--label-columns', String(options.columns));
-      preview.innerHTML = Array.from({ length:visibleCells }, (_, index) =>
-        `<span class="${index < copies ? 'filled' : ''}" title="${index < copies ? `Etiqueta ${index + 1}` : 'Espacio libre'}">${index < copies ? index + 1 : ''}</span>`).join('');
-      const messages = [...validation.errors, ...validation.warnings];
+      const core = window.CLICK360_SMART_PRINT;
+      const paper = smartPaperFromOptions(options);
+      const paperValidation = core?.validatePaperProfile(paper) || { valid:true, errors:[], warnings:[], paper };
+      const sheetPlan = core?.buildSheetPlan([{ product, copies }], paper, { startSlot:options.startSlot, usedSlots:options.usedSlots })
+        || buildLabelSheetPlan([{ product, copies }], options);
+	      const capacity = Math.max(1, sheetPlan.capacity || options.columns * options.rows);
+	      $('#labelStartSlot').max = String(capacity);
+	      const preview = $('#labelSheetPreview');
+	      preview.style.setProperty('--label-columns', String(options.columns));
+	      preview.style.setProperty('--label-aspect', String(options.widthMm / Math.max(1, options.heightMm)));
+	      const previewMediaWidth = paperValidation.paper?.mediaWidthMm || paperValidation.requiredWidthMm || options.widthMm;
+	      const previewMediaHeight = paperValidation.paper?.mediaHeightMm || paperValidation.requiredHeightMm || options.heightMm;
+	      preview.dataset.geometryFingerprint = window.CLICK360_SMART_PRINT?.paperGeometryFingerprint(paper) || '';
+	      preview.innerHTML = (sheetPlan.pages || []).map((page) => `<section class="labelPreviewPage" style="--media-aspect:${previewMediaWidth / Math.max(1, previewMediaHeight)}" aria-label="${sheetPlan.mediaType === 'sheet' ? 'Hoja' : 'Tramo'} ${page.index + 1}"><header>${sheetPlan.mediaType === 'sheet' ? 'Hoja' : 'Tramo'} ${page.index + 1}</header><div class="labelPreviewCells">${(page.cells || page.sheetCells || []).map((cell, index) => {
+	        const status = cell?.status || (cell ? 'filled' : 'empty');
+	        const slot = cell?.slot || index + 1;
+	        const isStart = status === 'filled' && !(page.cells || []).slice(0, index).some(candidate => candidate.status === 'filled') && page.index === 0;
+	        const left = Number(cell?.xMm ?? options.marginLeftMm) / Math.max(1, previewMediaWidth) * 100;
+	        const top = Number(cell?.yMm ?? options.marginTopMm) / Math.max(1, previewMediaHeight) * 100;
+	        const width = options.widthMm / Math.max(1, previewMediaWidth) * 100;
+	        const height = options.heightMm / Math.max(1, previewMediaHeight) * 100;
+	        return `<span class="${status}${isStart ? ' start' : ''}" style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;" title="Casilla ${slot}: ${status === 'filled' ? 'etiqueta' : status === 'used' ? 'ya usada' : 'libre'}">${status === 'filled' ? slot : status === 'used' ? '×' : ''}</span>`;
+	      }).join('')}</div></section>`).join('');
+      const startGrid = $('#labelStartGrid');
+      startGrid.style.setProperty('--label-columns', String(options.columns));
+      startGrid.innerHTML = Array.from({ length:capacity }, (_, index) => {
+        const slot = index + 1;
+        const used = usedPrintSlots.has(slot);
+        return `<button type="button" data-used-slot="${slot}" class="${used ? 'used' : ''}" aria-pressed="${used}" title="Casilla ${slot}${used ? ' ya usada' : ''}">${slot}</button>`;
+      }).join('');
+      $$('[data-used-slot]', startGrid).forEach((button) => {
+        button.onclick = () => {
+          const slot = Number(button.dataset.usedSlot);
+          if (usedPrintSlots.has(slot)) usedPrintSlots.delete(slot);
+          else usedPrintSlots.add(slot);
+          updateSheetPreview();
+        };
+      });
+      const baseWidth = Math.round(Math.max(10, options.widthMm) * (260 / 60));
+      const baseHeight = Math.round(Math.max(10, options.heightMm) * (380 / 88));
+      const corePreflight = core?.buildPreflight({
+        paper,
+        manualQuantity:$('#labelCopies')?.value,
+        useStock,
+        stock:product.qty,
+        elements:editorLayout,
+        bounds:{ width:baseWidth, height:baseHeight },
+        qrSizeMm:Number(editorLayout.qr?.width || 0) / Math.max(1, baseWidth) * options.widthMm,
+        showUrl:options.showUrl,
+        visibleUrl:options.showUrl ? productPayload(product) : ''
+      });
+	      const blocking = !quantity.valid || !paperValidation.valid || sheetPlan.valid === false || !validation.valid || corePreflight?.blocking === true;
+      latestSmartPreflight = {
+        blocking,
+        quantity,
+        paper:paperValidation,
+        plan:sheetPlan,
+        validation,
+        core:corePreflight,
+        options
+      };
+	      const messages = [...paperValidation.errors, ...(sheetPlan.errors || []), ...validation.errors,
+	        ...(corePreflight?.errors || []).map((item) => item.message),
+	        ...paperValidation.warnings, ...validation.warnings,
+	        ...(corePreflight?.warnings || []).map((item) => item.message)];
       $('#labelValidationSummary').textContent = messages.length
         ? messages.join(' ')
-        : `${copies} etiqueta${copies === 1 ? '' : 's'} · ${options.columns} columna${options.columns === 1 ? '' : 's'} · ${sheetPlan.pages.length} hoja${sheetPlan.pages.length === 1 ? '' : 's'} · ${sheetPlan.pages.at(-1)?.emptyCells || 0} espacios vacíos.`;
-      $('#labelValidationSummary').classList.toggle('validationError', !validation.valid);
-      $('#printOne').disabled = !validation.valid || copies < 1;
-      return validation;
+        : `${copies} etiqueta${copies === 1 ? '' : 's'} · ${options.columns} columna${options.columns === 1 ? '' : 's'} · ${sheetPlan.pages.length} ${sheetPlan.mediaType === 'sheet' ? 'hoja' : 'tramo'}${sheetPlan.pages.length === 1 ? '' : 's'}.`;
+      $('#labelValidationSummary').classList.toggle('validationError', blocking);
+      $('#labelPhysicalSummary').textContent = `${options.widthMm} mm ancho × ${options.heightMm} mm alto por sticker · soporte ${options.mediaWidthMm || 'sin confirmar'} mm · rotación ${options.contentRotation}° · inicio casilla ${options.startSlot}.`;
+	      const checks = corePreflight?.checks?.length ? corePreflight.checks : [
+	        { status:paperValidation.valid ? 'pass' : 'error', message:paperValidation.valid ? 'Perfil de papel válido' : paperValidation.errors[0] },
+	        { status:quantity.valid ? 'pass' : 'error', message:quantity.valid ? `Cantidad exacta: ${copies}` : quantity.error },
+	        { status:useStock ? 'warning' : 'pass', message:useStock ? `Opción por stock activa: ${copies}` : 'Opción por stock desactivada' },
+	        { status:validation.errors.length ? 'error' : 'pass', message:validation.errors[0] || 'Contenido dentro de la zona segura' },
+	        { status:validation.warnings.length ? 'warning' : 'pass', message:validation.warnings[0] || 'Sin elementos montados' },
+	        { status:'warning', message:'En Windows o Chrome usa escala 100 % y desactiva encabezados y pies' }
+	      ];
+      $('#labelPreflightList').innerHTML = checks.map((check) => `<div class="${check.status}"><span>${check.status === 'pass' ? '✓' : check.status === 'error' ? '×' : '!'}</span><p>${escapeHtml(check.message || '')}</p></div>`).join('');
+      $('#printOne').disabled = blocking || copies < 1;
+      $('#savePdfBtn').disabled = blocking || copies < 1;
+      return latestSmartPreflight;
     };
 
 	    let previewGeneration = 0;
@@ -5644,7 +5965,7 @@ function parseMoney(value) {
 	       if (generation !== previewGeneration || !result) return;
 	       const selectedKey = $('#labelElementSelect').value;
 	       const selected = result.layout[selectedKey];
-	       if (selected?.visible !== false) {
+		       if (selected?.visible !== false && Number(getOptions().contentRotation) === 0) {
 	         const bounds = hitBounds(selectedKey, selected);
 	         const context = canvas.getContext('2d');
 	         const previewScale = canvas.width / Number(canvas.dataset.baseWidth || result.baseWidth || 260);
@@ -5679,11 +6000,17 @@ function parseMoney(value) {
     $('#labelFgColor').oninput = updatePreview;
     $('#labelSocial').oninput = updatePreview;
     $('#labelAddress').oninput = updatePreview;
-    $('#labelCustomText').oninput = updatePreview;
-    $('#labelTaxDisplay').onchange = updatePreview;
-    $('#labelQrMargin').oninput = updatePreview;
-    $('#labelWidthMm').oninput = updatePreview;
-    $('#labelHeightMm').oninput = updatePreview;
+	    $('#labelCustomText').oninput = updatePreview;
+	    $('#labelTaxDisplay').onchange = updatePreview;
+	    $('#labelQrMargin').oninput = updatePreview;
+	    $('#labelWidthMm').oninput = () => { loadCalibrationIntoForm(); updatePreview(); };
+	    $('#labelHeightMm').oninput = () => { loadCalibrationIntoForm(); updatePreview(); };
+	    $('#labelShowBarcode').onchange = updatePreview;
+	    $('#labelShowUrl').onchange = () => {
+	      editorLayout.customText.visible = $('#labelShowUrl').checked;
+	      updatePreview();
+	    };
+	    $$('input[name="smartPrintOutput"]', labelEditorModal).forEach((input) => { input.onchange = updateSheetPreview; });
 
     // Wire range inputs
     $('#labelYOffset').oninput = (e) => { $('#yOffsetVal').textContent = e.target.value + 'px'; updatePreview(); };
@@ -5762,23 +6089,41 @@ function parseMoney(value) {
 	      });
 	      return layout;
 	    };
-	    const applyPreset = (preset) => {
-	      const sizes = { small: [40, 60], medium: [60, 88], large: [80, 110], qr: [45, 50], 'qr-price': [50, 65], business: [60, 88] };
-	      const [widthMm, heightMm] = sizes[preset] || sizes.medium;
+	    const applyPreset = (preset, announce = true) => {
+	      const widthMm = Math.max(10, Number($('#labelWidthMm').value || 60));
+	      const heightMm = Math.max(10, Number($('#labelHeightMm').value || 40));
 	      editorLayout = scaledDefaultLayout(widthMm, heightMm);
-	      if (preset === 'qr' || preset === 'qr-price') {
-	        Object.values(editorLayout).forEach((element) => { element.visible = false; });
-	        const baseWidth = widthMm * (260 / 60);
-	        const qrSize = Math.max(90, Math.min(baseWidth - 24, heightMm * (380 / 88) - (preset === 'qr-price' ? 65 : 24)));
-	        Object.assign(editorLayout.qr, { visible: true, x: (baseWidth - qrSize) / 2, y: 12, width: qrSize, height: qrSize });
-	        if (preset === 'qr-price') {
-	          Object.assign(editorLayout.price, { visible: true, x: baseWidth / 2, y: qrSize + 42, width: baseWidth - 20, size: 18 });
-	          Object.assign(editorLayout.code, { visible: true, x: baseWidth / 2, y: qrSize + 23, width: baseWidth - 20, size: 9 });
-	        }
+	      Object.values(editorLayout).forEach((element) => { element.visible = false; });
+	      const visibleByPreset = {
+	        qr:['qr'],
+	        'qr-name':['qr','name'],
+	        'qr-price':['qr','name','price'],
+	        'barcode-price':['barcode','price'],
+	        'name-price-sku':['name','price','code'],
+	        compact:['business','qr','barcode','name','price','code'],
+	        custom:['business','qr','name','price','code'],
+	        small:['qr','name','price'],
+	        medium:['business','qr','name','price','code'],
+	        large:['business','address','qr','barcode','name','price','code'],
+	        business:['business','address','qr','name','price','code']
+	      };
+	      (visibleByPreset[preset] || visibleByPreset.custom).forEach((key) => { editorLayout[key].visible = true; });
+	      const baseWidth = widthMm * (260 / 60);
+	      const baseHeight = heightMm * (380 / 88);
+	      if (['qr','qr-name','qr-price'].includes(preset)) {
+	        const reserved = preset === 'qr' ? 16 : preset === 'qr-name' ? 55 : 78;
+	        const qrSize = Math.max(90, Math.min(baseWidth - 24, baseHeight - reserved));
+	        Object.assign(editorLayout.qr, { visible:true, x:(baseWidth - qrSize) / 2, y:10, width:qrSize, height:qrSize });
+	        if (preset !== 'qr') Object.assign(editorLayout.name, { visible:true, x:baseWidth / 2, y:qrSize + 30, width:baseWidth - 20, size:14 });
+	        if (preset === 'qr-price') Object.assign(editorLayout.price, { visible:true, x:baseWidth / 2, y:qrSize + 52, width:baseWidth - 20, size:17 });
 	      }
-	      if (preset === 'business') ['business','address','name','price','tax','social','phone','code','qr'].forEach((key) => { editorLayout[key].visible = true; });
-	      $('#labelWidthMm').value = widthMm; $('#labelHeightMm').value = heightMm;
-	      syncElementControls(); updatePreview(); toast('Diseño aplicado');
+	      if (preset === 'barcode-price') {
+	        Object.assign(editorLayout.barcode, { visible:true, x:14, y:22, width:baseWidth - 28, height:Math.max(28, baseHeight * 0.42) });
+	        Object.assign(editorLayout.price, { visible:true, x:baseWidth / 2, y:baseHeight - 18, width:baseWidth - 20, size:17 });
+	      }
+	      syncElementControls();
+	      updatePreview();
+	      if (announce) toast('Diseño aplicado');
 	    };
 	    $$('[data-label-preset]').forEach((button) => { button.onclick = () => applyPreset(button.dataset.labelPreset); });
 	    $('#labelResetAll').onclick = () => { editorLayout = normalizedLabelLayout(); $('#labelWidthMm').value = 60; $('#labelHeightMm').value = 88; syncElementControls(); updatePreview(); };
@@ -5884,7 +6229,7 @@ function parseMoney(value) {
 	    $('#applyTemplateSelect').onchange = (e) => {
 	       const tplId = e.target.value;
 	       if (!tplId) { activeTemplateId = ''; $('#deleteTemplateBtn').disabled = true; return; }
-       const tpl = labelTemplatesForBiz().find(t => t.id === tplId);
+	       const tpl = labelTemplatesForBiz(editorBusinessId).find(t => t.id === tplId);
 	       if (tpl) {
 	          activeTemplateId = tpl.id;
 	          $('#deleteTemplateBtn').disabled = false;
@@ -5905,15 +6250,22 @@ function parseMoney(value) {
 	          $('#labelPriceScale').value = tpl.layout ? (tpl.priceScale || 1.0) : 1.0;
           $('#labelWidthMm').value = tpl.widthMm || 60;
           $('#labelHeightMm').value = tpl.heightMm || 88;
-          $('#labelPaperType').value = tpl.paperType || 'roll-4x2';
-          $('#labelColumns').value = tpl.columns || 1;
-          $('#labelRows').value = tpl.rows || 1;
-          $('#labelMarginTop').value = tpl.marginTopMm || 0;
-          $('#labelMarginLeft').value = tpl.marginLeftMm || 0;
+	          $('#labelPaperType').value = legacyPaperMap[tpl.paperType] || tpl.paperType || 'thermal-60x40';
+	          $('#labelMediaWidth').value = tpl.mediaWidthMm || 0;
+	          $('#labelMediaHeight').value = tpl.mediaHeightMm || 0;
+	          $('#labelColumns').value = tpl.columns || 1;
+	          $('#labelRows').value = tpl.rows || 1;
+	          $('#labelMarginTop').value = tpl.marginTopMm || 0;
+	          $('#labelMarginRight').value = tpl.marginRightMm || 0;
+	          $('#labelMarginBottom').value = tpl.marginBottomMm || 0;
+	          $('#labelMarginLeft').value = tpl.marginLeftMm || 0;
           $('#labelGapX').value = tpl.gapXmm ?? 2;
           $('#labelGapY').value = tpl.gapYmm ?? 2;
           $('#labelDpi').value = tpl.dpi || 203;
-          $('#labelOrientation').value = tpl.orientation || 'portrait';
+	          $('#labelContentRotation').value = [0,90,180,270].includes(Number(tpl.contentRotation)) ? String(tpl.contentRotation) : '0';
+	          $('#labelMeasurementsConfirmed').checked = tpl.measurementsConfirmed === true;
+	          $('#labelShowUrl').checked = tpl.showUrl === true;
+	          editorLayout.customText.visible = tpl.showUrl === true || editorLayout.customText.visible === true;
 	          $('#labelShowBarcode').checked = tpl.showBarcode !== false;
 	          $('#labelShape').value = ['square','circle'].includes(tpl.shape) ? tpl.shape : 'rounded';
           $('#labelTaxDisplay').value = tpl.taxDisplay || 'inherit';
@@ -5929,13 +6281,17 @@ function parseMoney(value) {
     };
 
 	    const refreshTemplateSelect = () => {
-	      const updatedTemplates = labelTemplatesForBiz();
+		      const updatedTemplates = labelTemplatesForBiz(editorBusinessId);
 	      $('#applyTemplateSelect').innerHTML = `<option value="">Nueva plantilla</option>` + updatedTemplates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('');
 	      $('#applyTemplateSelect').value = activeTemplateId;
 	      $('#deleteTemplateBtn').disabled = !activeTemplateId;
 	    };
 	    const persistTemplate = ({ forceNew = false, suggestedName = '' } = {}) => {
-	       const existing = forceNew ? null : labelTemplatesForBiz().find((template) => template.id === activeTemplateId);
+		       if (!editorBusinessIsActive()) {
+		         toast('El negocio activo cambió. Reabre el asistente para guardar con seguridad.', 'err');
+		         return null;
+		       }
+		       const existing = forceNew ? null : labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	       const name = prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
 	       if (!name?.trim()) return null;
 	       const currentOpts = getOptions();
@@ -5952,18 +6308,24 @@ function parseMoney(value) {
           qrMargin: currentOpts.qrMargin,
           widthMm: currentOpts.widthMm,
           heightMm: currentOpts.heightMm,
-          paperType: currentOpts.paperType,
-          columns: currentOpts.columns,
-          rows: currentOpts.rows,
-          marginTopMm: currentOpts.marginTopMm,
-          marginLeftMm: currentOpts.marginLeftMm,
+	          paperType: currentOpts.paperType,
+	          mediaWidthMm:currentOpts.mediaWidthMm,
+	          mediaHeightMm:currentOpts.mediaHeightMm,
+	          columns: currentOpts.columns,
+	          rows: currentOpts.rows,
+	          marginTopMm: currentOpts.marginTopMm,
+	          marginRightMm:currentOpts.marginRightMm,
+	          marginBottomMm:currentOpts.marginBottomMm,
+	          marginLeftMm: currentOpts.marginLeftMm,
           gapXmm: currentOpts.gapXmm,
           gapYmm: currentOpts.gapYmm,
-          dpi: currentOpts.dpi,
-          orientation: currentOpts.orientation,
+	          dpi: currentOpts.dpi,
+	          contentRotation:currentOpts.contentRotation,
+	          measurementsConfirmed:currentOpts.measurementsConfirmed,
+	          showUrl:currentOpts.showUrl,
 	          showBarcode: currentOpts.showBarcode,
 	          shape: currentOpts.shape,
-          businessId: currentBusiness().id,
+	          businessId: editorBusinessId,
           layout: currentOpts.layout,
           yOffsetAdj: currentOpts.yOffsetAdj,
           nameScale: currentOpts.nameScale,
@@ -5974,8 +6336,9 @@ function parseMoney(value) {
        };
        state.settings ||= {};
        state.settings.labelTemplates ||= [];
-       const index = state.settings.labelTemplates.findIndex((template) =>
-         template.id === tpl.id && template.businessId === currentBusiness().id);
+	       const index = state.settings.labelTemplates.findIndex((template) =>
+	         template.id === tpl.id && (template.businessId === editorBusinessId
+	           || (!template.businessId && state.settings?.legacyDataBusinessId === editorBusinessId)));
        if (index >= 0) state.settings.labelTemplates[index] = tpl;
        else state.settings.labelTemplates.push(tpl);
 	       activeTemplateId = tpl.id;
@@ -5992,15 +6355,20 @@ function parseMoney(value) {
 	    $('#saveTemplateBtn').onclick = () => persistTemplate();
 	    $('#saveTemplateAsNewBtn').onclick = () => persistTemplate({ forceNew: true });
 	    $('#duplicateTemplateBtn').onclick = () => {
-	      const current = labelTemplatesForBiz().find((template) => template.id === activeTemplateId);
+	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+	      const current = labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	      persistTemplate({ forceNew: true, suggestedName: `${current?.name || 'Mi Plantilla QR'} - copia` });
 	    };
 	    $('#deleteTemplateBtn').onclick = () => {
-	      const current = labelTemplatesForBiz().find((template) => template.id === activeTemplateId);
+	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+	      const current = labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	      if (!current || !confirm(`¿Eliminar la plantilla "${current.name}"?`)) return;
-	      const businessId = currentBusiness().id;
+	      const businessId = editorBusinessId;
 	      state.settings.labelTemplates = state.settings.labelTemplates.filter((template) =>
-	        template.id !== activeTemplateId || template.businessId !== businessId);
+	        template.id !== activeTemplateId || !(
+	          template.businessId === businessId
+	          || (!template.businessId && state.settings?.legacyDataBusinessId === businessId)
+	        ));
 	      addAudit('label_template_deleted', { templateId: activeTemplateId, name: current.name });
 	      activeTemplateId = '';
 	      if (!save()) return;
@@ -6009,74 +6377,394 @@ function parseMoney(value) {
 	      toast('Plantilla eliminada');
 	    };
 
-    updatePreview();
+	    const refreshPrintProfileSelect = () => {
+	      const profiles = labelProfilesForBiz(editorBusinessId);
+	      $('#labelProfileSelect').innerHTML = '<option value="">Configuración nueva</option>'
+	        + profiles.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name || 'Perfil de impresión')}</option>`).join('');
+	      $('#labelProfileSelect').value = activePrintProfileId;
+	      $('#deletePrintProfileBtn').disabled = !activePrintProfileId;
+	      $('#duplicatePrintProfileBtn').disabled = !activePrintProfileId;
+	    };
+	    const applyPrintProfile = (sourceProfile) => {
+	      if (!sourceProfile) return;
+	      const profile = window.CLICK360_SMART_PRINT?.normalizePrintProfile(sourceProfile, editorBusinessId) || sourceProfile;
+	      if (profile.businessId && profile.businessId !== editorBusinessId) {
+	        return toast('Ese perfil pertenece a otro negocio.', 'err');
+	      }
+	      const paper = profile.paper || {};
+	      const design = profile.design || {};
+	      activePrintProfileId = profile.id || sourceProfile.id;
+	      $('#labelProfileSelect').value = activePrintProfileId;
+	      $('#labelPaperType').value = LABEL_PAPER_PRESETS[paper.id] ? paper.id : 'custom';
+	      $('#labelWidthMm').value = paper.labelWidthMm || 60;
+	      $('#labelHeightMm').value = paper.labelHeightMm || 40;
+	      $('#labelMediaWidth').value = paper.mediaWidthMm || 0;
+	      $('#labelMediaHeight').value = paper.mediaHeightMm || 0;
+	      $('#labelColumns').value = paper.columns || 1;
+	      $('#labelRows').value = paper.rows || 1;
+	      $('#labelGapX').value = paper.gapHorizontalMm || 0;
+	      $('#labelGapY').value = paper.gapVerticalMm || 0;
+	      $('#labelMarginTop').value = paper.marginTopMm || 0;
+	      $('#labelMarginRight').value = paper.marginRightMm || 0;
+	      $('#labelMarginBottom').value = paper.marginBottomMm || 0;
+	      $('#labelMarginLeft').value = paper.marginLeftMm || 0;
+	      $('#labelShape').value = paper.shape || 'rounded';
+	      $('#labelContentRotation').value = String(paper.contentRotation || 0);
+	      $('#labelDpi').value = String(paper.nominalDpi || 203);
+	      $('#labelMeasurementsConfirmed').checked = paper.measurementsConfirmed === true;
+	      $('#labelShowUrl').checked = design.showUrl === true;
+	      editorLayout.customText.visible = design.showUrl === true || editorLayout.customText.visible === true;
+	      if (design.elements && Object.keys(design.elements).length) editorLayout = normalizedLabelLayout(design.elements);
+	      const output = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.value === profile.outputMode);
+	      if (output && !output.disabled) output.checked = true;
+	      printDeviceState = savePrintDeviceState({ ...printDeviceState, selectedProfileId:activePrintProfileId }, editorBusinessId);
+	      loadCalibrationIntoForm();
+	      syncElementControls();
+	      updatePreview();
+	      refreshPrintProfileSelect();
+	      toast(`Perfil ${profile.status === 'certified' ? 'certificado' : profile.status === 'verified' ? 'verificado' : 'provisional'} cargado.`);
+	    };
+	    $('#labelProfileSelect').onchange = () => {
+	      const selectedId = $('#labelProfileSelect').value;
+	      if (!selectedId) {
+	        activePrintProfileId = '';
+	        printDeviceState = savePrintDeviceState({ ...printDeviceState, selectedProfileId:'' }, editorBusinessId);
+	        refreshPrintProfileSelect();
+	        return updatePreview();
+	      }
+	      applyPrintProfile(labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === selectedId));
+	    };
+	    const persistPrintProfile = ({ forceNew = false, suggestedName = '' } = {}) => {
+	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+	      const preflight = updateSheetPreview();
+	      if (preflight.blocking) return toast('Corrige los errores rojos antes de guardar el perfil.', 'err');
+	      const existing = forceNew ? null : labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
+	      const name = prompt('Nombre del perfil de impresión:', suggestedName || existing?.name || 'Mi papel e impresora');
+	      if (!name?.trim()) return null;
+	      const options = getOptions();
+	      const core = window.CLICK360_SMART_PRINT;
+	      const profileInput = {
+	        id:existing?.id || uid('printprofile'),
+	        businessId:editorBusinessId,
+	        name:name.trim(),
+	        outputMode:options.outputMode,
+	        printer:{
+	          id:'system-dialog',
+	          businessId:editorBusinessId,
+	          deviceProfileId:window.click360DebugSyncIdentity?.().deviceId || '',
+	          displayName:'Impresora seleccionada en el sistema',
+	          connectionType:options.outputMode === 'pdf' ? 'pdf' : 'system',
+	          nominalDpi:options.dpi,
+	          status:existing?.status === 'certified' ? 'certified' : options.measurementsConfirmed ? 'verified' : 'provisional'
+	        },
+	        paper:smartPaperFromOptions(options),
+	        design:{
+	          id:activeTemplateId || 'design-safe',
+	          businessId:editorBusinessId,
+	          name:activeTemplateId ? (labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId)?.name || 'Diseño') : 'Diseño seguro',
+	          layoutPreset:'custom',
+	          elements:normalizedLabelLayout(editorLayout),
+	          showUrl:options.showUrl,
+	          showPrice:editorLayout.price?.visible !== false,
+	          showBusiness:editorLayout.business?.visible !== false,
+	          showSku:editorLayout.code?.visible !== false
+	        },
+	        status:existing?.status === 'certified' ? 'certified' : options.measurementsConfirmed ? 'verified' : 'provisional',
+	        createdAt:existing?.createdAt || new Date().toISOString(),
+	        updatedAt:new Date().toISOString()
+	      };
+	      const profile = core?.normalizePrintProfile(profileInput, editorBusinessId) || profileInput;
+	      const previous = JSON.parse(JSON.stringify(state.settings?.labelProfiles || []));
+	      state.settings ||= {};
+	      state.settings.labelProfiles ||= [];
+	      const index = state.settings.labelProfiles.findIndex((item) => item.id === profile.id
+	        && (item.businessId === editorBusinessId
+	          || (!item.businessId && state.settings?.legacyDataBusinessId === editorBusinessId)));
+	      if (index >= 0) state.settings.labelProfiles[index] = profile;
+	      else state.settings.labelProfiles.push(profile);
+	      activePrintProfileId = profile.id;
+	      addAudit('label_print_profile_saved', { profileId:profile.id, status:profile.status, updated:index >= 0 });
+	      if (!save()) {
+	        state.settings.labelProfiles = previous;
+	        return toast('No se pudo guardar el perfil. Tus datos anteriores siguen intactos.', 'err');
+	      }
+	      printDeviceState = savePrintDeviceState({ ...printDeviceState, selectedProfileId:profile.id }, editorBusinessId);
+	      refreshPrintProfileSelect();
+	      toast('Perfil de impresión guardado.', 'ok');
+	      return profile;
+	    };
+	    $('#savePrintProfileBtn').onclick = () => persistPrintProfile();
+	    $('#duplicatePrintProfileBtn').onclick = () => {
+	      const current = labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
+	      persistPrintProfile({ forceNew:true, suggestedName:`${current?.name || 'Perfil'} - copia` });
+	    };
+	    $('#deletePrintProfileBtn').onclick = () => {
+	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+	      const current = labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
+	      if (!current || !confirm(`¿Eliminar el perfil "${current.name}" de este negocio?`)) return;
+	      const previous = JSON.parse(JSON.stringify(state.settings.labelProfiles || []));
+	      state.settings.labelProfiles = state.settings.labelProfiles.filter((profile) =>
+	        profile.id !== activePrintProfileId || !(
+	          profile.businessId === editorBusinessId
+	          || (!profile.businessId && state.settings?.legacyDataBusinessId === editorBusinessId)
+	        ));
+	      addAudit('label_print_profile_deleted', { profileId:activePrintProfileId });
+	      if (!save()) {
+	        state.settings.labelProfiles = previous;
+	        return toast('No se pudo eliminar el perfil.', 'err');
+	      }
+	      activePrintProfileId = '';
+	      printDeviceState = savePrintDeviceState({ ...printDeviceState, selectedProfileId:'' }, editorBusinessId);
+	      refreshPrintProfileSelect();
+	      updatePreview();
+	      toast('Perfil eliminado.');
+	    };
+	    refreshPrintProfileSelect();
 
-    const updateQuantitySummary = () => {
-      const useStock = $('#labelUseStock').checked;
-	      const copies = resolveLabelCopies($('#labelCopies').value, product.qty, useStock);
+	    updatePreview();
+
+	    const updateQuantitySummary = () => {
+	      const useStock = $('#labelUseStock').checked;
+		      const result = resolveLabelCopyResult($('#labelCopies').value, product.qty, useStock);
+		      const copies = result.count;
 	      $('#labelCopies').disabled = useStock;
 	      $('#labelQuantitySummary').textContent = useStock
 	        ? (copies ? `Se imprimirán ${copies} etiquetas porque activaste la opción por stock.` : 'El producto no tiene stock; no se imprimirá ninguna etiqueta.')
 	        : `Se imprimirán ${copies} etiquetas exactas. El stock no cambia esta cantidad.`;
 	      updateSheetPreview();
-    };
-    $('#labelCopies').oninput = updateQuantitySummary;
-    $('#labelUseStock').onchange = updateQuantitySummary;
+	    };
+	    $('#labelCopies').oninput = updateQuantitySummary;
+	    $('#labelUseStock').onchange = () => {
+	      if ($('#labelUseStock').checked && !confirm(`Activar impresión por stock generará ${Math.max(0, Number(product.qty || 0))} etiqueta(s). ¿Continuar?`)) {
+	        $('#labelUseStock').checked = false;
+	      }
+	      updateQuantitySummary();
+	    };
     updateQuantitySummary();
 
-    const applyPaperType = () => {
-      const preset = LABEL_PAPER_PRESETS[$('#labelPaperType').value];
-      if (!preset?.width) return updateSheetPreview();
-      $('#labelWidthMm').value = preset.width;
-      $('#labelHeightMm').value = preset.height;
-      $('#labelColumns').value = preset.columns;
-      $('#labelRows').value = preset.rows;
-      $('#labelGapX').value = preset.gapX;
-      $('#labelGapY').value = preset.gapY;
-      $('#labelDpi').value = preset.dpi;
-      $('#labelOrientation').value = preset.orientation;
-      $('#labelMarginTop').value = preset.marginTop || 0;
-      $('#labelMarginLeft').value = preset.marginLeft || 0;
-      if (preset.shape) $('#labelShape').value = preset.shape;
-      editorLayout = scaledDefaultLayout(preset.width, preset.height);
-      syncElementControls();
-      updatePreview();
-    };
-	    $('#labelPaperType').onchange = applyPaperType;
-	    $('#labelShape').onchange = updatePreview;
-	    ['labelColumns','labelRows','labelMarginTop','labelMarginLeft','labelGapX','labelGapY','labelDpi','labelOrientation'].forEach((id) => {
-	      const input = $('#' + id);
-	      input.oninput = updateSheetPreview;
-	      input.onchange = updateSheetPreview;
+	    const applyPaperType = () => {
+	      const preset = LABEL_PAPER_PRESETS[$('#labelPaperType').value];
+	      if (!preset?.width) return updateSheetPreview();
+	      $('#labelWidthMm').value = preset.width;
+	      $('#labelHeightMm').value = preset.height;
+	      $('#labelMediaWidth').value = preset.mediaWidth || 0;
+	      $('#labelMediaHeight').value = preset.mediaHeight || 0;
+	      $('#labelColumns').value = preset.columns;
+	      $('#labelRows').value = preset.rows;
+	      $('#labelGapX').value = preset.gapX;
+	      $('#labelGapY').value = preset.gapY;
+	      $('#labelDpi').value = preset.dpi;
+	      $('#labelMarginTop').value = preset.marginTop || 0;
+	      $('#labelMarginRight').value = preset.marginRight || 0;
+	      $('#labelMarginBottom').value = preset.marginBottom || 0;
+	      $('#labelMarginLeft').value = preset.marginLeft || 0;
+	      $('#labelMeasurementsConfirmed').checked = preset.provisional !== true && preset.requiresMeasurement !== true;
+	      $('#smartPaperHint').textContent = preset.provisional
+	        ? 'Perfil provisional: confirma ancho total, gaps y medidas antes de imprimir.'
+	        : `${preset.label}. Puedes ajustar las medidas si tu material físico difiere.`;
+	      if (preset.shape) $('#labelShape').value = preset.shape;
+	      const recommendedPreset = preset.height <= 30
+	        ? 'qr'
+	        : preset.height <= 35
+	          ? 'qr-name'
+	          : 'qr-price';
+	      applyPreset(recommendedPreset, false);
+	      loadCalibrationIntoForm();
+	      updatePreview();
+	    };
+		    $('#labelPaperType').onchange = applyPaperType;
+		    $('#labelShape').onchange = updatePreview;
+		    ['labelColumns','labelRows','labelMediaWidth','labelMediaHeight','labelMarginTop','labelMarginRight','labelMarginBottom','labelMarginLeft','labelGapX','labelGapY','labelDpi','labelContentRotation','labelMeasurementsConfirmed'].forEach((id) => {
+		      const input = $('#' + id);
+		      input.oninput = () => { loadCalibrationIntoForm(); updatePreview(); };
+		      input.onchange = () => { loadCalibrationIntoForm(); updatePreview(); };
+		    });
+	    $$('[data-smart-paper]', labelEditorModal).forEach((button) => {
+	      button.onclick = () => {
+	        const paperType = button.dataset.smartPaper;
+	        if (!LABEL_PAPER_PRESETS[paperType]) return;
+	        $('#labelPaperType').value = paperType;
+	        $$('[data-smart-paper]', labelEditorModal).forEach((candidate) => candidate.classList.toggle('active', candidate === button));
+	        applyPaperType();
+	        showSmartPrintStep(3);
+	      };
 	    });
-	    if (!initialTemplate) applyPaperType();
-    $('#labelAlignmentTest').onclick = () => {
-      const options = getOptions();
-      const cells = Array.from({ length: Math.max(1, options.columns * Math.min(options.rows, 3)) }, (_, index) => `<div class="alignmentCell"><b>CLICK 360</b><span>${index + 1}</span><small>${options.widthMm} × ${options.heightMm} mm</small></div>`).join('');
-      handoffPrint({
-        media:'label',
-        widthMm:options.widthMm,
-        heightMm:options.heightMm,
-        filename:'CLICK360_prueba_alineacion.pdf',
-        html:`<section class="alignmentGrid" style="display:grid;grid-template-columns:repeat(${options.columns},${options.widthMm}mm);gap:${options.gapYmm}mm ${options.gapXmm}mm;padding:${options.marginTopMm}mm 0 0 ${options.marginLeftMm}mm">${cells}</section>`
-      }).catch((error) => toast(error.message || 'No se pudo preparar la prueba.', 'err'));
-    };
-
-	    $('#printOne').onclick = () => {
-	       const copies = resolveLabelCopies($('#labelCopies').value, product.qty, $('#labelUseStock').checked);
-	       if (!copies) return toast('No hay unidades en stock para imprimir.', 'err');
-	       const validation = validateLabelPrintSetup(getOptions(), editorLayout, copies);
-	       if (!validation.valid) return toast(validation.errors[0] || 'Revisa la configuración de impresión.', 'err');
-	       if (validation.warnings.length && !confirm(`${validation.warnings.join(' ')} ¿Deseas imprimir de todos modos?`)) return;
-	       printLabels([{ product, copies }], getOptions());
+	    $('#labelStartSlot').oninput = () => { $('#labelStartPreset').value = 'custom'; updateSheetPreview(); };
+	    $('#labelStartPreset').onchange = () => {
+	      const columns = Math.max(1, Number($('#labelColumns').value || 1));
+	      if ($('#labelStartPreset').value === 'first') {
+	        const capacity = columns * Math.max(1, Number($('#labelRows').value || 1));
+	        $('#labelStartSlot').value = String(Array.from({ length:capacity }, (_, index) => index + 1).find((slot) => !usedPrintSlots.has(slot)) || 1);
+	      } else if ($('#labelStartPreset').value === 'left') {
+	        $('#labelStartSlot').value = '1';
+	      } else if ($('#labelStartPreset').value === 'right') {
+	        $('#labelStartSlot').value = String(columns);
+	      }
+	      updateSheetPreview();
+	    };
+		    if (activePrintProfileId) {
+		      applyPrintProfile(labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId));
+		    } else if (!initialTemplate) {
+		      applyPaperType();
+		    } else {
+		      loadCalibrationIntoForm();
+		    }
+	    $('#labelAutoCorrect').onclick = () => {
+	      const options = getOptions();
+	      const baseWidth = Math.round(options.widthMm * (260 / 60));
+	      const baseHeight = Math.round(options.heightMm * (380 / 88));
+	      editorLayout = window.CLICK360_SMART_PRINT?.autoCorrectLayout(editorLayout, { width:baseWidth, height:baseHeight })
+	        || editorLayout;
+	      syncElementControls();
+	      updatePreview();
+	      toast('CLICK ajustó el contenido dentro de la zona segura.');
+	    };
+	    $('#labelUseCompact').onclick = () => applyPreset('compact');
+	    $('#copyPrintDiagnostic').onclick = async () => {
+	      const options = getOptions();
+	      const preflight = updateSheetPreview();
+	      const bytes = new Uint8Array(8);
+	      if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
+	      else bytes.forEach((_, index) => { bytes[index] = Math.floor(Math.random() * 256); });
+	      const diagnosticId = `PRNREP-${[...bytes].map((value) => value.toString(36).padStart(2, '0')).join('').slice(0, 12).toUpperCase()}`;
+	      const report = window.CLICK360_SMART_PRINT?.sanitizeDiagnostic({
+	        diagnosticId,
+	        release:APP_RELEASE_VERSION,
+	        buildSha:APP_BUILD_SHA,
+	        assetVersion:APP_ASSET_VERSION,
+	        browser:navigator.userAgent,
+	        operatingSystem:navigator.userAgent,
+	        displayMode:window.matchMedia?.('(display-mode: standalone)').matches ? 'standalone' : 'browser',
+	        online:navigator.onLine,
+	        step:smartPrintStep,
+	        outputMode:options.outputMode,
+	        printer:{ nominalDpi:options.dpi, status:options.profileStatus },
+	        paper:smartPaperFromOptions(options),
+	        exactQuantity:preflight.quantity.count,
+	        stockMode:preflight.quantity.mode === 'stock',
+	        startSlot:options.startSlot,
+	        preflightStatus:preflight.blocking ? 'blocked' : (preflight.validation.warnings.length ? 'warning' : 'ready'),
+	        quantityValid:preflight.quantity.valid,
+	        startSlotValid:preflight.plan.valid !== false,
+	        paperValid:preflight.paper.valid,
+	        paperIncomplete:options.columns > 1 && !options.mediaWidthMm,
+	        layoutOutside:preflight.core?.layout?.outside?.length > 0,
+	        layoutCollision:preflight.core?.layout?.collisions?.length > 0,
+	        qrUnsafe:preflight.core?.checks?.some((check) => check.code === 'qr-size' && check.status === 'error')
+	      });
+	      if (!report) return toast('No se pudo preparar el diagnóstico.', 'err');
+	      const serialized = JSON.stringify(report, null, 2).slice(0, 12000);
+	      await navigator.clipboard?.writeText(serialized).catch(() => null);
+	      toast(`Diagnóstico ${report.diagnosticId} copiado sin datos comerciales.`);
 	    };
 
-    $('#printAll').onclick = () => {
-       printLabels(productsForBiz().map(p => ({ product: p, copies: 1 })), getOptions());
-    };
+	    const calibrationGrid = window.CLICK360_SMART_PRINT?.buildCalibrationGrid(1) || [];
+	    $('#labelCalibrationGrid').innerHTML = calibrationGrid.map((cell) =>
+	      `<button type="button" data-calibration-cell="${cell.cell}" title="Ajuste X ${cell.deltaXmm} mm, Y ${cell.deltaYmm} mm">${cell.cell}<small>${cell.deltaXmm >= 0 ? '+' : ''}${cell.deltaXmm} / ${cell.deltaYmm >= 0 ? '+' : ''}${cell.deltaYmm}</small></button>`).join('');
+	    const applyCalibrationCell = (cell) => {
+	      const options = getOptions();
+	      const result = window.CLICK360_SMART_PRINT?.applyCalibrationCell({
+	        cell,
+	        stepMm:1,
+	        currentXOffsetMm:options.xOffsetMm,
+	        currentYOffsetMm:options.yOffsetMm
+	      });
+	      if (!result?.valid) return toast(result?.error || 'No se pudo calcular la calibración.', 'err');
+	      const key = calibrationKeyFor(options);
+	      const fingerprint = window.CLICK360_SMART_PRINT.paperGeometryFingerprint(smartPaperFromOptions(options));
+	      printDeviceState = savePrintDeviceState({
+	        ...printDeviceState,
+	        selectedProfileId:activePrintProfileId,
+	        calibrations:{
+	          ...(printDeviceState.calibrations || {}),
+	          [key]:{
+	            xOffsetMm:result.xOffsetMm,
+	            yOffsetMm:result.yOffsetMm,
+	            status:result.status,
+	            geometryFingerprint:fingerprint,
+	            attemptId:uid('cal'),
+	            updatedAt:new Date().toISOString()
+	          }
+	        }
+	      }, editorBusinessId);
+	      loadCalibrationIntoForm();
+	      updatePreview();
+	      toast(`Calibración local X ${result.xOffsetMm} mm · Y ${result.yOffsetMm} mm.`);
+	    };
+	    $$('[data-calibration-cell]', $('#labelCalibrationGrid')).forEach((button) => {
+	      button.onclick = () => applyCalibrationCell(Number(button.dataset.calibrationCell));
+	    });
+	    $('#openCalibrationBtn').onclick = () => {
+	      $('#labelCalibrationPanel').hidden = !$('#labelCalibrationPanel').hidden;
+	      if (!$('#labelCalibrationPanel').hidden) $('#labelCalibrationGrid button')?.focus();
+	    };
+	    $('#resetCalibrationBtn').onclick = () => {
+	      const key = calibrationKeyFor(getOptions());
+	      const calibrations = { ...(printDeviceState.calibrations || {}) };
+	      delete calibrations[key];
+	      printDeviceState = savePrintDeviceState({ ...printDeviceState, calibrations }, editorBusinessId);
+	      loadCalibrationIntoForm();
+	      updatePreview();
+	      toast('Calibración local restablecida.');
+	    };
+	    $('#repeatCalibrationBtn').onclick = () => $('#labelAlignmentTest').click();
 
-    $('#downloadLabelPng').onclick = async () => {
-       const exportCanvas = document.createElement('canvas');
+	    $('#labelAlignmentTest').onclick = () => {
+	      const options = getOptions();
+	      const paperValidation = window.CLICK360_SMART_PRINT?.validatePaperProfile(smartPaperFromOptions(options));
+	      if (!paperValidation?.valid) return toast(paperValidation?.errors?.[0] || 'Revisa las medidas del papel.', 'err');
+	      const columns = Math.max(1, options.columns);
+	      const calibrationRows = Math.ceil(9 / columns);
+	      const mediaWidthMm = options.mediaWidthMm || paperValidation.requiredWidthMm;
+	      const mediaHeightMm = options.mediaHeightMm || (
+	        options.marginTopMm + options.marginBottomMm
+	        + calibrationRows * options.heightMm
+	        + Math.max(0, calibrationRows - 1) * options.gapYmm
+	      );
+	      const cells = calibrationGrid.map((calibration, index) => {
+	        const column = index % columns;
+	        const row = Math.floor(index / columns);
+	        const x = options.marginLeftMm + column * (options.widthMm + options.gapXmm) + options.xOffsetMm;
+	        const y = options.marginTopMm + row * (options.heightMm + options.gapYmm) + options.yOffsetMm;
+	        return `<div class="alignmentCell" style="position:absolute;left:${x}mm;top:${y}mm;width:${options.widthMm}mm;height:${options.heightMm}mm"><i></i><b>${calibration.cell}</b><span>X ${calibration.deltaXmm >= 0 ? '+' : ''}${calibration.deltaXmm} · Y ${calibration.deltaYmm >= 0 ? '+' : ''}${calibration.deltaYmm}</span><small>CLICK 360 ${APP_RELEASE_VERSION} · ${options.widthMm} × ${options.heightMm} mm</small></div>`;
+	      }).join('');
+	      handoffPrint({
+	        media:'label',
+	        mediaWidthMm,
+	        mediaHeightMm,
+	        filename:'CLICK360_prueba_alineacion.pdf',
+	        html:`<section class="alignmentGrid" style="position:relative;width:${mediaWidthMm}mm;height:${mediaHeightMm}mm">${cells}</section>`
+	      }).catch((error) => toast(error.message || 'No se pudo preparar la prueba.', 'err'));
+	    };
+
+		    const runPrintJob = async (providerId = '') => {
+		       if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+		       const preflight = updateSheetPreview();
+		       if (!preflight.quantity.valid || preflight.quantity.count < 1) return toast(preflight.quantity.error || 'No hay etiquetas para imprimir.', 'err');
+		       if (preflight.blocking) return toast(preflight.validation.errors[0] || preflight.paper.errors[0] || 'Corrige los errores rojos antes de imprimir.', 'err');
+		       const options = getOptions();
+		       if (options.outputMode === 'certified') {
+		         const selected = labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
+		         if (selected?.status !== 'certified') return toast('Selecciona un perfil certificado por CLICK.', 'err');
+		       }
+		       const outputProvider = providerId || (options.outputMode === 'pdf' ? 'pdf' : 'system');
+		       return printLabels([{ product, copies:preflight.quantity.count }], options, outputProvider);
+		    };
+		    $('#printOne').onclick = () => runPrintJob();
+		    $('#savePdfBtn').onclick = () => runPrintJob('pdf');
+
+	    $('#printAll').onclick = () => {
+	       const preflight = updateSheetPreview();
+	       if (preflight.blocking) return toast('Corrige los errores rojos antes de imprimir el catálogo.', 'err');
+	       const products = productsForBiz(editorBusinessId);
+	       if (!products.length) return toast('No hay productos para imprimir.', 'err');
+	       printLabels(products.map((candidate) => ({ product:candidate, copies:1 })), getOptions(), 'system');
+	    };
+
+	    $('#downloadLabelPng').onclick = async () => {
+	       const preflight = updateSheetPreview();
+	       if (preflight.blocking) return toast('Corrige los errores rojos antes de descargar.', 'err');
+	       const exportCanvas = document.createElement('canvas');
        const options = getOptions(4);
        await drawLabelOnCanvas(exportCanvas, product, options);
        const a = document.createElement('a');
@@ -6092,79 +6780,133 @@ function parseMoney(value) {
     };
   }
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
+  function printPaperFromOptions(options = {}) {
+    return {
+      id:options.paperType || 'custom',
+      businessId:options.businessId || '',
+      mediaType:options.mediaType || (String(options.paperType || '').startsWith('sheet-') ? 'sheet' : 'roll-1'),
+      labelWidthMm:options.widthMm,
+      labelHeightMm:options.heightMm,
+      mediaWidthMm:options.mediaWidthMm,
+      mediaHeightMm:options.mediaHeightMm,
+      columns:options.columns,
+      rows:options.rows,
+      gapHorizontalMm:options.gapXmm,
+      gapVerticalMm:options.gapYmm,
+      marginTopMm:options.marginTopMm,
+      marginRightMm:options.marginRightMm,
+      marginBottomMm:options.marginBottomMm,
+      marginLeftMm:options.marginLeftMm,
+      shape:options.shape,
+      contentRotation:options.contentRotation,
+      xOffsetMm:options.xOffsetMm,
+      yOffsetMm:options.yOffsetMm,
+      nominalDpi:options.dpi,
+      status:options.profileStatus,
+      measurementsConfirmed:options.measurementsConfirmed
+    };
+  }
   function buildLabelSheetPlan(groups, options = {}) {
-    const items = [];
-    (groups || []).forEach((group) => {
-	      const requested = group?.copies == null ? 1 : Math.trunc(Number(group.copies) || 0);
-	      const copies = Math.max(0, Math.min(500, requested));
-      for (let index = 0; index < copies; index += 1) items.push({ product:group.product, copy:index + 1 });
+    const core = window.CLICK360_SMART_PRINT;
+    if (!core?.buildSheetPlan) {
+      return { valid:false, errors:['El motor físico de impresión no está disponible. Recarga CLICK 360.'], items:[], count:0, columns:1, rows:1, capacity:1, pages:[], mediaType:'roll' };
+    }
+    return core.buildSheetPlan(groups, printPaperFromOptions(options), {
+      startSlot:options.startSlot,
+      usedSlots:options.usedSlots
     });
-    const columns = Math.max(1, Math.min(6, Number(options.columns || 1)));
-    const rows = Math.max(1, Math.min(20, Number(options.rows || 1)));
-    const capacity = columns * rows;
-    const pages = Array.from({ length:Math.max(1, Math.ceil(items.length / capacity)) }, (_, pageIndex) => {
-      const pageItems = items.slice(pageIndex * capacity, (pageIndex + 1) * capacity);
-      return {
-        index:pageIndex,
-        occupied:pageItems.length,
-        emptyCells:Math.max(0, capacity - pageItems.length),
-        sheetCells:Array.from({ length:capacity }, (unused, cellIndex) => pageItems[cellIndex] || null)
-      };
-    });
-    return { items, count:items.length, columns, rows, capacity, pages, mediaType:String(options.paperType || '').startsWith('sheet-') ? 'sheet' : 'roll' };
   }
   function buildLabelPrintPlan(groups, options = {}) { return buildLabelSheetPlan(groups, options); }
   window.click360BuildLabelSheetPlan = buildLabelSheetPlan;
   window.click360BuildLabelPrintPlan = buildLabelPrintPlan;
-  async function printLabels(groups, options = {}){
-    const root=$('#printRoot') || document.createElement('div'); root.id='printRoot'; root.className='printSheet'; document.body.appendChild(root);
-    root.innerHTML='<div class="printLabels"></div>';
-    const wrap=$('.printLabels',root);
-    const widthMm = Math.max(25, Math.min(120, Number(options.widthMm || 60)));
-    const heightMm = Math.max(25, Math.min(180, Number(options.heightMm || 88)));
+  async function printLabels(groups, options = {}, providerId = 'system'){
+    const root=$('#printRoot') || document.createElement('div');
+    root.id='printRoot';
+    root.className='printSheet';
+    if (!root.isConnected) document.body.appendChild(root);
+    root.replaceChildren();
     const plan = buildLabelPrintPlan(groups, options);
-    wrap.style.gridTemplateColumns = `repeat(${plan.columns}, ${widthMm}mm)`;
-    wrap.style.gap = `${Math.max(0, Number(options.gapYmm || 0))}mm ${Math.max(0, Number(options.gapXmm || 0))}mm`;
-    wrap.style.padding = `${Math.max(0, Number(options.marginTopMm || 0))}mm 0 0 ${Math.max(0, Number(options.marginLeftMm || 0))}mm`;
+    if (!plan.valid || !plan.count || !plan.pages.length) {
+      toast(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.', 'err');
+      return { count:0, columns:plan.columns, rows:plan.rows, status:'blocked' };
+    }
+    const paperValidation = window.CLICK360_SMART_PRINT.validatePaperProfile(printPaperFromOptions(options));
+    if (!paperValidation.valid) {
+      toast(paperValidation.errors[0], 'err');
+      return { count:0, columns:plan.columns, rows:plan.rows, status:'blocked' };
+    }
+    const paper = paperValidation.paper;
+    const widthMm = paper.labelWidthMm;
+    const heightMm = paper.labelHeightMm;
+    const mediaWidthMm = paper.mediaWidthMm || paperValidation.requiredWidthMm;
+    const mediaHeightMm = paper.mediaHeightMm || paperValidation.requiredHeightMm;
+    const wrap=document.createElement('div');
+    wrap.className='printLabels';
     wrap.dataset.paper = String(options.paperType || 'custom');
+    wrap.dataset.geometryFingerprint = window.CLICK360_SMART_PRINT.paperGeometryFingerprint(paper);
+    root.appendChild(wrap);
     root.dataset.labelCount = String(plan.count);
     root.dataset.labelPaper = String(options.paperType || 'custom');
-    for(const planned of plan.items){
-       const item=document.createElement('div');
-       item.className='printLabel';
-	       item.style.width = `${widthMm}mm`;
-	       item.style.height = `${heightMm}mm`;
-	       item.style.borderRadius = options.shape === 'circle' ? '50%' : (options.shape === 'square' ? '0' : '6px');
-	       item.style.overflow = 'hidden';
-       const canvas=document.createElement('canvas');
-       canvas.style.width = `${widthMm}mm`;
-       canvas.style.height = `${heightMm}mm`;
-       item.appendChild(canvas);
-       wrap.appendChild(item);
-
-       const opt = {
+    for (const page of plan.pages) {
+      const pageElement=document.createElement('section');
+      pageElement.className='labelPrintPage';
+      pageElement.dataset.page=String(page.index + 1);
+      pageElement.style.width=`${mediaWidthMm}mm`;
+      pageElement.style.height=`${mediaHeightMm}mm`;
+      pageElement.style.position='relative';
+      for (const cell of page.cells) {
+        const cellElement=document.createElement('div');
+        cellElement.className=`labelPrintCell ${cell.status}`;
+        cellElement.dataset.slot=String(cell.slot);
+        cellElement.style.position='absolute';
+        cellElement.style.left=`${cell.xMm}mm`;
+        cellElement.style.top=`${cell.yMm}mm`;
+        cellElement.style.width=`${widthMm}mm`;
+        cellElement.style.height=`${heightMm}mm`;
+        if (cell.status !== 'filled') {
+          cellElement.setAttribute('aria-hidden', 'true');
+          pageElement.appendChild(cellElement);
+          continue;
+        }
+        cellElement.classList.add('printLabel');
+        cellElement.style.borderRadius = options.shape === 'circle' ? '50%' : (options.shape === 'square' ? '0' : '2mm');
+        cellElement.style.overflow='hidden';
+        const canvas=document.createElement('canvas');
+        const opt = {
           ...options,
-          scale: 3,
-          bgColor: safeColor(options.bgColor, '#ffffff'),
-          qrBgColor: safeColor(options.qrBgColor || options.bgColor, '#ffffff'),
-          fgColor: safeColor(options.fgColor, '#000000'),
-          social: options.social || '',
-          address: options.address || '',
+          scale:3,
+          bgColor:safeColor(options.bgColor, '#ffffff'),
+          qrBgColor:safeColor(options.qrBgColor || options.bgColor, '#ffffff'),
+          fgColor:safeColor(options.fgColor, '#000000'),
+          social:options.social || '',
+          address:options.address || '',
           widthMm,
           heightMm
-       };
-       await drawLabelOnCanvas(canvas, planned.product, opt);
-       const renderedImage = document.createElement('img');
-       renderedImage.src = canvas.toDataURL('image/png');
-       renderedImage.alt = `Etiqueta ${planned.copy} de ${planned.product?.name || 'producto'}`;
-       renderedImage.style.width = `${widthMm}mm`;
-       renderedImage.style.height = `${heightMm}mm`;
-       renderedImage.style.display = 'block';
-       canvas.replaceWith(renderedImage);
+        };
+        await drawLabelOnCanvas(canvas, cell.item.product, opt);
+        const renderedImage=document.createElement('img');
+        renderedImage.src=canvas.toDataURL('image/png');
+        renderedImage.alt=`Etiqueta ${cell.item.copy} de ${cell.item.product?.name || 'producto'}`;
+        renderedImage.style.width=`${widthMm}mm`;
+        renderedImage.style.height=`${heightMm}mm`;
+        renderedImage.style.display='block';
+        cellElement.appendChild(renderedImage);
+        pageElement.appendChild(cellElement);
+      }
+      wrap.appendChild(pageElement);
     }
-	    const printable = wrap.cloneNode(true);
-	    await handoffPrint({ node: printable, media: plan.mediaType === 'sheet' ? 'a4' : 'label', widthMm, heightMm, copiesHandled: true, filename: `CLICK360_etiquetas_${today()}.pdf` });
-	    return { count:plan.count, columns:plan.columns, rows:plan.rows };
+    const printable=wrap.cloneNode(true);
+    const handoff=await handoffPrint({
+      node:printable,
+      media:'label',
+      mediaWidthMm,
+      mediaHeightMm,
+      widthMm,
+      heightMm,
+      copiesHandled:true,
+      filename:`CLICK360_etiquetas_${today()}.pdf`
+    }, providerId);
+    return { count:plan.count, columns:plan.columns, rows:plan.rows, pages:plan.pages.length, status:handoff ? 'handed_off' : 'error' };
 	  }
 
   function createBackupSnapshot(reason='manual') {

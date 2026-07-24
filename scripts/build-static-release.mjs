@@ -17,6 +17,7 @@ const files = [
   'access-flow.js',
   'firebase-service.js',
   'printing-service.js',
+  'smart-print-core.js',
   'service-worker.js',
   'manifest.webmanifest',
   'robots.txt',

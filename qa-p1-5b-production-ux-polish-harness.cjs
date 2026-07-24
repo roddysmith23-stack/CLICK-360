@@ -9,8 +9,8 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 const publicSource = `${app}\n${styles}\n${html}\n${worker}`;
 
-const RELEASE = '1.0.4-p1';
-const ASSET = 'mvp-launch-v16-2-p1-5b-r1';
+const RELEASE = '1.0.4-p2';
+const ASSET = 'mvp-launch-v16-2-p1-5c-r1';
 const functionalResults = [];
 const contractResults = [];
 
@@ -280,7 +280,7 @@ function searchHelp(query, articles = HELP_ARTICLES) {
     .map((result) => result.article);
 }
 
-runFunctional('Modo Simple has five guided steps and collapsed advanced controls', () => {
+runFunctional('Modo Simple has nine guided steps and collapsed advanced controls', () => {
   const simple = labelStudioMode('simple');
   assert.deepEqual(simple.steps, SIMPLE_STEPS);
   assert.equal(simple.advancedOpen, false);
@@ -442,7 +442,7 @@ runFunctional('help search resolves required queries and synonyms locally', () =
 });
 
 staticContract(
-  'candidate release version is 1.0.4-p1',
+  'candidate release version is current',
   app.includes(`const APP_RELEASE_VERSION = '${RELEASE}'`),
   `app.js must set APP_RELEASE_VERSION to ${RELEASE}`
 );
@@ -461,15 +461,19 @@ staticContract(
   'render two explicit controls/tabs labelled "Modo Simple" and "Modo Experto"'
 );
 staticContract(
-  'Simple mode is a five-step guided flow',
+  'Simple mode is a nine-step guided flow',
   [
-    /Qu[eé] quieres imprimir/i,
-    /Cantidad/i,
-    /Tipo de papel/i,
-    /Vista previa/i,
-    /Imprimir/i
+    /C[oó]mo vas a imprimir/i,
+    /Qu[eé] tipo de papel/i,
+    /Medidas del sticker/i,
+    /Qu[eé] quieres mostrar/i,
+    /Cantidad exacta/i,
+    /Desde d[oó]nde quieres empezar/i,
+    /Vista previa del sticker/i,
+    /Revisi[oó]n antes de imprimir/i,
+    /Todo listo para imprimir/i
   ].every((expression) => matches(app, expression)),
-  'Simple mode must visibly guide print target, quantity, paper, preview and printing'
+  'Simple mode must visibly guide all nine Smart Print steps'
 );
 staticContract(
   'advanced label controls are collapsed in Simple mode',
@@ -523,7 +527,7 @@ staticContract(
 staticContract(
   'label validation runs before printing',
   matches(app, /validateLabelLayout|labelLayoutValidation|validar.*(?:dise[ñn]o|etiqueta)/i)
-    && matches(app, /fuera de margen|outside.*margin/i)
+    && matches(app, /fuera de (?:margen|la zona segura)|outside.*margin/i)
     && matches(app, /superpuest|overlap/i)
     && matches(app, /demasiado peque[ñn]o|too small/i),
   'block or warn for missing dimensions, overflow, overlap and undersized QR/barcode'
@@ -536,7 +540,7 @@ staticContract(
 );
 staticContract(
   'template lifecycle remains available',
-  [/Guardar plantilla/i, /Duplicar/i, /Renombrar/i, /Predeterminada|predeterminada/i]
+  [/Guardar (?:plantilla|dise[ñn]o)/i, /Duplicar/i, /Renombrar/i, /Predeterminada|predeterminada/i]
     .every((expression) => matches(app, expression)),
   'users need save, duplicate, rename and default-template actions'
 );
