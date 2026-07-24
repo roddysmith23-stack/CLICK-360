@@ -1,0 +1,84 @@
+const childProcess = require('node:child_process');
+const { assert, fs, path, ROOT, loadSmartPrintCore } = require('./qa/helpers/smart-print-test-utils.cjs');
+
+const core = loadSmartPrintCore();
+const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
+const app = read('app.js');
+const html = read('index.html');
+const styles = read('styles.css');
+const worker = read('service-worker.js');
+const runtime = read('runtime-guard.js');
+const build = read('scripts/build-static-release.mjs');
+const printing = read('printing-service.js');
+const manifest = JSON.parse(read('manifest.webmanifest'));
+const pkg = JSON.parse(read('package.json'));
+const artifacts = JSON.parse(read('qa/artifacts/p1-5c-synthetic-print-plans.json'));
+
+assert.match(app, /APP_RELEASE_VERSION = '1\.0\.4-p2'/);
+assert.match(app, /APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5c-r1'/);
+assert.match(runtime, /APP_VERSION = '1\.0\.4-p2'/);
+assert.match(worker, /click360-mvp-launch-v16-2-p1-5c-r1/);
+assert.match(html, /smart-print-core\.js\?v=mvp-launch-v16-2-p1-5c-r1/);
+assert.ok(html.indexOf('smart-print-core.js') < html.indexOf('app.js'), 'core loads before app');
+assert.match(worker, /\.\/smart-print-core\.js/);
+assert.match(build, /'smart-print-core\.js'/);
+assert.equal(manifest.start_url, './?v=mvp-launch-v16-2-p1-5c-r1');
+assert.equal(pkg.version, '1.0.4-p2');
+assert.equal(artifacts.hardwareCertified, false);
+assert.ok(artifacts.cases.length >= 13);
+const artifactIds = new Set(artifacts.cases.map((entry) => entry.id));
+for (const id of [
+  'exact-one-stock-seven',
+  'roll-two-start-right',
+  'roll-three-exact-four',
+  'sheet-two-start-five-used-six',
+  'sheet-three-seven',
+  'orientation-40x60',
+  'orientation-60x40',
+  'design-qr-only',
+  'design-complete-compact',
+  'numbered-test-3x3'
+]) assert.equal(artifactIds.has(id), true, `synthetic artifact exists: ${id}`);
+assert.equal(core.DESIGN_PRESETS['qr-only'].showUrl, false);
+assert.equal(core.DESIGN_PRESETS.compact.showUrl, false);
+assert.deepEqual(
+  Array.from(core.buildCalibrationGrid(1), (cell) => cell.cell),
+  [1, 2, 3, 4, 5, 6, 7, 8, 9]
+);
+
+for (const contract of [
+  'getOptions',
+  'buildLabelSheetPlan',
+  'labelPrintPage',
+  'labelStartSlot',
+  'usedPrintSlots',
+  'savePrintProfileBtn',
+  'labelCalibrationGrid',
+  'copyPrintDiagnostic'
+]) assert.ok(app.includes(contract), `${contract} remains integrated`);
+assert.match(printing, /mediaWidthMm \|\| job\.widthMm/);
+assert.match(printing, /click360PrintPortal/);
+assert.match(styles, /#click360PrintPortal/);
+assert.match(styles, /body>\*:not\(#click360PrintPortal\)/);
+assert.doesNotMatch(styles, /P1\.5C[^]*printLabels\[data-paper\^="roll"\] \.printLabel\{break-after:page/);
+
+const cachedAssets = [...worker.matchAll(/'(\.\/[^']+)'/g)].map((match) => match[1]);
+for (const asset of cachedAssets) {
+  const relative = asset === './' ? 'index.html' : asset.replace(/^\.\//, '');
+  assert.ok(fs.existsSync(path.join(ROOT, relative)), `cached asset exists: ${asset}`);
+}
+
+const forbidden = [
+  'firestore.rules',
+  'firebase-config.js',
+  'p0-tenant-guard.js',
+  'access-flow.js'
+];
+let changed = [];
+try {
+  changed = childProcess.execFileSync('git', ['diff', '--name-only', '6aa097f9ce48fbb308d7851a0917122d5ed2695a'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+} catch {}
+for (const file of forbidden) assert.equal(changed.includes(file), false, `${file} is untouched`);
+assert.equal(core.VERSION, '1.0.4-p2');
+
+console.log('P1.5C regression harness PASS');
