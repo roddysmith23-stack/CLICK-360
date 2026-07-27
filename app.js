@@ -1238,6 +1238,16 @@ function parseMoney(value) {
     out.settings.activationRequests ||= [];
     out.settings.policies ||= {};
     out.settings.legal ||= {};
+    out.settings.p2 ||= {};
+    out.settings.p2.featureFlags ||= {
+      workerAccessEnabled: { key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      restaurantAdvancedEnabled: { key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      logisticsEnabled: { key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }
+    };
+    out.settings.p2.memberships ||= [];
+    out.settings.p2.invitations ||= [];
+    out.settings.p2.adminActions ||= [];
+    out.settings.p2.diagnostics ||= [];
     const businessIds = new Set(out.businesses.map((business) => business?.id).filter(Boolean));
     if (!businessIds.has(out.settings.legacyDataBusinessId)) {
       out.settings.legacyDataBusinessId = businessIds.has(out.activeBusinessId)
@@ -1330,7 +1340,7 @@ function parseMoney(value) {
       finance:{ payments: [], loans: [], envelopes: [], goals: [] },
       notifications:[],
       legalAcceptances:[],
-      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.2.0' }
+      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, p2:{ featureFlags:{ workerAccessEnabled:{ key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, restaurantAdvancedEnabled:{ key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, logisticsEnabled:{ key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false } }, memberships:[], invitations:[], adminActions:[], diagnostics:[] }, appVersion: '16.2.0' }
     };
   }
 
@@ -1394,6 +1404,57 @@ function parseMoney(value) {
     const u = authUser();
     return u?.role === 'owner' || u?.isOwner === true;
   }
+  function p2PlatformData() {
+    state.settings ||= {};
+    state.settings.p2 ||= {};
+    const p2 = state.settings.p2;
+    p2.featureFlags ||= {
+      workerAccessEnabled: { key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      restaurantAdvancedEnabled: { key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      logisticsEnabled: { key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }
+    };
+    p2.memberships ||= [];
+    p2.invitations ||= [];
+    p2.adminActions ||= [];
+    p2.diagnostics ||= [];
+    return p2;
+  }
+  function p2CurrentMembership(businessId=currentBusiness()?.id) {
+    const domain = window.CLICK360_P2_PLATFORM;
+    const user = authUser();
+    const stored = p2PlatformData().memberships.find((member) => member.businessId === businessId && member.uid && member.uid === user.uid);
+    const fallback = isOwnerUser()
+      ? { id:`owner_${user.uid || 'local'}`, uid:user.uid || '', email:user.email || '', businessId, roleId:'owner', permissions:domain?.rolePermissions?.('owner') || [], status:'active', acceptedAt:new Date(0).toISOString() }
+      : { id:`guest_${user.uid || 'local'}`, uid:user.uid || '', email:user.email || '', businessId, roleId:user.role || 'readonly', permissions:domain?.rolePermissions?.(user.role || 'readonly') || [], status:'active' };
+    return domain?.normalizeMembership ? domain.normalizeMembership(stored || fallback, { businessId }) : (stored || fallback);
+  }
+  function p2ModuleResolution(business=currentBusiness()) {
+    const domain = window.CLICK360_P2_PLATFORM;
+    if (!domain?.resolveEnabledModules || !business) return { modules:{ core:true }, permissions:{}, readOnly:accessInfo().readOnly === true, limits:{}, warnings:[], reasons:['platform_domain_unavailable'] };
+    return domain.resolveEnabledModules({
+      accountAccess: window.click360AccessState || { status:'active', readOnly:accessInfo().readOnly === true },
+      business,
+      membership: p2CurrentMembership(business.id),
+      featureFlags: p2PlatformData().featureFlags,
+      device: { uid:window.click360User?.uid || '', environment:'local' }
+    });
+  }
+  function p2ModuleEnabled(module, business=currentBusiness()) { return p2ModuleResolution(business).modules?.[module] === true; }
+  function p2Can(permission, business=currentBusiness()) {
+    const domain = window.CLICK360_P2_PLATFORM;
+    return domain?.can?.(p2ModuleResolution(business), permission) === true;
+  }
+  function p2Audit(action, details={}) {
+    const event = window.CLICK360_P2_PLATFORM?.auditEvent?.(action, details) || { action, details };
+    addAudit(event.action, event.details || {});
+    p2PlatformData().diagnostics.push({
+      action:event.action,
+      businessId:currentBusiness()?.id || '',
+      createdAt:event.createdAt || new Date().toISOString(),
+      details:event.details || {}
+    });
+  }
+  window.click360P2ResolveModules = () => p2ModuleResolution();
   function saleItems(s) {
     return Array.isArray(s?.items) ? s.items : [];
   }
@@ -1599,6 +1660,8 @@ function parseMoney(value) {
       report.businessId === businessId && report.date === date && report.status !== 'reopened');
   }
   function can(section) {
+    if (section === 'admin') return isOwnerUser() && p2ModuleEnabled('admin');
+    if (section === 'workers' && p2ModuleEnabled('workers')) return p2Can('members.read');
     const role = authUser().role;
     if (role === 'owner') return true;
 	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory'].includes(role);
@@ -1858,7 +1921,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,finance:financeView,help:helpView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,admin:p2AdminView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -3049,6 +3112,9 @@ function parseMoney(value) {
 	  }
 
 		function moreView(){
+		    const memberTools = !isOwnerUser() && p2WorkersEnabled()
+		      ? `<button class="card bigRow" data-more="workers"><span>${icon('users-round')} Equipo</span>${icon('chevron-right')}</button>`
+		      : '';
 		    const ownerTools = isOwnerUser() ? `
 		      <button class="card bigRow" data-more="reports"><span>${icon('chart-no-axes-combined')} Reportes</span>${icon('chevron-right')}</button>
 	      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
@@ -3057,9 +3123,10 @@ function parseMoney(value) {
 	      <button class="card bigRow" data-more="finance"><span>${icon('wallet-cards')} Finanzas</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
+	      ${p2ModuleEnabled('admin') ? `<button class="card bigRow" data-more="admin"><span>${icon('shield-check')} Administracion</span>${icon('chevron-right')}</button>` : ''}
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
-		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
+		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>${memberTools}`;
 			    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
 			      ${ownerTools}
 			      <button class="card bigRow" data-more="printing"><span>${icon('printer')} Centro de impresión</span>${icon('chevron-right')}</button>
@@ -3152,7 +3219,157 @@ function parseMoney(value) {
         <div class="split" style="gap:10px;"><button type="button" class="btn silver" id="backupBtn">\uD83D\uDCBE Guardar Respaldo</button><label class="btn silver" style="flex:1; text-align:center; display:flex; align-items:center; justify-content:center;"><input type="file" id="restoreFile" accept="application/json" hidden/>\uD83D\uDD04 Restaurar Respaldo</label></div>
       </section>`;
   }
+  let p2InvitationTokenForDisplay = '';
+  function p2FeatureFlagFor(module, businessId=currentBusiness()?.id) {
+    const key = window.CLICK360_P2_PLATFORM?.FEATURE_FOR_MODULE?.[module] || '';
+    return key ? p2PlatformData().featureFlags[key] : null;
+  }
+  function p2WorkersEnabled() { return p2ModuleEnabled('workers') && p2Can('members.read'); }
+  function p2AdminView() {
+    const business = currentBusiness();
+    const resolution = p2ModuleResolution(business);
+    const p2 = p2PlatformData();
+    if (!isOwnerUser() || resolution.modules?.admin !== true) return `<div class="pageHead"><div><h1>Administracion</h1><p>Esta seccion esta reservada para el propietario autorizado.</p></div></div><section class="card sectionCard"><p class="empty">No tienes permiso para administrar este negocio.</p></section>`;
+    const members = p2.memberships.filter((member) => member.businessId === business.id);
+    const profiles = labelProfilesForBiz(business.id);
+    const enabledModules = Object.entries(resolution.modules || {}).filter(([, enabled]) => enabled).map(([module]) => module);
+    const moduleRows = (window.CLICK360_P2_PLATFORM?.MODULES || []).map((module) => {
+      const active = resolution.modules?.[module] === true;
+      const gated = ['workers', 'restaurant', 'logistics'].includes(module);
+      const flag = p2FeatureFlagFor(module, business.id);
+      const detail = gated ? `Flag: ${flag?.enabled === true ? 'preparado para este negocio' : 'apagado'}` : (active ? 'Disponible' : 'Desactivado');
+      return `<label class="p2ModuleRow"><span><b>${escapeHtml(module)}</b><small>${escapeHtml(detail)}</small></span><input type="checkbox" data-p2-module="${escapeHtml(module)}" ${active ? 'checked' : ''} ${module === 'core' || module === 'admin' ? 'disabled' : ''}></label>`;
+    }).join('');
+    const activity = (state.auditLogs || []).filter((entry) => entry.businessId === business.id).slice(-8).reverse();
+    return `<div class="pageHead"><div><h1>Administracion del negocio</h1><p>Modulos, equipo y diagnostico de ${escapeHtml(business.name)}.</p></div></div>
+      <section class="p2SummaryGrid"><article class="card"><small>Plan detectado</small><b>${escapeHtml(String(resolution.account?.planCode || resolution.account?.plan || 'actual'))}</b><span>${resolution.readOnly ? 'Modo lectura' : 'Acceso operativo'}</span></article><article class="card"><small>Modulos activos</small><b>${enabledModules.length}</b><span>${escapeHtml(enabledModules.join(', ') || 'core')}</span></article><article class="card"><small>Equipo</small><b>${members.filter((member) => member.status === 'active').length}/${resolution.limits?.workers || 0}</b><span>Miembros activos</span></article></section>
+      <section class="card sectionCard p2AdminSection"><h3>Modulos por negocio</h3><p class="fieldHint">Los modulos de alto riesgo requieren flag por negocio y permanecen apagados por defecto.</p><div class="p2ModuleGrid">${moduleRows}</div></section>
+      <section class="card sectionCard p2AdminSection"><h3>Acceso y acciones controladas</h3><p class="fieldHint">Estas acciones se registran como solicitudes locales de QA. No escriben accountAccess ni ningun dato de Firebase.</p><div class="p2InlineActions"><button class="btn" data-p2-admin-action="plan">Solicitar cambio de plan</button><button class="btn danger" data-p2-admin-action="suspend">Solicitar suspension</button><button class="btn" data-p2-admin-action="reactivate">Solicitar reactivacion</button></div><div class="p2PendingList">${(p2.adminActions || []).filter((entry) => entry.businessId === business.id).slice(-5).reverse().map((entry) => `<div><b>${escapeHtml(entry.type)}</b><small>${escapeHtml(entry.status)} · ${escapeHtml(entry.createdAt)}</small></div>`).join('') || '<p class="empty">No hay solicitudes locales pendientes.</p>'}</div></section>
+      <section class="card sectionCard p2AdminSection"><h3>Equipo, dispositivos y diagnostico</h3><div class="p2AdminData"><div><b>Miembros</b><span>${members.length} registros</span></div><div><b>Perfiles de impresion</b><span>${profiles.length} perfiles del negocio</span></div><div><b>Diagnosticos</b><span>${p2.diagnostics.filter((entry) => entry.businessId === business.id).length} eventos locales</span></div></div><label class="field"><span>Buscar usuario</span><input id="p2AdminMemberSearch" type="search" placeholder="Nombre, correo o rol"></label><div id="p2AdminMemberResults" class="p2MemberResults">${members.map((member) => `<div class="p2MemberRow"><span><b>${escapeHtml(member.email || member.uid || 'Invitacion pendiente')}</b><small>${escapeHtml(member.roleId || member.role || 'readonly')} · ${escapeHtml(member.status || 'pending')}</small></span></div>`).join('') || '<p class="empty">No hay miembros para este negocio.</p>'}</div></section>
+      <section class="card sectionCard p2AdminSection"><h3>Actividad auditada</h3><div class="p2ActivityList">${activity.map((entry) => `<div><b>${escapeHtml(entry.action)}</b><small>${escapeHtml(entry.createdAt || entry.when || '')}</small></div>`).join('') || '<p class="empty">Aun no hay actividad local.</p>'}</div></section>`;
+  }
+  function p2WorkersView() {
+    const business = currentBusiness();
+    const resolution = p2ModuleResolution(business);
+    const p2 = p2PlatformData();
+    const canManage = p2Can('members.manage', business);
+    const members = p2.memberships.filter((member) => member.businessId === business.id);
+    const invitations = p2.invitations.filter((invite) => invite.businessId === business.id);
+    const roleOptions = (window.CLICK360_P2_PLATFORM?.ROLES || []).filter((role) => role !== 'owner').map((role) => `<option value="${escapeHtml(role)}">${escapeHtml(role)}</option>`).join('');
+    const memberRows = members.map((member) => `<div class="p2MemberRow"><span><b>${escapeHtml(member.email || member.uid || 'Pendiente')}</b><small>${escapeHtml(member.roleId)} · ${escapeHtml(member.status)} · ${escapeHtml(member.lastSeenAt || 'sin actividad')}</small></span>${canManage && member.roleId !== 'owner' ? `<span class="p2InlineActions"><button class="btn" data-p2-member-edit="${actionId(member.id)}">Permisos</button>${member.status === 'active' ? `<button class="btn" data-p2-member-status="suspended:${actionId(member.id)}">Suspender</button>` : ''}${member.status === 'suspended' ? `<button class="btn" data-p2-member-status="active:${actionId(member.id)}">Reactivar</button>` : ''}${member.status !== 'revoked' ? `<button class="btn danger" data-p2-member-status="revoked:${actionId(member.id)}">Revocar</button>` : ''}</span>` : ''}</div>`).join('');
+    const inviteRows = invitations.map((invite) => `<div class="p2MemberRow"><span><b>${escapeHtml(invite.email)}</b><small>${escapeHtml(invite.roleId)} · ${escapeHtml(invite.status)} · vence ${escapeHtml(invite.expiresAt)}</small></span>${canManage && invite.status === 'pending' ? `<button class="btn danger" data-p2-invite-revoke="${actionId(invite.id)}">Revocar</button>` : ''}</div>`).join('');
+    return `<div class="pageHead"><div><h1>Equipo</h1><p>Roles, invitaciones y actividad del negocio.</p></div></div>
+      <section class="card sectionCard"><div class="p2WorkerHeader"><div><h3>Acceso de trabajadores</h3><p class="fieldHint">El flag esta activo solo para este negocio de prueba. Ninguna invitacion se envia ni se escribe en Firebase desde este candidato.</p></div><span class="badge ${resolution.readOnly ? 'danger' : 'green'}">${resolution.readOnly ? 'Lectura' : 'Controlado'}</span></div>
+      ${canManage ? `<form id="p2WorkerInviteForm" class="formGrid"><div class="field"><label>Correo</label><input id="p2WorkerEmail" type="email" required placeholder="trabajador@ejemplo.com"></div><div class="field"><label>Rol</label><select id="p2WorkerRole">${roleOptions}</select></div><div class="field full"><button class="btn primary" type="submit">Crear invitacion de un solo uso</button></div></form>` : '<p class="empty">Solo el propietario o administrador autorizado puede gestionar miembros.</p>'}
+      ${p2InvitationTokenForDisplay ? `<div class="p2InviteToken"><b>Comparte este codigo una sola vez</b><code>${escapeHtml(p2InvitationTokenForDisplay)}</code><small>El token no se guarda en el estado local.</small></div>` : ''}</section>
+      <section class="card sectionCard"><h3>Miembros</h3><div class="p2MemberResults">${memberRows || '<p class="empty">Aun no hay trabajadores activos.</p>'}</div></section>
+      <section class="card sectionCard"><h3>Invitaciones</h3><div class="p2MemberResults">${inviteRows || '<p class="empty">No hay invitaciones pendientes.</p>'}</div></section>`;
+  }
+  function openP2MemberEditor(memberId) {
+    const business = currentBusiness();
+    const member = p2PlatformData().memberships.find((entry) => entry.id === memberId && entry.businessId === business.id);
+    if (!member || !p2Can('members.manage', business)) return toast('No tienes permiso para editar este miembro.', 'err');
+    const domain = window.CLICK360_P2_PLATFORM;
+    const roles = (domain?.ROLES || []).filter((role) => role !== 'owner');
+    const permissions = domain?.PERMISSIONS || [];
+    showModal(`<div class="modalHeader"><div><h2>Permisos del trabajador</h2><p>${escapeHtml(member.email || member.uid)}</p></div><button class="closeBtn" data-close>×</button></div><div class="field"><label>Rol<select id="p2MemberRole">${roles.map((role) => `<option value="${role}" ${member.roleId === role ? 'selected' : ''}>${role}</option>`).join('')}</select></label></div><div class="p2PermissionGrid">${permissions.map((permission) => `<label><input type="checkbox" data-p2-permission="${permission}" ${member.permissions?.includes(permission) ? 'checked' : ''}>${escapeHtml(permission)}</label>`).join('')}</div><button class="btn primary block" id="p2SaveMember">Guardar permisos</button>`);
+    $('#p2SaveMember').onclick = () => {
+      const permissions = $$('[data-p2-permission]').filter((input) => input.checked).map((input) => input.dataset.p2Permission);
+      const actor = p2CurrentMembership(business.id);
+      try {
+        const next = domain.updateMembership({ actor, target:member, roleId:$('#p2MemberRole').value, permissions });
+        const index = p2PlatformData().memberships.findIndex((entry) => entry.id === member.id && entry.businessId === business.id);
+        p2PlatformData().memberships[index] = next;
+        p2Audit('worker_permissions_updated', { memberId:member.id, roleId:next.roleId, businessId:business.id });
+        if (!save()) return;
+        closeModal(); renderApp('workers'); toast('Permisos actualizados');
+      } catch (error) { toast('No se pudo cambiar el rol: ' + error.message, 'err'); }
+    };
+  }
+  function bindP2Workers() {
+    const business = currentBusiness();
+    const domain = window.CLICK360_P2_PLATFORM;
+    $('#p2WorkerInviteForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!p2Can('members.manage', business)) return toast('No tienes permiso para invitar.', 'err');
+      const email = $('#p2WorkerEmail').value;
+      const roleId = $('#p2WorkerRole').value;
+      const p2 = p2PlatformData();
+      if (p2.memberships.some((member) => member.businessId === business.id && String(member.email).toLowerCase() === String(email).toLowerCase() && member.status !== 'revoked') || p2.invitations.some((invite) => invite.businessId === business.id && String(invite.email).toLowerCase() === String(email).toLowerCase() && invite.status === 'pending')) return toast('Ese correo ya tiene una membresia o invitacion activa.', 'err');
+      if (p2.memberships.filter((member) => member.businessId === business.id && member.status === 'active').length >= Number(p2ModuleResolution(business).limits.workers || 0)) return toast('El plan actual alcanzo su limite de trabajadores.', 'err');
+      try {
+        const created = await domain.createInvitation({ businessId:business.id, email, roleId, invitedBy:authUser().uid || authUser().email });
+        p2.invitations.push(created.invitation);
+        p2.memberships.push(domain.normalizeMembership({ id:`pending_${created.invitation.id}`, email:created.invitation.email, businessId:business.id, roleId, permissions:created.invitation.permissions, status:'pending', invitedBy:created.invitation.invitedBy, invitedAt:created.invitation.invitedAt }));
+        p2InvitationTokenForDisplay = created.token;
+        p2Audit('worker_invited', { invitationId:created.invitation.id, roleId, businessId:business.id });
+        if (!save()) return;
+        renderApp('workers');
+      } catch (error) { toast('No se pudo crear la invitacion: ' + error.message, 'err'); }
+    });
+    $$('[data-p2-member-edit]').forEach((button) => button.onclick = () => openP2MemberEditor(decodeActionId(button.dataset.p2MemberEdit)));
+    $$('[data-p2-member-status]').forEach((button) => button.onclick = () => {
+      const [status, encoded] = button.dataset.p2MemberStatus.split(':');
+      const memberId = decodeActionId(encoded);
+      const p2 = p2PlatformData();
+      const member = p2.memberships.find((entry) => entry.id === memberId && entry.businessId === business.id);
+      if (!member || !p2Can('members.manage', business) || !confirm(`Confirmar ${status} para este trabajador?`)) return;
+      try {
+        const next = domain.updateMembership({ actor:p2CurrentMembership(business.id), target:member, status });
+        p2.memberships[p2.memberships.indexOf(member)] = next;
+        p2Audit(`worker_${status}`, { memberId, businessId:business.id });
+        if (!save()) return;
+        renderApp('workers');
+      } catch (error) { toast('No se pudo actualizar el miembro: ' + error.message, 'err'); }
+    });
+    $$('[data-p2-invite-revoke]').forEach((button) => button.onclick = () => {
+      const invitationId = decodeActionId(button.dataset.p2InviteRevoke);
+      const p2 = p2PlatformData();
+      const invitation = p2.invitations.find((entry) => entry.id === invitationId && entry.businessId === business.id);
+      if (!invitation || !p2Can('members.manage', business) || !confirm('Revocar esta invitacion?')) return;
+      invitation.status = 'revoked'; invitation.revokedAt = new Date().toISOString();
+      const pending = p2.memberships.find((entry) => entry.businessId === business.id && entry.email === invitation.email && entry.status === 'pending');
+      if (pending) { pending.status = 'revoked'; pending.revokedAt = invitation.revokedAt; }
+      p2Audit('worker_invitation_revoked', { invitationId, businessId:business.id });
+      if (!save()) return;
+      renderApp('workers');
+    });
+  }
+  function bindP2Admin() {
+    const business = currentBusiness();
+    if (!isOwnerUser() || !p2ModuleEnabled('admin', business)) return;
+    $$('[data-p2-module]').forEach((input) => input.onchange = () => {
+      const module = input.dataset.p2Module;
+      if (!confirm(`Confirmar ${input.checked ? 'activar' : 'desactivar'} ${module} para ${business.name}?`)) { input.checked = !input.checked; return; }
+      business.settings ||= {}; business.settings.modules ||= {};
+      business.settings.modules[module] = input.checked;
+      const flag = p2FeatureFlagFor(module, business.id);
+      if (flag) {
+        flag.enabled = input.checked;
+        flag.rolloutPercentage = input.checked ? 100 : 0;
+        flag.allowedBusinessIds = input.checked ? [business.id] : [];
+        flag.updatedAt = new Date().toISOString();
+      }
+      p2Audit('module_toggled', { module, enabled:input.checked, businessId:business.id });
+      if (!save()) return;
+      renderApp('admin');
+    });
+    $$('[data-p2-admin-action]').forEach((button) => button.onclick = () => {
+      const type = button.dataset.p2AdminAction;
+      if (!confirm(`Registrar solicitud local de ${type}? No modificara accountAccess.`)) return;
+      p2PlatformData().adminActions.push({ id:uid('p2-admin'), type, status:'pending_backend', businessId:business.id, createdAt:new Date().toISOString(), requestedBy:authUser().uid || '' });
+      p2Audit('admin_action_requested', { type, businessId:business.id });
+      if (!save()) return;
+      renderApp('admin');
+    });
+    $('#p2AdminMemberSearch')?.addEventListener('input', (event) => {
+      const query = String(event.target.value || '').toLowerCase();
+      const rows = p2PlatformData().memberships.filter((member) => member.businessId === business.id && `${member.email} ${member.roleId} ${member.status}`.toLowerCase().includes(query));
+      $('#p2AdminMemberResults').innerHTML = rows.map((member) => `<div class="p2MemberRow"><span><b>${escapeHtml(member.email || member.uid || 'Pendiente')}</b><small>${escapeHtml(member.roleId)} · ${escapeHtml(member.status)}</small></span></div>`).join('') || '<p class="empty">Sin coincidencias.</p>';
+    });
+  }
   function workersView(){
+    if (p2WorkersEnabled()) return p2WorkersView();
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
 	  ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<section class="card sectionCard"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>'}
       <section class="card sectionCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
@@ -3281,6 +3498,7 @@ function parseMoney(value) {
     if(r==='backup') bindBackup();
     if(r==='settings') bindSettings();
     if(r==='workers') bindWorkers();
+    if(r==='admin') bindP2Admin();
     if(r==='reports') bindReports();
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
@@ -4738,6 +4956,7 @@ function parseMoney(value) {
   }
 
   async function bindWorkers() {
+    if (p2WorkersEnabled()) return bindP2Workers();
     const list = $('#workersList');
     if (!window.click360User || window.click360User.role !== 'owner') {
       list.innerHTML = '<p class="empty">Solo el dueño puede administrar trabajadores.</p>';
