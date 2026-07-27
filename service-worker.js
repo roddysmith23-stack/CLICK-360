@@ -13,6 +13,7 @@ const ASSETS = [
   './firebase-service.js',
   './printing-service.js',
   './smart-print-core.js',
+  './p2-logistics-domain.js',
   './manifest.webmanifest',
 	'./robots.txt',
 	'./sitemap.xml',

@@ -1219,6 +1219,8 @@ function parseMoney(value) {
     out.cashSessions ||= [];
     out.tables ||= [];
     out.tableOrders ||= [];
+    out.logistics ||= {};
+    ['vehicles','routes','routeAssignments','loadSheets','routeSales','collections','returns','shortages','overages','routeSettlements','routeExpenses','routeCustomers','events','printHistory'].forEach((key) => { out.logistics[key] ||= []; });
     out.labelPrintHistory ||= [];
     out.notifications ||= [];
     out.legalAcceptances ||= [];
@@ -1238,6 +1240,7 @@ function parseMoney(value) {
     out.settings.activationRequests ||= [];
     out.settings.policies ||= {};
     out.settings.legal ||= {};
+    out.settings.logisticsAdvanced ||= { featureFlag:{ key:'logisticsEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false }, settingsByBusiness:{} };
     const businessIds = new Set(out.businesses.map((business) => business?.id).filter(Boolean));
     if (!businessIds.has(out.settings.legacyDataBusinessId)) {
       out.settings.legacyDataBusinessId = businessIds.has(out.activeBusinessId)
@@ -1326,11 +1329,12 @@ function parseMoney(value) {
       cashSessions:[],
       tables:[],
       tableOrders:[],
+      logistics:{ vehicles:[], routes:[], routeAssignments:[], loadSheets:[], routeSales:[], collections:[], returns:[], shortages:[], overages:[], routeSettlements:[], routeExpenses:[], routeCustomers:[], events:[], printHistory:[] },
       labelPrintHistory:[],
       finance:{ payments: [], loans: [], envelopes: [], goals: [] },
       notifications:[],
       legalAcceptances:[],
-      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.2.0' }
+      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, logisticsAdvanced:{ featureFlag:{ key:'logisticsEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false }, settingsByBusiness:{} }, appVersion: '16.2.0' }
     };
   }
 
@@ -1465,6 +1469,8 @@ function parseMoney(value) {
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
   function tablesForBiz(bid=currentBusiness()?.id){ return (state.tables || []).filter(table=>table.businessId===bid); }
   function tableOrdersForBiz(bid=currentBusiness()?.id){ return (state.tableOrders || []).filter(order=>order.businessId===bid); }
+  function logisticsStore(){ state.logistics ||= {}; ['vehicles','routes','routeAssignments','loadSheets','routeSales','collections','returns','shortages','overages','routeSettlements','routeExpenses','routeCustomers','events','printHistory'].forEach((key) => { state.logistics[key] ||= []; }); return state.logistics; }
+  function logisticsForBiz(key, bid=currentBusiness()?.id){ return (logisticsStore()[key] || []).filter((entry) => entry.businessId === bid); }
   function financeForBiz(kind, bid=currentBusiness()?.id){ return (state.finance?.[kind] || []).filter(entry=>entry.businessId===bid); }
   function labelTemplatesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
@@ -1522,6 +1528,31 @@ function parseMoney(value) {
   function isRestaurantBusiness(business=currentBusiness()) {
     return ['restaurante', 'cafeteria', 'bar'].includes(String(business?.type || '').toLowerCase());
   }
+  function logisticsAdvancedSettings() {
+    state.settings ||= {};
+    state.settings.logisticsAdvanced ||= {};
+    const config = state.settings.logisticsAdvanced;
+    config.featureFlag ||= { key:'logisticsEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false };
+    config.settingsByBusiness ||= {};
+    return config;
+  }
+  function logisticsAdvancedEnabled(business=currentBusiness()) {
+    const flag = logisticsAdvancedSettings().featureFlag || {};
+    const businessId = business?.id || '';
+    if (flag.enabled !== true || flag.killSwitch === true) return false;
+    if (Array.isArray(flag.allowedBusinessIds) && flag.allowedBusinessIds.length && !flag.allowedBusinessIds.includes(businessId)) return false;
+    const rollout = Math.max(0, Math.min(100, Number(flag.rolloutPercentage == null ? 100 : flag.rolloutPercentage)));
+    return rollout > 0 && business?.settings?.modules?.logistics === true;
+  }
+  function logisticsActor() {
+    const user = authUser();
+    return { uid:window.click360User?.uid || '', roleId:user.role || 'readonly', permissions:Array.isArray(user.permissions) ? user.permissions : undefined };
+  }
+  function logisticsCan(permission) {
+    if (isOwnerUser()) return true;
+    return window.CLICK360_P2_LOGISTICS?.hasPermission?.(logisticsActor(), permission) === true;
+  }
+  window.click360LogisticsEnabled = () => logisticsAdvancedEnabled();
   function resolveLabelCopyResult(manualCopies, stock, useStock=false) {
     return window.CLICK360_SMART_PRINT?.resolveCopies(manualCopies, useStock, stock)
       || (() => {
@@ -1601,7 +1632,9 @@ function parseMoney(value) {
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory'].includes(role);
+	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory','server','kitchen','routeSeller','collector','readonly','admin'].includes(role);
+	    if (section === 'logistics') return logisticsAdvancedEnabled() && logisticsCan('routes.read');
+	    if (section === 'logisticsSettlement') return logisticsAdvancedEnabled() && logisticsCan('settlements.read');
     const permissions = window.click360User?.permissions || {};
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
     if (routeModule && Object.keys(permissions).length) return permissions[routeModule]?.view === true;
@@ -1858,7 +1891,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,finance:financeView,help:helpView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,logistics:logisticsView,logisticsSettlement:logisticsSettlementView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2923,6 +2956,331 @@ function parseMoney(value) {
 	    });
 	  }
 
+    function logisticsDomain() { return window.CLICK360_P2_LOGISTICS; }
+    function logisticsRouteById(routeId) {
+      const route = logisticsForBiz('routes').find((entry) => entry.id === routeId) || null;
+      return route && logisticsDomain()?.canAccessRoute?.(route, logisticsActor(), 'read') ? route : null;
+    }
+    function logisticsVisibleRoutes() {
+      return logisticsForBiz('routes').filter((route) => logisticsDomain()?.canAccessRoute?.(route, logisticsActor(), 'read') === true);
+    }
+    function logisticsSheetForRoute(routeId) { return logisticsForBiz('loadSheets').find((sheet) => sheet.routeId === routeId && sheet.status !== 'cancelled') || null; }
+    function logisticsSettlementForRoute(routeId) { return logisticsForBiz('routeSettlements').filter((entry) => entry.routeId === routeId && entry.status !== 'cancelled').at(-1) || null; }
+    function logisticsReplace(key, record) {
+      const rows = logisticsStore()[key] || (logisticsStore()[key] = []);
+      const index = rows.findIndex((entry) => entry.id === record.id && entry.businessId === record.businessId);
+      if (index < 0) rows.push(record); else rows[index] = record;
+      return record;
+    }
+    function logisticsReplaceProducts(nextProducts) {
+      const byId = new Map((nextProducts || []).map((product) => [product.id, product]));
+      state.products = state.products.map((product) => byId.get(product.id) || product);
+    }
+    function logisticsAddAudit(action, details={}) {
+      const store = logisticsStore();
+      store.events.push({ id:uid('logistics-event'), businessId:currentBusiness().id, action, createdAt:new Date().toISOString(), createdBy:authUser().name || '', details });
+      addAudit(action, details);
+    }
+    function logisticsRouteCustomer(route, name) {
+      const normalized = String(name || '').trim().toLocaleLowerCase();
+      if (!normalized) throw new Error('route_customer_required');
+      const rows = logisticsStore().routeCustomers;
+      let customer = rows.find((entry) => entry.businessId === currentBusiness().id && String(entry.name || '').trim().toLocaleLowerCase() === normalized) || null;
+      if (!customer) {
+        customer = { id:uid('route-customer'), businessId:currentBusiness().id, name:String(name).trim(), routeIds:[route.id], createdAt:new Date().toISOString(), createdBy:authUser().name || '' };
+        rows.push(customer);
+      } else if (!customer.routeIds?.includes(route.id)) {
+        customer.routeIds = [...(customer.routeIds || []), route.id];
+        customer.updatedAt = new Date().toISOString();
+      }
+      return customer;
+    }
+    function logisticsSave(snapshot, view='logistics') {
+      if (save()) return true;
+      state = snapshot;
+      renderApp(view);
+      return false;
+    }
+    function logisticsRouteLabel(status) {
+      return ({ draft:'Borrador', planned:'Planificada', dispatched:'En ruta', in_progress:'En curso', settlement_pending:'Pendiente de liquidación', closed:'Cerrada', cancelled:'Cancelada' })[status] || status;
+    }
+    function logisticsSheetLabel(status) { return ({ draft:'Borrador', confirmed:'Confirmada', dispatched:'Despachada', closed:'Cerrada', cancelled:'Cancelada' })[status] || status; }
+    function logisticsSettlementLabel(status) { return ({ draft:'Borrador', pending_approval:'Pendiente de aprobación', approved:'Aprobada', closed:'Cerrada', reopened:'Reabierta', cancelled:'Cancelada' })[status] || status; }
+    function logisticsGuardView() {
+      return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>Vehículos, carga, cobranzas y liquidación.</p></div></div><section class="card sectionCard logisticsGuard"><h3>Módulo protegido</h3><p>Logística está desactivada para este negocio. El módulo se habilita por negocio y permiso, sin exponer rutas de otros negocios.</p></section>`;
+    }
+    function logisticsView() {
+      if (!logisticsAdvancedEnabled()) return logisticsGuardView();
+      if (!logisticsCan('routes.read')) return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>No tienes permiso para consultar rutas.</p></div></div>`;
+      const domain = logisticsDomain();
+      const business = currentBusiness();
+      const routes = logisticsVisibleRoutes();
+      const routeIds = new Set(routes.map((route) => route.id));
+      const privileged = ['owner','admin','inventory'].includes(String(logisticsActor().roleId || '').toLowerCase());
+      const vehicles = logisticsForBiz('vehicles').filter((vehicle) => privileged || routes.some((route) => route.vehicleId === vehicle.id));
+      const report = domain.logisticsReport({ businessId:business.id, routes, routeSales:logisticsForBiz('routeSales').filter((entry) => routeIds.has(entry.routeId)), collections:logisticsForBiz('collections').filter((entry) => routeIds.has(entry.routeId)), returns:logisticsForBiz('returns').filter((entry) => routeIds.has(entry.routeId)), settlements:logisticsForBiz('routeSettlements').filter((entry) => routeIds.has(entry.routeId)) });
+      const vehicleRows = vehicles.map((vehicle) => `<article class="card logisticsVehicle"><span><b>${escapeHtml(vehicle.name || vehicle.plate)}</b><small>${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.driverName || 'Sin conductor')} · ${escapeHtml(vehicle.status)}</small></span><strong>${Number(vehicle.capacity || 0)} ${escapeHtml(vehicle.capacityUnit || 'unidades')}</strong></article>`).join('') || '<p class="empty">Sin vehículos registrados.</p>';
+      const routeRows = routes.slice().sort((first, second) => String(second.date || '').localeCompare(String(first.date || ''))).map((route) => {
+        const sheet = logisticsSheetForRoute(route.id);
+        const settlement = logisticsSettlementForRoute(route.id);
+        return `<article class="card logisticsRouteCard ${escapeHtml(route.status)}"><header><span><b>${escapeHtml(route.name)}</b><small>${escapeHtml(route.date)} · ${escapeHtml(route.zone || 'Sin zona')}</small></span><span class="badge ${route.status === 'closed' ? 'green' : 'gold'}">${escapeHtml(logisticsRouteLabel(route.status))}</span></header><p>${escapeHtml(route.sellerName || 'Sin vendedor')} · ${escapeHtml(vehicles.find((vehicle) => vehicle.id === route.vehicleId)?.plate || 'Sin vehículo')}</p><small>${sheet ? `Carga ${escapeHtml(logisticsSheetLabel(sheet.status))}` : 'Sin hoja de carga'}${settlement ? ` · ${escapeHtml(logisticsSettlementLabel(settlement.status))}` : ''}</small><div class="p2InlineActions"><button class="btn primary" data-logistics-route="${actionId(route.id)}">Abrir ruta</button><button class="btn" data-logistics-print="load:${actionId(route.id)}">${icon('printer')} Carga</button></div></article>`;
+      }).join('') || '<p class="empty">Crea una ruta para iniciar una hoja de carga.</p>';
+      return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>Operación de distribución aislada para ${escapeHtml(business.name)}.</p></div><div class="toolbar">${logisticsCan('vehicles.write') ? `<button class="btn" id="newLogisticsVehicle">${icon('truck')} Vehículo</button>` : ''}${logisticsCan('routes.write') ? `<button class="btn primary" id="newLogisticsRoute">${icon('route')} Nueva ruta</button>` : ''}</div></div>
+        <section class="logisticsSummary"><article class="card"><small>Rutas abiertas</small><b>${report.openRoutes}</b><span>${report.routeCount} totales</span></article><article class="card"><small>Venta de ruta</small><b>${fmt(report.sales)}</b><span>Crédito ${fmt(report.credits)}</span></article><article class="card"><small>Cobranzas</small><b>${fmt(report.collections)}</b><span>${report.settlementsPending} liquidaciones pendientes</span></article><article class="card"><small>Retornos</small><b>${report.sellableReturns}</b><span>${report.damagedReturns} dañados</span></article></section>
+        <section class="card sectionCard logisticsSection"><header><h3>Vehículos</h3><span>${vehicles.length}</span></header><div class="logisticsVehicleList">${vehicleRows}</div></section>
+        <section class="logisticsRouteGrid">${routeRows}</section>
+        <details class="card sectionCard logisticsReport"><summary>Reportes de distribución</summary><ul><li>Venta por ruta: ${escapeHtml(Object.entries(report.byRoute).map(([routeId, amount]) => `${routes.find((route) => route.id === routeId)?.name || routeId} ${fmt(amount)}`).join(' · ') || 'Sin ventas')}</li><li>Venta por vendedor: ${escapeHtml(Object.entries(report.bySeller).map(([name, amount]) => `${name} ${fmt(amount)}`).join(' · ') || 'Sin ventas')}</li><li>Crédito pendiente: ${fmt(report.credits)}</li></ul></details>`;
+    }
+    function logisticsSettlementView() {
+      if (!logisticsAdvancedEnabled()) return logisticsGuardView();
+      if (!logisticsCan('settlements.read')) return `<div class="pageHead"><div><h1>Liquidaciones</h1><p>No tienes permiso para ver liquidaciones.</p></div></div>`;
+      const routes = logisticsVisibleRoutes();
+      const routeIds = new Set(routes.map((route) => route.id));
+      const settlements = logisticsForBiz('routeSettlements').filter((entry) => routeIds.has(entry.routeId)).slice().reverse();
+      return `<div class="pageHead"><div><h1>Liquidaciones</h1><p>Cuadre de rutas, retornos, gastos y diferencias.</p></div><div class="toolbar"><button class="btn" data-logistics-nav="logistics">${icon('arrow-left')} Rutas</button></div></div><section class="logisticsSettlementList">${settlements.map((settlement) => { const route = routes.find((entry) => entry.id === settlement.routeId); return `<article class="card logisticsSettlementCard"><header><span><b>${escapeHtml(route?.name || settlement.routeId)}</b><small>${escapeHtml(logisticsSettlementLabel(settlement.status))}</small></span><strong>${fmt(settlement.difference)}</strong></header><p>Esperado ${fmt(settlement.calculation?.expectedCash)} · recibido ${fmt(settlement.receivedCash)}</p><div class="p2InlineActions"><button class="btn" data-logistics-settlement="${actionId(settlement.id)}">Ver detalle</button><button class="btn" data-logistics-print="settlement:${actionId(route?.id || settlement.routeId)}">${icon('printer')} Imprimir</button></div></article>`; }).join('') || '<section class="card empty">No hay liquidaciones todavía.</section>'}</section>`;
+    }
+    function openLogisticsVehicleModal(vehicleId = '') {
+      const vehicle = logisticsForBiz('vehicles').find((item) => item.id === vehicleId);
+      showModal(`<div class="modalHeader"><div><h2>${vehicle ? 'Editar vehículo' : 'Nuevo vehículo'}</h2><p>Datos operativos del negocio activo.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsVehicleForm" class="formGrid"><div class="field"><label>Nombre</label><input id="logisticsVehicleName" required maxlength="60" value="${escapeHtml(vehicle?.name || '')}" placeholder="Camión 1"></div><div class="field"><label>Placa</label><input id="logisticsVehiclePlate" required maxlength="20" value="${escapeHtml(vehicle?.plate || '')}" placeholder="ABC-123"></div><div class="field"><label>Conductor</label><input id="logisticsVehicleDriver" maxlength="80" value="${escapeHtml(vehicle?.driverName || '')}" placeholder="Nombre del conductor"></div><div class="field"><label>Capacidad</label><input id="logisticsVehicleCapacity" type="number" min="0" step="1" value="${Number(vehicle?.capacity || 0)}"></div><div class="field"><label>Unidad</label><input id="logisticsVehicleUnit" maxlength="20" value="${escapeHtml(vehicle?.capacityUnit || 'unidades')}"></div><div class="field"><label>Estado</label><select id="logisticsVehicleStatus"><option value="active" ${vehicle?.status !== 'inactive' && vehicle?.status !== 'maintenance' ? 'selected' : ''}>Activo</option><option value="maintenance" ${vehicle?.status === 'maintenance' ? 'selected' : ''}>Mantenimiento</option><option value="inactive" ${vehicle?.status === 'inactive' ? 'selected' : ''}>Inactivo</option></select></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar vehículo</button></form>`);
+      $('#logisticsVehicleForm').onsubmit = (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        try {
+          const input = { id:vehicle?.id, businessId:currentBusiness().id, name:$('#logisticsVehicleName').value, plate:$('#logisticsVehiclePlate').value, driverName:$('#logisticsVehicleDriver').value, capacity:$('#logisticsVehicleCapacity').value, capacityUnit:$('#logisticsVehicleUnit').value, status:$('#logisticsVehicleStatus').value };
+          const next = vehicle ? { ...vehicle, ...input, updatedAt:new Date().toISOString(), updatedAtMs:Date.now() } : logisticsDomain().createVehicle({ input, actor:logisticsActor() });
+          logisticsReplace('vehicles', next); logisticsAddAudit(vehicle ? 'logistics_vehicle_updated' : 'logistics_vehicle_created', { vehicleId:next.id });
+          if (!logisticsSave(snapshot)) return;
+          closeModal(); renderApp('logistics');
+        } catch (error) { state = snapshot; toast('No se pudo guardar el vehículo: ' + error.message, 'err'); }
+      };
+    }
+    function openLogisticsRouteModal() {
+      const vehicles = logisticsForBiz('vehicles').filter((vehicle) => vehicle.status === 'active');
+      showModal(`<div class="modalHeader"><div><h2>Nueva ruta</h2><p>La ruta se crea en borrador y no altera inventario hasta despachar la carga.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsRouteForm" class="formGrid"><div class="field"><label>Nombre de ruta</label><input id="logisticsRouteName" required maxlength="80" placeholder="Ruta Norte"></div><div class="field"><label>Zona</label><input id="logisticsRouteZone" maxlength="80" placeholder="Sector / zona"></div><div class="field"><label>Fecha</label><input id="logisticsRouteDate" type="date" required value="${today()}"></div><div class="field"><label>Vehículo</label><select id="logisticsRouteVehicle"><option value="">Sin vehículo</option>${vehicles.map((vehicle) => `<option value="${actionId(vehicle.id)}">${escapeHtml(vehicle.name || vehicle.plate)} · ${escapeHtml(vehicle.plate)}</option>`).join('')}</select></div><div class="field"><label>Vendedor asignado</label><input id="logisticsRouteSeller" maxlength="80" placeholder="Nombre visible"></div><div class="field"><label>ID del vendedor</label><input id="logisticsRouteSellerId" maxlength="100" placeholder="UID/identificador del equipo"></div><div class="field"><label>Cobrador asignado</label><input id="logisticsRouteCollector" maxlength="80" placeholder="Nombre visible"></div><div class="field"><label>ID del cobrador</label><input id="logisticsRouteCollectorId" maxlength="100" placeholder="UID/identificador del equipo"></div><div class="field"><label>Ayudante</label><input id="logisticsRouteHelper" maxlength="80" placeholder="Opcional"></div><div class="field full"><label>Notas</label><textarea id="logisticsRouteNotes" maxlength="180"></textarea></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Crear ruta</button></form>`);
+      $('#logisticsRouteForm').onsubmit = (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        try {
+          const vehicle = vehicles.find((entry) => entry.id === decodeActionId($('#logisticsRouteVehicle').value));
+          const route = logisticsDomain().createRoute({ input:{ businessId:currentBusiness().id, name:$('#logisticsRouteName').value, zone:$('#logisticsRouteZone').value, date:$('#logisticsRouteDate').value, vehicleId:vehicle?.id || '', sellerId:$('#logisticsRouteSellerId').value, sellerName:$('#logisticsRouteSeller').value, collectorId:$('#logisticsRouteCollectorId').value, collectorName:$('#logisticsRouteCollector').value, helperName:$('#logisticsRouteHelper').value, notes:$('#logisticsRouteNotes').value }, vehicle, actor:logisticsActor() });
+          logisticsReplace('routes', route); logisticsAddAudit('logistics_route_created', { routeId:route.id });
+          if (!logisticsSave(snapshot)) return;
+          closeModal(); openLogisticsWorkspace(route.id);
+        } catch (error) { state = snapshot; toast('No se pudo crear la ruta: ' + error.message, 'err'); }
+      };
+    }
+    function logisticsLoadItemsHtml(sheet) {
+      return (sheet?.items || []).map((item) => `<li><span><b>${item.qty} x ${escapeHtml(item.name)}</b><small>${escapeHtml(item.code)}${item.lot ? ` · lote ${escapeHtml(item.lot)}` : ''}</small></span><strong>${fmt(item.total)}</strong></li>`).join('') || '<li class="empty">Sin productos en la carga.</li>';
+    }
+    function logisticsRouteSalesHtml(routeId) {
+      return logisticsForBiz('routeSales').filter((sale) => sale.routeId === routeId).slice().reverse().map((sale) => `<li><span><b>${escapeHtml(sale.customerName)}</b><small>${escapeHtml(sale.paymentType)} · saldo ${fmt(logisticsDomain().remainingCredit(sale, logisticsForBiz('collections')))}</small></span><strong>${fmt(sale.total)}</strong></li>`).join('') || '<li class="empty">Sin ventas registradas.</li>';
+    }
+    function logisticsReturnsHtml(routeId) {
+      return logisticsForBiz('returns').filter((entry) => entry.routeId === routeId).slice().reverse().map((entry) => `<li><span><b>${entry.qty} x ${escapeHtml(entry.name)}</b><small>${entry.condition === 'sellable' ? 'Retorno vendible' : 'Retorno dañado'}</small></span><strong>${fmt(entry.qty * entry.price)}</strong></li>`).join('') || '<li class="empty">Sin retornos registrados.</li>';
+    }
+    async function logisticsCriticalCommit(snapshot, reason, verifier, view='logistics') {
+      const committed = await commitCriticalMutation(snapshot, reason, verifier);
+      if (!committed.ok) { state = snapshot; renderApp(view); }
+      return committed;
+    }
+    function logisticsPrintRoute(routeId, kind='load') {
+      const route = logisticsRouteById(routeId);
+      if (!route) return;
+      const sheet = logisticsSheetForRoute(route.id);
+      const settlement = logisticsSettlementForRoute(route.id);
+      if (kind === 'load' && !sheet) return toast('Crea una hoja de carga antes de imprimir.', 'err');
+      if (kind === 'settlement' && !settlement) return toast('No hay liquidación para imprimir.', 'err');
+      const html = logisticsDomain().printDocument({ kind:kind === 'settlement' ? 'settlement' : 'load_sheet', businessName:currentBusiness().name, route, sheet, settlement });
+      logisticsStore().printHistory.push({ id:uid('logistics-print'), businessId:currentBusiness().id, routeId:route.id, kind, createdAt:new Date().toISOString(), createdBy:authUser().name || '' });
+      logisticsAddAudit('logistics_printed', { routeId:route.id, kind });
+      save({ nonBlockingSync:true, syncSource:'logistics_print_audit' });
+      handoffPrint({ html, media:kind === 'settlement' ? 'a4' : 'receipt-80', filename:`Ruta_${kind}_${route.id.slice(-6)}.pdf` }, 'system');
+    }
+    function openLogisticsWorkspace(routeId) {
+      const route = logisticsRouteById(routeId);
+      if (!route) return toast('La ruta ya no está disponible.', 'err');
+      const sheet = logisticsSheetForRoute(route.id);
+      const settlement = logisticsSettlementForRoute(route.id);
+      const products = productsForBiz();
+      const loadedProducts = (sheet?.items || []).map((item) => products.find((product) => product.id === item.productId)).filter(Boolean);
+      const canLoad = logisticsCan('loadSheets.write');
+      const canSell = logisticsCan('routeSales.create');
+      const canCollect = logisticsCan('collections.write');
+      const canReturn = logisticsCan('returns.write');
+      const canSettle = logisticsCan('settlements.write');
+      const canApprove = logisticsCan('settlements.approve');
+      const creditSales = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id && logisticsDomain().remainingCredit(sale, logisticsForBiz('collections')) > 0.00001);
+      const loadControls = !sheet ? `<button class="btn primary" data-logistics-action="create-sheet:${actionId(route.id)}">Crear hoja de carga</button>` : `<section class="logisticsWorkspaceSection"><header><span><h3>Hoja de carga</h3><small>${escapeHtml(logisticsSheetLabel(sheet.status))}</small></span><button class="iconBtn" data-logistics-print="load:${actionId(route.id)}" title="Imprimir hoja de carga" aria-label="Imprimir hoja de carga">${icon('printer')}</button></header><ul class="logisticsRows">${logisticsLoadItemsHtml(sheet)}</ul>${sheet.status === 'draft' && canLoad ? `<form id="logisticsAddLoadForm" class="formGrid"><div class="field full"><label>Producto</label><select id="logisticsLoadProduct">${products.filter((product) => Number(product.qty || 0) > 0).map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${product.qty} disp.</option>`).join('') || '<option value="">Sin productos disponibles</option>'}</select></div><div class="field"><label>Cantidad</label><input id="logisticsLoadQty" type="number" min="1" max="999" value="1"></div><div class="field"><label>Precio de ruta</label><input id="logisticsLoadPrice" inputmode="decimal" placeholder="Usar precio actual"></div><div class="field full"><label>Lote</label><input id="logisticsLoadLot" maxlength="60" placeholder="Opcional"></div><button class="btn silver full" type="submit">${icon('plus')} Agregar a carga</button></form><div class="p2InlineActions"><button class="btn primary" data-logistics-action="confirm-sheet:${actionId(route.id)}">Confirmar carga</button></div>` : ''}${sheet.status === 'confirmed' && canLoad ? `<div class="p2InlineActions"><button class="btn primary" data-logistics-action="dispatch-sheet:${actionId(route.id)}">Despachar ruta e inventario</button></div>` : ''}</section>`;
+      const saleControls = sheet?.status === 'dispatched' && canSell ? `<section class="logisticsWorkspaceSection"><header><span><h3>Ventas de ruta</h3><small>Contado, transferencia o crédito.</small></span></header><form id="logisticsSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="logisticsSaleCustomer" maxlength="80" required placeholder="Nombre del cliente"></div><div class="field"><label>Pago</label><select id="logisticsSalePayment"><option value="cash">Contado</option><option value="transfer">Transferencia</option><option value="credit">Crédito</option></select></div><div class="field full"><label>Producto de carga</label><select id="logisticsSaleProduct">${loadedProducts.map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${product.code}</option>`).join('') || '<option value="">Sin productos cargados</option>'}</select></div><div class="field"><label>Cantidad</label><input id="logisticsSaleQty" type="number" min="1" max="999" value="1"></div>${logisticsCan('routeSales.discount') ? '<div class="field"><label>Descuento autorizado</label><input id="logisticsSaleDiscount" inputmode="decimal" value="0"></div>' : ''}<div class="field full"><label>Nota</label><input id="logisticsSaleNote" maxlength="140" placeholder="Opcional"></div><button class="btn primary full" type="submit" ${loadedProducts.length ? '' : 'disabled'}>Registrar venta de ruta</button></form><ul class="logisticsRows">${logisticsRouteSalesHtml(route.id)}</ul></section>` : '';
+      const collectionControls = creditSales.length && canCollect ? `<section class="logisticsWorkspaceSection"><header><span><h3>Cobranzas</h3><small>Solo créditos pendientes de esta ruta.</small></span></header><button class="btn" data-logistics-action="open-collection:${actionId(route.id)}">${icon('hand-coins')} Registrar cobranza</button></section>` : '';
+      const returnControls = sheet?.status === 'dispatched' && canReturn ? `<section class="logisticsWorkspaceSection"><header><span><h3>Retornos y diferencias</h3><small>El retorno vendible vuelve al inventario al cerrar la liquidación.</small></span></header><form id="logisticsReturnForm" class="formGrid"><div class="field full"><label>Producto de carga</label><select id="logisticsReturnProduct">${loadedProducts.map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)}</option>`).join('')}</select></div><div class="field"><label>Cantidad</label><input id="logisticsReturnQty" type="number" min="1" max="999" value="1"></div><div class="field"><label>Condición</label><select id="logisticsReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><div class="field full"><label>Observación</label><input id="logisticsReturnNote" maxlength="140" placeholder="Opcional"></div><button class="btn silver full" type="submit">Registrar retorno</button></form><form id="logisticsVarianceForm" class="formGrid"><div class="field"><label>Diferencia</label><select id="logisticsVarianceType"><option value="shortage">Faltante</option><option value="overage">Sobrante</option></select></div><div class="field"><label>Valor estimado</label><input id="logisticsVarianceAmount" inputmode="decimal" required></div><div class="field full"><label>Observación</label><input id="logisticsVarianceNote" maxlength="140" placeholder="Obligatoria para diferencias relevantes"></div><button class="btn full" type="submit">Registrar diferencia</button></form><ul class="logisticsRows">${logisticsReturnsHtml(route.id)}</ul></section>` : '';
+      const expenseControls = sheet?.status === 'dispatched' && canSettle ? `<section class="logisticsWorkspaceSection"><header><span><h3>Gastos de ruta</h3><small>Se descuentan del efectivo esperado en la liquidación.</small></span></header><form id="logisticsExpenseForm" class="formGrid"><div class="field"><label>Categoría</label><input id="logisticsExpenseCategory" maxlength="50" value="Otro"></div><div class="field"><label>Monto</label><input id="logisticsExpenseAmount" inputmode="decimal" required></div><div class="field full"><label>Nota</label><input id="logisticsExpenseNote" maxlength="140"></div><button class="btn silver full" type="submit">Agregar gasto</button></form></section>` : '';
+      const settlementControls = sheet?.status === 'dispatched' ? `<section class="logisticsWorkspaceSection"><header><span><h3>Liquidación diaria</h3><small>${settlement ? logisticsSettlementLabel(settlement.status) : 'Aún no creada'}</small></span></header><div class="p2InlineActions">${!settlement && canSettle ? `<button class="btn primary" data-logistics-action="open-settlement:${actionId(route.id)}">Preparar liquidación</button>` : ''}${settlement && canApprove && ['pending_approval','reopened'].includes(settlement.status) ? `<button class="btn primary" data-logistics-action="approve-settlement:${actionId(route.id)}">Aprobar</button>` : ''}${settlement && canApprove && settlement.status === 'approved' ? `<button class="btn primary" data-logistics-action="close-settlement:${actionId(route.id)}">Cerrar ruta</button>` : ''}${settlement && logisticsCan('settlements.reopen') && ['approved','closed'].includes(settlement.status) ? `<button class="btn" data-logistics-action="reopen-settlement:${actionId(route.id)}">Reabrir</button>` : ''}${settlement ? `<button class="btn" data-logistics-action="open-settlement:${actionId(route.id)}">Ver liquidación</button>` : ''}</div></section>` : '';
+      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p>${escapeHtml(logisticsRouteLabel(route.status))} · ${escapeHtml(route.date)} · ${escapeHtml(route.sellerName || 'Sin vendedor')}</p></div><button class="closeBtn" data-close>×</button></div><div class="logisticsWorkspace">${loadControls}${saleControls}${collectionControls}${returnControls}${expenseControls}${settlementControls}</div>`);
+      $('#logisticsAddLoadForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const currentSheet = logisticsSheetForRoute(route.id); const product = productsForBiz().find((entry) => entry.id === decodeActionId($('#logisticsLoadProduct').value));
+        if (!currentSheet || !product) return toast('Selecciona un producto válido.', 'err');
+        const snapshot = cloneState(state);
+        try { const next = logisticsDomain().addLoadItem({ sheet:currentSheet, product, qty:$('#logisticsLoadQty').value, routePrice:$('#logisticsLoadPrice').value === '' ? undefined : parseMoney($('#logisticsLoadPrice').value), lot:$('#logisticsLoadLot').value, actor:logisticsActor() }); logisticsReplace('loadSheets', next); logisticsAddAudit('logistics_load_item_added', { routeId:route.id, productId:product.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(route.id); } catch (error) { state = snapshot; toast('No se pudo agregar a la carga: ' + error.message, 'err'); }
+      });
+      $('#logisticsSaleForm')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const currentRoute = logisticsRouteById(route.id); const currentSheet = logisticsSheetForRoute(route.id); const product = productsForBiz().find((entry) => entry.id === decodeActionId($('#logisticsSaleProduct').value)); const paymentType = $('#logisticsSalePayment').value;
+        if (!currentRoute || !currentSheet || !product) return toast('La ruta o el producto ya no están disponibles.', 'err');
+        if (paymentType !== 'credit' && (!isDayStarted() || isDayClosed())) return toast('Abre una caja activa para registrar cobros de ruta.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const customer = logisticsRouteCustomer(currentRoute, $('#logisticsSaleCustomer').value);
+          const sale = logisticsDomain().createRouteSale({ input:{ businessId:currentBusiness().id, customerId:customer.id, customerName:customer.name, paymentType, discount:parseMoney($('#logisticsSaleDiscount')?.value || 0), note:$('#logisticsSaleNote').value, items:[{ productId:product.id, qty:$('#logisticsSaleQty').value }] }, route:currentRoute, sheet:currentSheet, products:productsForBiz(), routeSales:logisticsForBiz('routeSales'), actor:logisticsActor() });
+          logisticsStore().routeSales.push(sale);
+          if (sale.paidAmount > 0) state.movements.push({ id:uid('mov'), businessId:currentBusiness().id, date:today(), when:nowLabel(), kind:'ingreso', amount:sale.paidAmount, note:`Venta de ruta ${currentRoute.name}`, routeSaleId:sale.id, routeId:currentRoute.id, paymentMethod:paymentType, cashSessionId:currentOpenCashSession()?.id || '', createdAtMs:Date.now(), createdBy:authUser().name });
+          logisticsAddAudit('logistics_route_sale_created', { routeId:currentRoute.id, routeSaleId:sale.id, total:sale.total });
+          const committed = await logisticsCriticalCommit(snapshot, 'logistics_route_sale_created', (next) => next.logistics?.routeSales?.some((entry) => entry.id === sale.id && entry.businessId === currentBusiness().id));
+          if (!committed.ok) return;
+          openLogisticsWorkspace(route.id); toast(paymentType === 'credit' ? 'Venta a crédito registrada.' : 'Venta y movimiento de caja registrados.');
+        } catch (error) { state = snapshot; toast('No se pudo registrar la venta: ' + error.message, 'err'); }
+      });
+      $('#logisticsReturnForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const currentRoute = logisticsRouteById(route.id); const currentSheet = logisticsSheetForRoute(route.id); const product = productsForBiz().find((entry) => entry.id === decodeActionId($('#logisticsReturnProduct').value));
+        if (!currentRoute || !currentSheet || !product) return toast('Selecciona un producto válido.', 'err');
+        const snapshot = cloneState(state);
+        try { const loaded = currentSheet.items.find((item) => item.productId === product.id); const entry = logisticsDomain().recordReturn({ input:{ businessId:currentBusiness().id, productId:product.id, code:product.code, name:product.name, qty:$('#logisticsReturnQty').value, price:loaded?.price ?? product.price, condition:$('#logisticsReturnCondition').value, note:$('#logisticsReturnNote').value }, route:currentRoute, sheet:currentSheet, routeSales:logisticsForBiz('routeSales'), returns:logisticsForBiz('returns'), actor:logisticsActor() }); logisticsStore().returns.push(entry); logisticsAddAudit('logistics_return_recorded', { routeId:route.id, returnId:entry.id, condition:entry.condition }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(route.id); } catch (error) { state = snapshot; toast('No se pudo registrar el retorno: ' + error.message, 'err'); }
+      });
+      $('#logisticsVarianceForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const currentRoute = logisticsRouteById(route.id);
+        if (!currentRoute) return toast('La ruta ya no está disponible.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const entry = logisticsDomain().recordVariance({ input:{ businessId:currentBusiness().id, type:$('#logisticsVarianceType').value, amount:parseMoney($('#logisticsVarianceAmount').value), note:$('#logisticsVarianceNote').value }, route:currentRoute, actor:logisticsActor() });
+          logisticsStore()[entry.type === 'overage' ? 'overages' : 'shortages'].push(entry);
+          logisticsAddAudit(`logistics_${entry.type}_recorded`, { routeId:route.id, varianceId:entry.id, amount:entry.amount });
+          if (!logisticsSave(snapshot)) return;
+          openLogisticsWorkspace(route.id);
+        } catch (error) { state = snapshot; toast('No se pudo registrar la diferencia: ' + error.message, 'err'); }
+      });
+      $('#logisticsExpenseForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        try { const currentRoute = logisticsRouteById(route.id); if (!currentRoute) throw new Error('route_not_available'); const expense = logisticsDomain().recordExpense({ input:{ businessId:currentBusiness().id, category:$('#logisticsExpenseCategory').value, amount:parseMoney($('#logisticsExpenseAmount').value), note:$('#logisticsExpenseNote').value }, route:currentRoute, actor:logisticsActor() }); logisticsStore().routeExpenses.push(expense); logisticsAddAudit('logistics_route_expense_created', { routeId:route.id, expenseId:expense.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(route.id); } catch (error) { state = snapshot; toast('No se pudo registrar el gasto: ' + error.message, 'err'); }
+      });
+      $$('[data-logistics-action]').forEach((button) => button.onclick = () => logisticsHandleAction(button.dataset.logisticsAction));
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+      refreshIcons();
+    }
+    async function dispatchLogisticsSheet(routeId) {
+      const route = logisticsRouteById(routeId); const sheet = logisticsSheetForRoute(routeId);
+      if (!route || !sheet) return toast('La ruta o la carga ya no están disponibles.', 'err');
+      const snapshot = cloneState(state);
+      try {
+        const result = logisticsDomain().dispatchLoadSheet({ sheet, route, products:productsForBiz(), actor:logisticsActor() });
+        if (result.noop) return toast('La carga ya fue despachada.', 'ok');
+        logisticsReplace('loadSheets', result.sheet); logisticsReplace('routes', result.route); logisticsReplaceProducts(result.products);
+        logisticsAddAudit('logistics_load_dispatched', { routeId, loadSheetId:sheet.id });
+        const committed = await logisticsCriticalCommit(snapshot, 'logistics_load_dispatched', (next) => next.logistics?.loadSheets?.some((entry) => entry.id === sheet.id && entry.stockCommittedAt));
+        if (!committed.ok) return;
+        openLogisticsWorkspace(routeId); toast('Ruta despachada e inventario reservado.', 'ok');
+      } catch (error) { state = snapshot; toast('No se pudo despachar: ' + error.message, 'err'); }
+    }
+    function openLogisticsCollectionModal(routeId) {
+      const route = logisticsRouteById(routeId);
+      const collections = logisticsForBiz('collections');
+      const candidates = logisticsForBiz('routeSales').filter((sale) => sale.routeId === routeId && logisticsDomain().remainingCredit(sale, collections) > 0.00001);
+      if (!route || !candidates.length) return toast('No hay créditos pendientes para cobrar.', 'err');
+      showModal(`<div class="modalHeader"><div><h2>Registrar cobranza</h2><p>${escapeHtml(route.name)} · solo créditos pendientes.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsCollectionForm" class="formGrid"><div class="field full"><label>Crédito</label><select id="logisticsCollectionSale">${candidates.map((sale) => `<option value="${actionId(sale.id)}">${escapeHtml(sale.customerName)} · saldo ${fmt(logisticsDomain().remainingCredit(sale, collections))}</option>`).join('')}</select></div><div class="field"><label>Monto</label><input id="logisticsCollectionAmount" inputmode="decimal" required></div><div class="field"><label>Método</label><select id="logisticsCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><div class="field full"><label>Nota</label><input id="logisticsCollectionNote" maxlength="140" placeholder="Opcional"></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Registrar cobranza</button></form>`);
+      $('#logisticsCollectionForm').onsubmit = async (event) => {
+        event.preventDefault();
+        if (!isDayStarted() || isDayClosed()) return toast('Abre una caja activa antes de registrar una cobranza.', 'err');
+        const sale = logisticsForBiz('routeSales').find((entry) => entry.id === decodeActionId($('#logisticsCollectionSale').value));
+        if (!sale) return toast('El crédito ya no está disponible.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const result = logisticsDomain().recordCollection({ input:{ businessId:currentBusiness().id, amount:parseMoney($('#logisticsCollectionAmount').value), method:$('#logisticsCollectionMethod').value, note:$('#logisticsCollectionNote').value, idempotencyKey:uid('route-collection') }, route, sale, collections:logisticsForBiz('collections'), actor:logisticsActor() });
+          if (result.noop) return toast('Esta cobranza ya fue confirmada.', 'ok');
+          logisticsStore().collections.push(result.collection);
+          state.movements.push({ id:uid('mov'), businessId:currentBusiness().id, date:today(), when:nowLabel(), kind:'ingreso', amount:result.collection.amount, note:`Cobranza ruta ${route.name}`, collectionId:result.collection.id, routeSaleId:sale.id, routeId:route.id, paymentMethod:result.collection.method, cashSessionId:currentOpenCashSession()?.id || '', createdAtMs:Date.now(), createdBy:authUser().name });
+          logisticsAddAudit('logistics_collection_recorded', { routeId:route.id, collectionId:result.collection.id, routeSaleId:sale.id });
+          const committed = await logisticsCriticalCommit(snapshot, 'logistics_collection_recorded', (next) => next.logistics?.collections?.some((entry) => entry.id === result.collection.id));
+          if (!committed.ok) return;
+          closeModal(); openLogisticsWorkspace(route.id); toast('Cobranza y movimiento de caja registrados.');
+        } catch (error) { state = snapshot; toast('No se pudo registrar la cobranza: ' + error.message, 'err'); }
+      };
+    }
+    function logisticsSettlementCalculation(route) {
+      const sheet = logisticsSheetForRoute(route.id);
+      if (!sheet) return null;
+      return logisticsDomain().settlementCalculation({ route, sheet, routeSales:logisticsForBiz('routeSales'), collections:logisticsForBiz('collections'), returns:logisticsForBiz('returns'), expenses:logisticsForBiz('routeExpenses'), shortages:logisticsForBiz('shortages'), overages:logisticsForBiz('overages') });
+    }
+    function openLogisticsReopenModal(routeId) {
+      const route = logisticsRouteById(routeId); const settlement = logisticsSettlementForRoute(routeId);
+      if (!route || !settlement) return;
+      showModal(`<div class="modalHeader"><div><h2>Reabrir liquidación</h2><p>La razón quedará auditada. El inventario no se restaurará dos veces.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsReopenForm" class="formGrid"><div class="field full"><label>Motivo</label><textarea id="logisticsReopenReason" maxlength="160" required></textarea></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Reabrir</button></form>`);
+      $('#logisticsReopenForm').onsubmit = (event) => {
+        event.preventDefault(); const snapshot = cloneState(state);
+        try { const result = logisticsDomain().reopenSettlement({ settlement, route, reason:$('#logisticsReopenReason').value, actor:logisticsActor() }); logisticsReplace('routeSettlements', result.settlement); logisticsReplace('routes', result.route); logisticsAddAudit('logistics_settlement_reopened', { routeId, settlementId:settlement.id }); if (!logisticsSave(snapshot)) return; closeModal(); openLogisticsWorkspace(routeId); } catch (error) { state = snapshot; toast('No se pudo reabrir: ' + error.message, 'err'); }
+      };
+    }
+    function openLogisticsSettlementModal(routeId) {
+      const route = logisticsRouteById(routeId); const sheet = logisticsSheetForRoute(routeId); const settlement = logisticsSettlementForRoute(routeId);
+      if (!route || !sheet) return toast('La ruta no tiene una hoja de carga válida.', 'err');
+      const calculation = settlement?.calculation || logisticsSettlementCalculation(route);
+      if (!calculation) return toast('No se pudo calcular la liquidación.', 'err');
+      const canWrite = logisticsCan('settlements.write');
+      showModal(`<div class="modalHeader"><div><h2>Liquidación de ${escapeHtml(route.name)}</h2><p>${settlement ? escapeHtml(logisticsSettlementLabel(settlement.status)) : 'Vista previa antes de crearla'}</p></div><button class="closeBtn" data-close>×</button></div><section class="logisticsSettlementBreakdown"><div><small>Venta de ruta</small><b>${fmt(calculation.salesTotal)}</b></div><div><small>Cobranzas</small><b>${fmt(calculation.collectionsTotal)}</b></div><div><small>Gastos</small><b>${fmt(calculation.expensesTotal)}</b></div><div><small>Efectivo esperado</small><b>${fmt(calculation.expectedCash)}</b></div><div><small>Crédito pendiente</small><b>${fmt(calculation.openCredit)}</b></div><div><small>Retorno vendible</small><b>${fmt(calculation.sellableReturnValue)}</b></div></section>${!settlement && canWrite ? `<form id="logisticsSettlementForm" class="formGrid"><div class="field"><label>Efectivo recibido</label><input id="logisticsSettlementReceived" inputmode="decimal" required value="${calculation.expectedCash}"></div><div class="field"><label>Diferencia prevista</label><input value="${fmt(0)}" disabled></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Crear liquidación</button></form>` : ''}${settlement ? `<section class="card sectionCard logisticsSettlementResult"><p>Recibido ${fmt(settlement.receivedCash)} · diferencia ${fmt(settlement.difference)}</p><button class="btn" data-logistics-print="settlement:${actionId(route.id)}">${icon('printer')} Imprimir liquidación</button></section>` : ''}`);
+      $('#logisticsSettlementForm')?.addEventListener('submit', async (event) => {
+        event.preventDefault(); const snapshot = cloneState(state);
+        try {
+          const result = logisticsDomain().createSettlement({ input:{ businessId:currentBusiness().id, receivedCash:parseMoney($('#logisticsSettlementReceived').value) }, route, sheet, routeSales:logisticsForBiz('routeSales'), collections:logisticsForBiz('collections'), returns:logisticsForBiz('returns'), expenses:logisticsForBiz('routeExpenses'), shortages:logisticsForBiz('shortages'), overages:logisticsForBiz('overages'), actor:logisticsActor() });
+          logisticsStore().routeSettlements.push(result.settlement); logisticsReplace('routes', result.route); logisticsAddAudit('logistics_settlement_created', { routeId, settlementId:result.settlement.id });
+          const committed = await logisticsCriticalCommit(snapshot, 'logistics_settlement_created', (next) => next.logistics?.routeSettlements?.some((entry) => entry.id === result.settlement.id));
+          if (!committed.ok) return;
+          closeModal(); openLogisticsWorkspace(routeId); toast('Liquidación preparada para aprobación.');
+        } catch (error) { state = snapshot; toast('No se pudo crear la liquidación: ' + error.message, 'err'); }
+      });
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+    }
+    async function logisticsHandleAction(value) {
+      const [action, encoded] = value.split(':');
+      const routeId = decodeActionId(encoded); const route = logisticsRouteById(routeId); const sheet = logisticsSheetForRoute(routeId); const settlement = logisticsSettlementForRoute(routeId);
+      if (!route) return toast('La ruta ya no está disponible.', 'err');
+      if (action === 'create-sheet') {
+        const snapshot = cloneState(state);
+        try { const next = logisticsDomain().createLoadSheet({ input:{ businessId:currentBusiness().id }, route, actor:logisticsActor() }); logisticsStore().loadSheets.push(next); logisticsAddAudit('logistics_load_sheet_created', { routeId, loadSheetId:next.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(routeId); } catch (error) { state = snapshot; toast('No se pudo crear la hoja: ' + error.message, 'err'); }
+        return;
+      }
+      if (action === 'confirm-sheet') {
+        if (!sheet) return; const snapshot = cloneState(state);
+        try { const next = logisticsDomain().confirmLoadSheet({ sheet, products:productsForBiz(), actor:logisticsActor() }); logisticsReplace('loadSheets', next); logisticsAddAudit('logistics_load_sheet_confirmed', { routeId, loadSheetId:sheet.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(routeId); } catch (error) { state = snapshot; toast('No se pudo confirmar la carga: ' + error.message, 'err'); }
+        return;
+      }
+      if (action === 'dispatch-sheet') return dispatchLogisticsSheet(routeId);
+      if (action === 'open-collection') return openLogisticsCollectionModal(routeId);
+      if (action === 'open-settlement') return openLogisticsSettlementModal(routeId);
+      if (action === 'reopen-settlement') return openLogisticsReopenModal(routeId);
+      if (action === 'approve-settlement') {
+        if (!settlement) return; const snapshot = cloneState(state);
+        try { const next = logisticsDomain().approveSettlement({ settlement, actor:logisticsActor() }); logisticsReplace('routeSettlements', next); logisticsAddAudit('logistics_settlement_approved', { routeId, settlementId:next.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(routeId); toast('Liquidación aprobada.'); } catch (error) { state = snapshot; toast('No se pudo aprobar: ' + error.message, 'err'); }
+        return;
+      }
+      if (action === 'close-settlement') {
+        if (!settlement) return; const snapshot = cloneState(state);
+        try { const result = logisticsDomain().closeSettlement({ settlement, route, products:productsForBiz(), returns:logisticsForBiz('returns'), actor:logisticsActor() }); logisticsReplace('routeSettlements', result.settlement); logisticsReplace('routes', result.route); logisticsReplaceProducts(result.products); logisticsAddAudit('logistics_route_closed', { routeId, settlementId:settlement.id }); const committed = await logisticsCriticalCommit(snapshot, 'logistics_route_closed', (next) => next.logistics?.routeSettlements?.some((entry) => entry.id === settlement.id && entry.status === 'closed')); if (!committed.ok) return; closeModal(); renderApp('logistics'); toast('Ruta cerrada y retornos vendibles restaurados.'); } catch (error) { state = snapshot; toast('No se pudo cerrar la ruta: ' + error.message, 'err'); }
+      }
+    }
+    function bindLogistics() {
+      $('#newLogisticsVehicle')?.addEventListener('click', () => openLogisticsVehicleModal());
+      $('#newLogisticsRoute')?.addEventListener('click', () => openLogisticsRouteModal());
+      $$('[data-logistics-route]').forEach((button) => button.onclick = () => openLogisticsWorkspace(decodeActionId(button.dataset.logisticsRoute)));
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+    }
+    function bindLogisticsSettlement() {
+      $$('[data-logistics-nav]').forEach((button) => button.onclick = () => renderApp(button.dataset.logisticsNav));
+      $$('[data-logistics-settlement]').forEach((button) => button.onclick = () => { const settlement = logisticsForBiz('routeSettlements').find((entry) => entry.id === decodeActionId(button.dataset.logisticsSettlement)); if (settlement) openLogisticsSettlementModal(settlement.routeId); });
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+    }
+
 	  const FINANCE_CONFIG = Object.freeze({
 	    payments: { title:'Pagos mensuales', icon:'calendar-clock', fields:['name','category','amount','dueDate','notes'] },
 	    loans: { title:'Bancos / préstamos manuales', icon:'landmark', fields:['name','amount','monthlyAmount','dueDate','status','notes'] },
@@ -3054,6 +3412,7 @@ function parseMoney(value) {
 	      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
 	      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
 	      ${isRestaurantBusiness() ? `<button class="card bigRow" data-more="tables"><span>${icon('utensils')} Mesas / Restaurante</span>${icon('chevron-right')}</button>` : ''}
+	      ${logisticsAdvancedEnabled() ? `<button class="card bigRow" data-more="logistics"><span>${icon('truck')} Logística y rutas</span>${icon('chevron-right')}</button>` : ''}
 	      <button class="card bigRow" data-more="finance"><span>${icon('wallet-cards')} Finanzas</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
@@ -3286,6 +3645,8 @@ function parseMoney(value) {
     if(r==='crm') bindCrm();
     if(r==='reminders') bindReminders();
     if(r==='tables') bindTables();
+    if(r==='logistics') bindLogistics();
+    if(r==='logisticsSettlement') bindLogisticsSettlement();
     if(r==='finance') bindFinance();
     if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();
@@ -7992,7 +8353,7 @@ function parseMoney(value) {
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
-	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','finance','help'].includes(h)) renderApp(h); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','logistics','logisticsSettlement','finance','help'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();
