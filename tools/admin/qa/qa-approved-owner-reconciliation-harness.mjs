@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeOwnerAccessAssessment } from './lib/click360-owner-access-core.mjs';
+import { normalizeOwnerAccessAssessment } from '../lib/click360-owner-access-core.mjs';
 
 const uid = 'owner-a';
 const stateDocument = {

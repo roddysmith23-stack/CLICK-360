@@ -1,0 +1,27 @@
+{
+  "name": "@click360/admin-tools",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "qa": "node --check scripts/admin-access-v16.mjs && node --check scripts/audit-firestore-legacy.mjs && node --check scripts/migrate-legacy-v9-to-v10.mjs && node --check scripts/normalize-approved-owner-access.mjs && node qa/qa-p0-migration-harness.cjs && node qa/qa-p0-contamination-harness.cjs && node qa/qa-v16-admin-harness.mjs && node qa/qa-approved-owner-reconciliation-harness.mjs",
+    "audit:fixture": "node scripts/audit-firestore-legacy.mjs --fixture fixtures/firebase-audit-fixture.json --out artifacts/firebase-audit",
+    "migrate:fixture": "node scripts/migrate-legacy-v9-to-v10.mjs --fixture fixtures/firebase-audit-fixture.json --dry-run",
+    "qa:fixtures": "npm run audit:fixture && npm run migrate:fixture && npm run qa"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.1.0"
+  }
+}

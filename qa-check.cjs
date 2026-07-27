@@ -47,7 +47,6 @@ assert('almacenamiento lleno conserva datos confirmados', app.includes('restoreL
 assert('perfil pendiente se reintenta al reconectar', app.includes('CLICK360_PROFILE_PENDING:') && app.includes('click360FlushPendingProfile'));
 
 const firebaseService = fs.readFileSync(path.join(__dirname, 'firebase-service.js'), 'utf8');
-const administrativeMigrator = fs.readFileSync(path.join(__dirname, 'scripts', 'migrate-legacy-v9-to-v10.mjs'), 'utf8');
 assert('estado local aislado por UID y tenant', app.includes("const STATE_PREFIX = 'CLICK360:V16:STATE:'") && app.includes('`${STATE_PREFIX}${activeTenantContext.authUid}:${activeTenantContext.tenantKey}`') && app.includes('click360SetTenantContext'));
 assert('sesión local aislada por UID', app.includes("const SESSION_PREFIX = 'CLICK360:V16:SESSION:'") && app.includes('`${SESSION_PREFIX}${activeTenantContext.authUid}`') && app.includes('sessionStorageKey()'));
 assert('sesión local no concede permisos', app.includes('cloudUser.uid !== activeTenantContext.authUid') && !app.includes('session.role') && !app.includes('session.username'));
@@ -61,7 +60,6 @@ assert('legacy entra en cuarentena namespaced', firebaseService.includes('quaran
 assert('no resetea almacenamiento de negocio', !firebaseService.includes('localStorage.clear()'));
 assert('aprobación offline aislada por UID', firebaseService.includes('CLICK360_APPROVED_IDENTITY:') && !firebaseService.includes('CLICK360_LAST_APPROVED_USER'));
 assert('legacy bloquea push y desbloqueo', firebaseService.includes('legacyMigrationRequired()') && firebaseService.includes('tenantGuard.canWrite(context)') && firebaseService.includes('showLegacyMigrationGate()'));
-assert('migración exige backup y conteos administrativos', administrativeMigrator.includes('legacyBackups') && administrativeMigrator.includes('beforeCounts') && administrativeMigrator.includes('afterCounts') && administrativeMigrator.includes('equalCounts'));
 assert('harness P0 ejecutable', fs.existsSync(path.join(__dirname, 'qa-p0-isolation-harness.cjs')) && fs.existsSync(path.join(__dirname, 'p0-tenant-guard.js')));
 assert('arranque offline valida caché del tenant', app.includes('click360GetTenantCacheStatus') && firebaseService.includes('verifiedOfflineTenantCache()'));
 assert('offline sin caché no crea seed', firebaseService.includes('Sin internet y no existe una caché propia') && firebaseService.includes('tenantGuard.block()'));
