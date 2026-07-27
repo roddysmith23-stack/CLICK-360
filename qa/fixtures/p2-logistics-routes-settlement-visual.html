@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" href="../../assets/favicon.ico">
+  <link rel="stylesheet" href="../../styles.css">
+  <title>CLICK 360 P2 Logistica QA</title>
+</head>
+<body>
+  <main class="app" style="height:auto;min-height:100dvh;padding:16px max(16px,var(--safe-right)) calc(24px + var(--safe-bottom)) max(16px,var(--safe-left));overflow:visible">
+    <section class="pageHead"><div><h1>Logistica y rutas</h1><p>Fixture sintetico, sin datos de clientes.</p></div><div class="toolbar"><button class="btn">Vehiculo</button><button class="btn primary" id="newRoute">Nueva ruta</button></div></section>
+    <section class="logisticsSummary"><article class="card"><small>Rutas abiertas</small><b>2</b><span>3 totales</span></article><article class="card"><small>Venta de ruta</small><b>$125.00</b><span>Credito $15.00</span></article><article class="card"><small>Cobranzas</small><b>$15.00</b><span>1 liquidacion</span></article><article class="card"><small>Retornos</small><b>3</b><span>1 danado</span></article></section>
+    <section class="card sectionCard logisticsSection"><header><h3>Vehiculos</h3><span>1</span></header><div class="logisticsVehicleList"><article class="card logisticsVehicle"><span><b>Unidad QA</b><small>QA-001 · Conductor QA · active</small></span><strong>200 unidades</strong></article></div></section>
+    <section class="logisticsRouteGrid"><article class="card logisticsRouteCard dispatched"><header><span><b>Ruta QA Norte</b><small>2026-07-27 · Zona QA</small></span><span class="badge gold">En ruta</span></header><p>Vendedor QA · QA-001</p><small>Carga Despachada · Pendiente de liquidacion</small><div class="p2InlineActions"><button class="btn primary" id="openRoute">Abrir ruta</button><button class="btn">Carga</button></div></article><article class="card logisticsRouteCard closed"><header><span><b>Ruta QA Sur</b><small>2026-07-26 · Zona QA</small></span><span class="badge green">Cerrada</span></header><p>Vendedor QA · QA-001</p><small>Carga Despachada · Liquidacion Cerrada</small><div class="p2InlineActions"><button class="btn">Ver liquidacion</button><button class="btn">Imprimir</button></div></article></section>
+    <section class="card sectionCard logisticsWorkspace" id="workspace" hidden><section class="logisticsWorkspaceSection"><header><span><h3>Hoja de carga</h3><small>Despachada</small></span><button class="iconBtn" aria-label="Imprimir carga" title="Imprimir carga">P</button></header><ul class="logisticsRows"><li><span><b>3 x Producto QA A</b><small>QA-A</small></span><strong>$30.00</strong></li><li><span><b>2 x Producto QA B</b><small>QA-B</small></span><strong>$10.00</strong></li></ul></section><section class="logisticsWorkspaceSection"><header><span><h3>Ventas de ruta</h3><small>Contado y credito.</small></span></header><form class="formGrid"><div class="field"><label>Cliente</label><input value="Cliente QA"></div><div class="field"><label>Pago</label><select><option>Contado</option><option>Credito</option></select></div><div class="field full"><label>Producto</label><select><option>Producto QA A</option></select></div><div class="field"><label>Cantidad</label><input value="1"></div><button class="btn primary full" type="button" id="saleButton">Registrar venta de ruta</button></form></section><section class="logisticsWorkspaceSection"><header><span><h3>Liquidacion diaria</h3><small>Vista previa</small></span></header><section class="logisticsSettlementBreakdown"><div><small>Venta de ruta</small><b>$125.00</b></div><div><small>Cobranzas</small><b>$15.00</b></div><div><small>Gastos</small><b>$2.00</b></div><div><small>Efectivo esperado</small><b>$98.00</b></div><div><small>Credito pendiente</small><b>$15.00</b></div><div><small>Retorno vendible</small><b>$10.00</b></div></section><button class="btn primary" id="settlementButton" type="button">Crear liquidacion</button></section></section>
+  </main>
+  <script>
+    document.getElementById('openRoute').addEventListener('click', () => { document.getElementById('workspace').hidden = false; });
+    document.getElementById('newRoute').addEventListener('click', (event) => { event.currentTarget.textContent = 'Ruta en borrador'; });
+    document.getElementById('saleButton').addEventListener('click', (event) => { event.currentTarget.textContent = 'Venta registrada'; });
+    document.getElementById('settlementButton').addEventListener('click', (event) => { event.currentTarget.textContent = 'Liquidacion preparada'; });
+  </script>
+</body>
+</html>
