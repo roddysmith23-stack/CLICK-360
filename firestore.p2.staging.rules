@@ -1,0 +1,811 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // P2 Cloud uses per-business documents and never exposes the legacy
+    // monolithic state document to workers. Critical mutations are handled by
+    // Functions transactions; these rules are the read/scope boundary.
+    function p2MemberDoc(businessId) {
+      return get(/databases/$(database)/documents/businesses/$(businessId)/members/$(request.auth.uid));
+    }
+
+    function p2MemberData(businessId) {
+      return p2MemberDoc(businessId).data;
+    }
+
+    function p2ActiveMember(businessId) {
+      let member = p2MemberData(businessId);
+      return signedIn()
+        && businessId != "demo-click360"
+        && exists(/databases/$(database)/documents/businesses/$(businessId)/members/$(request.auth.uid))
+        && member.schemaFamily == "p2"
+        && member.uid == request.auth.uid
+        && member.businessId == businessId
+        && member.status == "active";
+    }
+
+    function p2Role(businessId, roleId) {
+      return p2ActiveMember(businessId) && p2MemberData(businessId).roleId == roleId;
+    }
+
+    function p2Has(businessId, permission) {
+      return p2ActiveMember(businessId)
+        && (p2Role(businessId, "owner") || p2MemberData(businessId).permissions.hasAny([permission]));
+    }
+
+    function p2Manager(businessId) {
+      return p2Has(businessId, "members.manage");
+    }
+
+    function p2SettingsManager(businessId) {
+      return p2Has(businessId, "settings.manage");
+    }
+
+    function p2RestaurantReader(businessId) {
+      return p2Has(businessId, "tables.read")
+        || p2Has(businessId, "kitchen.read")
+        || p2Has(businessId, "sales.read")
+        || p2Has(businessId, "cash.read");
+    }
+
+    function p2LogisticsReader(businessId) {
+      return p2Has(businessId, "routes.read")
+        || p2Has(businessId, "collections.read")
+        || p2Has(businessId, "inventory.read");
+    }
+
+    function p2OwnDevice(businessId) {
+      return p2ActiveMember(businessId)
+        && request.resource.data.businessId == businessId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.schemaFamily == "p2"
+        && request.resource.data.status == "active"
+        && request.resource.data.version is int
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid));
+    }
+
+    function userData() {
+      return userDoc().data;
+    }
+
+    function inviteDoc(email) {
+      return get(/databases/$(database)/documents/approvedUsersByEmail/$(email));
+    }
+
+    function inviteData(email) {
+      return inviteDoc(email).data;
+    }
+
+    function hasActiveInvite(email) {
+      return signedIn()
+        && email != null
+        && exists(/databases/$(database)/documents/approvedUsersByEmail/$(email))
+        && inviteData(email).status == "active"
+        && inviteData(email).approved == true;
+    }
+
+    function membershipDoc(businessId) {
+      return get(/databases/$(database)/documents/businesses/$(businessId)/members/$(request.auth.uid));
+    }
+
+    function membershipData(businessId) {
+      return membershipDoc(businessId).data;
+    }
+
+    function hasActiveMembership(businessId) {
+      let member = membershipData(businessId);
+      return signedIn()
+        && businessId != "demo-click360"
+        && exists(/databases/$(database)/documents/businesses/$(businessId)/members/$(request.auth.uid))
+        && member.uid == request.auth.uid
+        && member.ownerId == businessId
+        && member.businessId == businessId
+        && member.tenantKey == "owner:" + businessId + ":business:" + businessId
+        && member.status == "active"
+        && (member.role == "worker" || member.role == "cashier" || member.role == "inventory");
+    }
+
+    function approvedUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && (
+          (userData().keys().hasAll(["status", "approved"])
+            && userData().status == "active"
+            && userData().approved == true)
+          || (!userData().keys().hasAll(["status"]) && userData().approved == true)
+        )
+        && (
+          userData().role == "owner"
+          || userData().isOwner == true
+          || userData().ownerId == request.auth.uid
+          || hasActiveMembership(userData().ownerId)
+          || (
+            request.auth.token.email != null
+            && hasActiveInvite(request.auth.token.email)
+            && inviteData(request.auth.token.email).ownerId == userData().ownerId
+          )
+        );
+    }
+
+    function legacyOwnerUser() {
+      let data = userData();
+      return signedIn()
+        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && data.approved == true
+        && (!data.keys().hasAny(["status"]) || data.status == "active")
+        && data.ownerId == request.auth.uid
+        && (data.role == "owner" || data.isOwner == true);
+    }
+
+    function accessDoc() {
+      return get(/databases/$(database)/documents/accountAccess/$(request.auth.uid));
+    }
+
+    function accessData() {
+      return accessDoc().data;
+    }
+
+    function hasAccountAccess() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid));
+    }
+
+    function accountAccessReadable() {
+      let data = accessData();
+      return signedIn()
+        && hasAccountAccess()
+        && data.uid == request.auth.uid
+        && data.businessId == request.auth.uid
+        && (!data.keys().hasAny(["ownerId"]) || data.ownerId == request.auth.uid)
+        && (!data.keys().hasAny(["tenantKey"])
+          || data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid)
+        && data.businessId != "demo-click360"
+        && (data.status == "trial" || data.status == "trial_active"
+          || data.status == "expired" || data.status == "trial_expired"
+          || data.status == "active" || data.status == "paid_base"
+          || data.status == "paid_pro" || data.status == "founder"
+          || data.status == "lifetime");
+    }
+
+    function activeAccountOwnerUser() {
+      let data = accessData();
+      return accountAccessReadable()
+        && (
+          ((data.status == "trial" || data.status == "trial_active")
+            && data.trialDays == 7
+            && data.trialStartedAt is timestamp
+            && request.time < data.trialStartedAt + duration.value(7, "d"))
+          || ((data.status == "founder" || data.status == "lifetime")
+            && (data.plan == "base" || data.plan == "pro" || data.plan == "founder" || data.plan == "lifetime"))
+          || (data.status == "active"
+            && data.lifetime == true
+            && data.plan == "pro"
+            && data.planCode == "pro_lifetime"
+            && data.billingStatus == "lifetime")
+          || ((data.status == "active" || data.status == "paid_base" || data.status == "paid_pro")
+            && (data.plan == "normal" || data.plan == "base" || data.plan == "pro")
+            && (!data.keys().hasAny(["planCode"]) || data.planCode != "pro_lifetime")
+            && (!data.keys().hasAny(["expiresAt"])
+              || (data.expiresAt is timestamp && request.time < data.expiresAt)))
+        );
+    }
+
+    function ownerUser() {
+      return hasAccountAccess() ? activeAccountOwnerUser() : legacyOwnerUser();
+    }
+
+    function ownerReadUser() {
+      return hasAccountAccess() ? accountAccessReadable() : legacyOwnerUser();
+    }
+
+    function tenantReadable(businessId) {
+      // V16.2 keeps the monolithic tenant snapshot owner-only. Worker access
+      // returns after business modules move to per-record collections in P1;
+      // exposing this document would reveal every module regardless of role.
+      return ownerReadUser() && request.auth.uid == businessId;
+    }
+
+    function validStatePayload() {
+      return request.resource.data.payload.keys().hasAll(["schemaVersion", "identity", "data"])
+        && request.resource.data.payload.data.keys().hasAll([
+          "businesses", "products", "sales", "movements", "invoices", "dailyReports",
+          "deletedProducts", "auditLogs", "settings"
+        ])
+        && request.resource.data.payload.data.businesses is list
+        && request.resource.data.payload.data.businesses.size() > 0
+        && request.resource.data.payload.data.products is list
+        && request.resource.data.payload.data.sales is list
+        && request.resource.data.payload.data.movements is list
+        && request.resource.data.payload.data.invoices is list
+        && request.resource.data.payload.data.dailyReports is list
+        && request.resource.data.payload.data.deletedProducts is list
+        && request.resource.data.payload.data.auditLogs is list
+        && request.resource.data.payload.data.settings is map
+        && request.resource.data.payload.data.settings.keys().hasAll(["workers", "labelTemplates"])
+        && request.resource.data.payload.data.settings.workers is list
+        && request.resource.data.payload.data.settings.labelTemplates is list
+        && (!request.resource.data.payload.data.keys().hasAny(["layaways"]) || request.resource.data.payload.data.layaways is list)
+        && (!request.resource.data.payload.data.keys().hasAny(["cashSessions"]) || request.resource.data.payload.data.cashSessions is list)
+        && (!request.resource.data.payload.data.keys().hasAny(["notifications"]) || request.resource.data.payload.data.notifications is list)
+        && (!request.resource.data.payload.data.keys().hasAny(["legalAcceptances"]) || request.resource.data.payload.data.legalAcceptances is list);
+    }
+
+    function writeMatchesTenant(businessId) {
+      return businessId != "demo-click360"
+        && request.resource.data.schemaVersion == 10
+        && request.resource.data.ownerUid == businessId
+        && request.resource.data.ownerId == businessId
+        && request.resource.data.businessId == businessId
+        && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
+        && request.resource.data.payload.schemaVersion == 10
+        && request.resource.data.payload.identity.schemaVersion == 10
+        && request.resource.data.payload.identity.ownerUid == businessId
+        && request.resource.data.payload.identity.ownerId == businessId
+        && request.resource.data.payload.identity.businessId == businessId
+        && request.resource.data.payload.identity.tenantKey == "owner:" + businessId + ":business:" + businessId
+        && validStatePayload();
+    }
+
+    function validWorkerUserCreate(uid) {
+      return validV16WorkerUserCreate(uid) || (signedIn()
+        && uid == request.auth.uid
+        && request.auth.token.email != null
+        && hasActiveInvite(request.auth.token.email)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role == inviteData(request.auth.token.email).role
+        && request.resource.data.ownerId == inviteData(request.auth.token.email).ownerId
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.isOwner != true
+        && request.resource.data.keys().hasOnly([
+          "uid", "email", "role", "ownerId", "name", "photoURL", "status",
+          "approved", "businessLimit", "createdAt", "updatedAt", "approvedFromEmail", "isOwner"
+        ]));
+    }
+
+    function validV16WorkerUserCreate(uid) {
+      let ownerId = request.resource.data.ownerId;
+      let inviteHash = request.resource.data.invitationHash;
+      let invite = get(/databases/$(database)/documents/businesses/$(ownerId)/invitations/$(inviteHash)).data;
+      let inviteAfter = getAfter(/databases/$(database)/documents/businesses/$(ownerId)/invitations/$(inviteHash)).data;
+      let memberAfter = getAfter(/databases/$(database)/documents/businesses/$(ownerId)/members/$(uid)).data;
+      return signedIn()
+        && uid == request.auth.uid
+        && ownerId != uid
+        && ownerId != "demo-click360"
+        && request.auth.token.email != null
+        && invite.email == request.auth.token.email
+        && invite.ownerId == ownerId
+        && invite.businessId == ownerId
+        && invite.inviteHash == inviteHash
+        && invite.status == "pending"
+        && invite.createdAt is timestamp
+        && request.time < invite.createdAt + duration.value(invite.expiresAfterDays, "d")
+        && inviteAfter.status == "accepted"
+        && inviteAfter.acceptedBy == uid
+        && inviteAfter.consumed == true
+        && memberAfter.uid == uid
+        && memberAfter.ownerId == ownerId
+        && memberAfter.businessId == ownerId
+        && memberAfter.invitationHash == inviteHash
+        && memberAfter.status == "active"
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.ownerId == ownerId
+        && request.resource.data.businessId == ownerId
+        && request.resource.data.tenantKey == "owner:" + ownerId + ":business:" + ownerId
+        && request.resource.data.invitationHash == inviteHash
+        && request.resource.data.role == invite.role
+        && request.resource.data.permissions == invite.permissions
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.isOwner == false
+        && request.resource.data.approvedFromInvitation == true
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly([
+          "uid", "email", "name", "photoURL", "role", "permissions", "ownerId",
+          "businessId", "tenantKey", "invitationHash", "status", "approved", "isOwner",
+          "businessLimit", "workerLimit", "approvedFromInvitation", "createdAt", "updatedAt"
+        ]);
+    }
+
+    function validProfileFields() {
+      return request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.photoURL is string
+        && request.resource.data.photoURL.size() <= 100000;
+    }
+
+    function ownProfileUpdateOnly(uid) {
+      return approvedUser()
+        && request.auth.uid == uid
+        && validProfileFields()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "photoURL", "updatedAt"]);
+    }
+
+    function ownerRevokesWorker() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.role != "owner"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "approved", "revokedAt", "revokedBy", "updatedAt"])
+        && (request.resource.data.status == "blocked" || request.resource.data.status == "revoked")
+        && request.resource.data.approved == false
+        && request.resource.data.revokedBy == request.auth.uid;
+    }
+
+    function ownerUpdatesWorkerAccess() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.role != "owner"
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.isOwner != true
+        && (request.resource.data.role == "worker" || request.resource.data.role == "cashier" || request.resource.data.role == "inventory")
+        && request.resource.data.permissions is map
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["role", "permissions", "updatedAt"])
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    function validInviteWrite(email) {
+      return ownerUser()
+        && request.resource.data.email == email
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.role == "worker"
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.keys().hasOnly([
+          "email", "role", "ownerId", "inviteToken", "status", "approved",
+          "name", "businessLimit", "createdAt", "updatedAt"
+        ]);
+    }
+
+    function validInviteRevoke() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "approved", "revokedAt", "revokedBy", "updatedAt"])
+        && (request.resource.data.status == "blocked" || request.resource.data.status == "revoked")
+        && request.resource.data.approved == false
+        && request.resource.data.revokedBy == request.auth.uid;
+    }
+
+    match /approvedUsers/{uid} {
+      allow read: if signedIn() && (
+        request.auth.uid == uid
+        || (ownerUser() && resource.data.ownerId == request.auth.uid && resource.data.role == "worker")
+      );
+      // Owner accounts are provisioned only by an administrative credential.
+      allow create: if validWorkerUserCreate(uid);
+      allow update: if ownProfileUpdateOnly(uid) || ownerRevokesWorker() || ownerUpdatesWorkerAccess();
+      allow delete: if false;
+    }
+
+    match /approvedUsersByEmail/{email} {
+      allow read: if signedIn() && (
+        request.auth.token.email == email
+        || (ownerUser() && resource.data.ownerId == request.auth.uid)
+      );
+      allow create: if validInviteWrite(email);
+      allow update: if validInviteWrite(email) || validInviteRevoke();
+      allow delete: if false;
+    }
+
+    match /accountAccess/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasAll([
+          "uid", "ownerId", "businessId", "tenantKey", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
+          "trialStartedAt", "lastSeenAt", "createdAt", "source", "entitlementVersion", "revision"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "uid", "ownerId", "businessId", "tenantKey", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
+          "trialStartedAt", "profileUpdatedAt", "lastSeenAt", "createdAt", "source", "entitlementVersion", "revision"
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.businessId == request.auth.uid
+        && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
+        && request.resource.data.businessId != "demo-click360"
+        && request.resource.data.email == request.auth.token.email
+        && !exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && !exists(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email))
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && (!request.resource.data.keys().hasAny(["photoURL"])
+          || (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 100000))
+        && request.resource.data.status == "trial"
+        && request.resource.data.plan == "normal"
+        && request.resource.data.planCode == "base"
+        && request.resource.data.trialDays == 7
+        && request.resource.data.source == "self_service"
+        && request.resource.data.entitlementVersion == 16
+        && request.resource.data.revision == 1
+        && request.resource.data.trialStartedAt == request.time
+        && (!request.resource.data.keys().hasAny(["profileUpdatedAt"])
+          || request.resource.data.profileUpdatedAt == request.time)
+        && request.resource.data.lastSeenAt == request.time
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "photoURL", "profileUpdatedAt", "lastSeenAt"])
+        && request.resource.data.lastSeenAt == request.time
+        && (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(["lastSeenAt"])
+          || (request.resource.data.profileUpdatedAt == request.time
+            && request.resource.data.name is string
+            && request.resource.data.name.size() <= 120
+            && (!request.resource.data.keys().hasAny(["photoURL"])
+              || (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 100000)))
+        );
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/invitations/{inviteHash} {
+      allow read: if businessId != "demo-click360" && signedIn()
+        && !resource.data.keys().hasAny(["schemaFamily"]) && (
+        (ownerUser() && request.auth.uid == businessId)
+        || (request.auth.token.email != null && resource.data.email == request.auth.token.email)
+      );
+      allow create: if businessId != "demo-click360"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && request.resource.data.keys().hasAll([
+          "inviteHash", "email", "name", "role", "permissions", "ownerId", "businessId",
+          "tenantKey", "status", "expiresAfterDays", "singleUse", "createdAt", "createdBy", "appVersion"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "inviteHash", "email", "name", "role", "permissions", "ownerId", "businessId",
+          "tenantKey", "status", "expiresAfterDays", "singleUse", "createdAt", "createdBy", "appVersion"
+        ])
+        && request.resource.data.inviteHash == inviteHash
+        && request.resource.data.ownerId == businessId
+        && request.resource.data.businessId == businessId
+        && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.email is string
+        && request.resource.data.name is string
+        && (request.resource.data.role == "worker" || request.resource.data.role == "cashier" || request.resource.data.role == "inventory")
+        && request.resource.data.permissions is map
+        && request.resource.data.status == "pending"
+        && request.resource.data.expiresAfterDays == 7
+        && request.resource.data.singleUse == true
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0");
+      allow update: if businessId != "demo-click360"
+        && !resource.data.keys().hasAny(["schemaFamily"]) && (
+        (ownerUser()
+          && request.auth.uid == businessId
+          && resource.data.ownerId == businessId
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.businessId == resource.data.businessId
+          && request.resource.data.tenantKey == resource.data.tenantKey
+          && request.resource.data.inviteHash == resource.data.inviteHash
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "status", "revokedAt", "revokedBy", "role", "permissions", "updatedAt", "updatedBy"
+          ])
+          && (request.resource.data.role == "worker" || request.resource.data.role == "cashier" || request.resource.data.role == "inventory")
+          && request.resource.data.permissions is map)
+        || (signedIn()
+          && request.auth.token.email != null
+          && resource.data.email == request.auth.token.email
+          && resource.data.status == "pending"
+          && resource.data.createdAt is timestamp
+          && request.time < resource.data.createdAt + duration.value(resource.data.expiresAfterDays, "d")
+          && request.resource.data.status == "accepted"
+          && request.resource.data.acceptedBy == request.auth.uid
+          && request.resource.data.acceptedAt == request.time
+          && request.resource.data.consumed == true
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "acceptedBy", "acceptedAt", "consumed"])
+          && getAfter(/databases/$(database)/documents/businesses/$(businessId)/members/$(request.auth.uid)).data.status == "active")
+      );
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/ownerInviteSecrets/{inviteHash} {
+      allow read: if businessId != "demo-click360"
+        && ownerReadUser()
+        && request.auth.uid == businessId;
+      allow create, update: if businessId != "demo-click360"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && request.resource.data.ownerId == businessId
+        && request.resource.data.inviteHash == inviteHash;
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/members/{uid} {
+      allow read: if businessId != "demo-click360" && signedIn()
+        && !resource.data.keys().hasAny(["schemaFamily"]) && (
+        (ownerReadUser() && request.auth.uid == businessId)
+        || request.auth.uid == uid
+      );
+      allow create: if businessId != "demo-click360" && signedIn() && (
+        (ownerUser() && request.auth.uid == businessId
+          && request.resource.data.ownerId == businessId
+          && request.resource.data.businessId == businessId
+          && request.resource.data.uid == uid
+          && request.resource.data.status == "active"
+          && request.resource.data.role != "owner")
+        || (request.auth.uid == uid
+          && request.auth.token.email != null
+          && request.resource.data.uid == uid
+          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.ownerId == businessId
+          && request.resource.data.businessId == businessId
+          && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
+          && request.resource.data.status == "active"
+          && request.resource.data.role != "owner"
+          && request.resource.data.permissions is map
+          && get(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.status == "pending"
+          && get(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.email == request.auth.token.email
+          && getAfter(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.status == "accepted"
+          && request.resource.data.acceptedAt == request.time
+          && request.resource.data.lastAccessAt == request.time)
+      );
+      allow update: if businessId != "demo-click360"
+        && !resource.data.keys().hasAny(["schemaFamily"])
+        && ownerUser()
+        && request.auth.uid == businessId
+        && resource.data.ownerId == businessId
+        && request.resource.data.ownerId == businessId
+        && request.resource.data.businessId == businessId
+        && request.resource.data.uid == uid
+        && request.resource.data.role != "owner"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "role", "permissions", "status", "updatedAt", "updatedBy", "revokedAt", "revokedBy"
+        ]);
+      allow delete: if false;
+    }
+
+    match /activationRequests/{requestId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          "requestId", "uid", "businessId", "tenantKey", "email", "businessName", "plan",
+          "period", "price", "currency", "requestCode", "status", "notes", "createdAt", "appVersion"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "requestId", "uid", "businessId", "tenantKey", "email", "businessName", "plan",
+          "period", "price", "currency", "requestCode", "status", "notes", "createdAt", "appVersion"
+        ])
+        && request.resource.data.requestId == requestId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.businessId == request.auth.uid
+        && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
+        && (request.resource.data.plan == "base" || request.resource.data.plan == "pro")
+        && (request.resource.data.period == "month" || request.resource.data.period == "quarter"
+          || request.resource.data.period == "semester" || request.resource.data.period == "year"
+          || (request.resource.data.plan == "base" && request.resource.data.period == "lifetime"))
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0
+        && request.resource.data.status == "pending"
+        && request.resource.data.currency == "USD"
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /legalAcceptances/{acceptanceId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          "acceptanceId", "uid", "businessId", "tenantKey", "termsVersion", "privacyVersion",
+          "locale", "source", "acceptedAt", "appVersion"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "acceptanceId", "uid", "businessId", "tenantKey", "termsVersion", "privacyVersion",
+          "locale", "source", "acceptedAt", "appVersion"
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.businessId == request.auth.uid
+        && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
+        && request.resource.data.acceptanceId == acceptanceId
+        && request.resource.data.termsVersion is string
+        && request.resource.data.privacyVersion is string
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.acceptedAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /telemetryEvents/{eventId} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          "eventId", "eventType", "uidHash", "businessId", "tenantKey", "appVersion",
+          "requestId", "mode", "errorCode", "deviceIdHash", "createdAt"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "eventId", "eventType", "uidHash", "businessId", "tenantKey", "appVersion",
+          "requestId", "mode", "errorCode", "deviceIdHash", "createdAt"
+        ])
+        && request.resource.data.eventId == eventId
+        && request.resource.data.businessId != "demo-click360"
+        && request.resource.data.tenantKey == "owner:" + request.resource.data.businessId + ":business:" + request.resource.data.businessId
+        && (request.resource.data.businessId == request.auth.uid || hasActiveMembership(request.resource.data.businessId))
+        && (request.resource.data.eventType == "login" || request.resource.data.eventType == "bootstrap"
+          || request.resource.data.eventType == "cache_failure" || request.resource.data.eventType == "online_only"
+          || request.resource.data.eventType == "sync" || request.resource.data.eventType == "plan_request"
+          || request.resource.data.eventType == "invitation" || request.resource.data.eventType == "cash_open"
+          || request.resource.data.eventType == "cash_close" || request.resource.data.eventType == "template_save_failure")
+        && request.resource.data.uidHash is string
+        && request.resource.data.uidHash.size() == 16
+        && request.resource.data.deviceIdHash is string
+        && request.resource.data.deviceIdHash.size() == 16
+        && request.resource.data.requestId is string
+        && request.resource.data.requestId.size() <= 64
+        && request.resource.data.mode is string
+        && request.resource.data.mode.size() <= 40
+        && request.resource.data.errorCode is string
+        && request.resource.data.errorCode.size() <= 80
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.createdAt == request.time;
+      allow read, update, delete: if false;
+    }
+
+    // Administrative operations run only through IAM-protected Admin SDK
+    // tooling. Public clients can never inspect backups or audit records.
+    match /adminBackups/{backupId} {
+      allow read, write: if false;
+    }
+
+    match /adminAuditLogs/{eventId} {
+      allow read, write: if false;
+    }
+
+    // The public client may only read/write the tenant state document. Legacy
+    // backups are created by the administrative migrator with Admin SDK.
+    match /businesses/{businessId}/state/{stateId} {
+      allow read: if stateId == "main" && tenantReadable(businessId);
+      allow create: if stateId == "main" && request.auth.uid == businessId && ownerUser() && writeMatchesTenant(businessId);
+      allow update: if stateId == "main"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && writeMatchesTenant(businessId);
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/legacyBackups/{backupId} {
+      allow read, write: if false;
+    }
+
+    // P2 Cloud staging contract. Every P2 record carries a businessId and is
+    // created by a verified Functions transaction. Browser clients can read
+    // only their active business scope; direct critical writes are denied.
+    match /organizations/{organizationId} {
+      allow read, write: if false;
+    }
+
+    match /businesses/{businessId} {
+      allow read: if p2ActiveMember(businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/featureConfig/{configId} {
+      allow read: if configId == "main" && p2ActiveMember(businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/members/{uid} {
+      allow read: if p2ActiveMember(businessId)
+        && (request.auth.uid == uid || p2Manager(businessId));
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/invitations/{invitationId} {
+      allow read: if p2Manager(businessId)
+        || (signedIn()
+          && resource.data.schemaFamily == "p2"
+          && resource.data.status == "pending"
+          && request.auth.token.email != null
+          && resource.data.email == request.auth.token.email);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/devices/{deviceId} {
+      allow read: if p2ActiveMember(businessId)
+        && (resource.data.uid == request.auth.uid || p2Manager(businessId));
+      allow create: if p2OwnDevice(businessId);
+      allow update: if p2ActiveMember(businessId)
+        && resource.data.schemaFamily == "p2"
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.businessId == resource.data.businessId
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.schemaFamily == resource.data.schemaFamily
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "deviceName", "lastSeenAt", "status", "version", "updatedBy", "updatedAt"
+        ]);
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/restaurantOrders/{orderId} {
+      allow read: if p2RestaurantReader(businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/restaurantPayments/{paymentId} {
+      allow read: if p2Has(businessId, "sales.read") || p2Has(businessId, "cash.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/restaurantEvents/{eventId} {
+      allow read: if p2RestaurantReader(businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/restaurantPrintHistory/{printId} {
+      allow read: if p2RestaurantReader(businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/vehicles/{vehicleId} {
+      allow read: if p2LogisticsReader(businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routes/{routeId} {
+      allow read: if p2Has(businessId, "routes.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/loadSheets/{sheetId} {
+      allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "inventory.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routeSales/{saleId} {
+      allow read: if p2Has(businessId, "sales.read") || p2Has(businessId, "routes.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/collections/{collectionId} {
+      allow read: if p2Has(businessId, "collections.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/returns/{returnId} {
+      allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "inventory.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routeSettlements/{settlementId} {
+      allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "cash.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routeExpenses/{expenseId} {
+      allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "cash.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routeCustomers/{customerId} {
+      allow read: if p2Has(businessId, "routes.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/p2AuditLogs/{auditId} {
+      allow read: if p2Manager(businessId);
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/p2Idempotency/{keyHash} {
+      allow read, write: if false;
+    }
+  }
+}
