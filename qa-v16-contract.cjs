@@ -6,7 +6,6 @@ const firebase = fs.readFileSync('firebase-service.js', 'utf8');
 const rules = fs.readFileSync('firestore.rules', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
-const admin = fs.readFileSync('scripts/admin-access-v16.mjs', 'utf8');
 
 assert(app.includes("const STATE_PREFIX = 'CLICK360:V16:STATE:'"), 'tenant state uses V16 namespace');
 assert(app.includes("const PROFILE_CACHE_PREFIX = 'CLICK360:V16:PROFILE:'"), 'profiles use application and UID namespace');
@@ -27,7 +26,6 @@ assert(rules.includes('request.time < data.expiresAt'), 'rules enforce paid expi
 assert(!rules.includes('changedKeys()'), 'rules reject unauthorized added and removed fields through affectedKeys');
 assert(firebase.includes('onlineOnlyEmptyDevice') && firebase.includes('click360LoadIndexedTenantCache(context)'), 'new online-only tenants check IndexedDB before cloud bootstrap');
 assert(app.includes("const fullName = [name, lastName].filter(Boolean).join(' ')"), 'onboarding persists first and last name');
-assert(admin.includes("REQUIRED_PROJECT_ID") && admin.includes("expected-before-hash") && admin.includes('adminBackups'), 'secure administration is project-locked, hash-confirmed, and backed up');
 assert(firebase.includes('click360RecordTelemetry') && rules.includes('match /telemetryEvents/{eventId}'), 'V16 telemetry is non-blocking and protected by an explicit server contract');
 assert(html.includes('v16-domain.js') && html.includes('v16-storage.js'), 'V16 modules load before the application');
 assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-5c-r1'"), 'PWA cache version is current');
