@@ -5658,7 +5658,7 @@ function parseMoney(value) {
     return { widthMm, heightMm, baseWidth, baseHeight, layout };
   }
 
-  async function openLabelModal(product, initialTemplateId = ''){
+  async function openAdvancedLabelModal(product, initialTemplateId = ''){
     const editorBusiness = currentBusiness();
     const editorBusinessId = editorBusiness?.id || '';
     if (!editorBusinessId || (product?.businessId && product.businessId !== editorBusinessId)) {
@@ -6835,6 +6835,164 @@ function parseMoney(value) {
        toast('Código copiado');
     };
   }
+  function universalLabelDocument(template = {}) {
+    const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvas) return null;
+    if (template.universalDocument) return canvas.normalizeDocument(template.universalDocument);
+    return canvas.normalizeDocument({
+      paper: {
+        id: template.paperType || 'roll-1-60x40', mediaType: template.mediaType,
+        widthMm: template.widthMm || 60, heightMm: template.heightMm || 40,
+        mediaWidthMm: template.mediaWidthMm || 0, mediaHeightMm: template.mediaHeightMm || 0,
+        columns: template.columns || 1, rows: template.rows || 1,
+        gapXmm: template.gapXmm || 0, gapYmm: template.gapYmm || 0,
+        marginTopMm: template.marginTopMm || 0, marginRightMm: template.marginRightMm || 0,
+        marginBottomMm: template.marginBottomMm || 0, marginLeftMm: template.marginLeftMm || 0,
+        dpi: template.dpi || 203, orientation: template.orientation || 'portrait'
+      },
+      layout: template.layout || undefined,
+      quantity: template.quantity || 1,
+      startSlot: template.startSlot || 1
+    });
+  }
+  function universalMediaSize(document) {
+    const paper = document.paper;
+    const rowAdvanceMm = paper.pitchMm > paper.heightMm ? paper.pitchMm : paper.heightMm + paper.gapYmm;
+    const width = paper.mediaWidthMm || paper.marginLeftMm + paper.marginRightMm
+      + paper.columns * paper.widthMm + Math.max(0, paper.columns - 1) * paper.gapXmm;
+    const height = paper.mediaHeightMm || paper.marginTopMm + paper.marginBottomMm + paper.heightMm
+      + Math.max(0, paper.rows - 1) * rowAdvanceMm;
+    return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
+  }
+  async function buildUniversalLabelPrintNode(product, sourceDocument) {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const documentModel = canvasApi.normalizeDocument(sourceDocument);
+    const plan = canvasApi.buildPrintPlan([{ product, copies: documentModel.quantity }], documentModel, { startSlot: documentModel.startSlot });
+    if (!plan.valid || !plan.count || !plan.pages?.length) throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.'), { code:'universal-print-plan-invalid' });
+    const media = universalMediaSize(documentModel);
+    const wrap = document.createElement('div');
+    wrap.className = 'printLabels universalPrintLabels';
+    wrap.dataset.printPlan = canvasApi.planFingerprint(plan);
+    wrap.dataset.renderer = 'universal-mm-v2';
+    for (const page of plan.pages) {
+      const pageNode = document.createElement('section');
+      pageNode.className = 'labelPrintPage';
+      pageNode.style.cssText = `position:relative;width:${media.widthMm}mm;height:${media.heightMm}mm;overflow:hidden;page-break-after:always;`;
+      for (const cell of page.cells) {
+        const cellNode = document.createElement('div');
+        cellNode.className = `labelPrintCell ${cell.status}`;
+        cellNode.style.cssText = `position:absolute;left:${cell.xMm}mm;top:${cell.yMm}mm;width:${documentModel.paper.widthMm}mm;height:${documentModel.paper.heightMm}mm;overflow:hidden;`;
+        if (cell.status === 'filled') {
+          const labelCanvas = document.createElement('canvas');
+          await canvasApi.renderLabelToCanvas(labelCanvas, documentModel, {
+            product: cell.item.product,
+            price: fmt(cell.item.product?.price || 0),
+            sku: cell.item.product?.code || '',
+            qrPayload: productPayload(cell.item.product)
+          });
+          if (!labelCanvas.width || !labelCanvas.height) throw Object.assign(new Error('La etiqueta se renderizó vacía.'), { code:'universal-render-empty' });
+          const image = document.createElement('img');
+          image.src = labelCanvas.toDataURL('image/png');
+          image.alt = `Etiqueta ${cell.item.copy} de ${cell.item.product?.name || 'producto'}`;
+          image.style.cssText = `display:block;width:${documentModel.paper.widthMm}mm;height:${documentModel.paper.heightMm}mm;`;
+          cellNode.appendChild(image);
+        }
+        pageNode.appendChild(cellNode);
+      }
+      wrap.appendChild(pageNode);
+    }
+    return { node:wrap, plan, document:documentModel, media };
+  }
+  async function printUniversalLabels(product, sourceDocument, providerId = 'system') {
+    const job = await buildUniversalLabelPrintNode(product, sourceDocument);
+    const result = await handoffPrint({
+      node: job.node.cloneNode(true), media:'label', mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm,
+      widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm, copiesHandled:true,
+      printPlan:job.plan, filename:`CLICK360_lienzo_${today()}.pdf`
+    }, providerId);
+    return { ...job, result };
+  }
+  async function printUniversalCalibration(sourceDocument, providerId = 'system') {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const documentModel = canvasApi.normalizeDocument(sourceDocument);
+    const calibrationProduct = { id:'calibration', name:'Calibración CLICK 360', code:'CAL-001', price:0, qty:1 };
+    const withText = canvasApi.addObject(documentModel, 'text', { text:'Prueba X/Y · mide borde y gap', xMm:2, yMm:Math.max(2, documentModel.paper.heightMm - 8), widthMm:Math.max(10, documentModel.paper.widthMm - 4), heightMm:5 });
+    return printUniversalLabels(calibrationProduct, { ...withText, quantity: Math.max(2, documentModel.paper.columns), startSlot:1 }, providerId);
+  }
+  async function openLabelModal(product, initialTemplateId = '') {
+    const editor = window.CLICK360_UNIVERSAL_LABEL_EDITOR;
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const editorBusiness = currentBusiness();
+    const businessId = editorBusiness?.id || '';
+    if (!editor || !canvasApi) return openAdvancedLabelModal(product, initialTemplateId);
+    if (!businessId || (product?.businessId && product.businessId !== businessId)) return toast('El producto no pertenece al negocio activo.', 'err');
+    const templates = labelTemplatesForBiz(businessId);
+    const initialTemplate = templates.find((template) => template.id === initialTemplateId) || templates.find((template) => template.isDefault) || null;
+    const deviceState = loadPrintDeviceState(businessId);
+    const initialProfile = labelProfilesForBiz(businessId).find((profile) => profile.id === deviceState.universalProfileId) || null;
+    const editorBusinessIsActive = () => currentBusiness()?.id === businessId;
+    editor.open({
+      product,
+      initialTemplate,
+      initialProfile,
+      initialDocument: universalLabelDocument(initialTemplate || {}),
+      formatPrice:fmt,
+      productPayload,
+      readImage:(input, onImage) => readImageInput(input, onImage, { max:640, maxBytes:140 * 1024, quality:0.7 }),
+      showModal,
+      closeModal,
+      toast,
+      getTemplates:() => labelTemplatesForBiz(businessId).filter((template) => template.universalDocument || template.layout),
+      getProfiles:() => labelProfilesForBiz(businessId).filter((profile) => profile.universalPaper),
+      saveTemplate:async (name, universalDocument, templateId = '') => {
+        if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo para guardar con seguridad.', 'err');
+        state.settings ||= {}; state.settings.labelTemplates ||= [];
+        const previous = [...state.settings.labelTemplates];
+        const existing = state.settings.labelTemplates.find((template) => template.id === templateId && template.businessId === businessId);
+        const template = {
+          ...(existing || {}), id:existing?.id || uid('tpl'), name, businessId,
+          universalDocument:canvasApi.normalizeDocument(universalDocument), widthMm:universalDocument.paper.widthMm,
+          heightMm:universalDocument.paper.heightMm, columns:universalDocument.paper.columns, rows:universalDocument.paper.rows,
+          paperType:universalDocument.paper.id, dpi:universalDocument.paper.dpi,
+          createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString(), isDefault:existing?.isDefault === true
+        };
+        const index = state.settings.labelTemplates.findIndex((item) => item.id === template.id && item.businessId === businessId);
+        if (index >= 0) state.settings.labelTemplates[index] = template; else state.settings.labelTemplates.push(template);
+        addAudit('universal_label_template_saved', { templateId:template.id, businessId, renderer:'universal-mm-v2' });
+        if (!save()) { state.settings.labelTemplates = previous; toast('No se pudo guardar la plantilla en este dispositivo.', 'err'); return null; }
+        refreshInventoryTemplateSection(); toast('Plantilla del lienzo guardada.', 'ok'); return template;
+      },
+      deleteTemplate:async (templateId) => {
+        if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');
+        state.settings.labelTemplates = (state.settings.labelTemplates || []).filter((template) => !(template.id === templateId && template.businessId === businessId));
+        if (!save()) return toast('No se pudo eliminar la plantilla.', 'err');
+        refreshInventoryTemplateSection(); toast('Plantilla eliminada.');
+      },
+      saveProfile:async (universalDocument, profileId = '', profileName = '') => {
+        if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');
+        state.settings ||= {}; state.settings.labelProfiles ||= [];
+        const previous = [...state.settings.labelProfiles];
+        const existing = state.settings.labelProfiles.find((profile) => profile.id === profileId && profile.businessId === businessId);
+        const name = String(profileName || existing?.name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`).trim().slice(0, 80);
+        const profile = { ...(existing || {}), id:existing?.id || uid('print-profile'), businessId, name:name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`, status:'provisional', universalPaper:universalDocument.paper, createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() };
+        const index = state.settings.labelProfiles.findIndex((item) => item.id === profile.id && item.businessId === businessId);
+        if (index >= 0) state.settings.labelProfiles[index] = profile; else state.settings.labelProfiles.push(profile);
+        addAudit('universal_label_profile_saved', { profileId:profile.id, businessId, status:'provisional' });
+        if (!save()) { state.settings.labelProfiles = previous; toast('No se pudo guardar el perfil.', 'err'); return null; }
+        savePrintDeviceState({ ...loadPrintDeviceState(businessId), selectedProfileId:profile.id, universalProfileId:profile.id }, businessId);
+        return profile;
+      },
+      print:(universalDocument, providerId) => printUniversalLabels(product, universalDocument, providerId),
+      printCalibration:(universalDocument) => printUniversalCalibration(universalDocument),
+      openAdvanced:() => openAdvancedLabelModal(product, initialTemplateId)
+    });
+  }
+  window.click360UniversalLabelTest = {
+    normalize:(input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.normalizeDocument(input),
+    buildPlan:(product, input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.buildPrintPlan([{ product, copies:input?.quantity || 1 }], input, { startSlot:input?.startSlot || 1 }),
+    render:(product, input) => buildUniversalLabelPrintNode(product, input),
+    open:(product) => openLabelModal(product)
+  };
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
   function printPaperFromOptions(options = {}) {
     return {
