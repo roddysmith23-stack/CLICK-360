@@ -87,8 +87,16 @@ Firestore ni de datos comerciales.
 
 ## Veredicto
 
-`READY_FOR_OWNER_REVIEW`
+`NO_GO_FOR_MERGE`
 
-No es autorizacion de deploy. La validacion fisica de impresion de Shary sigue
-siendo un smoke separado, y el hallazgo de dependencias debe atenderse antes de
-un release de plataforma amplio.
+La correccion visual, los harnesses, las reglas en emulador, los simuladores y
+el build pasaron. Sin embargo, la CI bloquea el merge por cinco vulnerabilidades
+altas transitivas de `firebase-admin 14.1.0`:
+`google-gax -> rimraf -> glob/minimatch -> brace-expansion`.
+
+La investigacion confirmo que subir `firebase-admin` a 14.2.0 no elimina la
+cadena vulnerable y que el arreglo automatico propone un cambio incompatible
+en `firebase-tools`. No se forzaron overrides fuera de rango. Se requiere un
+PR de dependencias aprobado cuando exista una ruta compatible o se defina una
+politica de mitigacion revisada. No es autorizacion de deploy; la validacion
+fisica de impresion de Shary tambien sigue siendo un smoke separado.
