@@ -21,18 +21,17 @@ assert.equal(normalized.paper.columns, 2);
 assert.equal(normalized.paper.marginRightMm, 8);
 assert.equal(normalized.design.elements.qr.width, 100);
 
-const shary = core.normalizePrintProfile({
-  id: 'shary-ltt214-2col',
-  businessId: 'qa-shary',
-  name: 'Shary - 3nStar LTT214 - 2 columnas',
-  paper: core.PAPER_PRESETS['shary-ltt214-2col'],
-  printer: { manufacturer: '3nStar', model: 'LTT214', driverDisplayName: '4BARCODE 4B-2054L' }
-}, 'qa-shary');
-assert.equal(shary.status, 'provisional');
-assert.equal(shary.paper.status, 'provisional');
-assert.equal(shary.paper.measurementsConfirmed, false);
-assert.equal(shary.paper.columns, 2);
-assert.equal(shary.paper.mediaWidthMm, 0);
+const provisional = core.normalizePrintProfile({
+  id: 'roll-2-40x60-provisional',
+  businessId: 'qa-print-profile',
+  name: 'Rollo 2 columnas 40 x 60 mm',
+  paper: core.PAPER_PRESETS['roll-2-40x60-provisional']
+}, 'qa-print-profile');
+assert.equal(provisional.status, 'provisional');
+assert.equal(provisional.paper.status, 'provisional');
+assert.equal(provisional.paper.measurementsConfirmed, false);
+assert.equal(provisional.paper.columns, 2);
+assert.equal(provisional.paper.mediaWidthMm, 0);
 
 const keyA = core.localDeviceStorageKey({ uid: 'uid-a', tenantKey: 'owner:a:business:a', businessId: 'omega', deviceId: 'device-1' });
 const keyB = core.localDeviceStorageKey({ uid: 'uid-a', tenantKey: 'owner:a:business:a', businessId: 'alfa', deviceId: 'device-1' });

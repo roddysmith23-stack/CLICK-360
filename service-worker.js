@@ -16,6 +16,8 @@ const ASSETS = [
   './p2-platform-domain.js',
   './p2-restaurant-domain.js',
   './p2-logistics-domain.js',
+  './universal-label-canvas.js',
+  './universal-label-editor.js',
   './manifest.webmanifest',
 	'./robots.txt',
 	'./sitemap.xml',
