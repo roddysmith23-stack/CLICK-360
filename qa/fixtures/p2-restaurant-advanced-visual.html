@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" href="../../assets/favicon.ico">
+  <link rel="stylesheet" href="../../styles.css">
+  <title>CLICK 360 P2 Restaurante QA</title>
+</head>
+<body>
+  <main class="app" style="height:auto;min-height:100dvh;padding:16px max(16px,var(--safe-right)) calc(24px + var(--safe-bottom)) max(16px,var(--safe-left));overflow:visible">
+    <section class="pageHead"><div><h1>Restaurante avanzado</h1><p>Fixture sintetico de comandas, cocina y cobro.</p></div><div class="toolbar"><button class="btn" id="kdsButton">Cocina</button><button class="btn">Mesas Lite</button></div></section>
+    <section class="restaurantSummary"><article class="card"><small>Mesas abiertas</small><b>2</b><span>$18.00 pendiente</span></article><article class="card"><small>Ventas cerradas</small><b>$42.00</b><span>4 cuentas</span></article><article class="card"><small>Producto destacado</small><b>Producto QA</b><span>$24.00</span></article><article class="card"><small>Tiempo de cocina</small><b>8 min</b><span>Promedio</span></article></section>
+    <section class="restaurantTableGrid">
+      <article class="card restaurantTableCard preparing"><header><span><b>Mesa QA 1</b><small>Preparando</small></span><span class="badge gold">Enviada</span></header><strong>$12.00</strong><small>Mesero QA · saldo $12.00</small><button class="btn primary" id="openOrder">Abrir comanda</button></article>
+      <article class="card restaurantTableCard to_charge"><header><span><b>Mesa QA 2</b><small>Por cobrar</small></span><span class="badge gold">Entregada</span></header><strong>$6.00</strong><small>Mesero QA · saldo $3.00</small><button class="btn primary">Abrir comanda</button></article>
+      <article class="card restaurantTableCard free"><header><span><b>Barra QA</b><small>Libre</small></span><span class="badge green">Libre</span></header><strong>$0.00</strong><small>Sin comanda abierta</small><button class="btn silver">Abrir mesa</button></article>
+    </section>
+    <section class="kdsGrid" id="kdsPanel" hidden><section><h2>Cocina</h2><article class="card kdsTicket sent"><header><span><b>Cocina · Mesa QA 1</b><small>6 min · Mesero QA</small></span><span class="badge gold">Enviada</span></header><ul><li><b>2 x Producto QA</b><small>Sin ingrediente opcional</small></li></ul><div class="p2InlineActions"><button class="btn" id="acceptButton">Aceptar</button><button class="btn">Imprimir</button></div></article></section><section><h2>Barra</h2><p class="empty">No hay pedidos en esta area.</p></section></section>
+    <section class="card sectionCard restaurantOrdersPanel"><h3>Comandas abiertas</h3><div class="restaurantOrderList"><button id="orderSummary"><span><b>Mesa QA 1</b><small>Enviada · Mesero QA</small></span><strong>$12.00</strong></button></div></section>
+    <section class="card sectionCard restaurantOrderModal" id="orderPanel" hidden><div class="restaurantLineList"><article class="restaurantLine sent"><span><b>2 x Producto QA</b><small>kitchen · sent · Sin ingrediente opcional</small></span><strong>$12.00</strong></article></div><div class="restaurantModalActions"><button class="btn">Mesero</button><button class="btn">Dividir cuenta</button><button class="btn primary" id="paymentButton">Cobrar</button></div><details class="restaurantHistory"><summary>Historial de comanda</summary><ul><li>round_sent · fixture</li></ul></details></section>
+  </main>
+  <script>
+    document.getElementById('kdsButton').addEventListener('click', () => { document.getElementById('kdsPanel').hidden = false; });
+    document.getElementById('openOrder').addEventListener('click', () => { document.getElementById('orderPanel').hidden = false; });
+    document.getElementById('orderSummary').addEventListener('click', () => { document.getElementById('orderPanel').hidden = false; });
+    document.getElementById('acceptButton').addEventListener('click', (event) => { event.currentTarget.textContent = 'Preparar'; });
+    document.getElementById('paymentButton').addEventListener('click', (event) => { event.currentTarget.textContent = 'Pago registrado'; });
+  </script>
+</body>
+</html>

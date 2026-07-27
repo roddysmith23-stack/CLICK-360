@@ -19,6 +19,7 @@ const files = [
   'printing-service.js',
   'smart-print-core.js',
   'p2-platform-domain.js',
+  'p2-restaurant-domain.js',
   'service-worker.js',
   'manifest.webmanifest',
   'robots.txt',

@@ -1219,6 +1219,10 @@ function parseMoney(value) {
     out.cashSessions ||= [];
     out.tables ||= [];
     out.tableOrders ||= [];
+    out.restaurantOrders ||= [];
+    out.restaurantPayments ||= [];
+    out.restaurantPrintHistory ||= [];
+    out.restaurantEvents ||= [];
     out.labelPrintHistory ||= [];
     out.notifications ||= [];
     out.legalAcceptances ||= [];
@@ -1248,6 +1252,10 @@ function parseMoney(value) {
     out.settings.p2.invitations ||= [];
     out.settings.p2.adminActions ||= [];
     out.settings.p2.diagnostics ||= [];
+    out.settings.restaurantAdvanced ||= {
+      featureFlag: { key:'restaurantAdvancedEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false },
+      settingsByBusiness: {}
+    };
     const businessIds = new Set(out.businesses.map((business) => business?.id).filter(Boolean));
     if (!businessIds.has(out.settings.legacyDataBusinessId)) {
       out.settings.legacyDataBusinessId = businessIds.has(out.activeBusinessId)
@@ -1336,11 +1344,15 @@ function parseMoney(value) {
       cashSessions:[],
       tables:[],
       tableOrders:[],
+      restaurantOrders:[],
+      restaurantPayments:[],
+      restaurantPrintHistory:[],
+      restaurantEvents:[],
       labelPrintHistory:[],
       finance:{ payments: [], loans: [], envelopes: [], goals: [] },
       notifications:[],
       legalAcceptances:[],
-      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, p2:{ featureFlags:{ workerAccessEnabled:{ key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, restaurantAdvancedEnabled:{ key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, logisticsEnabled:{ key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false } }, memberships:[], invitations:[], adminActions:[], diagnostics:[] }, appVersion: '16.2.0' }
+      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, p2:{ featureFlags:{ workerAccessEnabled:{ key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, restaurantAdvancedEnabled:{ key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, logisticsEnabled:{ key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false } }, memberships:[], invitations:[], adminActions:[], diagnostics:[] }, restaurantAdvanced:{ featureFlag:{ key:'restaurantAdvancedEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false }, settingsByBusiness:{} }, appVersion: '16.2.0' }
     };
   }
 
@@ -1526,6 +1538,8 @@ function parseMoney(value) {
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
   function tablesForBiz(bid=currentBusiness()?.id){ return (state.tables || []).filter(table=>table.businessId===bid); }
   function tableOrdersForBiz(bid=currentBusiness()?.id){ return (state.tableOrders || []).filter(order=>order.businessId===bid); }
+  function restaurantOrdersForBiz(bid=currentBusiness()?.id){ return (state.restaurantOrders || []).filter(order=>order.businessId===bid); }
+  function restaurantPaymentsForBiz(bid=currentBusiness()?.id){ return (state.restaurantPayments || []).filter(payment=>payment.businessId===bid); }
   function financeForBiz(kind, bid=currentBusiness()?.id){ return (state.finance?.[kind] || []).filter(entry=>entry.businessId===bid); }
   function labelTemplatesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
@@ -1583,6 +1597,31 @@ function parseMoney(value) {
   function isRestaurantBusiness(business=currentBusiness()) {
     return ['restaurante', 'cafeteria', 'bar'].includes(String(business?.type || '').toLowerCase());
   }
+  function restaurantAdvancedSettings() {
+    state.settings ||= {};
+    state.settings.restaurantAdvanced ||= {};
+    const config = state.settings.restaurantAdvanced;
+    config.featureFlag ||= { key:'restaurantAdvancedEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false };
+    config.settingsByBusiness ||= {};
+    return config;
+  }
+  function restaurantAdvancedEnabled(business=currentBusiness()) {
+    const flag = restaurantAdvancedSettings().featureFlag || {};
+    const businessId = business?.id || '';
+    if (!isRestaurantBusiness(business) || flag.enabled !== true || flag.killSwitch === true) return false;
+    if (Array.isArray(flag.allowedBusinessIds) && flag.allowedBusinessIds.length && !flag.allowedBusinessIds.includes(businessId)) return false;
+    const rollout = Math.max(0, Math.min(100, Number(flag.rolloutPercentage == null ? 100 : flag.rolloutPercentage)));
+    return rollout > 0 && business?.settings?.modules?.restaurant === true;
+  }
+  function restaurantActor() {
+    const user = authUser();
+    return { uid:window.click360User?.uid || '', roleId:user.role || 'readonly', permissions:Array.isArray(user.permissions) ? user.permissions : undefined };
+  }
+  function restaurantCan(permission) {
+    if (isOwnerUser()) return true;
+    return window.CLICK360_P2_RESTAURANT?.hasPermission?.(restaurantActor(), permission) === true;
+  }
+  window.click360RestaurantAdvancedEnabled = () => restaurantAdvancedEnabled();
   function resolveLabelCopyResult(manualCopies, stock, useStock=false) {
     return window.CLICK360_SMART_PRINT?.resolveCopies(manualCopies, useStock, stock)
       || (() => {
@@ -1921,7 +1960,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,admin:p2AdminView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,finance:financeView,help:helpView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,admin:p2AdminView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,restaurant:restaurantAdvancedView,restaurantKds:restaurantKdsView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2986,6 +3025,292 @@ function parseMoney(value) {
 	    });
 	  }
 
+    function restaurantDomain() { return window.CLICK360_P2_RESTAURANT; }
+    function restaurantOrderById(orderId) { return restaurantOrdersForBiz().find((order) => order.id === orderId) || null; }
+    function restaurantOpenOrderForTable(tableId) { return restaurantOrdersForBiz().find((order) => order.tableId === tableId && !['paid', 'cancelled'].includes(order.status)) || null; }
+    function restaurantReplaceOrder(nextOrder) {
+      const index = (state.restaurantOrders || []).findIndex((order) => order.id === nextOrder.id && order.businessId === nextOrder.businessId);
+      if (index < 0) state.restaurantOrders.push(nextOrder);
+      else state.restaurantOrders[index] = nextOrder;
+      return nextOrder;
+    }
+    function restaurantStatusLabel(status) {
+      return ({ draft:'Borrador', sent:'Enviada', accepted:'Aceptada', preparing:'Preparando', ready:'Lista', delivered:'Entregada', cancelled:'Cancelada', paid:'Pagada' })[status] || status;
+    }
+    function restaurantTableStateLabel(status) {
+      return ({ free:'Libre', occupied:'Ocupada', preparing:'Preparando', ready:'Lista', to_charge:'Por cobrar', paid:'Pagada', cancelled:'Cancelada' })[status] || status;
+    }
+    function restaurantGuardView() {
+      return `<div class="pageHead"><div><h1>Restaurante avanzado</h1><p>Mesas, comandas, cocina y pagos parciales.</p></div></div><section class="card sectionCard restaurantGuard"><h3>Módulo protegido</h3><p>Restaurante avanzado está desactivado para este negocio. Mesas Lite continúa disponible y no se modificó.</p><button class="btn primary" type="button" onclick="window.click360Route('tables')">Abrir Mesas Lite</button></section>`;
+    }
+    function restaurantAdvancedView() {
+      if (!restaurantAdvancedEnabled()) return restaurantGuardView();
+      if (!restaurantCan('tables.read')) return `<div class="pageHead"><div><h1>Restaurante avanzado</h1><p>No tienes permiso para ver mesas ni comandas.</p></div></div>`;
+      const domain = restaurantDomain();
+      const business = currentBusiness();
+      const tables = tablesForBiz();
+      const orders = restaurantOrdersForBiz();
+      const report = domain.restaurantReport(orders, { businessId:business.id });
+      const tableCards = tables.map((table) => {
+        const order = restaurantOpenOrderForTable(table.id);
+        const stateLabel = order ? restaurantTableStateLabel(order.tableState) : 'Libre';
+        return `<article class="card restaurantTableCard ${escapeHtml(order?.tableState || 'free')}"><header><span><b>${escapeHtml(table.name)}</b><small>${escapeHtml(stateLabel)}</small></span><span class="badge ${order ? 'gold' : 'green'}">${order ? escapeHtml(restaurantStatusLabel(order.status)) : 'Libre'}</span></header><strong>${fmt(order?.total || 0)}</strong><small>${order ? `${escapeHtml(order.serverName || 'Sin mesero')} · saldo ${fmt(order.remaining)}` : 'Sin comanda abierta'}</small><button class="btn ${order ? 'primary' : 'silver'}" data-restaurant-table="${actionId(table.id)}">${order ? 'Abrir comanda' : 'Abrir mesa'}</button></article>`;
+      }).join('');
+      return `<div class="pageHead"><div><h1>Restaurante avanzado</h1><p>Comandas, cocina, pagos e impresión para ${escapeHtml(business.name)}.</p></div><div class="toolbar"><button class="btn" data-restaurant-route="restaurantKds">${icon('cooking-pot')} Cocina</button><button class="btn" data-restaurant-route="tables">${icon('layout-grid')} Mesas Lite</button></div></div>
+        <section class="restaurantSummary"><article class="card"><small>Mesas abiertas</small><b>${report.openOrders}</b><span>${fmt(report.openBalance)} pendiente</span></article><article class="card"><small>Ventas cerradas</small><b>${fmt(report.sales)}</b><span>${report.paidOrders} cuentas · desc. ${fmt(report.discounts)}</span></article><article class="card"><small>Producto destacado</small><b>${escapeHtml(report.bestProduct.name || 'Sin ventas')}</b><span>${fmt(report.bestProduct.sales)}</span></article><article class="card"><small>Tiempo de cocina</small><b>${report.averageKitchenMinutes} min</b><span>Promedio histórico</span></article></section>
+        <section class="card sectionCard restaurantActionBar"><div><h3>Mesas y comandas</h3><p class="fieldHint">Cada comanda queda aislada por negocio. Los cobros parciales requieren caja abierta.</p></div><div class="p2InlineActions"><button class="btn" data-restaurant-route="restaurantKds">Ver KDS</button><button class="btn primary" data-restaurant-route="tables">Crear mesa</button></div></section>
+        <section class="restaurantTableGrid">${tableCards || '<section class="card empty">Primero crea una mesa, barra, delivery o retiro en Mesas Lite.</section>'}</section>
+        <section class="card sectionCard restaurantOrdersPanel"><h3>Comandas abiertas</h3><div class="restaurantOrderList">${orders.filter((order) => !['paid', 'cancelled'].includes(order.status)).map((order) => `<button type="button" data-restaurant-order="${actionId(order.id)}"><span><b>Mesa ${escapeHtml(tables.find((table) => table.id === order.tableId)?.name || order.tableId)}</b><small>${escapeHtml(restaurantStatusLabel(order.status))} · ${escapeHtml(order.serverName || 'Sin mesero')}</small></span><strong>${fmt(order.total)}</strong></button>`).join('') || '<p class="empty">No hay comandas abiertas.</p>'}</div></section>
+        <details class="card sectionCard restaurantHistory"><summary>Reportes de restaurante</summary><ul><li>Ventas por mesa: ${escapeHtml(Object.entries(report.salesByTable).map(([tableId, amount]) => `${tables.find((table) => table.id === tableId)?.name || tableId} ${fmt(amount)}`).join(' · ') || 'Sin cuentas cerradas')}</li><li>Ventas por mesero: ${escapeHtml(Object.entries(report.salesByServer).map(([name, amount]) => `${name} ${fmt(amount)}`).join(' · ') || 'Sin cuentas cerradas')}</li><li>Caja por método: ${escapeHtml(Object.entries(report.cashByMethod).map(([method, amount]) => `${method} ${fmt(amount)}`).join(' · ') || 'Sin cobros')}</li><li>Anulaciones: ${report.cancelledOrders}</li></ul></details>`;
+    }
+    function restaurantKdsActions(order, area) {
+      if (!restaurantCan('kitchen.update')) return '';
+      const next = ({ sent:'accepted', accepted:'preparing', preparing:'ready', ready:'delivered' })[order.areaStatus || order.status];
+      if (!next) return '';
+      const label = ({ accepted:'Aceptar', preparing:'Preparar', ready:'Lista', delivered:'Entregar' })[next];
+      const tone = next === 'ready' ? 'primary' : '';
+      return `<button class="btn ${tone}" data-restaurant-kds="${area}:${next}:${actionId(order.id)}">${label}</button>`;
+    }
+    function restaurantKdsView() {
+      if (!restaurantAdvancedEnabled()) return restaurantGuardView();
+      if (!restaurantCan('kitchen.read')) return `<div class="pageHead"><div><h1>Cocina</h1><p>No tienes permiso para ver pedidos de cocina.</p></div></div>`;
+      const domain = restaurantDomain();
+      const business = currentBusiness();
+      const tables = tablesForBiz();
+      const queue = domain.kitchenQueue(restaurantOrdersForBiz(), { businessId:business.id, area:'kitchen' });
+      const bar = domain.kitchenQueue(restaurantOrdersForBiz(), { businessId:business.id, area:'bar' });
+      const queueHtml = (orders, area) => orders.map((order) => `<article class="card kdsTicket ${escapeHtml(order.areaStatus || order.status)}"><header><span><b>${area === 'bar' ? 'Barra' : 'Cocina'} · ${escapeHtml(tables.find((table) => table.id === order.tableId)?.name || order.tableId)}</b><small>${order.elapsedMinutes} min · ${escapeHtml(order.serverName || 'Sin mesero')}</small></span><span class="badge gold">${escapeHtml(restaurantStatusLabel(order.areaStatus || order.status))}</span></header><ul>${order.items.map((line) => `<li><b>${line.qty} x ${escapeHtml(line.name)}</b>${line.notes ? `<small>${escapeHtml(line.notes)}</small>` : ''}${line.priority === 'high' ? '<em>Prioridad</em>' : ''}</li>`).join('')}</ul><div class="p2InlineActions">${restaurantKdsActions(order, area)}<button class="btn" data-restaurant-print="kitchen:${area}:${actionId(order.id)}">${icon('printer')} Imprimir</button></div></article>`).join('') || '<p class="empty">No hay pedidos en esta área.</p>';
+      return `<div class="pageHead"><div><h1>Cocina y barra</h1><p>Pedidos activos con estados y tiempos visibles.</p></div><div class="toolbar"><button class="btn" data-restaurant-route="restaurant">${icon('arrow-left')} Comandas</button></div></div><section class="kdsGrid"><section><h2>Cocina</h2>${queueHtml(queue, 'kitchen')}</section><section><h2>Barra</h2>${queueHtml(bar, 'bar')}</section></section>`;
+    }
+    function restaurantAddAudit(action, details={}) {
+      state.restaurantEvents ||= [];
+      const event = { id:uid('restaurant-event'), businessId:currentBusiness().id, action, createdAt:new Date().toISOString(), actorId:window.click360User?.uid || '', details };
+      state.restaurantEvents.push(event);
+      addAudit(action, details);
+    }
+    function restaurantSaveLocal(snapshot, route='restaurant') {
+      if (save()) return true;
+      state = snapshot;
+      renderApp(route);
+      return false;
+    }
+    function restaurantOpenTable(tableId) {
+      if (!restaurantAdvancedEnabled() || !restaurantCan('orders.create')) return toast('No tienes permiso para abrir una comanda.', 'err');
+      const table = tablesForBiz().find((item) => item.id === tableId);
+      if (!table) return toast('La mesa no pertenece a este negocio.', 'err');
+      let order = restaurantOpenOrderForTable(tableId);
+      if (!order) {
+        const snapshot = cloneState(state);
+        try {
+          order = restaurantDomain().createOrder({ businessId:currentBusiness().id, tableId, serverId:window.click360User?.uid || '', serverName:authUser().name || '', actor:restaurantActor() });
+          state.restaurantOrders.push(order);
+          table.status = 'occupied'; table.updatedAt = new Date().toISOString();
+          restaurantAddAudit('restaurant_order_opened', { orderId:order.id, tableId });
+          if (!restaurantSaveLocal(snapshot)) return;
+        } catch (error) { return toast('No se pudo abrir la comanda: ' + error.message, 'err'); }
+      }
+      openRestaurantOrderModal(order.id);
+    }
+    function restaurantLineHtml(order) {
+      return (order.items || []).map((line) => `<article class="restaurantLine ${escapeHtml(line.status)}"><span><b>${line.qty} x ${escapeHtml(line.name)}</b><small>${escapeHtml(line.area)} · ${escapeHtml(line.status)}${line.notes ? ` · ${escapeHtml(line.notes)}` : ''}</small></span><strong>${fmt(line.total)}</strong>${restaurantCan('orders.cancel') && line.status !== 'cancelled' ? `<button class="iconBtn danger" data-restaurant-line-cancel="${actionId(order.id)}:${actionId(line.id)}" title="Anular producto">${icon('circle-x')}</button>` : ''}</article>`).join('') || '<p class="empty">Agrega productos para enviar la primera ronda.</p>';
+    }
+    function openRestaurantOrderModal(orderId) {
+      const order = restaurantOrderById(orderId);
+      if (!order) return toast('La comanda ya no está disponible.', 'err');
+      const table = tablesForBiz().find((item) => item.id === order.tableId);
+      const productOptions = productsForBiz().filter((product) => Number(product.qty || 0) > 0).map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${fmt(product.price)} · ${product.qty} disp.</option>`).join('');
+      const history = (order.auditTrail || []).slice(-6).reverse().map((entry) => `<li>${escapeHtml(entry.type)} · ${escapeHtml(entry.at)}</li>`).join('') || '<li>Sin actividad todavía.</li>';
+      const canUpdate = restaurantCan('orders.update');
+      const canMove = restaurantCan('tables.write');
+      const canCharge = restaurantCan('sales.create');
+      const actionButtons = `${canUpdate ? `<button class="btn" data-restaurant-order-action="server:${actionId(order.id)}">Mesero</button><button class="btn" data-restaurant-order-action="send:${actionId(order.id)}">Enviar ronda</button><button class="btn" data-restaurant-order-action="split:${actionId(order.id)}">Dividir cuenta</button>` : ''}${canMove ? `<button class="btn" data-restaurant-order-action="move:${actionId(order.id)}">Mover</button><button class="btn" data-restaurant-order-action="merge:${actionId(order.id)}">Unir</button>` : ''}${restaurantCan('sales.cancel') ? `<button class="btn" data-restaurant-order-action="discount:${actionId(order.id)}">Descuento</button>` : ''}<button class="btn" data-restaurant-print="prebill::${actionId(order.id)}">${icon('receipt')} Precuenta</button>${canCharge ? `<button class="btn primary" data-restaurant-order-action="pay:${actionId(order.id)}">Cobrar</button>` : ''}${restaurantCan('orders.cancel') ? `<button class="btn danger" data-restaurant-order-action="cancel:${actionId(order.id)}">Cancelar comanda</button>` : ''}`;
+      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(table?.name || 'Comanda')}</h2><p>Total ${fmt(order.total)} · saldo ${fmt(order.remaining)} · ${escapeHtml(order.serverName || 'Sin mesero')}</p></div><button class="closeBtn" data-close>×</button></div><section class="restaurantOrderModal"><div class="restaurantLineList">${restaurantLineHtml(order)}</div>${canUpdate ? `<form id="restaurantAddLineForm" class="formGrid"><div class="field full"><label>Producto</label><select id="restaurantLineProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin productos disponibles</option>'}</select></div><div class="field"><label>Cantidad</label><input id="restaurantLineQty" type="number" min="1" max="99" value="1"></div><div class="field"><label>Área</label><select id="restaurantLineArea"><option value="kitchen">Cocina</option><option value="bar">Barra</option></select></div><div class="field"><label>Prioridad</label><select id="restaurantLinePriority"><option value="normal">Normal</option><option value="high">Alta</option></select></div><div class="field"><label>Variante</label><input id="restaurantLineVariant" maxlength="60" placeholder="Ej. término, sabor"></div><div class="field full"><label>Nota</label><input id="restaurantLineNote" maxlength="120" placeholder="Ej. sin ingrediente opcional"></div><button class="btn primary full" type="submit" ${productOptions ? '' : 'disabled'}>${icon('plus')} Agregar a comanda</button></form>` : ''}<div class="restaurantModalActions">${actionButtons}</div><details class="restaurantHistory"><summary>Historial de comanda</summary><ul>${history}</ul></details></section>`);
+      $('#restaurantAddLineForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        const product = productsForBiz().find((item) => item.id === decodeActionId($('#restaurantLineProduct').value));
+        const qty = Math.max(1, Math.min(99, Math.trunc(Number($('#restaurantLineQty').value || 1))));
+        if (!product || Number(product.qty || 0) < qty) return toast('No hay stock suficiente para ese producto.', 'err');
+        try {
+          const next = restaurantDomain().addLine({ order:restaurantOrderById(orderId), actor:restaurantActor(), line:{ productId:product.id, code:product.code, name:product.name, qty, price:product.price, area:$('#restaurantLineArea').value, priority:$('#restaurantLinePriority').value, variant:$('#restaurantLineVariant').value, notes:$('#restaurantLineNote').value } });
+          restaurantReplaceOrder(next); restaurantAddAudit('restaurant_line_added', { orderId, productId:product.id, qty, area:$('#restaurantLineArea').value });
+          if (!restaurantSaveLocal(snapshot)) return;
+          openRestaurantOrderModal(orderId);
+        } catch (error) { toast('No se pudo agregar el producto: ' + error.message, 'err'); }
+      });
+      $$('[data-restaurant-line-cancel]').forEach((button) => button.onclick = () => {
+        const [encodedOrder, encodedLine] = button.dataset.restaurantLineCancel.split(':');
+        const target = restaurantOrderById(decodeActionId(encodedOrder));
+        const reason = prompt('Motivo de anulación', 'Corrección solicitada');
+        if (!reason) return;
+        const snapshot = cloneState(state);
+        try {
+          restaurantReplaceOrder(restaurantDomain().cancelLine({ order:target, lineId:decodeActionId(encodedLine), reason, actor:restaurantActor() }));
+          restaurantAddAudit('restaurant_line_cancelled', { orderId:target.id, lineId:decodeActionId(encodedLine) });
+          if (!restaurantSaveLocal(snapshot)) return;
+          openRestaurantOrderModal(target.id);
+        } catch (error) { toast('No se pudo anular: ' + error.message, 'err'); }
+      });
+      $$('[data-restaurant-order-action]').forEach((button) => button.onclick = () => restaurantHandleOrderAction(button.dataset.restaurantOrderAction));
+      $$('[data-restaurant-print]').forEach((button) => button.onclick = () => {
+        const [kind, area, encodedOrder] = button.dataset.restaurantPrint.split(':');
+        restaurantPrint(decodeActionId(encodedOrder), kind, area);
+      });
+      refreshIcons();
+    }
+    function openRestaurantActionModal(orderId, action) {
+      const order = restaurantOrderById(orderId);
+      if (!order) return;
+      const requiredPermission = ({ server:'orders.update', split:'orders.update', move:'tables.write', merge:'tables.write', discount:'sales.cancel', cancel:'orders.cancel' })[action];
+      if (!requiredPermission || !restaurantCan(requiredPermission)) return toast('No tienes permiso para esta acción.', 'err');
+      const tableName = tablesForBiz().find((table) => table.id === order.tableId)?.name || order.tableId;
+      let title = '', description = '', fields = '', submitLabel = 'Guardar';
+      if (action === 'server') {
+        title = 'Asignar mesero'; description = `Comanda de ${tableName}.`;
+        fields = `<div class="field full"><label>Mesero asignado</label><input id="restaurantActionServer" maxlength="80" required value="${escapeHtml(order.serverName || '')}" placeholder="Nombre del mesero"></div>`;
+      } else if (action === 'split') {
+        title = 'Dividir cuenta'; description = 'La división guía los pagos parciales y conserva el total exacto.';
+        fields = `<div class="field"><label>Dividir por</label><select id="restaurantActionSplitMode"><option value="person">Persona</option><option value="product">Producto</option><option value="quantity">Cantidad</option></select></div><div class="field"><label>Número de partes</label><input id="restaurantActionSplitParts" type="number" min="2" max="20" value="2" required></div>`;
+        submitLabel = 'Preparar división';
+      } else if (action === 'move') {
+        const destinations = tablesForBiz().filter((table) => table.id !== order.tableId && !restaurantOpenOrderForTable(table.id));
+        if (!destinations.length) return toast('No hay una mesa libre disponible para mover esta comanda.', 'err');
+        title = 'Mover comanda'; description = `La cuenta se moverá desde ${tableName} a la mesa seleccionada.`;
+        fields = `<div class="field full"><label>Mesa destino</label><select id="restaurantActionTable">${destinations.map((table) => `<option value="${actionId(table.id)}">${escapeHtml(table.name)}</option>`).join('')}</select></div>`;
+        submitLabel = 'Mover comanda';
+      } else if (action === 'merge') {
+        const sources = restaurantOrdersForBiz().filter((candidate) => candidate.id !== order.id && !['paid','cancelled'].includes(candidate.status) && !candidate.payments?.length);
+        if (!sources.length) return toast('No hay otra comanda abierta sin pagos para unir.', 'err');
+        title = 'Unir comandas'; description = 'La comanda elegida se archivará y sus productos pasarán a esta cuenta. Esta acción no está disponible después de un pago.';
+        fields = `<div class="field full"><label>Comanda a unir</label><select id="restaurantActionSource">${sources.map((candidate) => `<option value="${actionId(candidate.id)}">${escapeHtml(tablesForBiz().find((table) => table.id === candidate.tableId)?.name || candidate.tableId)} · ${fmt(candidate.subtotal)}</option>`).join('')}</select></div>`;
+        submitLabel = 'Unir comandas';
+      } else if (action === 'discount') {
+        title = 'Aplicar descuento'; description = 'El descuento no puede superar el subtotal y queda auditado antes del cobro.';
+        fields = `<div class="field"><label>Monto de descuento</label><input id="restaurantActionDiscount" type="number" min="0.01" max="${order.subtotal}" step="0.01" required></div><div class="field"><label>Motivo</label><input id="restaurantActionDiscountReason" maxlength="120" required placeholder="Ej. promoción autorizada"></div>`;
+        submitLabel = 'Aplicar descuento';
+      } else if (action === 'cancel') {
+        title = 'Cancelar comanda'; description = 'Esta acción requiere motivo y queda en el historial.';
+        fields = `<div class="field full"><label>Motivo de cancelación</label><textarea id="restaurantActionReason" maxlength="160" required placeholder="Explica el motivo"></textarea></div>`;
+        submitLabel = 'Cancelar comanda';
+      } else return;
+      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p></div><button class="closeBtn" data-close>×</button></div><form id="restaurantActionForm" class="formGrid">${fields}<button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">${escapeHtml(submitLabel)}</button></form>`);
+      $('#restaurantActionForm').onsubmit = (event) => {
+        event.preventDefault();
+        const current = restaurantOrderById(orderId);
+        if (!current) return toast('La comanda ya no está disponible.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          if (action === 'server') {
+            const serverName = $('#restaurantActionServer').value.trim();
+            const next = { ...current, serverName, auditTrail:[...(current.auditTrail || []), { id:uid('restaurant-audit'), type:'server_assigned', at:new Date().toISOString(), actorId:window.click360User?.uid || '', details:{} }] };
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_server_assigned', { orderId:current.id });
+          } else if (action === 'split') {
+            const next = restaurantDomain().splitOrder({ order:current, mode:$('#restaurantActionSplitMode').value, parts:Number($('#restaurantActionSplitParts').value), actor:restaurantActor() });
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_bill_split', { orderId:current.id, mode:next.splitPlan.mode, parts:next.splitPlan.parts });
+          } else if (action === 'move') {
+            const tableId = decodeActionId($('#restaurantActionTable').value);
+            if (restaurantOpenOrderForTable(tableId)) return toast('La mesa destino ya tiene una comanda abierta.', 'err');
+            const next = restaurantDomain().moveOrder({ order:current, tableId, actor:restaurantActor() });
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_order_moved', { orderId:current.id, from:current.tableId, to:tableId });
+          } else if (action === 'merge') {
+            const source = restaurantOrderById(decodeActionId($('#restaurantActionSource').value));
+            if (!source) return toast('La comanda a unir ya no está disponible.', 'err');
+            const merged = restaurantDomain().mergeOrders({ target:current, source, actor:restaurantActor() });
+            restaurantReplaceOrder(merged.target); restaurantReplaceOrder(merged.source); restaurantAddAudit('restaurant_orders_merged', { targetOrderId:current.id, sourceOrderId:source.id });
+          } else if (action === 'discount') {
+            const next = restaurantDomain().applyDiscount({ order:current, amount:parseMoney($('#restaurantActionDiscount').value), reason:$('#restaurantActionDiscountReason').value, actor:restaurantActor() });
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_discount_applied', { orderId:current.id, amount:next.discount });
+          } else if (action === 'cancel') {
+            const reason = $('#restaurantActionReason').value.trim();
+            if (!reason) return toast('Escribe el motivo de cancelación.', 'err');
+            const next = restaurantDomain().transitionOrder({ order:current, status:'cancelled', actor:restaurantActor() });
+            next.cancellationReason = reason; restaurantReplaceOrder(next);
+            const table = tablesForBiz().find((item) => item.id === current.tableId); if (table) table.status = 'free';
+            restaurantAddAudit('restaurant_order_cancelled', { orderId:current.id, reason });
+          }
+          if (!restaurantSaveLocal(snapshot)) return;
+          if (action === 'move' || action === 'cancel') { closeModal(); renderApp('restaurant'); }
+          else { openRestaurantOrderModal(orderId); if (action === 'split') toast('División preparada para los pagos parciales.'); }
+        } catch (error) { state = snapshot; toast('No se pudo completar la acción: ' + error.message, 'err'); }
+      };
+    }
+    function restaurantHandleOrderAction(value) {
+      const [action, encoded] = value.split(':');
+      const order = restaurantOrderById(decodeActionId(encoded));
+      if (!order) return;
+      if (action === 'pay') return openRestaurantPaymentModal(order.id);
+      if (action === 'send') {
+        const snapshot = cloneState(state);
+        try { restaurantReplaceOrder(restaurantDomain().sendRound({ order, actor:restaurantActor() })); restaurantAddAudit('restaurant_round_sent', { orderId:order.id }); if (!restaurantSaveLocal(snapshot)) return; openRestaurantOrderModal(order.id); } catch (error) { toast('No se pudo enviar la ronda: ' + error.message, 'err'); }
+        return;
+      }
+      openRestaurantActionModal(order.id, action);
+    }
+    function restaurantStockAvailable(order) {
+      return restaurantDomain().activeLines(order).every((line) => {
+        const product = productsForBiz().find((item) => item.id === line.productId);
+        return product && Number(product.qty || 0) >= Number(line.qty || 0);
+      });
+    }
+    function openRestaurantPaymentModal(orderId) {
+      const order = restaurantOrderById(orderId);
+      if (!order) return;
+      showModal(`<div class="modalHeader"><div><h2>Cobrar comanda</h2><p>Total ${fmt(order.total)} · saldo ${fmt(order.remaining)}</p></div><button class="closeBtn" data-close>×</button></div><form id="restaurantPaymentForm" class="formGrid"><div class="field"><label>Monto</label><input id="restaurantPaymentAmount" type="number" step="0.01" min="0.01" max="${order.remaining}" value="${order.remaining}"></div><div class="field"><label>Método</label><select id="restaurantPaymentMethod"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select></div><div class="field full"><label>Nota</label><input id="restaurantPaymentNote" maxlength="100" placeholder="Opcional"></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Registrar pago</button></form>`);
+      $('#restaurantPaymentForm').onsubmit = async (event) => {
+        event.preventDefault();
+        const current = restaurantOrderById(orderId);
+        if (!current || !isDayStarted() || isDayClosed()) return toast('Abre una caja activa antes de cobrar.', 'err');
+        if (!restaurantStockAvailable(current)) return toast('No hay stock suficiente para cerrar esta comanda.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const paymentResult = restaurantDomain().recordPayment({ order:current, amount:parseMoney($('#restaurantPaymentAmount').value), method:$('#restaurantPaymentMethod').value, note:$('#restaurantPaymentNote').value, actor:restaurantActor(), idempotencyKey:uid('restaurant-payment') });
+          let nextOrder = paymentResult.order;
+          const payment = { ...paymentResult.payment, businessId:current.businessId, orderId:current.id, tableId:current.tableId };
+          state.restaurantPayments.push(payment);
+          state.movements.push({ id:uid('mov'), businessId:current.businessId, date:today(), when:nowLabel(), kind:'ingreso', amount:payment.amount, note:`Pago restaurante ${current.tableId}`, restaurantPaymentId:payment.id, restaurantOrderId:current.id, paymentMethod:payment.method, cashSessionId:currentOpenCashSession()?.id || '', createdAtMs:Date.now(), createdBy:authUser().name });
+          if (nextOrder.remaining === 0) {
+            nextOrder = restaurantDomain().finalizePayment({ order:nextOrder, actor:restaurantActor() });
+            const saleId = uid('sale');
+            nextOrder.saleId = saleId;
+            const lines = restaurantDomain().activeLines(nextOrder);
+            state.sales.push({ id:saleId, operationId:uid('restaurant-sale'), businessId:current.businessId, tableId:current.tableId, restaurantOrderId:current.id, date:today(), when:nowLabel(), items:lines.map((line) => ({ id:line.productId, name:line.name, code:line.code, qty:line.qty, price:line.unitPrice, total:line.total })), subtotal:nextOrder.subtotal, iva:0, discount:nextOrder.discount || 0, total:nextOrder.total, method:nextOrder.payments.length > 1 ? 'Mixto' : nextOrder.payments[0]?.method || '', status:'paid', received:nextOrder.paid, tendered:nextOrder.paid, change:0, balance:0, user:authUser().name, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
+            lines.forEach((line) => { const product = productsForBiz().find((item) => item.id === line.productId); if (product) { product.qty -= line.qty; product.updatedAt = new Date().toISOString(); product.updatedAtMs = Date.now(); } });
+            const table = tablesForBiz().find((item) => item.id === current.tableId); if (table) { table.status = 'free'; table.updatedAt = new Date().toISOString(); }
+          }
+          restaurantReplaceOrder(nextOrder);
+          restaurantAddAudit('restaurant_payment_recorded', { orderId:current.id, paymentId:payment.id, amount:payment.amount, final:nextOrder.status === 'paid' });
+          const committed = await commitCriticalMutation(snapshot, 'restaurant_payment_recorded', (next) => next.restaurantPayments?.some((entry) => entry.id === payment.id && entry.businessId === current.businessId));
+          if (!committed.ok) return;
+          closeModal(); renderApp('restaurant'); toast(nextOrder.status === 'paid' ? 'Cuenta pagada y mesa liberada.' : `Pago registrado. Saldo ${fmt(nextOrder.remaining)}.`);
+        } catch (error) { state = snapshot; toast('No se pudo registrar el pago: ' + error.message, 'err'); }
+      };
+    }
+    function restaurantPrint(orderId, kind, area = '') {
+      const order = restaurantOrderById(orderId);
+      if (!order) return;
+      const html = restaurantDomain().printDocument({ order, businessName:currentBusiness().name, kind, area:area || undefined });
+      state.restaurantPrintHistory.push({ id:uid('restaurant-print'), businessId:currentBusiness().id, orderId, kind, area, createdAt:new Date().toISOString(), createdBy:authUser().name });
+      restaurantAddAudit('restaurant_printed', { orderId, kind, area });
+      save({ nonBlockingSync:true, syncSource:'restaurant_print_audit' });
+      handoffPrint({ html, media:'receipt-80', filename:`Restaurante_${kind}_${order.id.slice(-6)}.pdf` }, 'system');
+    }
+    function bindRestaurantAdvanced() {
+      $$('[data-restaurant-route]').forEach((button) => button.onclick = () => renderApp(button.dataset.restaurantRoute));
+      $$('[data-restaurant-table]').forEach((button) => button.onclick = () => restaurantOpenTable(decodeActionId(button.dataset.restaurantTable)));
+      $$('[data-restaurant-order]').forEach((button) => button.onclick = () => openRestaurantOrderModal(decodeActionId(button.dataset.restaurantOrder)));
+    }
+    function bindRestaurantKds() {
+      $$('[data-restaurant-route]').forEach((button) => button.onclick = () => renderApp(button.dataset.restaurantRoute));
+      $$('[data-restaurant-kds]').forEach((button) => button.onclick = () => {
+        const [area, status, encoded] = button.dataset.restaurantKds.split(':');
+        const order = restaurantOrderById(decodeActionId(encoded));
+        if (!order) return;
+        const snapshot = cloneState(state);
+        try { restaurantReplaceOrder(restaurantDomain().transitionOrder({ order, status, actor:restaurantActor(), area })); restaurantAddAudit('restaurant_kds_status', { orderId:order.id, status, area }); if (!restaurantSaveLocal(snapshot, 'restaurantKds')) return; renderApp('restaurantKds'); } catch (error) { toast('No se pudo cambiar el estado: ' + error.message, 'err'); }
+      });
+      $$('[data-restaurant-print]').forEach((button) => button.onclick = () => { const [kind, area, encoded] = button.dataset.restaurantPrint.split(':'); restaurantPrint(decodeActionId(encoded), kind, area); });
+    }
+
 	  const FINANCE_CONFIG = Object.freeze({
 	    payments: { title:'Pagos mensuales', icon:'calendar-clock', fields:['name','category','amount','dueDate','notes'] },
 	    loans: { title:'Bancos / préstamos manuales', icon:'landmark', fields:['name','amount','monthlyAmount','dueDate','status','notes'] },
@@ -3120,6 +3445,7 @@ function parseMoney(value) {
 	      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
 	      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
 	      ${isRestaurantBusiness() ? `<button class="card bigRow" data-more="tables"><span>${icon('utensils')} Mesas / Restaurante</span>${icon('chevron-right')}</button>` : ''}
+	      ${restaurantAdvancedEnabled() ? `<button class="card bigRow" data-more="restaurant"><span>${icon('chef-hat')} Restaurante avanzado</span>${icon('chevron-right')}</button>` : ''}
 	      <button class="card bigRow" data-more="finance"><span>${icon('wallet-cards')} Finanzas</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
@@ -3504,6 +3830,8 @@ function parseMoney(value) {
     if(r==='crm') bindCrm();
     if(r==='reminders') bindReminders();
     if(r==='tables') bindTables();
+    if(r==='restaurant') bindRestaurantAdvanced();
+    if(r==='restaurantKds') bindRestaurantKds();
     if(r==='finance') bindFinance();
     if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();
@@ -8211,7 +8539,7 @@ function parseMoney(value) {
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
-	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','finance','help'].includes(h)) renderApp(h); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','restaurant','restaurantKds','finance','help'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();

@@ -10,6 +10,7 @@
     "qa:simulator:quick": "node qa/simulator/business-simulator.cjs --mode=quick",
     "qa:simulator:full": "node qa/simulator/business-simulator.cjs --mode=full",
     "qa:workers:e2e": "node qa-p2-platform-modules-workers-harness.cjs && node qa-p2-platform-workers-visual-harness.cjs",
+    "qa:restaurant:e2e": "node qa-p2-restaurant-advanced-harness.cjs && node qa-p2-restaurant-visual-harness.cjs",
     "admin:install": "npm ci --prefix tools/admin",
     "admin:qa": "npm run qa:fixtures --prefix tools/admin",
     "admin:access": "node scripts/admin-access-v16.mjs"
