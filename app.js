@@ -5426,7 +5426,7 @@ function parseMoney(value) {
     'thermal-108': { label:'Rollo térmico 4x2 · 4 pulgadas / 108 mm', mediaType:'roll-1', width:108, height:60, mediaWidth:108, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
     'roll-2-custom': { label:'Rollo de 2 columnas · confirmar medidas', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:2, gapY:2, dpi:203, provisional:true },
     'roll-3-custom': { label:'Rollo de 3 columnas · confirmar medidas', mediaType:'roll-3', width:30, height:40, mediaWidth:0, columns:3, rows:1, gapX:2, gapY:2, dpi:203, provisional:true },
-    'shary-ltt214-2col': { label:'Shary · 3nStar LTT214 · 2 columnas (provisional)', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:0, gapY:0, dpi:203, provisional:true, requiresMeasurement:true },
+    'roll-2-40x60-provisional': { label:'Rollo 2 columnas · 40x60 mm · 203 DPI (provisional)', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:0, gapY:0, dpi:203, provisional:true, requiresMeasurement:true },
     'sheet-2': { label:'Hoja 2 columnas · Hoja A4 2 columnas', mediaType:'sheet', width:90, height:45, mediaWidth:210, mediaHeight:297, columns:2, rows:5, gapX:4, gapY:4, dpi:300, marginTop:8, marginRight:8, marginBottom:8, marginLeft:8 },
     'sheet-3': { label:'Hoja 3 columnas · Hoja A4 3 columnas', mediaType:'sheet', width:60, height:35, mediaWidth:210, mediaHeight:297, columns:3, rows:7, gapX:3, gapY:3, dpi:300, marginTop:7, marginRight:7, marginBottom:7, marginLeft:7 },
     'sheet-small': { label:'Hoja A4 stickers pequeños', mediaType:'sheet', width:38, height:25, mediaWidth:210, mediaHeight:297, columns:4, rows:10, gapX:2, gapY:2, dpi:300, marginTop:6, marginRight:6, marginBottom:6, marginLeft:6 },
@@ -5522,7 +5522,24 @@ function parseMoney(value) {
       fontSize -= scale;
       ctx.font = `${weight} ${fontSize}px ${family}`;
     }
-    ctx.fillText(String(text), Number(element.x || 0) * scale, Number(element.y || 0) * scale, maxWidth);
+    const x = Number(element.x || 0) * scale;
+    const y = Number(element.y || 0) * scale;
+    const rotation = Number(element.rotation || 0) * Math.PI / 180;
+    if (rotation) {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(rotation);
+      ctx.fillText(String(text), 0, 0, maxWidth); ctx.restore();
+      return;
+    }
+    ctx.fillText(String(text), x, y, maxWidth);
+  }
+  function drawCanvasElement(ctx, element, scale, x, y, width, height, draw) {
+    const rotation = Number(element.rotation || 0) * Math.PI / 180;
+    if (!rotation) return draw(x * scale, y * scale, width * scale, height * scale);
+    ctx.save();
+    ctx.translate((x + width / 2) * scale, (y + height / 2) * scale);
+    ctx.rotate(rotation);
+    draw(-width * scale / 2, -height * scale / 2, width * scale, height * scale);
+    ctx.restore();
   }
   function loadCanvasImage(src) {
     return new Promise((resolve) => {
@@ -5588,18 +5605,18 @@ function parseMoney(value) {
         const y = Math.max(0, Math.min(baseHeight - size, Number(element.y || 0)));
         const qrCanvas = document.createElement('canvas');
         QR.draw(qrCanvas, productPayload(product), size * scale, Math.max(2, Number(options.qrMargin || 5)), fg, safeColor(options.qrBgColor || options.bgColor, '#ffffff'));
-        ctx.drawImage(qrCanvas, x * scale, y * scale, size * scale, size * scale);
+        drawCanvasElement(ctx, element, scale, x, y, size, size, (dx, dy, dw, dh) => ctx.drawImage(qrCanvas, dx, dy, dw, dh));
       } else if (key === 'barcode') {
         if (typeof window.JsBarcode !== 'function' || !String(product.code || '').trim()) continue;
         try {
           const barcodeCanvas = document.createElement('canvas');
           window.JsBarcode(barcodeCanvas, String(product.code).trim(), { format:'CODE128', displayValue:false, margin:0, background:safeColor(options.bgColor, '#ffffff'), lineColor:fg, height:Math.max(20, Number(element.height || 34) * scale) });
-          ctx.drawImage(barcodeCanvas, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 220) * scale, Number(element.height || 34) * scale);
+          drawCanvasElement(ctx, element, scale, Number(element.x || 0), Number(element.y || 0), Number(element.width || 220), Number(element.height || 34), (dx, dy, dw, dh) => ctx.drawImage(barcodeCanvas, dx, dy, dw, dh));
         } catch {}
       } else if (key === 'logo' || key === 'image') {
         const source = key === 'logo' ? options.businessLogo : product.imageData;
         const image = await loadCanvasImage(source);
-        if (image) ctx.drawImage(image, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 40) * scale, Number(element.height || 40) * scale);
+        if (image) drawCanvasElement(ctx, element, scale, Number(element.x || 0), Number(element.y || 0), Number(element.width || 40), Number(element.height || 40), (dx, dy, dw, dh) => ctx.drawImage(image, dx, dy, dw, dh));
       } else {
         const values = {
           business: String(options.businessName || 'CLICK 360').toUpperCase(),
@@ -5672,12 +5689,12 @@ function parseMoney(value) {
       editorLayout.price.size *= Number(initialTemplate.priceScale || 1);
     }
 
-	    showModal(`<div class="modalHeader"><div><h2>Asistente de impresión</h2><p class="fieldHint">Label Studio · configura papel, diseño y cantidad sin cambiar opciones técnicas del sistema.</p></div><button class="closeBtn" data-close>×</button></div>
-	      <div class="labelModeSwitch" role="group" aria-label="Modo del estudio"><button type="button" class="active" data-label-mode="simple">Modo simple</button><button type="button" data-label-mode="expert">Modo experto</button></div>
+	    showModal(`<div class="modalHeader"><div><h2>Lienzo universal de etiquetas</h2><p class="fieldHint">Diseña con medidas físicas. La vista, el PDF y la impresión comparten un único plan.</p></div><button class="closeBtn" data-close>×</button></div>
+	      <div class="labelModeSwitch" role="group" aria-label="Modo del lienzo"><button type="button" class="active" data-label-mode="simple">Modo simple · Lienzo</button><button type="button" data-label-mode="expert">Modo experto · Asistente avanzado</button></div>
 	      <div class="smartPrintProgress"><span id="smartPrintStepText">Paso 1 de 9</span><progress id="smartPrintProgress" max="9" value="1">1 de 9</progress></div>
 	      <ol class="labelGuideSteps smartPrintSteps"><li class="active" data-smart-step-nav="1"><b>1</b><span>Salida</span></li><li data-smart-step-nav="2"><b>2</b><span>Papel</span></li><li data-smart-step-nav="3"><b>3</b><span>Medidas</span></li><li data-smart-step-nav="4"><b>4</b><span>Contenido</span></li><li data-smart-step-nav="5"><b>5</b><span>Cantidad</span></li><li data-smart-step-nav="6"><b>6</b><span>Inicio</span></li><li data-smart-step-nav="7"><b>7</b><span>Vista</span></li><li data-smart-step-nav="8"><b>8</b><span>Revisión</span></li><li data-smart-step-nav="9"><b>9</b><span>Imprimir</span></li></ol>
 	      <div class="labelCustomizerLayout">
-		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Editor visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
+		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Lienzo visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><div class="labelCanvasActions" role="toolbar" aria-label="Acciones del lienzo"><button type="button" class="btn" id="labelCanvasUndo" title="Deshacer">${icon('undo-2')}</button><button type="button" class="btn" id="labelCanvasRedo" title="Rehacer">${icon('redo-2')}</button><button type="button" class="btn" id="labelCanvasDuplicate">${icon('copy')} Duplicar</button><button type="button" class="btn" id="labelCanvasRotate">${icon('rotate-cw')} Rotar</button><button type="button" class="btn" id="labelCanvasAlign">${icon('align-center')} Alinear</button></div><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
 		          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="system" checked><span>${icon('printer')}<b>Impresora instalada</b><small>CLICK abrirá el diálogo de Chrome o Windows.</small></span></label><label><input type="radio" name="smartPrintOutput" value="pdf"><span>${icon('file-down')}<b>Guardar como PDF</b><small>Genera un archivo con la misma geometría.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
 		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
@@ -5771,6 +5788,45 @@ function parseMoney(value) {
     $('#smartPrintHelp').onclick = () => toast(smartStepHelp[smartPrintStep], 'ok');
     showSmartPrintStep(1);
 	    const canvas = $('#labelPreviewCanvas');
+	    let canvasHistory = [JSON.stringify(editorLayout)];
+	    let canvasHistoryIndex = 0;
+	    const rememberCanvasLayout = () => {
+	      const snapshot = JSON.stringify(editorLayout);
+	      if (canvasHistory[canvasHistoryIndex] === snapshot) return;
+	      canvasHistory = canvasHistory.slice(0, canvasHistoryIndex + 1).concat(snapshot).slice(-40);
+	      canvasHistoryIndex = canvasHistory.length - 1;
+	    };
+	    const restoreCanvasLayout = (direction) => {
+	      const next = canvasHistoryIndex + direction;
+	      if (next < 0 || next >= canvasHistory.length) return;
+	      canvasHistoryIndex = next;
+	      editorLayout = normalizedLabelLayout(JSON.parse(canvasHistory[canvasHistoryIndex]));
+	      syncElementControls();
+	      updatePreview();
+	    };
+	    $('#labelCanvasUndo').onclick = () => restoreCanvasLayout(-1);
+	    $('#labelCanvasRedo').onclick = () => restoreCanvasLayout(1);
+	    $('#labelCanvasRotate').onclick = () => {
+	      const element = editorLayout[elementSelect.value];
+	      if (!element || element.locked) return toast('Desbloquea el elemento para rotarlo.', 'err');
+	      element.rotation = (Number(element.rotation || 0) + 90) % 360;
+	      rememberCanvasLayout(); syncElementControls(); updatePreview();
+	    };
+	    $('#labelCanvasAlign').onclick = () => {
+	      const element = editorLayout[elementSelect.value];
+	      if (!element || element.locked) return toast('Desbloquea el elemento para alinearlo.', 'err');
+	      const baseWidth = Number(canvas.dataset.baseWidth || 260);
+	      element.x = ['qr','barcode','logo','image'].includes(elementSelect.value) ? Math.max(0, (baseWidth - Number(element.width || 0)) / 2) : baseWidth / 2;
+	      rememberCanvasLayout(); syncElementControls(); updatePreview();
+	    };
+	    $('#labelCanvasDuplicate').onclick = () => {
+	      const selected = editorLayout[elementSelect.value];
+	      if (!selected || selected.locked) return toast('Desbloquea el elemento para duplicarlo.', 'err');
+	      editorLayout.customText = { ...selected, x:Number(selected.x || 0) + 10, y:Number(selected.y || 0) + 10, visible:true, locked:false, z:Math.max(...Object.values(editorLayout).map((item) => Number(item.z || 0))) + 1 };
+	      $('#labelCustomText').value = $('#labelCustomText').value.trim() || 'Texto duplicado';
+	      elementSelect.value = 'customText';
+	      rememberCanvasLayout(); syncElementControls(); updatePreview();
+	    };
 	    $('#applyTemplateSelect').value = activeTemplateId;
 	    $('#labelProfileSelect').value = activePrintProfileId;
 	    $('#labelTaxDisplay').value = initialTemplate?.taxDisplay || 'inherit';
@@ -6220,7 +6276,7 @@ function parseMoney(value) {
       updatePreview();
       event.preventDefault();
     });
-    const stopDrag = () => { dragState = null; };
+	    const stopDrag = () => { if (dragState) rememberCanvasLayout(); dragState = null; };
     canvas.addEventListener('pointerup', stopDrag);
     canvas.addEventListener('pointercancel', stopDrag);
     syncElementControls();
@@ -6807,6 +6863,11 @@ function parseMoney(value) {
     };
   }
   function buildLabelSheetPlan(groups, options = {}) {
+    const universal = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (universal?.buildPrintPlan) return universal.buildPrintPlan(groups, printPaperFromOptions(options), {
+      startSlot: options.startSlot,
+      usedSlots: options.usedSlots
+    });
     const core = window.CLICK360_SMART_PRINT;
     if (!core?.buildSheetPlan) {
       return { valid:false, errors:['El motor físico de impresión no está disponible. Recarga CLICK 360.'], items:[], count:0, columns:1, rows:1, capacity:1, pages:[], mediaType:'roll' };
