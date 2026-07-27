@@ -15,7 +15,9 @@
     "admin:install": "npm ci --prefix tools/admin",
     "admin:qa": "npm run qa:fixtures --prefix tools/admin",
     "admin:access": "node scripts/admin-access-v16.mjs",
-    "qa:labels:e2e": "sh qa/run-p2-universal-label-browser-e2e.sh"
+    "qa:labels:e2e": "sh qa/run-p2-universal-label-browser-e2e.sh",
+    "qa:module-visuals:e2e": "sh qa/run-p2-module-visual-browser-e2e.sh",
+    "qa:integration": "node qa-p2-universal-platform-integration-harness.cjs && npm run qa:workers:e2e && npm run qa:restaurant:e2e && npm run qa:logistics:e2e && npm run qa:module-visuals:e2e && npm run qa:labels:e2e"
   },
   "dependencies": {
     "@zxing/browser": "^0.1.5",
