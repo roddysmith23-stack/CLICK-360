@@ -117,9 +117,12 @@
     const writable = membershipActive && !access.suspended && !access.expired && access.readOnly !== true;
     const modules = configuredModuleMap(business, access);
     const context = { businessId: text(business.id), uid: normalizedMember.uid || text(device.uid), environment: device.environment || 'local' };
+    const featureEnabled = {};
     for (const [module, flagKey] of Object.entries(FEATURE_FOR_MODULE)) {
-      modules[module] = modules[module] === true && isFlagEnabled(featureFlags, flagKey, context);
+      featureEnabled[module] = isFlagEnabled(featureFlags, flagKey, context);
+      modules[module] = modules[module] === true && featureEnabled[module];
     }
+    if (modules.workers && !isOwner && normalizedMember.roleId !== 'admin') modules.workers = false;
     modules.admin = modules.admin === true && isOwner;
     if (!membershipActive) {
       for (const module of MODULES) modules[module] = module === 'core';
@@ -146,7 +149,9 @@
     if (!membershipActive) { reasons.push('membership_not_active'); warnings.push('El usuario no tiene una membresia activa para este negocio.'); }
     if (access.suspended) { reasons.push('account_suspended'); warnings.push('La cuenta esta suspendida y no puede escribir.'); }
     if (access.expired) { reasons.push('access_expired'); warnings.push('El plan actual limita las operaciones de escritura.'); }
-    for (const [module, flagKey] of Object.entries(FEATURE_FOR_MODULE)) if (!modules[module]) reasons.push(`${flagKey}_off`);
+    for (const [module, flagKey] of Object.entries(FEATURE_FOR_MODULE)) {
+      if (!modules[module]) reasons.push(module === 'workers' && featureEnabled[module] ? 'workers_role_denied' : `${flagKey}_off`);
+    }
     return { modules, permissions, readOnly: !writable, limits: planLimits(access), warnings, reasons: unique(reasons), membership: normalizedMember, account: access };
   }
   function can(resolution, permission) {

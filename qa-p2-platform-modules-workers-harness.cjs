@@ -74,6 +74,8 @@ async function expectReject(fn, code) {
 
   const cashier = resolve({ membership: P.normalizeMembership({ uid: 'cashier-alpha', businessId: 'biz-alpha', roleId: 'cashier', status: 'active' }), uid: 'cashier-alpha' });
   assert.equal(P.can(cashier, 'sales.create'), true, 'cashier can sell');
+  assert.equal(cashier.modules.workers, false, 'a cashier cannot receive the team module merely because the feature is enabled');
+  assert.equal(cashier.reasons.includes('workers_role_denied'), true, 'the resolver explains the worker-module denial without pretending the flag is off');
   assert.equal(P.can(cashier, 'members.manage'), false, 'cashier cannot manage members');
   assert.equal(P.can(cashier, 'inventory.write'), false, 'cashier cannot alter inventory');
   const kitchen = resolve({ membership: P.normalizeMembership({ uid: 'kitchen-alpha', businessId: 'biz-alpha', roleId: 'kitchen', status: 'active' }), uid: 'kitchen-alpha' });
