@@ -99,8 +99,8 @@ assert(firebase.includes('PENDING_REMOTE_SYNC_GRACE_MS'), 'temporary pending gat
 assert(firebase.includes('pendingRemoteSync = event.detail?.pendingRemoteSync !== false'), 'local-state events distinguish real pending writes from non-blocking switches');
 assert(storage.includes('materialHash: String(metadata.materialHash'), 'IndexedDB snapshot stores material hash');
 assert(storage.includes('pendingCreatedAtMs: Number(metadata.pendingCreatedAtMs'), 'IndexedDB snapshot stores pending creation time');
-assert(app.includes("const APP_RELEASE_VERSION = '1.0.4-p2'"), 'app version is current candidate');
-assert(runtime.includes("const APP_VERSION = '1.0.4-p2'"), 'runtime version is current candidate');
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-5c-r1'"), 'service worker cache is current');
+assert(app.includes("const APP_RELEASE_VERSION = '1.0.4-p3'"), 'app version is current candidate');
+assert(runtime.includes("const APP_VERSION = '1.0.4-p3'"), 'runtime version is current candidate');
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-5d-r1'"), 'service worker cache is current');
 
 console.log('PASS P1.1b sync guard harness: stale pending/conflict locks clear, real pending/conflicts remain protected');

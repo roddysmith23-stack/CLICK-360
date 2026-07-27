@@ -8,8 +8,8 @@ const styles = fs.readFileSync('styles.css', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
-const RELEASE = '1.0.4-p2';
-const ASSET = 'mvp-launch-v16-2-p1-5c-r1';
+const RELEASE = '1.0.4-p3';
+const ASSET = 'mvp-launch-v16-2-p1-5d-r1';
 
 function normalizeP15AState(input) {
   const state = structuredClone(input);

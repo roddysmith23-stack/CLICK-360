@@ -134,9 +134,9 @@ delete incompleteState.auditLogs;
 const incompleteResult = closeCash({ ...incompleteState, dailyReports: [], auditLogs: [] });
 assert.equal(incompleteResult.ok, true, 'incomplete but normalized state can close safely');
 
-assert(app.includes("const APP_RELEASE_VERSION = '1.0.4-p2'"), 'candidate app version is current');
-assert(runtime.includes("const APP_VERSION = '1.0.4-p2'"), 'runtime candidate version is current');
-assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-5c-r1'"), 'service worker cache is current');
+assert(app.includes("const APP_RELEASE_VERSION = '1.0.4-p3'"), 'candidate app version is current');
+assert(runtime.includes("const APP_VERSION = '1.0.4-p3'"), 'runtime candidate version is current');
+assert(worker.includes("const CACHE = 'click360-mvp-launch-v16-2-p1-5d-r1'"), 'service worker cache is current');
 assert(firebase.includes('window.click360WriteGate = writeGateStatus'), 'cash close still uses the existing client write gate');
 for (const stage of [
   'cash_close_validate_access',
