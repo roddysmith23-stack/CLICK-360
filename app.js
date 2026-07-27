@@ -1219,6 +1219,12 @@ function parseMoney(value) {
     out.cashSessions ||= [];
     out.tables ||= [];
     out.tableOrders ||= [];
+    out.restaurantOrders ||= [];
+    out.restaurantPayments ||= [];
+    out.restaurantPrintHistory ||= [];
+    out.restaurantEvents ||= [];
+    out.logistics ||= {};
+    ['vehicles','routes','routeAssignments','loadSheets','routeSales','collections','returns','shortages','overages','routeSettlements','routeExpenses','routeCustomers','events','printHistory'].forEach((key) => { out.logistics[key] ||= []; });
     out.labelPrintHistory ||= [];
     out.notifications ||= [];
     out.legalAcceptances ||= [];
@@ -1238,6 +1244,21 @@ function parseMoney(value) {
     out.settings.activationRequests ||= [];
     out.settings.policies ||= {};
     out.settings.legal ||= {};
+    out.settings.p2 ||= {};
+    out.settings.p2.featureFlags ||= {
+      workerAccessEnabled: { key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      restaurantAdvancedEnabled: { key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      logisticsEnabled: { key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }
+    };
+    out.settings.p2.memberships ||= [];
+    out.settings.p2.invitations ||= [];
+    out.settings.p2.adminActions ||= [];
+    out.settings.p2.diagnostics ||= [];
+    out.settings.restaurantAdvanced ||= {
+      featureFlag: { key:'restaurantAdvancedEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false },
+      settingsByBusiness: {}
+    };
+    out.settings.logisticsAdvanced ||= { featureFlag:{ key:'logisticsEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false }, settingsByBusiness:{} };
     const businessIds = new Set(out.businesses.map((business) => business?.id).filter(Boolean));
     if (!businessIds.has(out.settings.legacyDataBusinessId)) {
       out.settings.legacyDataBusinessId = businessIds.has(out.activeBusinessId)
@@ -1326,11 +1347,16 @@ function parseMoney(value) {
       cashSessions:[],
       tables:[],
       tableOrders:[],
+      restaurantOrders:[],
+      restaurantPayments:[],
+      restaurantPrintHistory:[],
+      restaurantEvents:[],
+      logistics:{ vehicles:[], routes:[], routeAssignments:[], loadSheets:[], routeSales:[], collections:[], returns:[], shortages:[], overages:[], routeSettlements:[], routeExpenses:[], routeCustomers:[], events:[], printHistory:[] },
       labelPrintHistory:[],
       finance:{ payments: [], loans: [], envelopes: [], goals: [] },
       notifications:[],
       legalAcceptances:[],
-      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.2.0' }
+      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, p2:{ featureFlags:{ workerAccessEnabled:{ key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, restaurantAdvancedEnabled:{ key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }, logisticsEnabled:{ key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false } }, memberships:[], invitations:[], adminActions:[], diagnostics:[] }, restaurantAdvanced:{ featureFlag:{ key:'restaurantAdvancedEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false }, settingsByBusiness:{} }, logisticsAdvanced:{ featureFlag:{ key:'logisticsEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false }, settingsByBusiness:{} }, appVersion: '16.2.0' }
     };
   }
 
@@ -1394,6 +1420,57 @@ function parseMoney(value) {
     const u = authUser();
     return u?.role === 'owner' || u?.isOwner === true;
   }
+  function p2PlatformData() {
+    state.settings ||= {};
+    state.settings.p2 ||= {};
+    const p2 = state.settings.p2;
+    p2.featureFlags ||= {
+      workerAccessEnabled: { key:'workerAccessEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      restaurantAdvancedEnabled: { key:'restaurantAdvancedEnabled', enabled:false, rolloutPercentage:0, killSwitch:false },
+      logisticsEnabled: { key:'logisticsEnabled', enabled:false, rolloutPercentage:0, killSwitch:false }
+    };
+    p2.memberships ||= [];
+    p2.invitations ||= [];
+    p2.adminActions ||= [];
+    p2.diagnostics ||= [];
+    return p2;
+  }
+  function p2CurrentMembership(businessId=currentBusiness()?.id) {
+    const domain = window.CLICK360_P2_PLATFORM;
+    const user = authUser();
+    const stored = p2PlatformData().memberships.find((member) => member.businessId === businessId && member.uid && member.uid === user.uid);
+    const fallback = isOwnerUser()
+      ? { id:`owner_${user.uid || 'local'}`, uid:user.uid || '', email:user.email || '', businessId, roleId:'owner', permissions:domain?.rolePermissions?.('owner') || [], status:'active', acceptedAt:new Date(0).toISOString() }
+      : { id:`guest_${user.uid || 'local'}`, uid:user.uid || '', email:user.email || '', businessId, roleId:user.role || 'readonly', permissions:domain?.rolePermissions?.(user.role || 'readonly') || [], status:'active' };
+    return domain?.normalizeMembership ? domain.normalizeMembership(stored || fallback, { businessId }) : (stored || fallback);
+  }
+  function p2ModuleResolution(business=currentBusiness()) {
+    const domain = window.CLICK360_P2_PLATFORM;
+    if (!domain?.resolveEnabledModules || !business) return { modules:{ core:true }, permissions:{}, readOnly:accessInfo().readOnly === true, limits:{}, warnings:[], reasons:['platform_domain_unavailable'] };
+    return domain.resolveEnabledModules({
+      accountAccess: window.click360AccessState || { status:'active', readOnly:accessInfo().readOnly === true },
+      business,
+      membership: p2CurrentMembership(business.id),
+      featureFlags: p2PlatformData().featureFlags,
+      device: { uid:window.click360User?.uid || '', environment:'local' }
+    });
+  }
+  function p2ModuleEnabled(module, business=currentBusiness()) { return p2ModuleResolution(business).modules?.[module] === true; }
+  function p2Can(permission, business=currentBusiness()) {
+    const domain = window.CLICK360_P2_PLATFORM;
+    return domain?.can?.(p2ModuleResolution(business), permission) === true;
+  }
+  function p2Audit(action, details={}) {
+    const event = window.CLICK360_P2_PLATFORM?.auditEvent?.(action, details) || { action, details };
+    addAudit(event.action, event.details || {});
+    p2PlatformData().diagnostics.push({
+      action:event.action,
+      businessId:currentBusiness()?.id || '',
+      createdAt:event.createdAt || new Date().toISOString(),
+      details:event.details || {}
+    });
+  }
+  window.click360P2ResolveModules = () => p2ModuleResolution();
   function saleItems(s) {
     return Array.isArray(s?.items) ? s.items : [];
   }
@@ -1465,6 +1542,10 @@ function parseMoney(value) {
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
   function tablesForBiz(bid=currentBusiness()?.id){ return (state.tables || []).filter(table=>table.businessId===bid); }
   function tableOrdersForBiz(bid=currentBusiness()?.id){ return (state.tableOrders || []).filter(order=>order.businessId===bid); }
+  function restaurantOrdersForBiz(bid=currentBusiness()?.id){ return (state.restaurantOrders || []).filter(order=>order.businessId===bid); }
+  function restaurantPaymentsForBiz(bid=currentBusiness()?.id){ return (state.restaurantPayments || []).filter(payment=>payment.businessId===bid); }
+  function logisticsStore(){ state.logistics ||= {}; ['vehicles','routes','routeAssignments','loadSheets','routeSales','collections','returns','shortages','overages','routeSettlements','routeExpenses','routeCustomers','events','printHistory'].forEach((key) => { state.logistics[key] ||= []; }); return state.logistics; }
+  function logisticsForBiz(key, bid=currentBusiness()?.id){ return (logisticsStore()[key] || []).filter((entry) => entry.businessId === bid); }
   function financeForBiz(kind, bid=currentBusiness()?.id){ return (state.finance?.[kind] || []).filter(entry=>entry.businessId===bid); }
   function labelTemplatesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
@@ -1522,6 +1603,56 @@ function parseMoney(value) {
   function isRestaurantBusiness(business=currentBusiness()) {
     return ['restaurante', 'cafeteria', 'bar'].includes(String(business?.type || '').toLowerCase());
   }
+  function restaurantAdvancedSettings() {
+    state.settings ||= {};
+    state.settings.restaurantAdvanced ||= {};
+    const config = state.settings.restaurantAdvanced;
+    config.featureFlag ||= { key:'restaurantAdvancedEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false };
+    config.settingsByBusiness ||= {};
+    return config;
+  }
+  function restaurantAdvancedEnabled(business=currentBusiness()) {
+    const flag = restaurantAdvancedSettings().featureFlag || {};
+    const businessId = business?.id || '';
+    if (!isRestaurantBusiness(business) || flag.enabled !== true || flag.killSwitch === true) return false;
+    if (Array.isArray(flag.allowedBusinessIds) && flag.allowedBusinessIds.length && !flag.allowedBusinessIds.includes(businessId)) return false;
+    const rollout = Math.max(0, Math.min(100, Number(flag.rolloutPercentage == null ? 100 : flag.rolloutPercentage)));
+    return rollout > 0 && business?.settings?.modules?.restaurant === true;
+  }
+  function restaurantActor() {
+    const user = authUser();
+    return { uid:window.click360User?.uid || '', roleId:user.role || 'readonly', permissions:Array.isArray(user.permissions) ? user.permissions : undefined };
+  }
+  function restaurantCan(permission) {
+    if (isOwnerUser()) return true;
+    return window.CLICK360_P2_RESTAURANT?.hasPermission?.(restaurantActor(), permission) === true;
+  }
+  window.click360RestaurantAdvancedEnabled = () => restaurantAdvancedEnabled();
+  function logisticsAdvancedSettings() {
+    state.settings ||= {};
+    state.settings.logisticsAdvanced ||= {};
+    const config = state.settings.logisticsAdvanced;
+    config.featureFlag ||= { key:'logisticsEnabled', enabled:false, allowedBusinessIds:[], rolloutPercentage:0, killSwitch:false };
+    config.settingsByBusiness ||= {};
+    return config;
+  }
+  function logisticsAdvancedEnabled(business=currentBusiness()) {
+    const flag = logisticsAdvancedSettings().featureFlag || {};
+    const businessId = business?.id || '';
+    if (flag.enabled !== true || flag.killSwitch === true) return false;
+    if (Array.isArray(flag.allowedBusinessIds) && flag.allowedBusinessIds.length && !flag.allowedBusinessIds.includes(businessId)) return false;
+    const rollout = Math.max(0, Math.min(100, Number(flag.rolloutPercentage == null ? 100 : flag.rolloutPercentage)));
+    return rollout > 0 && business?.settings?.modules?.logistics === true;
+  }
+  function logisticsActor() {
+    const user = authUser();
+    return { uid:window.click360User?.uid || '', roleId:user.role || 'readonly', permissions:Array.isArray(user.permissions) ? user.permissions : undefined };
+  }
+  function logisticsCan(permission) {
+    if (isOwnerUser()) return true;
+    return window.CLICK360_P2_LOGISTICS?.hasPermission?.(logisticsActor(), permission) === true;
+  }
+  window.click360LogisticsEnabled = () => logisticsAdvancedEnabled();
   function resolveLabelCopyResult(manualCopies, stock, useStock=false) {
     return window.CLICK360_SMART_PRINT?.resolveCopies(manualCopies, useStock, stock)
       || (() => {
@@ -1599,9 +1730,15 @@ function parseMoney(value) {
       report.businessId === businessId && report.date === date && report.status !== 'reopened');
   }
   function can(section) {
+    if (section === 'admin') return isOwnerUser() && p2ModuleEnabled('admin');
+    if (section === 'workers' && p2ModuleEnabled('workers')) return p2Can('members.read');
     const role = authUser().role;
     if (role === 'owner') return true;
-	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory'].includes(role);
+	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory','server','kitchen','routeSeller','collector','readonly','admin'].includes(role);
+	    if (section === 'restaurant') return restaurantAdvancedEnabled() && restaurantCan('tables.read');
+	    if (section === 'restaurantKds') return restaurantAdvancedEnabled() && restaurantCan('kitchen.read');
+	    if (section === 'logistics') return logisticsAdvancedEnabled() && logisticsCan('routes.read');
+	    if (section === 'logisticsSettlement') return logisticsAdvancedEnabled() && logisticsCan('settlements.read');
     const permissions = window.click360User?.permissions || {};
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
     if (routeModule && Object.keys(permissions).length) return permissions[routeModule]?.view === true;
@@ -1858,7 +1995,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,finance:financeView,help:helpView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,admin:p2AdminView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,restaurant:restaurantAdvancedView,restaurantKds:restaurantKdsView,logistics:logisticsView,logisticsSettlement:logisticsSettlementView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2923,6 +3060,616 @@ function parseMoney(value) {
 	    });
 	  }
 
+    function restaurantDomain() { return window.CLICK360_P2_RESTAURANT; }
+    function restaurantOrderById(orderId) { return restaurantOrdersForBiz().find((order) => order.id === orderId) || null; }
+    function restaurantOpenOrderForTable(tableId) { return restaurantOrdersForBiz().find((order) => order.tableId === tableId && !['paid', 'cancelled'].includes(order.status)) || null; }
+    function restaurantReplaceOrder(nextOrder) {
+      const index = (state.restaurantOrders || []).findIndex((order) => order.id === nextOrder.id && order.businessId === nextOrder.businessId);
+      if (index < 0) state.restaurantOrders.push(nextOrder);
+      else state.restaurantOrders[index] = nextOrder;
+      return nextOrder;
+    }
+    function restaurantStatusLabel(status) {
+      return ({ draft:'Borrador', sent:'Enviada', accepted:'Aceptada', preparing:'Preparando', ready:'Lista', delivered:'Entregada', cancelled:'Cancelada', paid:'Pagada' })[status] || status;
+    }
+    function restaurantTableStateLabel(status) {
+      return ({ free:'Libre', occupied:'Ocupada', preparing:'Preparando', ready:'Lista', to_charge:'Por cobrar', paid:'Pagada', cancelled:'Cancelada' })[status] || status;
+    }
+    function restaurantGuardView() {
+      return `<div class="pageHead"><div><h1>Restaurante avanzado</h1><p>Mesas, comandas, cocina y pagos parciales.</p></div></div><section class="card sectionCard restaurantGuard"><h3>Módulo protegido</h3><p>Restaurante avanzado está desactivado para este negocio. Mesas Lite continúa disponible y no se modificó.</p><button class="btn primary" type="button" onclick="window.click360Route('tables')">Abrir Mesas Lite</button></section>`;
+    }
+    function restaurantAdvancedView() {
+      if (!restaurantAdvancedEnabled()) return restaurantGuardView();
+      if (!restaurantCan('tables.read')) return `<div class="pageHead"><div><h1>Restaurante avanzado</h1><p>No tienes permiso para ver mesas ni comandas.</p></div></div>`;
+      const domain = restaurantDomain();
+      const business = currentBusiness();
+      const tables = tablesForBiz();
+      const orders = restaurantOrdersForBiz();
+      const report = domain.restaurantReport(orders, { businessId:business.id });
+      const tableCards = tables.map((table) => {
+        const order = restaurantOpenOrderForTable(table.id);
+        const stateLabel = order ? restaurantTableStateLabel(order.tableState) : 'Libre';
+        return `<article class="card restaurantTableCard ${escapeHtml(order?.tableState || 'free')}"><header><span><b>${escapeHtml(table.name)}</b><small>${escapeHtml(stateLabel)}</small></span><span class="badge ${order ? 'gold' : 'green'}">${order ? escapeHtml(restaurantStatusLabel(order.status)) : 'Libre'}</span></header><strong>${fmt(order?.total || 0)}</strong><small>${order ? `${escapeHtml(order.serverName || 'Sin mesero')} · saldo ${fmt(order.remaining)}` : 'Sin comanda abierta'}</small><button class="btn ${order ? 'primary' : 'silver'}" data-restaurant-table="${actionId(table.id)}">${order ? 'Abrir comanda' : 'Abrir mesa'}</button></article>`;
+      }).join('');
+      return `<div class="pageHead"><div><h1>Restaurante avanzado</h1><p>Comandas, cocina, pagos e impresión para ${escapeHtml(business.name)}.</p></div><div class="toolbar"><button class="btn" data-restaurant-route="restaurantKds">${icon('cooking-pot')} Cocina</button><button class="btn" data-restaurant-route="tables">${icon('layout-grid')} Mesas Lite</button></div></div>
+        <section class="restaurantSummary"><article class="card"><small>Mesas abiertas</small><b>${report.openOrders}</b><span>${fmt(report.openBalance)} pendiente</span></article><article class="card"><small>Ventas cerradas</small><b>${fmt(report.sales)}</b><span>${report.paidOrders} cuentas · desc. ${fmt(report.discounts)}</span></article><article class="card"><small>Producto destacado</small><b>${escapeHtml(report.bestProduct.name || 'Sin ventas')}</b><span>${fmt(report.bestProduct.sales)}</span></article><article class="card"><small>Tiempo de cocina</small><b>${report.averageKitchenMinutes} min</b><span>Promedio histórico</span></article></section>
+        <section class="card sectionCard restaurantActionBar"><div><h3>Mesas y comandas</h3><p class="fieldHint">Cada comanda queda aislada por negocio. Los cobros parciales requieren caja abierta.</p></div><div class="p2InlineActions"><button class="btn" data-restaurant-route="restaurantKds">Ver KDS</button><button class="btn primary" data-restaurant-route="tables">Crear mesa</button></div></section>
+        <section class="restaurantTableGrid">${tableCards || '<section class="card empty">Primero crea una mesa, barra, delivery o retiro en Mesas Lite.</section>'}</section>
+        <section class="card sectionCard restaurantOrdersPanel"><h3>Comandas abiertas</h3><div class="restaurantOrderList">${orders.filter((order) => !['paid', 'cancelled'].includes(order.status)).map((order) => `<button type="button" data-restaurant-order="${actionId(order.id)}"><span><b>Mesa ${escapeHtml(tables.find((table) => table.id === order.tableId)?.name || order.tableId)}</b><small>${escapeHtml(restaurantStatusLabel(order.status))} · ${escapeHtml(order.serverName || 'Sin mesero')}</small></span><strong>${fmt(order.total)}</strong></button>`).join('') || '<p class="empty">No hay comandas abiertas.</p>'}</div></section>
+        <details class="card sectionCard restaurantHistory"><summary>Reportes de restaurante</summary><ul><li>Ventas por mesa: ${escapeHtml(Object.entries(report.salesByTable).map(([tableId, amount]) => `${tables.find((table) => table.id === tableId)?.name || tableId} ${fmt(amount)}`).join(' · ') || 'Sin cuentas cerradas')}</li><li>Ventas por mesero: ${escapeHtml(Object.entries(report.salesByServer).map(([name, amount]) => `${name} ${fmt(amount)}`).join(' · ') || 'Sin cuentas cerradas')}</li><li>Caja por método: ${escapeHtml(Object.entries(report.cashByMethod).map(([method, amount]) => `${method} ${fmt(amount)}`).join(' · ') || 'Sin cobros')}</li><li>Anulaciones: ${report.cancelledOrders}</li></ul></details>`;
+    }
+    function restaurantKdsActions(order, area) {
+      if (!restaurantCan('kitchen.update')) return '';
+      const next = ({ sent:'accepted', accepted:'preparing', preparing:'ready', ready:'delivered' })[order.areaStatus || order.status];
+      if (!next) return '';
+      const label = ({ accepted:'Aceptar', preparing:'Preparar', ready:'Lista', delivered:'Entregar' })[next];
+      const tone = next === 'ready' ? 'primary' : '';
+      return `<button class="btn ${tone}" data-restaurant-kds="${area}:${next}:${actionId(order.id)}">${label}</button>`;
+    }
+    function restaurantKdsView() {
+      if (!restaurantAdvancedEnabled()) return restaurantGuardView();
+      if (!restaurantCan('kitchen.read')) return `<div class="pageHead"><div><h1>Cocina</h1><p>No tienes permiso para ver pedidos de cocina.</p></div></div>`;
+      const domain = restaurantDomain();
+      const business = currentBusiness();
+      const tables = tablesForBiz();
+      const queue = domain.kitchenQueue(restaurantOrdersForBiz(), { businessId:business.id, area:'kitchen' });
+      const bar = domain.kitchenQueue(restaurantOrdersForBiz(), { businessId:business.id, area:'bar' });
+      const queueHtml = (orders, area) => orders.map((order) => `<article class="card kdsTicket ${escapeHtml(order.areaStatus || order.status)}"><header><span><b>${area === 'bar' ? 'Barra' : 'Cocina'} · ${escapeHtml(tables.find((table) => table.id === order.tableId)?.name || order.tableId)}</b><small>${order.elapsedMinutes} min · ${escapeHtml(order.serverName || 'Sin mesero')}</small></span><span class="badge gold">${escapeHtml(restaurantStatusLabel(order.areaStatus || order.status))}</span></header><ul>${order.items.map((line) => `<li><b>${line.qty} x ${escapeHtml(line.name)}</b>${line.notes ? `<small>${escapeHtml(line.notes)}</small>` : ''}${line.priority === 'high' ? '<em>Prioridad</em>' : ''}</li>`).join('')}</ul><div class="p2InlineActions">${restaurantKdsActions(order, area)}<button class="btn" data-restaurant-print="kitchen:${area}:${actionId(order.id)}">${icon('printer')} Imprimir</button></div></article>`).join('') || '<p class="empty">No hay pedidos en esta área.</p>';
+      return `<div class="pageHead"><div><h1>Cocina y barra</h1><p>Pedidos activos con estados y tiempos visibles.</p></div><div class="toolbar"><button class="btn" data-restaurant-route="restaurant">${icon('arrow-left')} Comandas</button></div></div><section class="kdsGrid"><section><h2>Cocina</h2>${queueHtml(queue, 'kitchen')}</section><section><h2>Barra</h2>${queueHtml(bar, 'bar')}</section></section>`;
+    }
+    function restaurantAddAudit(action, details={}) {
+      state.restaurantEvents ||= [];
+      const event = { id:uid('restaurant-event'), businessId:currentBusiness().id, action, createdAt:new Date().toISOString(), actorId:window.click360User?.uid || '', details };
+      state.restaurantEvents.push(event);
+      addAudit(action, details);
+    }
+    function restaurantSaveLocal(snapshot, route='restaurant') {
+      if (save()) return true;
+      state = snapshot;
+      renderApp(route);
+      return false;
+    }
+    function restaurantOpenTable(tableId) {
+      if (!restaurantAdvancedEnabled() || !restaurantCan('orders.create')) return toast('No tienes permiso para abrir una comanda.', 'err');
+      const table = tablesForBiz().find((item) => item.id === tableId);
+      if (!table) return toast('La mesa no pertenece a este negocio.', 'err');
+      let order = restaurantOpenOrderForTable(tableId);
+      if (!order) {
+        const snapshot = cloneState(state);
+        try {
+          order = restaurantDomain().createOrder({ businessId:currentBusiness().id, tableId, serverId:window.click360User?.uid || '', serverName:authUser().name || '', actor:restaurantActor() });
+          state.restaurantOrders.push(order);
+          table.status = 'occupied'; table.updatedAt = new Date().toISOString();
+          restaurantAddAudit('restaurant_order_opened', { orderId:order.id, tableId });
+          if (!restaurantSaveLocal(snapshot)) return;
+        } catch (error) { return toast('No se pudo abrir la comanda: ' + error.message, 'err'); }
+      }
+      openRestaurantOrderModal(order.id);
+    }
+    function restaurantLineHtml(order) {
+      return (order.items || []).map((line) => `<article class="restaurantLine ${escapeHtml(line.status)}"><span><b>${line.qty} x ${escapeHtml(line.name)}</b><small>${escapeHtml(line.area)} · ${escapeHtml(line.status)}${line.notes ? ` · ${escapeHtml(line.notes)}` : ''}</small></span><strong>${fmt(line.total)}</strong>${restaurantCan('orders.cancel') && line.status !== 'cancelled' ? `<button class="iconBtn danger" data-restaurant-line-cancel="${actionId(order.id)}:${actionId(line.id)}" title="Anular producto">${icon('circle-x')}</button>` : ''}</article>`).join('') || '<p class="empty">Agrega productos para enviar la primera ronda.</p>';
+    }
+    function openRestaurantOrderModal(orderId) {
+      const order = restaurantOrderById(orderId);
+      if (!order) return toast('La comanda ya no está disponible.', 'err');
+      const table = tablesForBiz().find((item) => item.id === order.tableId);
+      const productOptions = productsForBiz().filter((product) => Number(product.qty || 0) > 0).map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${fmt(product.price)} · ${product.qty} disp.</option>`).join('');
+      const history = (order.auditTrail || []).slice(-6).reverse().map((entry) => `<li>${escapeHtml(entry.type)} · ${escapeHtml(entry.at)}</li>`).join('') || '<li>Sin actividad todavía.</li>';
+      const canUpdate = restaurantCan('orders.update');
+      const canMove = restaurantCan('tables.write');
+      const canCharge = restaurantCan('sales.create');
+      const actionButtons = `${canUpdate ? `<button class="btn" data-restaurant-order-action="server:${actionId(order.id)}">Mesero</button><button class="btn" data-restaurant-order-action="send:${actionId(order.id)}">Enviar ronda</button><button class="btn" data-restaurant-order-action="split:${actionId(order.id)}">Dividir cuenta</button>` : ''}${canMove ? `<button class="btn" data-restaurant-order-action="move:${actionId(order.id)}">Mover</button><button class="btn" data-restaurant-order-action="merge:${actionId(order.id)}">Unir</button>` : ''}${restaurantCan('sales.cancel') ? `<button class="btn" data-restaurant-order-action="discount:${actionId(order.id)}">Descuento</button>` : ''}<button class="btn" data-restaurant-print="prebill::${actionId(order.id)}">${icon('receipt')} Precuenta</button>${canCharge ? `<button class="btn primary" data-restaurant-order-action="pay:${actionId(order.id)}">Cobrar</button>` : ''}${restaurantCan('orders.cancel') ? `<button class="btn danger" data-restaurant-order-action="cancel:${actionId(order.id)}">Cancelar comanda</button>` : ''}`;
+      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(table?.name || 'Comanda')}</h2><p>Total ${fmt(order.total)} · saldo ${fmt(order.remaining)} · ${escapeHtml(order.serverName || 'Sin mesero')}</p></div><button class="closeBtn" data-close>×</button></div><section class="restaurantOrderModal"><div class="restaurantLineList">${restaurantLineHtml(order)}</div>${canUpdate ? `<form id="restaurantAddLineForm" class="formGrid"><div class="field full"><label>Producto</label><select id="restaurantLineProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin productos disponibles</option>'}</select></div><div class="field"><label>Cantidad</label><input id="restaurantLineQty" type="number" min="1" max="99" value="1"></div><div class="field"><label>Área</label><select id="restaurantLineArea"><option value="kitchen">Cocina</option><option value="bar">Barra</option></select></div><div class="field"><label>Prioridad</label><select id="restaurantLinePriority"><option value="normal">Normal</option><option value="high">Alta</option></select></div><div class="field"><label>Variante</label><input id="restaurantLineVariant" maxlength="60" placeholder="Ej. término, sabor"></div><div class="field full"><label>Nota</label><input id="restaurantLineNote" maxlength="120" placeholder="Ej. sin ingrediente opcional"></div><button class="btn primary full" type="submit" ${productOptions ? '' : 'disabled'}>${icon('plus')} Agregar a comanda</button></form>` : ''}<div class="restaurantModalActions">${actionButtons}</div><details class="restaurantHistory"><summary>Historial de comanda</summary><ul>${history}</ul></details></section>`);
+      $('#restaurantAddLineForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        const product = productsForBiz().find((item) => item.id === decodeActionId($('#restaurantLineProduct').value));
+        const qty = Math.max(1, Math.min(99, Math.trunc(Number($('#restaurantLineQty').value || 1))));
+        if (!product || Number(product.qty || 0) < qty) return toast('No hay stock suficiente para ese producto.', 'err');
+        try {
+          const next = restaurantDomain().addLine({ order:restaurantOrderById(orderId), actor:restaurantActor(), line:{ productId:product.id, code:product.code, name:product.name, qty, price:product.price, area:$('#restaurantLineArea').value, priority:$('#restaurantLinePriority').value, variant:$('#restaurantLineVariant').value, notes:$('#restaurantLineNote').value } });
+          restaurantReplaceOrder(next); restaurantAddAudit('restaurant_line_added', { orderId, productId:product.id, qty, area:$('#restaurantLineArea').value });
+          if (!restaurantSaveLocal(snapshot)) return;
+          openRestaurantOrderModal(orderId);
+        } catch (error) { toast('No se pudo agregar el producto: ' + error.message, 'err'); }
+      });
+      $$('[data-restaurant-line-cancel]').forEach((button) => button.onclick = () => {
+        const [encodedOrder, encodedLine] = button.dataset.restaurantLineCancel.split(':');
+        const target = restaurantOrderById(decodeActionId(encodedOrder));
+        const reason = prompt('Motivo de anulación', 'Corrección solicitada');
+        if (!reason) return;
+        const snapshot = cloneState(state);
+        try {
+          restaurantReplaceOrder(restaurantDomain().cancelLine({ order:target, lineId:decodeActionId(encodedLine), reason, actor:restaurantActor() }));
+          restaurantAddAudit('restaurant_line_cancelled', { orderId:target.id, lineId:decodeActionId(encodedLine) });
+          if (!restaurantSaveLocal(snapshot)) return;
+          openRestaurantOrderModal(target.id);
+        } catch (error) { toast('No se pudo anular: ' + error.message, 'err'); }
+      });
+      $$('[data-restaurant-order-action]').forEach((button) => button.onclick = () => restaurantHandleOrderAction(button.dataset.restaurantOrderAction));
+      $$('[data-restaurant-print]').forEach((button) => button.onclick = () => {
+        const [kind, area, encodedOrder] = button.dataset.restaurantPrint.split(':');
+        restaurantPrint(decodeActionId(encodedOrder), kind, area);
+      });
+      refreshIcons();
+    }
+    function openRestaurantActionModal(orderId, action) {
+      const order = restaurantOrderById(orderId);
+      if (!order) return;
+      const requiredPermission = ({ server:'orders.update', split:'orders.update', move:'tables.write', merge:'tables.write', discount:'sales.cancel', cancel:'orders.cancel' })[action];
+      if (!requiredPermission || !restaurantCan(requiredPermission)) return toast('No tienes permiso para esta acción.', 'err');
+      const tableName = tablesForBiz().find((table) => table.id === order.tableId)?.name || order.tableId;
+      let title = '', description = '', fields = '', submitLabel = 'Guardar';
+      if (action === 'server') {
+        title = 'Asignar mesero'; description = `Comanda de ${tableName}.`;
+        fields = `<div class="field full"><label>Mesero asignado</label><input id="restaurantActionServer" maxlength="80" required value="${escapeHtml(order.serverName || '')}" placeholder="Nombre del mesero"></div>`;
+      } else if (action === 'split') {
+        title = 'Dividir cuenta'; description = 'La división guía los pagos parciales y conserva el total exacto.';
+        fields = `<div class="field"><label>Dividir por</label><select id="restaurantActionSplitMode"><option value="person">Persona</option><option value="product">Producto</option><option value="quantity">Cantidad</option></select></div><div class="field"><label>Número de partes</label><input id="restaurantActionSplitParts" type="number" min="2" max="20" value="2" required></div>`;
+        submitLabel = 'Preparar división';
+      } else if (action === 'move') {
+        const destinations = tablesForBiz().filter((table) => table.id !== order.tableId && !restaurantOpenOrderForTable(table.id));
+        if (!destinations.length) return toast('No hay una mesa libre disponible para mover esta comanda.', 'err');
+        title = 'Mover comanda'; description = `La cuenta se moverá desde ${tableName} a la mesa seleccionada.`;
+        fields = `<div class="field full"><label>Mesa destino</label><select id="restaurantActionTable">${destinations.map((table) => `<option value="${actionId(table.id)}">${escapeHtml(table.name)}</option>`).join('')}</select></div>`;
+        submitLabel = 'Mover comanda';
+      } else if (action === 'merge') {
+        const sources = restaurantOrdersForBiz().filter((candidate) => candidate.id !== order.id && !['paid','cancelled'].includes(candidate.status) && !candidate.payments?.length);
+        if (!sources.length) return toast('No hay otra comanda abierta sin pagos para unir.', 'err');
+        title = 'Unir comandas'; description = 'La comanda elegida se archivará y sus productos pasarán a esta cuenta. Esta acción no está disponible después de un pago.';
+        fields = `<div class="field full"><label>Comanda a unir</label><select id="restaurantActionSource">${sources.map((candidate) => `<option value="${actionId(candidate.id)}">${escapeHtml(tablesForBiz().find((table) => table.id === candidate.tableId)?.name || candidate.tableId)} · ${fmt(candidate.subtotal)}</option>`).join('')}</select></div>`;
+        submitLabel = 'Unir comandas';
+      } else if (action === 'discount') {
+        title = 'Aplicar descuento'; description = 'El descuento no puede superar el subtotal y queda auditado antes del cobro.';
+        fields = `<div class="field"><label>Monto de descuento</label><input id="restaurantActionDiscount" type="number" min="0.01" max="${order.subtotal}" step="0.01" required></div><div class="field"><label>Motivo</label><input id="restaurantActionDiscountReason" maxlength="120" required placeholder="Ej. promoción autorizada"></div>`;
+        submitLabel = 'Aplicar descuento';
+      } else if (action === 'cancel') {
+        title = 'Cancelar comanda'; description = 'Esta acción requiere motivo y queda en el historial.';
+        fields = `<div class="field full"><label>Motivo de cancelación</label><textarea id="restaurantActionReason" maxlength="160" required placeholder="Explica el motivo"></textarea></div>`;
+        submitLabel = 'Cancelar comanda';
+      } else return;
+      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(title)}</h2><p>${escapeHtml(description)}</p></div><button class="closeBtn" data-close>×</button></div><form id="restaurantActionForm" class="formGrid">${fields}<button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">${escapeHtml(submitLabel)}</button></form>`);
+      $('#restaurantActionForm').onsubmit = (event) => {
+        event.preventDefault();
+        const current = restaurantOrderById(orderId);
+        if (!current) return toast('La comanda ya no está disponible.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          if (action === 'server') {
+            const serverName = $('#restaurantActionServer').value.trim();
+            const next = { ...current, serverName, auditTrail:[...(current.auditTrail || []), { id:uid('restaurant-audit'), type:'server_assigned', at:new Date().toISOString(), actorId:window.click360User?.uid || '', details:{} }] };
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_server_assigned', { orderId:current.id });
+          } else if (action === 'split') {
+            const next = restaurantDomain().splitOrder({ order:current, mode:$('#restaurantActionSplitMode').value, parts:Number($('#restaurantActionSplitParts').value), actor:restaurantActor() });
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_bill_split', { orderId:current.id, mode:next.splitPlan.mode, parts:next.splitPlan.parts });
+          } else if (action === 'move') {
+            const tableId = decodeActionId($('#restaurantActionTable').value);
+            if (restaurantOpenOrderForTable(tableId)) return toast('La mesa destino ya tiene una comanda abierta.', 'err');
+            const next = restaurantDomain().moveOrder({ order:current, tableId, actor:restaurantActor() });
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_order_moved', { orderId:current.id, from:current.tableId, to:tableId });
+          } else if (action === 'merge') {
+            const source = restaurantOrderById(decodeActionId($('#restaurantActionSource').value));
+            if (!source) return toast('La comanda a unir ya no está disponible.', 'err');
+            const merged = restaurantDomain().mergeOrders({ target:current, source, actor:restaurantActor() });
+            restaurantReplaceOrder(merged.target); restaurantReplaceOrder(merged.source); restaurantAddAudit('restaurant_orders_merged', { targetOrderId:current.id, sourceOrderId:source.id });
+          } else if (action === 'discount') {
+            const next = restaurantDomain().applyDiscount({ order:current, amount:parseMoney($('#restaurantActionDiscount').value), reason:$('#restaurantActionDiscountReason').value, actor:restaurantActor() });
+            restaurantReplaceOrder(next); restaurantAddAudit('restaurant_discount_applied', { orderId:current.id, amount:next.discount });
+          } else if (action === 'cancel') {
+            const reason = $('#restaurantActionReason').value.trim();
+            if (!reason) return toast('Escribe el motivo de cancelación.', 'err');
+            const next = restaurantDomain().transitionOrder({ order:current, status:'cancelled', actor:restaurantActor() });
+            next.cancellationReason = reason; restaurantReplaceOrder(next);
+            const table = tablesForBiz().find((item) => item.id === current.tableId); if (table) table.status = 'free';
+            restaurantAddAudit('restaurant_order_cancelled', { orderId:current.id, reason });
+          }
+          if (!restaurantSaveLocal(snapshot)) return;
+          if (action === 'move' || action === 'cancel') { closeModal(); renderApp('restaurant'); }
+          else { openRestaurantOrderModal(orderId); if (action === 'split') toast('División preparada para los pagos parciales.'); }
+        } catch (error) { state = snapshot; toast('No se pudo completar la acción: ' + error.message, 'err'); }
+      };
+    }
+    function restaurantHandleOrderAction(value) {
+      const [action, encoded] = value.split(':');
+      const order = restaurantOrderById(decodeActionId(encoded));
+      if (!order) return;
+      if (action === 'pay') return openRestaurantPaymentModal(order.id);
+      if (action === 'send') {
+        const snapshot = cloneState(state);
+        try { restaurantReplaceOrder(restaurantDomain().sendRound({ order, actor:restaurantActor() })); restaurantAddAudit('restaurant_round_sent', { orderId:order.id }); if (!restaurantSaveLocal(snapshot)) return; openRestaurantOrderModal(order.id); } catch (error) { toast('No se pudo enviar la ronda: ' + error.message, 'err'); }
+        return;
+      }
+      openRestaurantActionModal(order.id, action);
+    }
+    function restaurantStockAvailable(order) {
+      return restaurantDomain().activeLines(order).every((line) => {
+        const product = productsForBiz().find((item) => item.id === line.productId);
+        return product && Number(product.qty || 0) >= Number(line.qty || 0);
+      });
+    }
+    function openRestaurantPaymentModal(orderId) {
+      const order = restaurantOrderById(orderId);
+      if (!order) return;
+      showModal(`<div class="modalHeader"><div><h2>Cobrar comanda</h2><p>Total ${fmt(order.total)} · saldo ${fmt(order.remaining)}</p></div><button class="closeBtn" data-close>×</button></div><form id="restaurantPaymentForm" class="formGrid"><div class="field"><label>Monto</label><input id="restaurantPaymentAmount" type="number" step="0.01" min="0.01" max="${order.remaining}" value="${order.remaining}"></div><div class="field"><label>Método</label><select id="restaurantPaymentMethod"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select></div><div class="field full"><label>Nota</label><input id="restaurantPaymentNote" maxlength="100" placeholder="Opcional"></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Registrar pago</button></form>`);
+      $('#restaurantPaymentForm').onsubmit = async (event) => {
+        event.preventDefault();
+        const current = restaurantOrderById(orderId);
+        if (!current || !isDayStarted() || isDayClosed()) return toast('Abre una caja activa antes de cobrar.', 'err');
+        if (!restaurantStockAvailable(current)) return toast('No hay stock suficiente para cerrar esta comanda.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const paymentResult = restaurantDomain().recordPayment({ order:current, amount:parseMoney($('#restaurantPaymentAmount').value), method:$('#restaurantPaymentMethod').value, note:$('#restaurantPaymentNote').value, actor:restaurantActor(), idempotencyKey:uid('restaurant-payment') });
+          let nextOrder = paymentResult.order;
+          const payment = { ...paymentResult.payment, businessId:current.businessId, orderId:current.id, tableId:current.tableId };
+          state.restaurantPayments.push(payment);
+          state.movements.push({ id:uid('mov'), businessId:current.businessId, date:today(), when:nowLabel(), kind:'ingreso', amount:payment.amount, note:`Pago restaurante ${current.tableId}`, restaurantPaymentId:payment.id, restaurantOrderId:current.id, paymentMethod:payment.method, cashSessionId:currentOpenCashSession()?.id || '', createdAtMs:Date.now(), createdBy:authUser().name });
+          if (nextOrder.remaining === 0) {
+            nextOrder = restaurantDomain().finalizePayment({ order:nextOrder, actor:restaurantActor() });
+            const saleId = uid('sale');
+            nextOrder.saleId = saleId;
+            const lines = restaurantDomain().activeLines(nextOrder);
+            state.sales.push({ id:saleId, operationId:uid('restaurant-sale'), businessId:current.businessId, tableId:current.tableId, restaurantOrderId:current.id, date:today(), when:nowLabel(), items:lines.map((line) => ({ id:line.productId, name:line.name, code:line.code, qty:line.qty, price:line.unitPrice, total:line.total })), subtotal:nextOrder.subtotal, iva:0, discount:nextOrder.discount || 0, total:nextOrder.total, method:nextOrder.payments.length > 1 ? 'Mixto' : nextOrder.payments[0]?.method || '', status:'paid', received:nextOrder.paid, tendered:nextOrder.paid, change:0, balance:0, user:authUser().name, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
+            lines.forEach((line) => { const product = productsForBiz().find((item) => item.id === line.productId); if (product) { product.qty -= line.qty; product.updatedAt = new Date().toISOString(); product.updatedAtMs = Date.now(); } });
+            const table = tablesForBiz().find((item) => item.id === current.tableId); if (table) { table.status = 'free'; table.updatedAt = new Date().toISOString(); }
+          }
+          restaurantReplaceOrder(nextOrder);
+          restaurantAddAudit('restaurant_payment_recorded', { orderId:current.id, paymentId:payment.id, amount:payment.amount, final:nextOrder.status === 'paid' });
+          const committed = await commitCriticalMutation(snapshot, 'restaurant_payment_recorded', (next) => next.restaurantPayments?.some((entry) => entry.id === payment.id && entry.businessId === current.businessId));
+          if (!committed.ok) return;
+          closeModal(); renderApp('restaurant'); toast(nextOrder.status === 'paid' ? 'Cuenta pagada y mesa liberada.' : `Pago registrado. Saldo ${fmt(nextOrder.remaining)}.`);
+        } catch (error) { state = snapshot; toast('No se pudo registrar el pago: ' + error.message, 'err'); }
+      };
+    }
+    function restaurantPrint(orderId, kind, area = '') {
+      const order = restaurantOrderById(orderId);
+      if (!order) return;
+      const html = restaurantDomain().printDocument({ order, businessName:currentBusiness().name, kind, area:area || undefined });
+      state.restaurantPrintHistory.push({ id:uid('restaurant-print'), businessId:currentBusiness().id, orderId, kind, area, createdAt:new Date().toISOString(), createdBy:authUser().name });
+      restaurantAddAudit('restaurant_printed', { orderId, kind, area });
+      save({ nonBlockingSync:true, syncSource:'restaurant_print_audit' });
+      handoffPrint({ html, media:'receipt-80', filename:`Restaurante_${kind}_${order.id.slice(-6)}.pdf` }, 'system');
+    }
+    function bindRestaurantAdvanced() {
+      $$('[data-restaurant-route]').forEach((button) => button.onclick = () => renderApp(button.dataset.restaurantRoute));
+      $$('[data-restaurant-table]').forEach((button) => button.onclick = () => restaurantOpenTable(decodeActionId(button.dataset.restaurantTable)));
+      $$('[data-restaurant-order]').forEach((button) => button.onclick = () => openRestaurantOrderModal(decodeActionId(button.dataset.restaurantOrder)));
+    }
+    function bindRestaurantKds() {
+      $$('[data-restaurant-route]').forEach((button) => button.onclick = () => renderApp(button.dataset.restaurantRoute));
+      $$('[data-restaurant-kds]').forEach((button) => button.onclick = () => {
+        const [area, status, encoded] = button.dataset.restaurantKds.split(':');
+        const order = restaurantOrderById(decodeActionId(encoded));
+        if (!order) return;
+        const snapshot = cloneState(state);
+        try { restaurantReplaceOrder(restaurantDomain().transitionOrder({ order, status, actor:restaurantActor(), area })); restaurantAddAudit('restaurant_kds_status', { orderId:order.id, status, area }); if (!restaurantSaveLocal(snapshot, 'restaurantKds')) return; renderApp('restaurantKds'); } catch (error) { toast('No se pudo cambiar el estado: ' + error.message, 'err'); }
+      });
+      $$('[data-restaurant-print]').forEach((button) => button.onclick = () => { const [kind, area, encoded] = button.dataset.restaurantPrint.split(':'); restaurantPrint(decodeActionId(encoded), kind, area); });
+    }
+    function logisticsDomain() { return window.CLICK360_P2_LOGISTICS; }
+    function logisticsRouteById(routeId) {
+      const route = logisticsForBiz('routes').find((entry) => entry.id === routeId) || null;
+      return route && logisticsDomain()?.canAccessRoute?.(route, logisticsActor(), 'read') ? route : null;
+    }
+    function logisticsVisibleRoutes() {
+      return logisticsForBiz('routes').filter((route) => logisticsDomain()?.canAccessRoute?.(route, logisticsActor(), 'read') === true);
+    }
+    function logisticsSheetForRoute(routeId) { return logisticsForBiz('loadSheets').find((sheet) => sheet.routeId === routeId && sheet.status !== 'cancelled') || null; }
+    function logisticsSettlementForRoute(routeId) { return logisticsForBiz('routeSettlements').filter((entry) => entry.routeId === routeId && entry.status !== 'cancelled').at(-1) || null; }
+    function logisticsReplace(key, record) {
+      const rows = logisticsStore()[key] || (logisticsStore()[key] = []);
+      const index = rows.findIndex((entry) => entry.id === record.id && entry.businessId === record.businessId);
+      if (index < 0) rows.push(record); else rows[index] = record;
+      return record;
+    }
+    function logisticsReplaceProducts(nextProducts) {
+      const byId = new Map((nextProducts || []).map((product) => [product.id, product]));
+      state.products = state.products.map((product) => byId.get(product.id) || product);
+    }
+    function logisticsAddAudit(action, details={}) {
+      const store = logisticsStore();
+      store.events.push({ id:uid('logistics-event'), businessId:currentBusiness().id, action, createdAt:new Date().toISOString(), createdBy:authUser().name || '', details });
+      addAudit(action, details);
+    }
+    function logisticsRouteCustomer(route, name) {
+      const normalized = String(name || '').trim().toLocaleLowerCase();
+      if (!normalized) throw new Error('route_customer_required');
+      const rows = logisticsStore().routeCustomers;
+      let customer = rows.find((entry) => entry.businessId === currentBusiness().id && String(entry.name || '').trim().toLocaleLowerCase() === normalized) || null;
+      if (!customer) {
+        customer = { id:uid('route-customer'), businessId:currentBusiness().id, name:String(name).trim(), routeIds:[route.id], createdAt:new Date().toISOString(), createdBy:authUser().name || '' };
+        rows.push(customer);
+      } else if (!customer.routeIds?.includes(route.id)) {
+        customer.routeIds = [...(customer.routeIds || []), route.id];
+        customer.updatedAt = new Date().toISOString();
+      }
+      return customer;
+    }
+    function logisticsSave(snapshot, view='logistics') {
+      if (save()) return true;
+      state = snapshot;
+      renderApp(view);
+      return false;
+    }
+    function logisticsRouteLabel(status) {
+      return ({ draft:'Borrador', planned:'Planificada', dispatched:'En ruta', in_progress:'En curso', settlement_pending:'Pendiente de liquidación', closed:'Cerrada', cancelled:'Cancelada' })[status] || status;
+    }
+    function logisticsSheetLabel(status) { return ({ draft:'Borrador', confirmed:'Confirmada', dispatched:'Despachada', closed:'Cerrada', cancelled:'Cancelada' })[status] || status; }
+    function logisticsSettlementLabel(status) { return ({ draft:'Borrador', pending_approval:'Pendiente de aprobación', approved:'Aprobada', closed:'Cerrada', reopened:'Reabierta', cancelled:'Cancelada' })[status] || status; }
+    function logisticsGuardView() {
+      return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>Vehículos, carga, cobranzas y liquidación.</p></div></div><section class="card sectionCard logisticsGuard"><h3>Módulo protegido</h3><p>Logística está desactivada para este negocio. El módulo se habilita por negocio y permiso, sin exponer rutas de otros negocios.</p></section>`;
+    }
+    function logisticsView() {
+      if (!logisticsAdvancedEnabled()) return logisticsGuardView();
+      if (!logisticsCan('routes.read')) return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>No tienes permiso para consultar rutas.</p></div></div>`;
+      const domain = logisticsDomain();
+      const business = currentBusiness();
+      const routes = logisticsVisibleRoutes();
+      const routeIds = new Set(routes.map((route) => route.id));
+      const privileged = ['owner','admin','inventory'].includes(String(logisticsActor().roleId || '').toLowerCase());
+      const vehicles = logisticsForBiz('vehicles').filter((vehicle) => privileged || routes.some((route) => route.vehicleId === vehicle.id));
+      const report = domain.logisticsReport({ businessId:business.id, routes, routeSales:logisticsForBiz('routeSales').filter((entry) => routeIds.has(entry.routeId)), collections:logisticsForBiz('collections').filter((entry) => routeIds.has(entry.routeId)), returns:logisticsForBiz('returns').filter((entry) => routeIds.has(entry.routeId)), settlements:logisticsForBiz('routeSettlements').filter((entry) => routeIds.has(entry.routeId)) });
+      const vehicleRows = vehicles.map((vehicle) => `<article class="card logisticsVehicle"><span><b>${escapeHtml(vehicle.name || vehicle.plate)}</b><small>${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.driverName || 'Sin conductor')} · ${escapeHtml(vehicle.status)}</small></span><strong>${Number(vehicle.capacity || 0)} ${escapeHtml(vehicle.capacityUnit || 'unidades')}</strong></article>`).join('') || '<p class="empty">Sin vehículos registrados.</p>';
+      const routeRows = routes.slice().sort((first, second) => String(second.date || '').localeCompare(String(first.date || ''))).map((route) => {
+        const sheet = logisticsSheetForRoute(route.id);
+        const settlement = logisticsSettlementForRoute(route.id);
+        return `<article class="card logisticsRouteCard ${escapeHtml(route.status)}"><header><span><b>${escapeHtml(route.name)}</b><small>${escapeHtml(route.date)} · ${escapeHtml(route.zone || 'Sin zona')}</small></span><span class="badge ${route.status === 'closed' ? 'green' : 'gold'}">${escapeHtml(logisticsRouteLabel(route.status))}</span></header><p>${escapeHtml(route.sellerName || 'Sin vendedor')} · ${escapeHtml(vehicles.find((vehicle) => vehicle.id === route.vehicleId)?.plate || 'Sin vehículo')}</p><small>${sheet ? `Carga ${escapeHtml(logisticsSheetLabel(sheet.status))}` : 'Sin hoja de carga'}${settlement ? ` · ${escapeHtml(logisticsSettlementLabel(settlement.status))}` : ''}</small><div class="p2InlineActions"><button class="btn primary" data-logistics-route="${actionId(route.id)}">Abrir ruta</button><button class="btn" data-logistics-print="load:${actionId(route.id)}">${icon('printer')} Carga</button></div></article>`;
+      }).join('') || '<p class="empty">Crea una ruta para iniciar una hoja de carga.</p>';
+      return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>Operación de distribución aislada para ${escapeHtml(business.name)}.</p></div><div class="toolbar">${logisticsCan('vehicles.write') ? `<button class="btn" id="newLogisticsVehicle">${icon('truck')} Vehículo</button>` : ''}${logisticsCan('routes.write') ? `<button class="btn primary" id="newLogisticsRoute">${icon('route')} Nueva ruta</button>` : ''}</div></div>
+        <section class="logisticsSummary"><article class="card"><small>Rutas abiertas</small><b>${report.openRoutes}</b><span>${report.routeCount} totales</span></article><article class="card"><small>Venta de ruta</small><b>${fmt(report.sales)}</b><span>Crédito ${fmt(report.credits)}</span></article><article class="card"><small>Cobranzas</small><b>${fmt(report.collections)}</b><span>${report.settlementsPending} liquidaciones pendientes</span></article><article class="card"><small>Retornos</small><b>${report.sellableReturns}</b><span>${report.damagedReturns} dañados</span></article></section>
+        <section class="card sectionCard logisticsSection"><header><h3>Vehículos</h3><span>${vehicles.length}</span></header><div class="logisticsVehicleList">${vehicleRows}</div></section>
+        <section class="logisticsRouteGrid">${routeRows}</section>
+        <details class="card sectionCard logisticsReport"><summary>Reportes de distribución</summary><ul><li>Venta por ruta: ${escapeHtml(Object.entries(report.byRoute).map(([routeId, amount]) => `${routes.find((route) => route.id === routeId)?.name || routeId} ${fmt(amount)}`).join(' · ') || 'Sin ventas')}</li><li>Venta por vendedor: ${escapeHtml(Object.entries(report.bySeller).map(([name, amount]) => `${name} ${fmt(amount)}`).join(' · ') || 'Sin ventas')}</li><li>Crédito pendiente: ${fmt(report.credits)}</li></ul></details>`;
+    }
+    function logisticsSettlementView() {
+      if (!logisticsAdvancedEnabled()) return logisticsGuardView();
+      if (!logisticsCan('settlements.read')) return `<div class="pageHead"><div><h1>Liquidaciones</h1><p>No tienes permiso para ver liquidaciones.</p></div></div>`;
+      const routes = logisticsVisibleRoutes();
+      const routeIds = new Set(routes.map((route) => route.id));
+      const settlements = logisticsForBiz('routeSettlements').filter((entry) => routeIds.has(entry.routeId)).slice().reverse();
+      return `<div class="pageHead"><div><h1>Liquidaciones</h1><p>Cuadre de rutas, retornos, gastos y diferencias.</p></div><div class="toolbar"><button class="btn" data-logistics-nav="logistics">${icon('arrow-left')} Rutas</button></div></div><section class="logisticsSettlementList">${settlements.map((settlement) => { const route = routes.find((entry) => entry.id === settlement.routeId); return `<article class="card logisticsSettlementCard"><header><span><b>${escapeHtml(route?.name || settlement.routeId)}</b><small>${escapeHtml(logisticsSettlementLabel(settlement.status))}</small></span><strong>${fmt(settlement.difference)}</strong></header><p>Esperado ${fmt(settlement.calculation?.expectedCash)} · recibido ${fmt(settlement.receivedCash)}</p><div class="p2InlineActions"><button class="btn" data-logistics-settlement="${actionId(settlement.id)}">Ver detalle</button><button class="btn" data-logistics-print="settlement:${actionId(route?.id || settlement.routeId)}">${icon('printer')} Imprimir</button></div></article>`; }).join('') || '<section class="card empty">No hay liquidaciones todavía.</section>'}</section>`;
+    }
+    function openLogisticsVehicleModal(vehicleId = '') {
+      const vehicle = logisticsForBiz('vehicles').find((item) => item.id === vehicleId);
+      showModal(`<div class="modalHeader"><div><h2>${vehicle ? 'Editar vehículo' : 'Nuevo vehículo'}</h2><p>Datos operativos del negocio activo.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsVehicleForm" class="formGrid"><div class="field"><label>Nombre</label><input id="logisticsVehicleName" required maxlength="60" value="${escapeHtml(vehicle?.name || '')}" placeholder="Camión 1"></div><div class="field"><label>Placa</label><input id="logisticsVehiclePlate" required maxlength="20" value="${escapeHtml(vehicle?.plate || '')}" placeholder="ABC-123"></div><div class="field"><label>Conductor</label><input id="logisticsVehicleDriver" maxlength="80" value="${escapeHtml(vehicle?.driverName || '')}" placeholder="Nombre del conductor"></div><div class="field"><label>Capacidad</label><input id="logisticsVehicleCapacity" type="number" min="0" step="1" value="${Number(vehicle?.capacity || 0)}"></div><div class="field"><label>Unidad</label><input id="logisticsVehicleUnit" maxlength="20" value="${escapeHtml(vehicle?.capacityUnit || 'unidades')}"></div><div class="field"><label>Estado</label><select id="logisticsVehicleStatus"><option value="active" ${vehicle?.status !== 'inactive' && vehicle?.status !== 'maintenance' ? 'selected' : ''}>Activo</option><option value="maintenance" ${vehicle?.status === 'maintenance' ? 'selected' : ''}>Mantenimiento</option><option value="inactive" ${vehicle?.status === 'inactive' ? 'selected' : ''}>Inactivo</option></select></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar vehículo</button></form>`);
+      $('#logisticsVehicleForm').onsubmit = (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        try {
+          const input = { id:vehicle?.id, businessId:currentBusiness().id, name:$('#logisticsVehicleName').value, plate:$('#logisticsVehiclePlate').value, driverName:$('#logisticsVehicleDriver').value, capacity:$('#logisticsVehicleCapacity').value, capacityUnit:$('#logisticsVehicleUnit').value, status:$('#logisticsVehicleStatus').value };
+          const next = vehicle ? { ...vehicle, ...input, updatedAt:new Date().toISOString(), updatedAtMs:Date.now() } : logisticsDomain().createVehicle({ input, actor:logisticsActor() });
+          logisticsReplace('vehicles', next); logisticsAddAudit(vehicle ? 'logistics_vehicle_updated' : 'logistics_vehicle_created', { vehicleId:next.id });
+          if (!logisticsSave(snapshot)) return;
+          closeModal(); renderApp('logistics');
+        } catch (error) { state = snapshot; toast('No se pudo guardar el vehículo: ' + error.message, 'err'); }
+      };
+    }
+    function openLogisticsRouteModal() {
+      const vehicles = logisticsForBiz('vehicles').filter((vehicle) => vehicle.status === 'active');
+      showModal(`<div class="modalHeader"><div><h2>Nueva ruta</h2><p>La ruta se crea en borrador y no altera inventario hasta despachar la carga.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsRouteForm" class="formGrid"><div class="field"><label>Nombre de ruta</label><input id="logisticsRouteName" required maxlength="80" placeholder="Ruta Norte"></div><div class="field"><label>Zona</label><input id="logisticsRouteZone" maxlength="80" placeholder="Sector / zona"></div><div class="field"><label>Fecha</label><input id="logisticsRouteDate" type="date" required value="${today()}"></div><div class="field"><label>Vehículo</label><select id="logisticsRouteVehicle"><option value="">Sin vehículo</option>${vehicles.map((vehicle) => `<option value="${actionId(vehicle.id)}">${escapeHtml(vehicle.name || vehicle.plate)} · ${escapeHtml(vehicle.plate)}</option>`).join('')}</select></div><div class="field"><label>Vendedor asignado</label><input id="logisticsRouteSeller" maxlength="80" placeholder="Nombre visible"></div><div class="field"><label>ID del vendedor</label><input id="logisticsRouteSellerId" maxlength="100" placeholder="UID/identificador del equipo"></div><div class="field"><label>Cobrador asignado</label><input id="logisticsRouteCollector" maxlength="80" placeholder="Nombre visible"></div><div class="field"><label>ID del cobrador</label><input id="logisticsRouteCollectorId" maxlength="100" placeholder="UID/identificador del equipo"></div><div class="field"><label>Ayudante</label><input id="logisticsRouteHelper" maxlength="80" placeholder="Opcional"></div><div class="field full"><label>Notas</label><textarea id="logisticsRouteNotes" maxlength="180"></textarea></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Crear ruta</button></form>`);
+      $('#logisticsRouteForm').onsubmit = (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        try {
+          const vehicle = vehicles.find((entry) => entry.id === decodeActionId($('#logisticsRouteVehicle').value));
+          const route = logisticsDomain().createRoute({ input:{ businessId:currentBusiness().id, name:$('#logisticsRouteName').value, zone:$('#logisticsRouteZone').value, date:$('#logisticsRouteDate').value, vehicleId:vehicle?.id || '', sellerId:$('#logisticsRouteSellerId').value, sellerName:$('#logisticsRouteSeller').value, collectorId:$('#logisticsRouteCollectorId').value, collectorName:$('#logisticsRouteCollector').value, helperName:$('#logisticsRouteHelper').value, notes:$('#logisticsRouteNotes').value }, vehicle, actor:logisticsActor() });
+          logisticsReplace('routes', route); logisticsAddAudit('logistics_route_created', { routeId:route.id });
+          if (!logisticsSave(snapshot)) return;
+          closeModal(); openLogisticsWorkspace(route.id);
+        } catch (error) { state = snapshot; toast('No se pudo crear la ruta: ' + error.message, 'err'); }
+      };
+    }
+    function logisticsLoadItemsHtml(sheet) {
+      return (sheet?.items || []).map((item) => `<li><span><b>${item.qty} x ${escapeHtml(item.name)}</b><small>${escapeHtml(item.code)}${item.lot ? ` · lote ${escapeHtml(item.lot)}` : ''}</small></span><strong>${fmt(item.total)}</strong></li>`).join('') || '<li class="empty">Sin productos en la carga.</li>';
+    }
+    function logisticsRouteSalesHtml(routeId) {
+      return logisticsForBiz('routeSales').filter((sale) => sale.routeId === routeId).slice().reverse().map((sale) => `<li><span><b>${escapeHtml(sale.customerName)}</b><small>${escapeHtml(sale.paymentType)} · saldo ${fmt(logisticsDomain().remainingCredit(sale, logisticsForBiz('collections')))}</small></span><strong>${fmt(sale.total)}</strong></li>`).join('') || '<li class="empty">Sin ventas registradas.</li>';
+    }
+    function logisticsReturnsHtml(routeId) {
+      return logisticsForBiz('returns').filter((entry) => entry.routeId === routeId).slice().reverse().map((entry) => `<li><span><b>${entry.qty} x ${escapeHtml(entry.name)}</b><small>${entry.condition === 'sellable' ? 'Retorno vendible' : 'Retorno dañado'}</small></span><strong>${fmt(entry.qty * entry.price)}</strong></li>`).join('') || '<li class="empty">Sin retornos registrados.</li>';
+    }
+    async function logisticsCriticalCommit(snapshot, reason, verifier, view='logistics') {
+      const committed = await commitCriticalMutation(snapshot, reason, verifier);
+      if (!committed.ok) { state = snapshot; renderApp(view); }
+      return committed;
+    }
+    function logisticsPrintRoute(routeId, kind='load') {
+      const route = logisticsRouteById(routeId);
+      if (!route) return;
+      const sheet = logisticsSheetForRoute(route.id);
+      const settlement = logisticsSettlementForRoute(route.id);
+      if (kind === 'load' && !sheet) return toast('Crea una hoja de carga antes de imprimir.', 'err');
+      if (kind === 'settlement' && !settlement) return toast('No hay liquidación para imprimir.', 'err');
+      const html = logisticsDomain().printDocument({ kind:kind === 'settlement' ? 'settlement' : 'load_sheet', businessName:currentBusiness().name, route, sheet, settlement });
+      logisticsStore().printHistory.push({ id:uid('logistics-print'), businessId:currentBusiness().id, routeId:route.id, kind, createdAt:new Date().toISOString(), createdBy:authUser().name || '' });
+      logisticsAddAudit('logistics_printed', { routeId:route.id, kind });
+      save({ nonBlockingSync:true, syncSource:'logistics_print_audit' });
+      handoffPrint({ html, media:kind === 'settlement' ? 'a4' : 'receipt-80', filename:`Ruta_${kind}_${route.id.slice(-6)}.pdf` }, 'system');
+    }
+    function openLogisticsWorkspace(routeId) {
+      const route = logisticsRouteById(routeId);
+      if (!route) return toast('La ruta ya no está disponible.', 'err');
+      const sheet = logisticsSheetForRoute(route.id);
+      const settlement = logisticsSettlementForRoute(route.id);
+      const products = productsForBiz();
+      const loadedProducts = (sheet?.items || []).map((item) => products.find((product) => product.id === item.productId)).filter(Boolean);
+      const canLoad = logisticsCan('loadSheets.write');
+      const canSell = logisticsCan('routeSales.create');
+      const canCollect = logisticsCan('collections.write');
+      const canReturn = logisticsCan('returns.write');
+      const canSettle = logisticsCan('settlements.write');
+      const canApprove = logisticsCan('settlements.approve');
+      const creditSales = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id && logisticsDomain().remainingCredit(sale, logisticsForBiz('collections')) > 0.00001);
+      const loadControls = !sheet ? `<button class="btn primary" data-logistics-action="create-sheet:${actionId(route.id)}">Crear hoja de carga</button>` : `<section class="logisticsWorkspaceSection"><header><span><h3>Hoja de carga</h3><small>${escapeHtml(logisticsSheetLabel(sheet.status))}</small></span><button class="iconBtn" data-logistics-print="load:${actionId(route.id)}" title="Imprimir hoja de carga" aria-label="Imprimir hoja de carga">${icon('printer')}</button></header><ul class="logisticsRows">${logisticsLoadItemsHtml(sheet)}</ul>${sheet.status === 'draft' && canLoad ? `<form id="logisticsAddLoadForm" class="formGrid"><div class="field full"><label>Producto</label><select id="logisticsLoadProduct">${products.filter((product) => Number(product.qty || 0) > 0).map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${product.qty} disp.</option>`).join('') || '<option value="">Sin productos disponibles</option>'}</select></div><div class="field"><label>Cantidad</label><input id="logisticsLoadQty" type="number" min="1" max="999" value="1"></div><div class="field"><label>Precio de ruta</label><input id="logisticsLoadPrice" inputmode="decimal" placeholder="Usar precio actual"></div><div class="field full"><label>Lote</label><input id="logisticsLoadLot" maxlength="60" placeholder="Opcional"></div><button class="btn silver full" type="submit">${icon('plus')} Agregar a carga</button></form><div class="p2InlineActions"><button class="btn primary" data-logistics-action="confirm-sheet:${actionId(route.id)}">Confirmar carga</button></div>` : ''}${sheet.status === 'confirmed' && canLoad ? `<div class="p2InlineActions"><button class="btn primary" data-logistics-action="dispatch-sheet:${actionId(route.id)}">Despachar ruta e inventario</button></div>` : ''}</section>`;
+      const saleControls = sheet?.status === 'dispatched' && canSell ? `<section class="logisticsWorkspaceSection"><header><span><h3>Ventas de ruta</h3><small>Contado, transferencia o crédito.</small></span></header><form id="logisticsSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="logisticsSaleCustomer" maxlength="80" required placeholder="Nombre del cliente"></div><div class="field"><label>Pago</label><select id="logisticsSalePayment"><option value="cash">Contado</option><option value="transfer">Transferencia</option><option value="credit">Crédito</option></select></div><div class="field full"><label>Producto de carga</label><select id="logisticsSaleProduct">${loadedProducts.map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${product.code}</option>`).join('') || '<option value="">Sin productos cargados</option>'}</select></div><div class="field"><label>Cantidad</label><input id="logisticsSaleQty" type="number" min="1" max="999" value="1"></div>${logisticsCan('routeSales.discount') ? '<div class="field"><label>Descuento autorizado</label><input id="logisticsSaleDiscount" inputmode="decimal" value="0"></div>' : ''}<div class="field full"><label>Nota</label><input id="logisticsSaleNote" maxlength="140" placeholder="Opcional"></div><button class="btn primary full" type="submit" ${loadedProducts.length ? '' : 'disabled'}>Registrar venta de ruta</button></form><ul class="logisticsRows">${logisticsRouteSalesHtml(route.id)}</ul></section>` : '';
+      const collectionControls = creditSales.length && canCollect ? `<section class="logisticsWorkspaceSection"><header><span><h3>Cobranzas</h3><small>Solo créditos pendientes de esta ruta.</small></span></header><button class="btn" data-logistics-action="open-collection:${actionId(route.id)}">${icon('hand-coins')} Registrar cobranza</button></section>` : '';
+      const returnControls = sheet?.status === 'dispatched' && canReturn ? `<section class="logisticsWorkspaceSection"><header><span><h3>Retornos y diferencias</h3><small>El retorno vendible vuelve al inventario al cerrar la liquidación.</small></span></header><form id="logisticsReturnForm" class="formGrid"><div class="field full"><label>Producto de carga</label><select id="logisticsReturnProduct">${loadedProducts.map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)}</option>`).join('')}</select></div><div class="field"><label>Cantidad</label><input id="logisticsReturnQty" type="number" min="1" max="999" value="1"></div><div class="field"><label>Condición</label><select id="logisticsReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><div class="field full"><label>Observación</label><input id="logisticsReturnNote" maxlength="140" placeholder="Opcional"></div><button class="btn silver full" type="submit">Registrar retorno</button></form><form id="logisticsVarianceForm" class="formGrid"><div class="field"><label>Diferencia</label><select id="logisticsVarianceType"><option value="shortage">Faltante</option><option value="overage">Sobrante</option></select></div><div class="field"><label>Valor estimado</label><input id="logisticsVarianceAmount" inputmode="decimal" required></div><div class="field full"><label>Observación</label><input id="logisticsVarianceNote" maxlength="140" placeholder="Obligatoria para diferencias relevantes"></div><button class="btn full" type="submit">Registrar diferencia</button></form><ul class="logisticsRows">${logisticsReturnsHtml(route.id)}</ul></section>` : '';
+      const expenseControls = sheet?.status === 'dispatched' && canSettle ? `<section class="logisticsWorkspaceSection"><header><span><h3>Gastos de ruta</h3><small>Se descuentan del efectivo esperado en la liquidación.</small></span></header><form id="logisticsExpenseForm" class="formGrid"><div class="field"><label>Categoría</label><input id="logisticsExpenseCategory" maxlength="50" value="Otro"></div><div class="field"><label>Monto</label><input id="logisticsExpenseAmount" inputmode="decimal" required></div><div class="field full"><label>Nota</label><input id="logisticsExpenseNote" maxlength="140"></div><button class="btn silver full" type="submit">Agregar gasto</button></form></section>` : '';
+      const settlementControls = sheet?.status === 'dispatched' ? `<section class="logisticsWorkspaceSection"><header><span><h3>Liquidación diaria</h3><small>${settlement ? logisticsSettlementLabel(settlement.status) : 'Aún no creada'}</small></span></header><div class="p2InlineActions">${!settlement && canSettle ? `<button class="btn primary" data-logistics-action="open-settlement:${actionId(route.id)}">Preparar liquidación</button>` : ''}${settlement && canApprove && ['pending_approval','reopened'].includes(settlement.status) ? `<button class="btn primary" data-logistics-action="approve-settlement:${actionId(route.id)}">Aprobar</button>` : ''}${settlement && canApprove && settlement.status === 'approved' ? `<button class="btn primary" data-logistics-action="close-settlement:${actionId(route.id)}">Cerrar ruta</button>` : ''}${settlement && logisticsCan('settlements.reopen') && ['approved','closed'].includes(settlement.status) ? `<button class="btn" data-logistics-action="reopen-settlement:${actionId(route.id)}">Reabrir</button>` : ''}${settlement ? `<button class="btn" data-logistics-action="open-settlement:${actionId(route.id)}">Ver liquidación</button>` : ''}</div></section>` : '';
+      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p>${escapeHtml(logisticsRouteLabel(route.status))} · ${escapeHtml(route.date)} · ${escapeHtml(route.sellerName || 'Sin vendedor')}</p></div><button class="closeBtn" data-close>×</button></div><div class="logisticsWorkspace">${loadControls}${saleControls}${collectionControls}${returnControls}${expenseControls}${settlementControls}</div>`);
+      $('#logisticsAddLoadForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const currentSheet = logisticsSheetForRoute(route.id); const product = productsForBiz().find((entry) => entry.id === decodeActionId($('#logisticsLoadProduct').value));
+        if (!currentSheet || !product) return toast('Selecciona un producto válido.', 'err');
+        const snapshot = cloneState(state);
+        try { const next = logisticsDomain().addLoadItem({ sheet:currentSheet, product, qty:$('#logisticsLoadQty').value, routePrice:$('#logisticsLoadPrice').value === '' ? undefined : parseMoney($('#logisticsLoadPrice').value), lot:$('#logisticsLoadLot').value, actor:logisticsActor() }); logisticsReplace('loadSheets', next); logisticsAddAudit('logistics_load_item_added', { routeId:route.id, productId:product.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(route.id); } catch (error) { state = snapshot; toast('No se pudo agregar a la carga: ' + error.message, 'err'); }
+      });
+      $('#logisticsSaleForm')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const currentRoute = logisticsRouteById(route.id); const currentSheet = logisticsSheetForRoute(route.id); const product = productsForBiz().find((entry) => entry.id === decodeActionId($('#logisticsSaleProduct').value)); const paymentType = $('#logisticsSalePayment').value;
+        if (!currentRoute || !currentSheet || !product) return toast('La ruta o el producto ya no están disponibles.', 'err');
+        if (paymentType !== 'credit' && (!isDayStarted() || isDayClosed())) return toast('Abre una caja activa para registrar cobros de ruta.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const customer = logisticsRouteCustomer(currentRoute, $('#logisticsSaleCustomer').value);
+          const sale = logisticsDomain().createRouteSale({ input:{ businessId:currentBusiness().id, customerId:customer.id, customerName:customer.name, paymentType, discount:parseMoney($('#logisticsSaleDiscount')?.value || 0), note:$('#logisticsSaleNote').value, items:[{ productId:product.id, qty:$('#logisticsSaleQty').value }] }, route:currentRoute, sheet:currentSheet, products:productsForBiz(), routeSales:logisticsForBiz('routeSales'), actor:logisticsActor() });
+          logisticsStore().routeSales.push(sale);
+          if (sale.paidAmount > 0) state.movements.push({ id:uid('mov'), businessId:currentBusiness().id, date:today(), when:nowLabel(), kind:'ingreso', amount:sale.paidAmount, note:`Venta de ruta ${currentRoute.name}`, routeSaleId:sale.id, routeId:currentRoute.id, paymentMethod:paymentType, cashSessionId:currentOpenCashSession()?.id || '', createdAtMs:Date.now(), createdBy:authUser().name });
+          logisticsAddAudit('logistics_route_sale_created', { routeId:currentRoute.id, routeSaleId:sale.id, total:sale.total });
+          const committed = await logisticsCriticalCommit(snapshot, 'logistics_route_sale_created', (next) => next.logistics?.routeSales?.some((entry) => entry.id === sale.id && entry.businessId === currentBusiness().id));
+          if (!committed.ok) return;
+          openLogisticsWorkspace(route.id); toast(paymentType === 'credit' ? 'Venta a crédito registrada.' : 'Venta y movimiento de caja registrados.');
+        } catch (error) { state = snapshot; toast('No se pudo registrar la venta: ' + error.message, 'err'); }
+      });
+      $('#logisticsReturnForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const currentRoute = logisticsRouteById(route.id); const currentSheet = logisticsSheetForRoute(route.id); const product = productsForBiz().find((entry) => entry.id === decodeActionId($('#logisticsReturnProduct').value));
+        if (!currentRoute || !currentSheet || !product) return toast('Selecciona un producto válido.', 'err');
+        const snapshot = cloneState(state);
+        try { const loaded = currentSheet.items.find((item) => item.productId === product.id); const entry = logisticsDomain().recordReturn({ input:{ businessId:currentBusiness().id, productId:product.id, code:product.code, name:product.name, qty:$('#logisticsReturnQty').value, price:loaded?.price ?? product.price, condition:$('#logisticsReturnCondition').value, note:$('#logisticsReturnNote').value }, route:currentRoute, sheet:currentSheet, routeSales:logisticsForBiz('routeSales'), returns:logisticsForBiz('returns'), actor:logisticsActor() }); logisticsStore().returns.push(entry); logisticsAddAudit('logistics_return_recorded', { routeId:route.id, returnId:entry.id, condition:entry.condition }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(route.id); } catch (error) { state = snapshot; toast('No se pudo registrar el retorno: ' + error.message, 'err'); }
+      });
+      $('#logisticsVarianceForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const currentRoute = logisticsRouteById(route.id);
+        if (!currentRoute) return toast('La ruta ya no está disponible.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const entry = logisticsDomain().recordVariance({ input:{ businessId:currentBusiness().id, type:$('#logisticsVarianceType').value, amount:parseMoney($('#logisticsVarianceAmount').value), note:$('#logisticsVarianceNote').value }, route:currentRoute, actor:logisticsActor() });
+          logisticsStore()[entry.type === 'overage' ? 'overages' : 'shortages'].push(entry);
+          logisticsAddAudit(`logistics_${entry.type}_recorded`, { routeId:route.id, varianceId:entry.id, amount:entry.amount });
+          if (!logisticsSave(snapshot)) return;
+          openLogisticsWorkspace(route.id);
+        } catch (error) { state = snapshot; toast('No se pudo registrar la diferencia: ' + error.message, 'err'); }
+      });
+      $('#logisticsExpenseForm')?.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const snapshot = cloneState(state);
+        try { const currentRoute = logisticsRouteById(route.id); if (!currentRoute) throw new Error('route_not_available'); const expense = logisticsDomain().recordExpense({ input:{ businessId:currentBusiness().id, category:$('#logisticsExpenseCategory').value, amount:parseMoney($('#logisticsExpenseAmount').value), note:$('#logisticsExpenseNote').value }, route:currentRoute, actor:logisticsActor() }); logisticsStore().routeExpenses.push(expense); logisticsAddAudit('logistics_route_expense_created', { routeId:route.id, expenseId:expense.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(route.id); } catch (error) { state = snapshot; toast('No se pudo registrar el gasto: ' + error.message, 'err'); }
+      });
+      $$('[data-logistics-action]').forEach((button) => button.onclick = () => logisticsHandleAction(button.dataset.logisticsAction));
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+      refreshIcons();
+    }
+    async function dispatchLogisticsSheet(routeId) {
+      const route = logisticsRouteById(routeId); const sheet = logisticsSheetForRoute(routeId);
+      if (!route || !sheet) return toast('La ruta o la carga ya no están disponibles.', 'err');
+      const snapshot = cloneState(state);
+      try {
+        const result = logisticsDomain().dispatchLoadSheet({ sheet, route, products:productsForBiz(), actor:logisticsActor() });
+        if (result.noop) return toast('La carga ya fue despachada.', 'ok');
+        logisticsReplace('loadSheets', result.sheet); logisticsReplace('routes', result.route); logisticsReplaceProducts(result.products);
+        logisticsAddAudit('logistics_load_dispatched', { routeId, loadSheetId:sheet.id });
+        const committed = await logisticsCriticalCommit(snapshot, 'logistics_load_dispatched', (next) => next.logistics?.loadSheets?.some((entry) => entry.id === sheet.id && entry.stockCommittedAt));
+        if (!committed.ok) return;
+        openLogisticsWorkspace(routeId); toast('Ruta despachada e inventario reservado.', 'ok');
+      } catch (error) { state = snapshot; toast('No se pudo despachar: ' + error.message, 'err'); }
+    }
+    function openLogisticsCollectionModal(routeId) {
+      const route = logisticsRouteById(routeId);
+      const collections = logisticsForBiz('collections');
+      const candidates = logisticsForBiz('routeSales').filter((sale) => sale.routeId === routeId && logisticsDomain().remainingCredit(sale, collections) > 0.00001);
+      if (!route || !candidates.length) return toast('No hay créditos pendientes para cobrar.', 'err');
+      showModal(`<div class="modalHeader"><div><h2>Registrar cobranza</h2><p>${escapeHtml(route.name)} · solo créditos pendientes.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsCollectionForm" class="formGrid"><div class="field full"><label>Crédito</label><select id="logisticsCollectionSale">${candidates.map((sale) => `<option value="${actionId(sale.id)}">${escapeHtml(sale.customerName)} · saldo ${fmt(logisticsDomain().remainingCredit(sale, collections))}</option>`).join('')}</select></div><div class="field"><label>Monto</label><input id="logisticsCollectionAmount" inputmode="decimal" required></div><div class="field"><label>Método</label><select id="logisticsCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><div class="field full"><label>Nota</label><input id="logisticsCollectionNote" maxlength="140" placeholder="Opcional"></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Registrar cobranza</button></form>`);
+      $('#logisticsCollectionForm').onsubmit = async (event) => {
+        event.preventDefault();
+        if (!isDayStarted() || isDayClosed()) return toast('Abre una caja activa antes de registrar una cobranza.', 'err');
+        const sale = logisticsForBiz('routeSales').find((entry) => entry.id === decodeActionId($('#logisticsCollectionSale').value));
+        if (!sale) return toast('El crédito ya no está disponible.', 'err');
+        const snapshot = cloneState(state);
+        try {
+          const result = logisticsDomain().recordCollection({ input:{ businessId:currentBusiness().id, amount:parseMoney($('#logisticsCollectionAmount').value), method:$('#logisticsCollectionMethod').value, note:$('#logisticsCollectionNote').value, idempotencyKey:uid('route-collection') }, route, sale, collections:logisticsForBiz('collections'), actor:logisticsActor() });
+          if (result.noop) return toast('Esta cobranza ya fue confirmada.', 'ok');
+          logisticsStore().collections.push(result.collection);
+          state.movements.push({ id:uid('mov'), businessId:currentBusiness().id, date:today(), when:nowLabel(), kind:'ingreso', amount:result.collection.amount, note:`Cobranza ruta ${route.name}`, collectionId:result.collection.id, routeSaleId:sale.id, routeId:route.id, paymentMethod:result.collection.method, cashSessionId:currentOpenCashSession()?.id || '', createdAtMs:Date.now(), createdBy:authUser().name });
+          logisticsAddAudit('logistics_collection_recorded', { routeId:route.id, collectionId:result.collection.id, routeSaleId:sale.id });
+          const committed = await logisticsCriticalCommit(snapshot, 'logistics_collection_recorded', (next) => next.logistics?.collections?.some((entry) => entry.id === result.collection.id));
+          if (!committed.ok) return;
+          closeModal(); openLogisticsWorkspace(route.id); toast('Cobranza y movimiento de caja registrados.');
+        } catch (error) { state = snapshot; toast('No se pudo registrar la cobranza: ' + error.message, 'err'); }
+      };
+    }
+    function logisticsSettlementCalculation(route) {
+      const sheet = logisticsSheetForRoute(route.id);
+      if (!sheet) return null;
+      return logisticsDomain().settlementCalculation({ route, sheet, routeSales:logisticsForBiz('routeSales'), collections:logisticsForBiz('collections'), returns:logisticsForBiz('returns'), expenses:logisticsForBiz('routeExpenses'), shortages:logisticsForBiz('shortages'), overages:logisticsForBiz('overages') });
+    }
+    function openLogisticsReopenModal(routeId) {
+      const route = logisticsRouteById(routeId); const settlement = logisticsSettlementForRoute(routeId);
+      if (!route || !settlement) return;
+      showModal(`<div class="modalHeader"><div><h2>Reabrir liquidación</h2><p>La razón quedará auditada. El inventario no se restaurará dos veces.</p></div><button class="closeBtn" data-close>×</button></div><form id="logisticsReopenForm" class="formGrid"><div class="field full"><label>Motivo</label><textarea id="logisticsReopenReason" maxlength="160" required></textarea></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Reabrir</button></form>`);
+      $('#logisticsReopenForm').onsubmit = (event) => {
+        event.preventDefault(); const snapshot = cloneState(state);
+        try { const result = logisticsDomain().reopenSettlement({ settlement, route, reason:$('#logisticsReopenReason').value, actor:logisticsActor() }); logisticsReplace('routeSettlements', result.settlement); logisticsReplace('routes', result.route); logisticsAddAudit('logistics_settlement_reopened', { routeId, settlementId:settlement.id }); if (!logisticsSave(snapshot)) return; closeModal(); openLogisticsWorkspace(routeId); } catch (error) { state = snapshot; toast('No se pudo reabrir: ' + error.message, 'err'); }
+      };
+    }
+    function openLogisticsSettlementModal(routeId) {
+      const route = logisticsRouteById(routeId); const sheet = logisticsSheetForRoute(routeId); const settlement = logisticsSettlementForRoute(routeId);
+      if (!route || !sheet) return toast('La ruta no tiene una hoja de carga válida.', 'err');
+      const calculation = settlement?.calculation || logisticsSettlementCalculation(route);
+      if (!calculation) return toast('No se pudo calcular la liquidación.', 'err');
+      const canWrite = logisticsCan('settlements.write');
+      showModal(`<div class="modalHeader"><div><h2>Liquidación de ${escapeHtml(route.name)}</h2><p>${settlement ? escapeHtml(logisticsSettlementLabel(settlement.status)) : 'Vista previa antes de crearla'}</p></div><button class="closeBtn" data-close>×</button></div><section class="logisticsSettlementBreakdown"><div><small>Venta de ruta</small><b>${fmt(calculation.salesTotal)}</b></div><div><small>Cobranzas</small><b>${fmt(calculation.collectionsTotal)}</b></div><div><small>Gastos</small><b>${fmt(calculation.expensesTotal)}</b></div><div><small>Efectivo esperado</small><b>${fmt(calculation.expectedCash)}</b></div><div><small>Crédito pendiente</small><b>${fmt(calculation.openCredit)}</b></div><div><small>Retorno vendible</small><b>${fmt(calculation.sellableReturnValue)}</b></div></section>${!settlement && canWrite ? `<form id="logisticsSettlementForm" class="formGrid"><div class="field"><label>Efectivo recibido</label><input id="logisticsSettlementReceived" inputmode="decimal" required value="${calculation.expectedCash}"></div><div class="field"><label>Diferencia prevista</label><input value="${fmt(0)}" disabled></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Crear liquidación</button></form>` : ''}${settlement ? `<section class="card sectionCard logisticsSettlementResult"><p>Recibido ${fmt(settlement.receivedCash)} · diferencia ${fmt(settlement.difference)}</p><button class="btn" data-logistics-print="settlement:${actionId(route.id)}">${icon('printer')} Imprimir liquidación</button></section>` : ''}`);
+      $('#logisticsSettlementForm')?.addEventListener('submit', async (event) => {
+        event.preventDefault(); const snapshot = cloneState(state);
+        try {
+          const result = logisticsDomain().createSettlement({ input:{ businessId:currentBusiness().id, receivedCash:parseMoney($('#logisticsSettlementReceived').value) }, route, sheet, routeSales:logisticsForBiz('routeSales'), collections:logisticsForBiz('collections'), returns:logisticsForBiz('returns'), expenses:logisticsForBiz('routeExpenses'), shortages:logisticsForBiz('shortages'), overages:logisticsForBiz('overages'), actor:logisticsActor() });
+          logisticsStore().routeSettlements.push(result.settlement); logisticsReplace('routes', result.route); logisticsAddAudit('logistics_settlement_created', { routeId, settlementId:result.settlement.id });
+          const committed = await logisticsCriticalCommit(snapshot, 'logistics_settlement_created', (next) => next.logistics?.routeSettlements?.some((entry) => entry.id === result.settlement.id));
+          if (!committed.ok) return;
+          closeModal(); openLogisticsWorkspace(routeId); toast('Liquidación preparada para aprobación.');
+        } catch (error) { state = snapshot; toast('No se pudo crear la liquidación: ' + error.message, 'err'); }
+      });
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+    }
+    async function logisticsHandleAction(value) {
+      const [action, encoded] = value.split(':');
+      const routeId = decodeActionId(encoded); const route = logisticsRouteById(routeId); const sheet = logisticsSheetForRoute(routeId); const settlement = logisticsSettlementForRoute(routeId);
+      if (!route) return toast('La ruta ya no está disponible.', 'err');
+      if (action === 'create-sheet') {
+        const snapshot = cloneState(state);
+        try { const next = logisticsDomain().createLoadSheet({ input:{ businessId:currentBusiness().id }, route, actor:logisticsActor() }); logisticsStore().loadSheets.push(next); logisticsAddAudit('logistics_load_sheet_created', { routeId, loadSheetId:next.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(routeId); } catch (error) { state = snapshot; toast('No se pudo crear la hoja: ' + error.message, 'err'); }
+        return;
+      }
+      if (action === 'confirm-sheet') {
+        if (!sheet) return; const snapshot = cloneState(state);
+        try { const next = logisticsDomain().confirmLoadSheet({ sheet, products:productsForBiz(), actor:logisticsActor() }); logisticsReplace('loadSheets', next); logisticsAddAudit('logistics_load_sheet_confirmed', { routeId, loadSheetId:sheet.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(routeId); } catch (error) { state = snapshot; toast('No se pudo confirmar la carga: ' + error.message, 'err'); }
+        return;
+      }
+      if (action === 'dispatch-sheet') return dispatchLogisticsSheet(routeId);
+      if (action === 'open-collection') return openLogisticsCollectionModal(routeId);
+      if (action === 'open-settlement') return openLogisticsSettlementModal(routeId);
+      if (action === 'reopen-settlement') return openLogisticsReopenModal(routeId);
+      if (action === 'approve-settlement') {
+        if (!settlement) return; const snapshot = cloneState(state);
+        try { const next = logisticsDomain().approveSettlement({ settlement, actor:logisticsActor() }); logisticsReplace('routeSettlements', next); logisticsAddAudit('logistics_settlement_approved', { routeId, settlementId:next.id }); if (!logisticsSave(snapshot)) return; openLogisticsWorkspace(routeId); toast('Liquidación aprobada.'); } catch (error) { state = snapshot; toast('No se pudo aprobar: ' + error.message, 'err'); }
+        return;
+      }
+      if (action === 'close-settlement') {
+        if (!settlement) return; const snapshot = cloneState(state);
+        try { const result = logisticsDomain().closeSettlement({ settlement, route, products:productsForBiz(), returns:logisticsForBiz('returns'), actor:logisticsActor() }); logisticsReplace('routeSettlements', result.settlement); logisticsReplace('routes', result.route); logisticsReplaceProducts(result.products); logisticsAddAudit('logistics_route_closed', { routeId, settlementId:settlement.id }); const committed = await logisticsCriticalCommit(snapshot, 'logistics_route_closed', (next) => next.logistics?.routeSettlements?.some((entry) => entry.id === settlement.id && entry.status === 'closed')); if (!committed.ok) return; closeModal(); renderApp('logistics'); toast('Ruta cerrada y retornos vendibles restaurados.'); } catch (error) { state = snapshot; toast('No se pudo cerrar la ruta: ' + error.message, 'err'); }
+      }
+    }
+    function bindLogistics() {
+      $('#newLogisticsVehicle')?.addEventListener('click', () => openLogisticsVehicleModal());
+      $('#newLogisticsRoute')?.addEventListener('click', () => openLogisticsRouteModal());
+      $$('[data-logistics-route]').forEach((button) => button.onclick = () => openLogisticsWorkspace(decodeActionId(button.dataset.logisticsRoute)));
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+    }
+    function bindLogisticsSettlement() {
+      $$('[data-logistics-nav]').forEach((button) => button.onclick = () => renderApp(button.dataset.logisticsNav));
+      $$('[data-logistics-settlement]').forEach((button) => button.onclick = () => { const settlement = logisticsForBiz('routeSettlements').find((entry) => entry.id === decodeActionId(button.dataset.logisticsSettlement)); if (settlement) openLogisticsSettlementModal(settlement.routeId); });
+      $$('[data-logistics-print]').forEach((button) => button.onclick = () => { const [kind, encoded] = button.dataset.logisticsPrint.split(':'); logisticsPrintRoute(decodeActionId(encoded), kind); });
+    }
+
 	  const FINANCE_CONFIG = Object.freeze({
 	    payments: { title:'Pagos mensuales', icon:'calendar-clock', fields:['name','category','amount','dueDate','notes'] },
 	    loans: { title:'Bancos / préstamos manuales', icon:'landmark', fields:['name','amount','monthlyAmount','dueDate','status','notes'] },
@@ -3049,17 +3796,23 @@ function parseMoney(value) {
 	  }
 
 		function moreView(){
+		    const memberTools = !isOwnerUser() && p2WorkersEnabled()
+		      ? `<button class="card bigRow" data-more="workers"><span>${icon('users-round')} Equipo</span>${icon('chevron-right')}</button>`
+		      : '';
 		    const ownerTools = isOwnerUser() ? `
 		      <button class="card bigRow" data-more="reports"><span>${icon('chart-no-axes-combined')} Reportes</span>${icon('chevron-right')}</button>
 	      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
 	      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
 	      ${isRestaurantBusiness() ? `<button class="card bigRow" data-more="tables"><span>${icon('utensils')} Mesas / Restaurante</span>${icon('chevron-right')}</button>` : ''}
+      ${restaurantAdvancedEnabled() ? `<button class="card bigRow" data-more="restaurant"><span>${icon('chef-hat')} Restaurante avanzado</span>${icon('chevron-right')}</button>` : ''}
+      ${logisticsAdvancedEnabled() ? `<button class="card bigRow" data-more="logistics"><span>${icon('truck')} Logística y rutas</span>${icon('chevron-right')}</button>` : ''}
 	      <button class="card bigRow" data-more="finance"><span>${icon('wallet-cards')} Finanzas</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
+	      ${p2ModuleEnabled('admin') ? `<button class="card bigRow" data-more="admin"><span>${icon('shield-check')} Administracion</span>${icon('chevron-right')}</button>` : ''}
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
-		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
+		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>${memberTools}`;
 			    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
 			      ${ownerTools}
 			      <button class="card bigRow" data-more="printing"><span>${icon('printer')} Centro de impresión</span>${icon('chevron-right')}</button>
@@ -3152,7 +3905,157 @@ function parseMoney(value) {
         <div class="split" style="gap:10px;"><button type="button" class="btn silver" id="backupBtn">\uD83D\uDCBE Guardar Respaldo</button><label class="btn silver" style="flex:1; text-align:center; display:flex; align-items:center; justify-content:center;"><input type="file" id="restoreFile" accept="application/json" hidden/>\uD83D\uDD04 Restaurar Respaldo</label></div>
       </section>`;
   }
+  let p2InvitationTokenForDisplay = '';
+  function p2FeatureFlagFor(module, businessId=currentBusiness()?.id) {
+    const key = window.CLICK360_P2_PLATFORM?.FEATURE_FOR_MODULE?.[module] || '';
+    return key ? p2PlatformData().featureFlags[key] : null;
+  }
+  function p2WorkersEnabled() { return p2ModuleEnabled('workers') && p2Can('members.read'); }
+  function p2AdminView() {
+    const business = currentBusiness();
+    const resolution = p2ModuleResolution(business);
+    const p2 = p2PlatformData();
+    if (!isOwnerUser() || resolution.modules?.admin !== true) return `<div class="pageHead"><div><h1>Administracion</h1><p>Esta seccion esta reservada para el propietario autorizado.</p></div></div><section class="card sectionCard"><p class="empty">No tienes permiso para administrar este negocio.</p></section>`;
+    const members = p2.memberships.filter((member) => member.businessId === business.id);
+    const profiles = labelProfilesForBiz(business.id);
+    const enabledModules = Object.entries(resolution.modules || {}).filter(([, enabled]) => enabled).map(([module]) => module);
+    const moduleRows = (window.CLICK360_P2_PLATFORM?.MODULES || []).map((module) => {
+      const active = resolution.modules?.[module] === true;
+      const gated = ['workers', 'restaurant', 'logistics'].includes(module);
+      const flag = p2FeatureFlagFor(module, business.id);
+      const detail = gated ? `Flag: ${flag?.enabled === true ? 'preparado para este negocio' : 'apagado'}` : (active ? 'Disponible' : 'Desactivado');
+      return `<label class="p2ModuleRow"><span><b>${escapeHtml(module)}</b><small>${escapeHtml(detail)}</small></span><input type="checkbox" data-p2-module="${escapeHtml(module)}" ${active ? 'checked' : ''} ${module === 'core' || module === 'admin' ? 'disabled' : ''}></label>`;
+    }).join('');
+    const activity = (state.auditLogs || []).filter((entry) => entry.businessId === business.id).slice(-8).reverse();
+    return `<div class="pageHead"><div><h1>Administracion del negocio</h1><p>Modulos, equipo y diagnostico de ${escapeHtml(business.name)}.</p></div></div>
+      <section class="p2SummaryGrid"><article class="card"><small>Plan detectado</small><b>${escapeHtml(String(resolution.account?.planCode || resolution.account?.plan || 'actual'))}</b><span>${resolution.readOnly ? 'Modo lectura' : 'Acceso operativo'}</span></article><article class="card"><small>Modulos activos</small><b>${enabledModules.length}</b><span>${escapeHtml(enabledModules.join(', ') || 'core')}</span></article><article class="card"><small>Equipo</small><b>${members.filter((member) => member.status === 'active').length}/${resolution.limits?.workers || 0}</b><span>Miembros activos</span></article></section>
+      <section class="card sectionCard p2AdminSection"><h3>Modulos por negocio</h3><p class="fieldHint">Los modulos de alto riesgo requieren flag por negocio y permanecen apagados por defecto.</p><div class="p2ModuleGrid">${moduleRows}</div></section>
+      <section class="card sectionCard p2AdminSection"><h3>Acceso y acciones controladas</h3><p class="fieldHint">Estas acciones se registran como solicitudes locales de QA. No escriben accountAccess ni ningun dato de Firebase.</p><div class="p2InlineActions"><button class="btn" data-p2-admin-action="plan">Solicitar cambio de plan</button><button class="btn danger" data-p2-admin-action="suspend">Solicitar suspension</button><button class="btn" data-p2-admin-action="reactivate">Solicitar reactivacion</button></div><div class="p2PendingList">${(p2.adminActions || []).filter((entry) => entry.businessId === business.id).slice(-5).reverse().map((entry) => `<div><b>${escapeHtml(entry.type)}</b><small>${escapeHtml(entry.status)} · ${escapeHtml(entry.createdAt)}</small></div>`).join('') || '<p class="empty">No hay solicitudes locales pendientes.</p>'}</div></section>
+      <section class="card sectionCard p2AdminSection"><h3>Equipo, dispositivos y diagnostico</h3><div class="p2AdminData"><div><b>Miembros</b><span>${members.length} registros</span></div><div><b>Perfiles de impresion</b><span>${profiles.length} perfiles del negocio</span></div><div><b>Diagnosticos</b><span>${p2.diagnostics.filter((entry) => entry.businessId === business.id).length} eventos locales</span></div></div><label class="field"><span>Buscar usuario</span><input id="p2AdminMemberSearch" type="search" placeholder="Nombre, correo o rol"></label><div id="p2AdminMemberResults" class="p2MemberResults">${members.map((member) => `<div class="p2MemberRow"><span><b>${escapeHtml(member.email || member.uid || 'Invitacion pendiente')}</b><small>${escapeHtml(member.roleId || member.role || 'readonly')} · ${escapeHtml(member.status || 'pending')}</small></span></div>`).join('') || '<p class="empty">No hay miembros para este negocio.</p>'}</div></section>
+      <section class="card sectionCard p2AdminSection"><h3>Actividad auditada</h3><div class="p2ActivityList">${activity.map((entry) => `<div><b>${escapeHtml(entry.action)}</b><small>${escapeHtml(entry.createdAt || entry.when || '')}</small></div>`).join('') || '<p class="empty">Aun no hay actividad local.</p>'}</div></section>`;
+  }
+  function p2WorkersView() {
+    const business = currentBusiness();
+    const resolution = p2ModuleResolution(business);
+    const p2 = p2PlatformData();
+    const canManage = p2Can('members.manage', business);
+    const members = p2.memberships.filter((member) => member.businessId === business.id);
+    const invitations = p2.invitations.filter((invite) => invite.businessId === business.id);
+    const roleOptions = (window.CLICK360_P2_PLATFORM?.ROLES || []).filter((role) => role !== 'owner').map((role) => `<option value="${escapeHtml(role)}">${escapeHtml(role)}</option>`).join('');
+    const memberRows = members.map((member) => `<div class="p2MemberRow"><span><b>${escapeHtml(member.email || member.uid || 'Pendiente')}</b><small>${escapeHtml(member.roleId)} · ${escapeHtml(member.status)} · ${escapeHtml(member.lastSeenAt || 'sin actividad')}</small></span>${canManage && member.roleId !== 'owner' ? `<span class="p2InlineActions"><button class="btn" data-p2-member-edit="${actionId(member.id)}">Permisos</button>${member.status === 'active' ? `<button class="btn" data-p2-member-status="suspended:${actionId(member.id)}">Suspender</button>` : ''}${member.status === 'suspended' ? `<button class="btn" data-p2-member-status="active:${actionId(member.id)}">Reactivar</button>` : ''}${member.status !== 'revoked' ? `<button class="btn danger" data-p2-member-status="revoked:${actionId(member.id)}">Revocar</button>` : ''}</span>` : ''}</div>`).join('');
+    const inviteRows = invitations.map((invite) => `<div class="p2MemberRow"><span><b>${escapeHtml(invite.email)}</b><small>${escapeHtml(invite.roleId)} · ${escapeHtml(invite.status)} · vence ${escapeHtml(invite.expiresAt)}</small></span>${canManage && invite.status === 'pending' ? `<button class="btn danger" data-p2-invite-revoke="${actionId(invite.id)}">Revocar</button>` : ''}</div>`).join('');
+    return `<div class="pageHead"><div><h1>Equipo</h1><p>Roles, invitaciones y actividad del negocio.</p></div></div>
+      <section class="card sectionCard"><div class="p2WorkerHeader"><div><h3>Acceso de trabajadores</h3><p class="fieldHint">El flag esta activo solo para este negocio de prueba. Ninguna invitacion se envia ni se escribe en Firebase desde este candidato.</p></div><span class="badge ${resolution.readOnly ? 'danger' : 'green'}">${resolution.readOnly ? 'Lectura' : 'Controlado'}</span></div>
+      ${canManage ? `<form id="p2WorkerInviteForm" class="formGrid"><div class="field"><label>Correo</label><input id="p2WorkerEmail" type="email" required placeholder="trabajador@ejemplo.com"></div><div class="field"><label>Rol</label><select id="p2WorkerRole">${roleOptions}</select></div><div class="field full"><button class="btn primary" type="submit">Crear invitacion de un solo uso</button></div></form>` : '<p class="empty">Solo el propietario o administrador autorizado puede gestionar miembros.</p>'}
+      ${p2InvitationTokenForDisplay ? `<div class="p2InviteToken"><b>Comparte este codigo una sola vez</b><code>${escapeHtml(p2InvitationTokenForDisplay)}</code><small>El token no se guarda en el estado local.</small></div>` : ''}</section>
+      <section class="card sectionCard"><h3>Miembros</h3><div class="p2MemberResults">${memberRows || '<p class="empty">Aun no hay trabajadores activos.</p>'}</div></section>
+      <section class="card sectionCard"><h3>Invitaciones</h3><div class="p2MemberResults">${inviteRows || '<p class="empty">No hay invitaciones pendientes.</p>'}</div></section>`;
+  }
+  function openP2MemberEditor(memberId) {
+    const business = currentBusiness();
+    const member = p2PlatformData().memberships.find((entry) => entry.id === memberId && entry.businessId === business.id);
+    if (!member || !p2Can('members.manage', business)) return toast('No tienes permiso para editar este miembro.', 'err');
+    const domain = window.CLICK360_P2_PLATFORM;
+    const roles = (domain?.ROLES || []).filter((role) => role !== 'owner');
+    const permissions = domain?.PERMISSIONS || [];
+    showModal(`<div class="modalHeader"><div><h2>Permisos del trabajador</h2><p>${escapeHtml(member.email || member.uid)}</p></div><button class="closeBtn" data-close>×</button></div><div class="field"><label>Rol<select id="p2MemberRole">${roles.map((role) => `<option value="${role}" ${member.roleId === role ? 'selected' : ''}>${role}</option>`).join('')}</select></label></div><div class="p2PermissionGrid">${permissions.map((permission) => `<label><input type="checkbox" data-p2-permission="${permission}" ${member.permissions?.includes(permission) ? 'checked' : ''}>${escapeHtml(permission)}</label>`).join('')}</div><button class="btn primary block" id="p2SaveMember">Guardar permisos</button>`);
+    $('#p2SaveMember').onclick = () => {
+      const permissions = $$('[data-p2-permission]').filter((input) => input.checked).map((input) => input.dataset.p2Permission);
+      const actor = p2CurrentMembership(business.id);
+      try {
+        const next = domain.updateMembership({ actor, target:member, roleId:$('#p2MemberRole').value, permissions });
+        const index = p2PlatformData().memberships.findIndex((entry) => entry.id === member.id && entry.businessId === business.id);
+        p2PlatformData().memberships[index] = next;
+        p2Audit('worker_permissions_updated', { memberId:member.id, roleId:next.roleId, businessId:business.id });
+        if (!save()) return;
+        closeModal(); renderApp('workers'); toast('Permisos actualizados');
+      } catch (error) { toast('No se pudo cambiar el rol: ' + error.message, 'err'); }
+    };
+  }
+  function bindP2Workers() {
+    const business = currentBusiness();
+    const domain = window.CLICK360_P2_PLATFORM;
+    $('#p2WorkerInviteForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!p2Can('members.manage', business)) return toast('No tienes permiso para invitar.', 'err');
+      const email = $('#p2WorkerEmail').value;
+      const roleId = $('#p2WorkerRole').value;
+      const p2 = p2PlatformData();
+      if (p2.memberships.some((member) => member.businessId === business.id && String(member.email).toLowerCase() === String(email).toLowerCase() && member.status !== 'revoked') || p2.invitations.some((invite) => invite.businessId === business.id && String(invite.email).toLowerCase() === String(email).toLowerCase() && invite.status === 'pending')) return toast('Ese correo ya tiene una membresia o invitacion activa.', 'err');
+      if (p2.memberships.filter((member) => member.businessId === business.id && member.status === 'active').length >= Number(p2ModuleResolution(business).limits.workers || 0)) return toast('El plan actual alcanzo su limite de trabajadores.', 'err');
+      try {
+        const created = await domain.createInvitation({ businessId:business.id, email, roleId, invitedBy:authUser().uid || authUser().email });
+        p2.invitations.push(created.invitation);
+        p2.memberships.push(domain.normalizeMembership({ id:`pending_${created.invitation.id}`, email:created.invitation.email, businessId:business.id, roleId, permissions:created.invitation.permissions, status:'pending', invitedBy:created.invitation.invitedBy, invitedAt:created.invitation.invitedAt }));
+        p2InvitationTokenForDisplay = created.token;
+        p2Audit('worker_invited', { invitationId:created.invitation.id, roleId, businessId:business.id });
+        if (!save()) return;
+        renderApp('workers');
+      } catch (error) { toast('No se pudo crear la invitacion: ' + error.message, 'err'); }
+    });
+    $$('[data-p2-member-edit]').forEach((button) => button.onclick = () => openP2MemberEditor(decodeActionId(button.dataset.p2MemberEdit)));
+    $$('[data-p2-member-status]').forEach((button) => button.onclick = () => {
+      const [status, encoded] = button.dataset.p2MemberStatus.split(':');
+      const memberId = decodeActionId(encoded);
+      const p2 = p2PlatformData();
+      const member = p2.memberships.find((entry) => entry.id === memberId && entry.businessId === business.id);
+      if (!member || !p2Can('members.manage', business) || !confirm(`Confirmar ${status} para este trabajador?`)) return;
+      try {
+        const next = domain.updateMembership({ actor:p2CurrentMembership(business.id), target:member, status });
+        p2.memberships[p2.memberships.indexOf(member)] = next;
+        p2Audit(`worker_${status}`, { memberId, businessId:business.id });
+        if (!save()) return;
+        renderApp('workers');
+      } catch (error) { toast('No se pudo actualizar el miembro: ' + error.message, 'err'); }
+    });
+    $$('[data-p2-invite-revoke]').forEach((button) => button.onclick = () => {
+      const invitationId = decodeActionId(button.dataset.p2InviteRevoke);
+      const p2 = p2PlatformData();
+      const invitation = p2.invitations.find((entry) => entry.id === invitationId && entry.businessId === business.id);
+      if (!invitation || !p2Can('members.manage', business) || !confirm('Revocar esta invitacion?')) return;
+      invitation.status = 'revoked'; invitation.revokedAt = new Date().toISOString();
+      const pending = p2.memberships.find((entry) => entry.businessId === business.id && entry.email === invitation.email && entry.status === 'pending');
+      if (pending) { pending.status = 'revoked'; pending.revokedAt = invitation.revokedAt; }
+      p2Audit('worker_invitation_revoked', { invitationId, businessId:business.id });
+      if (!save()) return;
+      renderApp('workers');
+    });
+  }
+  function bindP2Admin() {
+    const business = currentBusiness();
+    if (!isOwnerUser() || !p2ModuleEnabled('admin', business)) return;
+    $$('[data-p2-module]').forEach((input) => input.onchange = () => {
+      const module = input.dataset.p2Module;
+      if (!confirm(`Confirmar ${input.checked ? 'activar' : 'desactivar'} ${module} para ${business.name}?`)) { input.checked = !input.checked; return; }
+      business.settings ||= {}; business.settings.modules ||= {};
+      business.settings.modules[module] = input.checked;
+      const flag = p2FeatureFlagFor(module, business.id);
+      if (flag) {
+        flag.enabled = input.checked;
+        flag.rolloutPercentage = input.checked ? 100 : 0;
+        flag.allowedBusinessIds = input.checked ? [business.id] : [];
+        flag.updatedAt = new Date().toISOString();
+      }
+      p2Audit('module_toggled', { module, enabled:input.checked, businessId:business.id });
+      if (!save()) return;
+      renderApp('admin');
+    });
+    $$('[data-p2-admin-action]').forEach((button) => button.onclick = () => {
+      const type = button.dataset.p2AdminAction;
+      if (!confirm(`Registrar solicitud local de ${type}? No modificara accountAccess.`)) return;
+      p2PlatformData().adminActions.push({ id:uid('p2-admin'), type, status:'pending_backend', businessId:business.id, createdAt:new Date().toISOString(), requestedBy:authUser().uid || '' });
+      p2Audit('admin_action_requested', { type, businessId:business.id });
+      if (!save()) return;
+      renderApp('admin');
+    });
+    $('#p2AdminMemberSearch')?.addEventListener('input', (event) => {
+      const query = String(event.target.value || '').toLowerCase();
+      const rows = p2PlatformData().memberships.filter((member) => member.businessId === business.id && `${member.email} ${member.roleId} ${member.status}`.toLowerCase().includes(query));
+      $('#p2AdminMemberResults').innerHTML = rows.map((member) => `<div class="p2MemberRow"><span><b>${escapeHtml(member.email || member.uid || 'Pendiente')}</b><small>${escapeHtml(member.roleId)} · ${escapeHtml(member.status)}</small></span></div>`).join('') || '<p class="empty">Sin coincidencias.</p>';
+    });
+  }
   function workersView(){
+    if (p2WorkersEnabled()) return p2WorkersView();
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
 	  ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<section class="card sectionCard"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>'}
       <section class="card sectionCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
@@ -3281,11 +4184,16 @@ function parseMoney(value) {
     if(r==='backup') bindBackup();
     if(r==='settings') bindSettings();
     if(r==='workers') bindWorkers();
+    if(r==='admin') bindP2Admin();
     if(r==='reports') bindReports();
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
     if(r==='reminders') bindReminders();
     if(r==='tables') bindTables();
+    if(r==='restaurant') bindRestaurantAdvanced();
+    if(r==='restaurantKds') bindRestaurantKds();
+    if(r==='logistics') bindLogistics();
+    if(r==='logisticsSettlement') bindLogisticsSettlement();
     if(r==='finance') bindFinance();
     if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();
@@ -4738,6 +5646,7 @@ function parseMoney(value) {
   }
 
   async function bindWorkers() {
+    if (p2WorkersEnabled()) return bindP2Workers();
     const list = $('#workersList');
     if (!window.click360User || window.click360User.role !== 'owner') {
       list.innerHTML = '<p class="empty">Solo el dueño puede administrar trabajadores.</p>';
@@ -5426,7 +6335,7 @@ function parseMoney(value) {
     'thermal-108': { label:'Rollo térmico 4x2 · 4 pulgadas / 108 mm', mediaType:'roll-1', width:108, height:60, mediaWidth:108, columns:1, rows:1, gapX:0, gapY:0, dpi:203 },
     'roll-2-custom': { label:'Rollo de 2 columnas · confirmar medidas', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:2, gapY:2, dpi:203, provisional:true },
     'roll-3-custom': { label:'Rollo de 3 columnas · confirmar medidas', mediaType:'roll-3', width:30, height:40, mediaWidth:0, columns:3, rows:1, gapX:2, gapY:2, dpi:203, provisional:true },
-    'shary-ltt214-2col': { label:'Shary · 3nStar LTT214 · 2 columnas (provisional)', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:0, gapY:0, dpi:203, provisional:true, requiresMeasurement:true },
+    'roll-2-40x60-provisional': { label:'Rollo 2 columnas · 40x60 mm · 203 DPI (provisional)', mediaType:'roll-2', width:40, height:60, mediaWidth:0, columns:2, rows:1, gapX:0, gapY:0, dpi:203, provisional:true, requiresMeasurement:true },
     'sheet-2': { label:'Hoja 2 columnas · Hoja A4 2 columnas', mediaType:'sheet', width:90, height:45, mediaWidth:210, mediaHeight:297, columns:2, rows:5, gapX:4, gapY:4, dpi:300, marginTop:8, marginRight:8, marginBottom:8, marginLeft:8 },
     'sheet-3': { label:'Hoja 3 columnas · Hoja A4 3 columnas', mediaType:'sheet', width:60, height:35, mediaWidth:210, mediaHeight:297, columns:3, rows:7, gapX:3, gapY:3, dpi:300, marginTop:7, marginRight:7, marginBottom:7, marginLeft:7 },
     'sheet-small': { label:'Hoja A4 stickers pequeños', mediaType:'sheet', width:38, height:25, mediaWidth:210, mediaHeight:297, columns:4, rows:10, gapX:2, gapY:2, dpi:300, marginTop:6, marginRight:6, marginBottom:6, marginLeft:6 },
@@ -5522,7 +6431,24 @@ function parseMoney(value) {
       fontSize -= scale;
       ctx.font = `${weight} ${fontSize}px ${family}`;
     }
-    ctx.fillText(String(text), Number(element.x || 0) * scale, Number(element.y || 0) * scale, maxWidth);
+    const x = Number(element.x || 0) * scale;
+    const y = Number(element.y || 0) * scale;
+    const rotation = Number(element.rotation || 0) * Math.PI / 180;
+    if (rotation) {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(rotation);
+      ctx.fillText(String(text), 0, 0, maxWidth); ctx.restore();
+      return;
+    }
+    ctx.fillText(String(text), x, y, maxWidth);
+  }
+  function drawCanvasElement(ctx, element, scale, x, y, width, height, draw) {
+    const rotation = Number(element.rotation || 0) * Math.PI / 180;
+    if (!rotation) return draw(x * scale, y * scale, width * scale, height * scale);
+    ctx.save();
+    ctx.translate((x + width / 2) * scale, (y + height / 2) * scale);
+    ctx.rotate(rotation);
+    draw(-width * scale / 2, -height * scale / 2, width * scale, height * scale);
+    ctx.restore();
   }
   function loadCanvasImage(src) {
     return new Promise((resolve) => {
@@ -5588,18 +6514,18 @@ function parseMoney(value) {
         const y = Math.max(0, Math.min(baseHeight - size, Number(element.y || 0)));
         const qrCanvas = document.createElement('canvas');
         QR.draw(qrCanvas, productPayload(product), size * scale, Math.max(2, Number(options.qrMargin || 5)), fg, safeColor(options.qrBgColor || options.bgColor, '#ffffff'));
-        ctx.drawImage(qrCanvas, x * scale, y * scale, size * scale, size * scale);
+        drawCanvasElement(ctx, element, scale, x, y, size, size, (dx, dy, dw, dh) => ctx.drawImage(qrCanvas, dx, dy, dw, dh));
       } else if (key === 'barcode') {
         if (typeof window.JsBarcode !== 'function' || !String(product.code || '').trim()) continue;
         try {
           const barcodeCanvas = document.createElement('canvas');
           window.JsBarcode(barcodeCanvas, String(product.code).trim(), { format:'CODE128', displayValue:false, margin:0, background:safeColor(options.bgColor, '#ffffff'), lineColor:fg, height:Math.max(20, Number(element.height || 34) * scale) });
-          ctx.drawImage(barcodeCanvas, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 220) * scale, Number(element.height || 34) * scale);
+          drawCanvasElement(ctx, element, scale, Number(element.x || 0), Number(element.y || 0), Number(element.width || 220), Number(element.height || 34), (dx, dy, dw, dh) => ctx.drawImage(barcodeCanvas, dx, dy, dw, dh));
         } catch {}
       } else if (key === 'logo' || key === 'image') {
         const source = key === 'logo' ? options.businessLogo : product.imageData;
         const image = await loadCanvasImage(source);
-        if (image) ctx.drawImage(image, Number(element.x || 0) * scale, Number(element.y || 0) * scale, Number(element.width || 40) * scale, Number(element.height || 40) * scale);
+        if (image) drawCanvasElement(ctx, element, scale, Number(element.x || 0), Number(element.y || 0), Number(element.width || 40), Number(element.height || 40), (dx, dy, dw, dh) => ctx.drawImage(image, dx, dy, dw, dh));
       } else {
         const values = {
           business: String(options.businessName || 'CLICK 360').toUpperCase(),
@@ -5641,7 +6567,7 @@ function parseMoney(value) {
     return { widthMm, heightMm, baseWidth, baseHeight, layout };
   }
 
-  async function openLabelModal(product, initialTemplateId = ''){
+  async function openAdvancedLabelModal(product, initialTemplateId = ''){
     const editorBusiness = currentBusiness();
     const editorBusinessId = editorBusiness?.id || '';
     if (!editorBusinessId || (product?.businessId && product.businessId !== editorBusinessId)) {
@@ -5672,12 +6598,12 @@ function parseMoney(value) {
       editorLayout.price.size *= Number(initialTemplate.priceScale || 1);
     }
 
-	    showModal(`<div class="modalHeader"><div><h2>Asistente de impresión</h2><p class="fieldHint">Label Studio · configura papel, diseño y cantidad sin cambiar opciones técnicas del sistema.</p></div><button class="closeBtn" data-close>×</button></div>
-	      <div class="labelModeSwitch" role="group" aria-label="Modo del estudio"><button type="button" class="active" data-label-mode="simple">Modo simple</button><button type="button" data-label-mode="expert">Modo experto</button></div>
+	    showModal(`<div class="modalHeader"><div><h2>Lienzo universal de etiquetas</h2><p class="fieldHint">Diseña con medidas físicas. La vista, el PDF y la impresión comparten un único plan.</p></div><button class="closeBtn" data-close>×</button></div>
+	      <div class="labelModeSwitch" role="group" aria-label="Modo del lienzo"><button type="button" class="active" data-label-mode="simple">Modo simple · Lienzo</button><button type="button" data-label-mode="expert">Modo experto · Asistente avanzado</button></div>
 	      <div class="smartPrintProgress"><span id="smartPrintStepText">Paso 1 de 9</span><progress id="smartPrintProgress" max="9" value="1">1 de 9</progress></div>
 	      <ol class="labelGuideSteps smartPrintSteps"><li class="active" data-smart-step-nav="1"><b>1</b><span>Salida</span></li><li data-smart-step-nav="2"><b>2</b><span>Papel</span></li><li data-smart-step-nav="3"><b>3</b><span>Medidas</span></li><li data-smart-step-nav="4"><b>4</b><span>Contenido</span></li><li data-smart-step-nav="5"><b>5</b><span>Cantidad</span></li><li data-smart-step-nav="6"><b>6</b><span>Inicio</span></li><li data-smart-step-nav="7"><b>7</b><span>Vista</span></li><li data-smart-step-nav="8"><b>8</b><span>Revisión</span></li><li data-smart-step-nav="9"><b>9</b><span>Imprimir</span></li></ol>
 	      <div class="labelCustomizerLayout">
-		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Editor visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
+		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Lienzo visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><div class="labelCanvasActions" role="toolbar" aria-label="Acciones del lienzo"><button type="button" class="btn" id="labelCanvasUndo" title="Deshacer">${icon('undo-2')}</button><button type="button" class="btn" id="labelCanvasRedo" title="Rehacer">${icon('redo-2')}</button><button type="button" class="btn" id="labelCanvasDuplicate">${icon('copy')} Duplicar</button><button type="button" class="btn" id="labelCanvasRotate">${icon('rotate-cw')} Rotar</button><button type="button" class="btn" id="labelCanvasAlign">${icon('align-center')} Alinear</button></div><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
 		          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="system" checked><span>${icon('printer')}<b>Impresora instalada</b><small>CLICK abrirá el diálogo de Chrome o Windows.</small></span></label><label><input type="radio" name="smartPrintOutput" value="pdf"><span>${icon('file-down')}<b>Guardar como PDF</b><small>Genera un archivo con la misma geometría.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
 		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
@@ -5771,6 +6697,45 @@ function parseMoney(value) {
     $('#smartPrintHelp').onclick = () => toast(smartStepHelp[smartPrintStep], 'ok');
     showSmartPrintStep(1);
 	    const canvas = $('#labelPreviewCanvas');
+	    let canvasHistory = [JSON.stringify(editorLayout)];
+	    let canvasHistoryIndex = 0;
+	    const rememberCanvasLayout = () => {
+	      const snapshot = JSON.stringify(editorLayout);
+	      if (canvasHistory[canvasHistoryIndex] === snapshot) return;
+	      canvasHistory = canvasHistory.slice(0, canvasHistoryIndex + 1).concat(snapshot).slice(-40);
+	      canvasHistoryIndex = canvasHistory.length - 1;
+	    };
+	    const restoreCanvasLayout = (direction) => {
+	      const next = canvasHistoryIndex + direction;
+	      if (next < 0 || next >= canvasHistory.length) return;
+	      canvasHistoryIndex = next;
+	      editorLayout = normalizedLabelLayout(JSON.parse(canvasHistory[canvasHistoryIndex]));
+	      syncElementControls();
+	      updatePreview();
+	    };
+	    $('#labelCanvasUndo').onclick = () => restoreCanvasLayout(-1);
+	    $('#labelCanvasRedo').onclick = () => restoreCanvasLayout(1);
+	    $('#labelCanvasRotate').onclick = () => {
+	      const element = editorLayout[elementSelect.value];
+	      if (!element || element.locked) return toast('Desbloquea el elemento para rotarlo.', 'err');
+	      element.rotation = (Number(element.rotation || 0) + 90) % 360;
+	      rememberCanvasLayout(); syncElementControls(); updatePreview();
+	    };
+	    $('#labelCanvasAlign').onclick = () => {
+	      const element = editorLayout[elementSelect.value];
+	      if (!element || element.locked) return toast('Desbloquea el elemento para alinearlo.', 'err');
+	      const baseWidth = Number(canvas.dataset.baseWidth || 260);
+	      element.x = ['qr','barcode','logo','image'].includes(elementSelect.value) ? Math.max(0, (baseWidth - Number(element.width || 0)) / 2) : baseWidth / 2;
+	      rememberCanvasLayout(); syncElementControls(); updatePreview();
+	    };
+	    $('#labelCanvasDuplicate').onclick = () => {
+	      const selected = editorLayout[elementSelect.value];
+	      if (!selected || selected.locked) return toast('Desbloquea el elemento para duplicarlo.', 'err');
+	      editorLayout.customText = { ...selected, x:Number(selected.x || 0) + 10, y:Number(selected.y || 0) + 10, visible:true, locked:false, z:Math.max(...Object.values(editorLayout).map((item) => Number(item.z || 0))) + 1 };
+	      $('#labelCustomText').value = $('#labelCustomText').value.trim() || 'Texto duplicado';
+	      elementSelect.value = 'customText';
+	      rememberCanvasLayout(); syncElementControls(); updatePreview();
+	    };
 	    $('#applyTemplateSelect').value = activeTemplateId;
 	    $('#labelProfileSelect').value = activePrintProfileId;
 	    $('#labelTaxDisplay').value = initialTemplate?.taxDisplay || 'inherit';
@@ -6220,7 +7185,7 @@ function parseMoney(value) {
       updatePreview();
       event.preventDefault();
     });
-    const stopDrag = () => { dragState = null; };
+	    const stopDrag = () => { if (dragState) rememberCanvasLayout(); dragState = null; };
     canvas.addEventListener('pointerup', stopDrag);
     canvas.addEventListener('pointercancel', stopDrag);
     syncElementControls();
@@ -6779,6 +7744,164 @@ function parseMoney(value) {
        toast('Código copiado');
     };
   }
+  function universalLabelDocument(template = {}) {
+    const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvas) return null;
+    if (template.universalDocument) return canvas.normalizeDocument(template.universalDocument);
+    return canvas.normalizeDocument({
+      paper: {
+        id: template.paperType || 'roll-1-60x40', mediaType: template.mediaType,
+        widthMm: template.widthMm || 60, heightMm: template.heightMm || 40,
+        mediaWidthMm: template.mediaWidthMm || 0, mediaHeightMm: template.mediaHeightMm || 0,
+        columns: template.columns || 1, rows: template.rows || 1,
+        gapXmm: template.gapXmm || 0, gapYmm: template.gapYmm || 0,
+        marginTopMm: template.marginTopMm || 0, marginRightMm: template.marginRightMm || 0,
+        marginBottomMm: template.marginBottomMm || 0, marginLeftMm: template.marginLeftMm || 0,
+        dpi: template.dpi || 203, orientation: template.orientation || 'portrait'
+      },
+      layout: template.layout || undefined,
+      quantity: template.quantity || 1,
+      startSlot: template.startSlot || 1
+    });
+  }
+  function universalMediaSize(document) {
+    const paper = document.paper;
+    const rowAdvanceMm = paper.pitchMm > paper.heightMm ? paper.pitchMm : paper.heightMm + paper.gapYmm;
+    const width = paper.mediaWidthMm || paper.marginLeftMm + paper.marginRightMm
+      + paper.columns * paper.widthMm + Math.max(0, paper.columns - 1) * paper.gapXmm;
+    const height = paper.mediaHeightMm || paper.marginTopMm + paper.marginBottomMm + paper.heightMm
+      + Math.max(0, paper.rows - 1) * rowAdvanceMm;
+    return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
+  }
+  async function buildUniversalLabelPrintNode(product, sourceDocument) {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const documentModel = canvasApi.normalizeDocument(sourceDocument);
+    const plan = canvasApi.buildPrintPlan([{ product, copies: documentModel.quantity }], documentModel, { startSlot: documentModel.startSlot });
+    if (!plan.valid || !plan.count || !plan.pages?.length) throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.'), { code:'universal-print-plan-invalid' });
+    const media = universalMediaSize(documentModel);
+    const wrap = document.createElement('div');
+    wrap.className = 'printLabels universalPrintLabels';
+    wrap.dataset.printPlan = canvasApi.planFingerprint(plan);
+    wrap.dataset.renderer = 'universal-mm-v2';
+    for (const page of plan.pages) {
+      const pageNode = document.createElement('section');
+      pageNode.className = 'labelPrintPage';
+      pageNode.style.cssText = `position:relative;width:${media.widthMm}mm;height:${media.heightMm}mm;overflow:hidden;page-break-after:always;`;
+      for (const cell of page.cells) {
+        const cellNode = document.createElement('div');
+        cellNode.className = `labelPrintCell ${cell.status}`;
+        cellNode.style.cssText = `position:absolute;left:${cell.xMm}mm;top:${cell.yMm}mm;width:${documentModel.paper.widthMm}mm;height:${documentModel.paper.heightMm}mm;overflow:hidden;`;
+        if (cell.status === 'filled') {
+          const labelCanvas = document.createElement('canvas');
+          await canvasApi.renderLabelToCanvas(labelCanvas, documentModel, {
+            product: cell.item.product,
+            price: fmt(cell.item.product?.price || 0),
+            sku: cell.item.product?.code || '',
+            qrPayload: productPayload(cell.item.product)
+          });
+          if (!labelCanvas.width || !labelCanvas.height) throw Object.assign(new Error('La etiqueta se renderizó vacía.'), { code:'universal-render-empty' });
+          const image = document.createElement('img');
+          image.src = labelCanvas.toDataURL('image/png');
+          image.alt = `Etiqueta ${cell.item.copy} de ${cell.item.product?.name || 'producto'}`;
+          image.style.cssText = `display:block;width:${documentModel.paper.widthMm}mm;height:${documentModel.paper.heightMm}mm;`;
+          cellNode.appendChild(image);
+        }
+        pageNode.appendChild(cellNode);
+      }
+      wrap.appendChild(pageNode);
+    }
+    return { node:wrap, plan, document:documentModel, media };
+  }
+  async function printUniversalLabels(product, sourceDocument, providerId = 'system') {
+    const job = await buildUniversalLabelPrintNode(product, sourceDocument);
+    const result = await handoffPrint({
+      node: job.node.cloneNode(true), media:'label', mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm,
+      widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm, copiesHandled:true,
+      printPlan:job.plan, filename:`CLICK360_lienzo_${today()}.pdf`
+    }, providerId);
+    return { ...job, result };
+  }
+  async function printUniversalCalibration(sourceDocument, providerId = 'system') {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const documentModel = canvasApi.normalizeDocument(sourceDocument);
+    const calibrationProduct = { id:'calibration', name:'Calibración CLICK 360', code:'CAL-001', price:0, qty:1 };
+    const withText = canvasApi.addObject(documentModel, 'text', { text:'Prueba X/Y · mide borde y gap', xMm:2, yMm:Math.max(2, documentModel.paper.heightMm - 8), widthMm:Math.max(10, documentModel.paper.widthMm - 4), heightMm:5 });
+    return printUniversalLabels(calibrationProduct, { ...withText, quantity: Math.max(2, documentModel.paper.columns), startSlot:1 }, providerId);
+  }
+  async function openLabelModal(product, initialTemplateId = '') {
+    const editor = window.CLICK360_UNIVERSAL_LABEL_EDITOR;
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const editorBusiness = currentBusiness();
+    const businessId = editorBusiness?.id || '';
+    if (!editor || !canvasApi) return openAdvancedLabelModal(product, initialTemplateId);
+    if (!businessId || (product?.businessId && product.businessId !== businessId)) return toast('El producto no pertenece al negocio activo.', 'err');
+    const templates = labelTemplatesForBiz(businessId);
+    const initialTemplate = templates.find((template) => template.id === initialTemplateId) || templates.find((template) => template.isDefault) || null;
+    const deviceState = loadPrintDeviceState(businessId);
+    const initialProfile = labelProfilesForBiz(businessId).find((profile) => profile.id === deviceState.universalProfileId) || null;
+    const editorBusinessIsActive = () => currentBusiness()?.id === businessId;
+    editor.open({
+      product,
+      initialTemplate,
+      initialProfile,
+      initialDocument: universalLabelDocument(initialTemplate || {}),
+      formatPrice:fmt,
+      productPayload,
+      readImage:(input, onImage) => readImageInput(input, onImage, { max:640, maxBytes:140 * 1024, quality:0.7 }),
+      showModal,
+      closeModal,
+      toast,
+      getTemplates:() => labelTemplatesForBiz(businessId).filter((template) => template.universalDocument || template.layout),
+      getProfiles:() => labelProfilesForBiz(businessId).filter((profile) => profile.universalPaper),
+      saveTemplate:async (name, universalDocument, templateId = '') => {
+        if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo para guardar con seguridad.', 'err');
+        state.settings ||= {}; state.settings.labelTemplates ||= [];
+        const previous = [...state.settings.labelTemplates];
+        const existing = state.settings.labelTemplates.find((template) => template.id === templateId && template.businessId === businessId);
+        const template = {
+          ...(existing || {}), id:existing?.id || uid('tpl'), name, businessId,
+          universalDocument:canvasApi.normalizeDocument(universalDocument), widthMm:universalDocument.paper.widthMm,
+          heightMm:universalDocument.paper.heightMm, columns:universalDocument.paper.columns, rows:universalDocument.paper.rows,
+          paperType:universalDocument.paper.id, dpi:universalDocument.paper.dpi,
+          createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString(), isDefault:existing?.isDefault === true
+        };
+        const index = state.settings.labelTemplates.findIndex((item) => item.id === template.id && item.businessId === businessId);
+        if (index >= 0) state.settings.labelTemplates[index] = template; else state.settings.labelTemplates.push(template);
+        addAudit('universal_label_template_saved', { templateId:template.id, businessId, renderer:'universal-mm-v2' });
+        if (!save()) { state.settings.labelTemplates = previous; toast('No se pudo guardar la plantilla en este dispositivo.', 'err'); return null; }
+        refreshInventoryTemplateSection(); toast('Plantilla del lienzo guardada.', 'ok'); return template;
+      },
+      deleteTemplate:async (templateId) => {
+        if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');
+        state.settings.labelTemplates = (state.settings.labelTemplates || []).filter((template) => !(template.id === templateId && template.businessId === businessId));
+        if (!save()) return toast('No se pudo eliminar la plantilla.', 'err');
+        refreshInventoryTemplateSection(); toast('Plantilla eliminada.');
+      },
+      saveProfile:async (universalDocument, profileId = '', profileName = '') => {
+        if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');
+        state.settings ||= {}; state.settings.labelProfiles ||= [];
+        const previous = [...state.settings.labelProfiles];
+        const existing = state.settings.labelProfiles.find((profile) => profile.id === profileId && profile.businessId === businessId);
+        const name = String(profileName || existing?.name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`).trim().slice(0, 80);
+        const profile = { ...(existing || {}), id:existing?.id || uid('print-profile'), businessId, name:name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`, status:'provisional', universalPaper:universalDocument.paper, createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() };
+        const index = state.settings.labelProfiles.findIndex((item) => item.id === profile.id && item.businessId === businessId);
+        if (index >= 0) state.settings.labelProfiles[index] = profile; else state.settings.labelProfiles.push(profile);
+        addAudit('universal_label_profile_saved', { profileId:profile.id, businessId, status:'provisional' });
+        if (!save()) { state.settings.labelProfiles = previous; toast('No se pudo guardar el perfil.', 'err'); return null; }
+        savePrintDeviceState({ ...loadPrintDeviceState(businessId), selectedProfileId:profile.id, universalProfileId:profile.id }, businessId);
+        return profile;
+      },
+      print:(universalDocument, providerId) => printUniversalLabels(product, universalDocument, providerId),
+      printCalibration:(universalDocument) => printUniversalCalibration(universalDocument),
+      openAdvanced:() => openAdvancedLabelModal(product, initialTemplateId)
+    });
+  }
+  window.click360UniversalLabelTest = {
+    normalize:(input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.normalizeDocument(input),
+    buildPlan:(product, input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.buildPrintPlan([{ product, copies:input?.quantity || 1 }], input, { startSlot:input?.startSlot || 1 }),
+    render:(product, input) => buildUniversalLabelPrintNode(product, input),
+    open:(product) => openLabelModal(product)
+  };
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
   function printPaperFromOptions(options = {}) {
     return {
@@ -6807,6 +7930,11 @@ function parseMoney(value) {
     };
   }
   function buildLabelSheetPlan(groups, options = {}) {
+    const universal = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (universal?.buildPrintPlan) return universal.buildPrintPlan(groups, printPaperFromOptions(options), {
+      startSlot: options.startSlot,
+      usedSlots: options.usedSlots
+    });
     const core = window.CLICK360_SMART_PRINT;
     if (!core?.buildSheetPlan) {
       return { valid:false, errors:['El motor físico de impresión no está disponible. Recarga CLICK 360.'], items:[], count:0, columns:1, rows:1, capacity:1, pages:[], mediaType:'roll' };
@@ -7992,7 +9120,7 @@ function parseMoney(value) {
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
-	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','finance','help'].includes(h)) renderApp(h); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','admin','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','restaurant','restaurantKds','logistics','logisticsSettlement','finance','help'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();
