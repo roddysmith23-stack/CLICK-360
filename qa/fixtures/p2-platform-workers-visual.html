@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" href="../../assets/favicon.ico">
+  <link rel="stylesheet" href="../../styles.css">
+  <title>CLICK 360 P2 Platform QA</title>
+</head>
+<body>
+  <main class="app" style="height:auto;min-height:100dvh;padding:16px max(16px,var(--safe-right)) calc(24px + var(--safe-bottom)) max(16px,var(--safe-left));overflow:visible">
+    <section class="pageHead"><div><h1>Administracion del negocio</h1><p>Fixture sintetico para revisar modulos y equipo.</p></div></section>
+    <section class="p2SummaryGrid">
+      <article class="card"><small>Plan detectado</small><b>pro</b><span>Acceso operativo</span></article>
+      <article class="card"><small>Modulos activos</small><b>9</b><span>core, ventas, etiquetas, equipo</span></article>
+      <article class="card"><small>Equipo</small><b>3/5</b><span>Miembros activos</span></article>
+    </section>
+    <section class="card sectionCard p2AdminSection">
+      <h3>Modulos por negocio</h3>
+      <div class="p2ModuleGrid">
+        <label class="p2ModuleRow"><span><b>Inventario</b><small>Disponible</small></span><input type="checkbox" checked></label>
+        <label class="p2ModuleRow"><span><b>Etiquetas</b><small>Disponible</small></span><input type="checkbox" checked></label>
+        <label class="p2ModuleRow"><span><b>Trabajadores</b><small id="workerFlag">Flag apagado</small></span><input id="workerToggle" type="checkbox"></label>
+        <label class="p2ModuleRow"><span><b>Restaurante</b><small>Flag apagado</small></span><input type="checkbox"></label>
+      </div>
+    </section>
+    <section class="card sectionCard p2AdminSection">
+      <div class="p2WorkerHeader"><div><h3>Equipo</h3><p class="fieldHint">Los nombres son sinteticos; este fixture no se conecta a Firebase.</p></div><span class="badge green">Controlado</span></div>
+      <div class="p2InlineActions"><button class="btn" id="inviteButton">Crear invitacion</button><button class="btn danger">Revocar acceso</button></div>
+      <div id="inviteStatus" class="p2InviteToken" hidden><b>Codigo de una sola vez</b><code>solo-fixture-no-persistir</code><small>Visualizacion local de QA.</small></div>
+      <div class="p2MemberResults">
+        <div class="p2MemberRow"><span><b>cajero@example.test</b><small>cashier · active</small></span><span class="p2InlineActions"><button class="btn">Permisos</button><button class="btn danger">Revocar</button></span></div>
+        <div class="p2MemberRow"><span><b>inventario@example.test</b><small>inventory · suspended</small></span><span class="p2InlineActions"><button class="btn">Reactivar</button></span></div>
+      </div>
+    </section>
+    <section class="card sectionCard p2AdminSection">
+      <h3>Permisos</h3>
+      <div class="p2PermissionGrid">
+        <label><input type="checkbox" checked>sales.create</label><label><input type="checkbox" checked>cash.open</label>
+        <label><input type="checkbox">members.manage</label><label><input type="checkbox">settings.manage</label>
+      </div>
+    </section>
+  </main>
+  <script>
+    document.getElementById('workerToggle').addEventListener('change', (event) => {
+      document.getElementById('workerFlag').textContent = event.target.checked ? 'Flag preparado para este negocio' : 'Flag apagado';
+    });
+    document.getElementById('inviteButton').addEventListener('click', () => {
+      document.getElementById('inviteStatus').hidden = false;
+    });
+  </script>
+</body>
+</html>
