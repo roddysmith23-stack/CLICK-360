@@ -6,7 +6,7 @@ import {
   firestoreHash,
   stateIdentitySummary,
   suspendConfirmation
-} from './scripts/lib/click360-v16-admin-core.mjs';
+} from '../lib/click360-v16-admin-core.mjs';
 
 const authUser = { uid: 'uid-shary', email: 'shary10mmvv@gmail.com', displayName: 'SHARY', disabled: false };
 const scope = assertAdminScope({

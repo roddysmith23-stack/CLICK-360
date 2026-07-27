@@ -1,7 +1,7 @@
 const assert = require('assert');
 
 (async () => {
-  const core = await import('./scripts/lib/click360-data-core.mjs');
+  const core = await import('../lib/click360-data-core.mjs');
   const fixture = await import('node:fs/promises').then((fs) => fs.readFile('./fixtures/firebase-audit-fixture.json', 'utf8')).then(JSON.parse);
   const categories = fixture.tenants.map((tenant) => core.classifyTenant(tenant, fixture.approvedUsers, fixture.authUsers || []).category);
   assert(categories.includes('CLEAN_V10'), 'clean v10 classified');
