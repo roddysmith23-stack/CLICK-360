@@ -14,16 +14,16 @@ const manifest = JSON.parse(read('manifest.webmanifest'));
 const pkg = JSON.parse(read('package.json'));
 const artifacts = JSON.parse(read('qa/artifacts/p1-5c-synthetic-print-plans.json'));
 
-assert.match(app, /APP_RELEASE_VERSION = '1\.0\.4-p2'/);
-assert.match(app, /APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5c-r1'/);
-assert.match(runtime, /APP_VERSION = '1\.0\.4-p2'/);
-assert.match(worker, /click360-mvp-launch-v16-2-p1-5c-r1/);
-assert.match(html, /smart-print-core\.js\?v=mvp-launch-v16-2-p1-5c-r1/);
+assert.match(app, /APP_RELEASE_VERSION = '1\.0\.4-p3'/);
+assert.match(app, /APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5d-r1'/);
+assert.match(runtime, /APP_VERSION = '1\.0\.4-p3'/);
+assert.match(worker, /click360-mvp-launch-v16-2-p1-5d-r1/);
+assert.match(html, /smart-print-core\.js\?v=mvp-launch-v16-2-p1-5d-r1/);
 assert.ok(html.indexOf('smart-print-core.js') < html.indexOf('app.js'), 'core loads before app');
 assert.match(worker, /\.\/smart-print-core\.js/);
 assert.match(build, /'smart-print-core\.js'/);
-assert.equal(manifest.start_url, './?v=mvp-launch-v16-2-p1-5c-r1');
-assert.equal(pkg.version, '1.0.4-p2');
+assert.equal(manifest.start_url, './?v=mvp-launch-v16-2-p1-5d-r1');
+assert.equal(pkg.version, '1.0.4-p3');
 assert.equal(artifacts.hardwareCertified, false);
 assert.ok(artifacts.cases.length >= 13);
 const artifactIds = new Set(artifacts.cases.map((entry) => entry.id));
@@ -79,6 +79,6 @@ try {
   changed = childProcess.execFileSync('git', ['diff', '--name-only', '6aa097f9ce48fbb308d7851a0917122d5ed2695a'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
 } catch {}
 for (const file of forbidden) assert.equal(changed.includes(file), false, `${file} is untouched`);
-assert.equal(core.VERSION, '1.0.4-p2');
+assert.equal(core.VERSION, '1.0.4-p3');
 
 console.log('P1.5C regression harness PASS');

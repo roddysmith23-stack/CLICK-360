@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-launch-v16-2-p1-5c-r1';
+const CACHE = 'click360-mvp-launch-v16-2-p1-5d-r1';
 const ASSETS = [
   './',
   './index.html',

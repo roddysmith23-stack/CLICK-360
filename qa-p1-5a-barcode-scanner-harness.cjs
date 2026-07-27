@@ -9,8 +9,8 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 const publicBundle = `${app}\n${styles}\n${html}\n${worker}`;
 
-const RELEASE = '1.0.4-p2';
-const ASSET = 'mvp-launch-v16-2-p1-5c-r1';
+const RELEASE = '1.0.4-p3';
+const ASSET = 'mvp-launch-v16-2-p1-5d-r1';
 const BARCODE_FORMATS = ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
 
 function normalizeCode(value) {
