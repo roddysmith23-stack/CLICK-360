@@ -14,6 +14,7 @@ const ASSETS = [
   './printing-service.js',
   './smart-print-core.js',
   './universal-label-canvas.js',
+  './universal-label-editor.js',
   './manifest.webmanifest',
 	'./robots.txt',
 	'./sitemap.xml',
