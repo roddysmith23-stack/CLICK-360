@@ -4,6 +4,12 @@
     return;
   }
 
+  const P2_CLOUD_CONFIG = window.CLICK360_P2_CLOUD?.config || { enabled: false };
+  if (P2_CLOUD_CONFIG.enabled && P2_CLOUD_CONFIG.projectId === 'click-360') {
+    console.error('CLICK360 P2 Cloud rechazó el proyecto de producción.');
+    return;
+  }
+
   if (!firebase.apps.length) firebase.initializeApp(window.CLICK360_FIREBASE_CONFIG);
 
   if (!window.CLICK360_P0_TENANT_GUARD) {
@@ -31,6 +37,15 @@
 
 	  const auth = firebase.auth();
 	  const db = firebase.firestore();
+  if (P2_CLOUD_CONFIG.enabled && P2_CLOUD_CONFIG.useEmulators) {
+    try {
+      auth.useEmulator(P2_CLOUD_CONFIG.authEmulatorUrl, { disableWarnings: true });
+      db.useEmulator(P2_CLOUD_CONFIG.firestoreEmulatorHost, Number(P2_CLOUD_CONFIG.firestoreEmulatorPort));
+    } catch (error) {
+      console.error('CLICK360 P2 Cloud no pudo conectar emuladores:', error.message);
+      return;
+    }
+  }
 	  db.enablePersistence({ synchronizeTabs: true }).catch(err => {
 	    console.warn("Persistencia offline de Firestore no disponible:", err.message);
 	  });
