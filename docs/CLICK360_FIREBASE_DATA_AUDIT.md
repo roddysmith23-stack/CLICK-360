@@ -5,7 +5,8 @@ The administrative audit is read-only by default. It inventories approved users,
 ## Fixture validation
 
 ```bash
-node scripts/audit-firestore-legacy.mjs --fixture fixtures/firebase-audit-fixture.json --out artifacts/firebase-audit
+npm ci --prefix tools/admin
+node tools/admin/scripts/audit-firestore-legacy.mjs --fixture tools/admin/fixtures/firebase-audit-fixture.json --out tools/admin/artifacts/firebase-audit
 ```
 
 ## Production read-only audit
@@ -14,7 +15,7 @@ Use an authorized Application Default Credential. No credential, token, or servi
 
 ```bash
 gcloud auth application-default login
-node scripts/audit-firestore-legacy.mjs --project=click-360 --out artifacts/firebase-audit
+node tools/admin/scripts/audit-firestore-legacy.mjs --project=click-360 --out tools/admin/artifacts/firebase-audit
 ```
 
 The generated `artifacts/firebase-audit/` folder is ignored by Git and contains JSON, CSV, and Markdown reports. Each tenant is classified as `CLEAN_V10`, `LEGACY_CLEAR_OWNER`, `LEGACY_AMBIGUOUS`, `CROSS_TENANT_SUSPECT`, or `ORPHANED`.
