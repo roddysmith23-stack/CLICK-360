@@ -40,6 +40,10 @@ firebase-admin@14.1.0
 
 The full dependency audit reports 20 findings (15 high, 5 moderate). The additional findings are under development tooling such as `firebase-tools`; they are not shipped by the static PWA, but remain relevant to developer and emulator tooling.
 
+### Repository Tree After This PR
+
+No dependency or lockfile change is committed because no compatible stable patch exists. The checked-in production dependency tree is intentionally identical to the baseline above. The isolated `firebase-admin@14.2.0` trial also retained the affected Firestore / GAX chain, so it was not committed as a cosmetic update.
+
 ## Exposure Matrix
 
 | Surface | Packages / files | Runs for customers | Assessment |
@@ -73,6 +77,8 @@ The workflow now has three independent required jobs:
 3. `security-audit`: `npm ci` followed by `npm audit --omit=dev --audit-level=moderate`.
 
 No job uses `continue-on-error`. A security failure remains a failed check and must block merge; the independent jobs still reveal whether functional QA passed.
+
+GitHub Actions run `30249609929` verified this split: `v16-qa` passed, `admin-fixture-qa` passed, and only `security-audit` failed on the known audit gate. GitHub emitted an informational Node 20 deprecation warning for upstream action runtime internals; the workflow explicitly configures application setup with Node 22.
 
 ## Validation on This Branch
 
