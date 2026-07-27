@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ ! -d functions/node_modules ]; then
+  echo "Run npm ci --prefix functions before P2 Cloud emulator QA." >&2
+  exit 1
+fi
+
+if ! command -v java >/dev/null 2>&1 || ! java -version >/dev/null 2>&1; then
+  for java_bin in /opt/homebrew/opt/openjdk@21/bin/java /usr/local/opt/openjdk@21/bin/java; do
+    if [ -x "$java_bin" ]; then
+      export PATH="$(dirname "$java_bin"):$PATH"
+      break
+    fi
+  done
+fi
+
+if ! command -v java >/dev/null 2>&1 || ! java -version >/dev/null 2>&1; then
+  echo "Java is required for emulator QA." >&2
+  exit 1
+fi
+
+unset GOOGLE_APPLICATION_CREDENTIALS
+unset CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE
+unset GOOGLE_CLOUD_QUOTA_PROJECT
+
+./node_modules/.bin/firebase emulators:exec --only auth,firestore,functions --config firebase.p2-emulator.json --project demo-click360-p2-staging "npm run qa:cloud --prefix functions"
