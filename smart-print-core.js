@@ -168,9 +168,9 @@
       shape: 'circle',
       nominalDpi: 203
     },
-    'shary-ltt214-2col': {
-      id: 'shary-ltt214-2col',
-      name: 'Shary - 3nStar LTT214 - 2 columnas',
+    'roll-2-40x60-provisional': {
+      id: 'roll-2-40x60-provisional',
+      name: 'Rollo 2 columnas 40 x 60 mm - provisional',
       mediaType: 'roll-2',
       labelWidthMm: 40,
       labelHeightMm: 60,
@@ -178,12 +178,9 @@
       columns: 2,
       rows: 1,
       nominalDpi: 203,
-      manufacturer: '3nStar',
-      model: 'LTT214',
-      driverDisplayName: '4BARCODE 4B-2054L',
       status: 'provisional',
       measurementsConfirmed: false,
-      notes: 'Confirma el ancho total del soporte y los gaps antes de guardar.'
+      notes: 'Confirma el ancho total, el gap y el pitch antes de guardar el perfil del dispositivo.'
     }
   });
 

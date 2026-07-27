@@ -18,6 +18,8 @@ const files = [
   'firebase-service.js',
   'printing-service.js',
   'smart-print-core.js',
+  'universal-label-canvas.js',
+  'universal-label-editor.js',
   'service-worker.js',
   'manifest.webmanifest',
   'robots.txt',
