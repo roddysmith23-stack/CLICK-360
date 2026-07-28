@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.0.5 - Release Candidate
+
+### Added
+
+- Universal Label Canvas as the primary label editor.
+- Physical millimetre document model shared by print and PDF.
+- Device-scoped paper profile and calibration restoration.
+- Responsive release QA across Chromium, WebKit, and Firefox.
+- Built-artifact smoke with version, manifest, console, and request checks.
+- Explicit web release gate in CI.
+
+### Improved
+
+- Mobile label editor keeps quantity and print actions visible.
+- Buttons, headings, arrows, and long labels remain inside their containers.
+- Logo, profile, navigation, and modal controls have improved semantics and
+  touch targets.
+- Cache identity is now `commercial-1-0-5-r1`.
+
+### Security
+
+- PWA and Firebase Admin dependencies remain physically separated.
+- Live administrative tools no longer default to production.
+- Root production audit remains independent from the unsuppressed
+  administrative audit.
+
+### Gated
+
+- P2 Workers, Restaurant Advanced, Logistics, and Owner Preview remain disabled
+  until their multiuser backend and Rules contracts are approved.
+
 ## 1.0.4-p0 - 2026-07-22
 
 - Añade escaneo desde cámara para QR, EAN, UPC y Code 128 con `BarcodeDetector`, fallback local ZXing y soporte de lectores físicos tipo teclado.

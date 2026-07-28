@@ -27,9 +27,9 @@ const secrets = [
 ];
 const report = core.sanitizeDiagnostic({
   diagnosticId: 'PRNREP-7F2K9M4Q',
-  release: '1.0.4-p2',
+  release: '1.0.5',
   buildSha: 'abc123def456',
-  assetVersion: 'mvp-launch-v16-2-p1-5c-r1',
+  assetVersion: 'commercial-1-0-5-r1',
   browser: `Safari ${secrets.join(' ')}`,
   operatingSystem: `iPhone ${secrets.join(' ')}`,
   outputMode: 'system',

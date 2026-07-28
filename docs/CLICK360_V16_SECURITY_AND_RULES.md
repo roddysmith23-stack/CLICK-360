@@ -34,7 +34,7 @@ Una prueba adversarial demostró que `MapDiff.changedKeys()` no incluye campos r
 
 ## Administración
 
-`scripts/admin-access-v16.mjs` no forma parte del frontend. Requiere ADC/IAM, proyecto exacto `click-360`, actor autorizado, email y UID exactos, hash de dry-run y confirmación textual. Cada cambio crea backup verificado y `adminAuditLogs`; ambas rutas son invisibles para clientes.
+`tools/admin/scripts/admin-access-v16.mjs` no forma parte del frontend. Requiere ADC/IAM, proyecto exacto `click-360`, actor autorizado, email y UID exactos, hash de dry-run y confirmación textual. Cada cambio crea backup verificado y `adminAuditLogs`; ambas rutas son invisibles para clientes.
 
 ## Resultado del emulador
 
