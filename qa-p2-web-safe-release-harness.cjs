@@ -3,7 +3,18 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 
 const root = __dirname;
-const main = 'main...HEAD';
+const gitRefExists = (ref) => {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', ref], { cwd: root, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+};
+const configuredBase = process.env.CLICK360_WEB_SAFE_BASE_REF;
+const baseRef = [configuredBase, 'origin/main', 'main'].find((ref) => ref && gitRefExists(ref));
+assert(baseRef, 'a reviewed main base ref is required for the web-safe diff audit');
+const main = `${baseRef}...HEAD`;
 const changedFiles = execFileSync('git', ['diff', '--name-only', main], { cwd:root, encoding:'utf8' })
   .split('\n').filter(Boolean);
 
