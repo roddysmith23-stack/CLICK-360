@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -21,4 +21,4 @@ unset CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE
 unset GOOGLE_CLOUD_QUOTA_PROJECT
 
 cd "$ROOT"
-./node_modules/.bin/firebase emulators:exec --only auth,firestore,functions --config firebase.p2-emulator.json --project demo-click360-p2-staging "sh qa/run-p2-cloud-multiuser-browser-inner.sh"
+./node_modules/.bin/firebase emulators:exec --only auth,firestore,functions --config firebase.p2-emulator.json --project demo-click360-p2-staging "bash qa/run-p2-cloud-multiuser-browser-inner.sh"

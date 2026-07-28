@@ -13,6 +13,9 @@ const adminWorkflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'a
 
 assert.equal(Object.hasOwn(rootPackage.dependencies, 'firebase-admin'), false, 'PWA root has no administrative SDK dependency');
 assert.equal(Object.hasOwn(rootLock.packages[''].dependencies || {}, 'firebase-admin'), false, 'PWA root lockfile has no direct administrative SDK dependency');
+for (const script of ['qa:p2:cloud', 'qa:p2:multiuser', 'qa:p2:browser']) {
+  assert.match(rootPackage.scripts[script], /^bash /, `${script} uses Bash where pipefail is required in Linux CI`);
+}
 assert.equal(adminPackage.dependencies['firebase-admin'], '^14.1.0', 'admin package owns firebase-admin explicitly');
 assert.equal(Object.hasOwn(adminLock.packages[''].dependencies || {}, 'firebase-admin'), true, 'admin lockfile owns firebase-admin');
 assert.equal(build.includes("'node_modules'"), false, 'static build allowlist never copies node_modules');
