@@ -29,7 +29,9 @@ an owner-approved compensating-control decision is recorded.
 
 - The emulator commands unset explicit credential overrides and use the
   `demo-click360-p2-staging` project.
-- The Functions service rejects `click-360` and refuses an unspecified project.
+- The Functions service accepts only the emulator project or an explicit
+  `CLICK360_STAGING_PROJECT_ID` allowlist; it rejects `click-360`, an
+  unspecified project, and every other project.
 - All emulator fixtures use synthetic identities and business IDs.
 - Admin SDK stays server-side; browser repositories only call authenticated
   endpoints.

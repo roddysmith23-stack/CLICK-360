@@ -4,21 +4,27 @@ const { onRequest } = require('firebase-functions/v2/https');
 const { setGlobalOptions } = require('firebase-functions/v2');
 const { initializeApp, getApps } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
-const { getFirestore } = require('firebase-admin/firestore');
+const { FieldValue, getFirestore } = require('firebase-admin/firestore');
 const { randomUUID } = require('node:crypto');
 const { createP2AdminService, P2Error, ACTIONS } = require('./p2-admin-service.cjs');
+const { createP2RestaurantService, RestaurantError, ACTIONS: RESTAURANT_ACTIONS } = require('./p2-restaurant-service.cjs');
+const { createP2LogisticsService, LogisticsError, ACTIONS: LOGISTICS_ACTIONS } = require('./p2-logistics-service.cjs');
+const { stagingProjectAllowed } = require('./p2-project-boundary.cjs');
 
 setGlobalOptions({ region: 'us-central1', maxInstances: 2 });
 if (!getApps().length) initializeApp();
 
 const buckets = new Map();
+const ALL_ACTIONS = new Set([...ACTIONS, ...RESTAURANT_ACTIONS, ...LOGISTICS_ACTIONS]);
 function projectId() {
   if (process.env.GCLOUD_PROJECT) return process.env.GCLOUD_PROJECT;
   try { return JSON.parse(process.env.FIREBASE_CONFIG || '{}').projectId || ''; } catch { return ''; }
 }
-function assertNonProduction() {
+function assertStagingProject() {
   const id = projectId();
-  if (!id || id === 'click-360') throw new P2Error('non_production_project_required', 403);
+  if (!stagingProjectAllowed(id)) {
+    throw new P2Error('non_production_project_required', 403);
+  }
   return id;
 }
 function originAllowed(origin) {
@@ -54,12 +60,17 @@ async function invoke(request, response, fixedAction = '') {
     }
     if (request.method !== 'POST') throw new P2Error('method_not_allowed', 405);
     if (!originAllowed(request.headers.origin)) throw new P2Error('origin_not_allowed', 403);
-    const id = assertNonProduction();
+    const id = assertStagingProject();
     const decoded = await getAuth().verifyIdToken(bearer(request), true);
     const action = fixedAction || String(request.body?.action || '');
-    if (!ACTIONS.has(action)) throw new P2Error('unknown_action', 404);
+    if (!ALL_ACTIONS.has(action)) throw new P2Error('unknown_action', 404);
     consumeRateLimit(decoded.uid, action);
-    const service = createP2AdminService({ db: getFirestore(), projectId: id });
+    const db = getFirestore();
+    const service = ACTIONS.has(action)
+      ? createP2AdminService({ db, projectId: id })
+      : RESTAURANT_ACTIONS.has(action)
+        ? createP2RestaurantService({ db, FieldValue })
+        : createP2LogisticsService({ db, FieldValue });
     const result = await service.run({
       action,
       actorUid: decoded.uid,
@@ -70,8 +81,9 @@ async function invoke(request, response, fixedAction = '') {
     });
     response.set('access-control-allow-origin', request.headers.origin || '*').status(200).json({ ok: true, requestId, result });
   } catch (error) {
-    const code = error instanceof P2Error ? error.code : 'internal_error';
-    const status = error instanceof P2Error ? error.status : 500;
+    const controlled = error instanceof P2Error || error instanceof RestaurantError || error instanceof LogisticsError;
+    const code = controlled ? error.code : 'internal_error';
+    const status = controlled ? error.status : 500;
     response.set('access-control-allow-origin', request.headers.origin || '*').status(status).json({ ok: false, requestId, code });
   }
 }
@@ -91,3 +103,6 @@ exports.revokeWorker = actionHandler('revokeWorker');
 exports.acceptInvitation = actionHandler('acceptInvitation');
 exports.regenerateInvitation = actionHandler('regenerateInvitation');
 exports.expireInvitation = actionHandler('expireInvitation');
+for (const action of [...RESTAURANT_ACTIONS, ...LOGISTICS_ACTIONS]) {
+  exports[action] = actionHandler(action);
+}

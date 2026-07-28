@@ -97,11 +97,20 @@ function createP2LogisticsService({ db, FieldValue, idFactory = randomUUID }) {
     if (required && !permission(current, required)) throw new LogisticsError('permission_denied:' + required, 403);
     return current;
   }
-  async function enabled(transaction, businessId) {
+  function flagAllows(flag, businessId, uid) {
+    const allowedBusinesses = Array.isArray(flag.allowedBusinessIds) ? flag.allowedBusinessIds : [];
+    const allowedUids = Array.isArray(flag.allowedUids) ? flag.allowedUids : [];
+    if (allowedBusinesses.length && !allowedBusinesses.includes(businessId)) return false;
+    if (allowedUids.length && !allowedUids.includes(uid)) return false;
+    const percentage = Math.max(0, Math.min(100, Number(flag.rolloutPercentage == null ? 100 : flag.rolloutPercentage)));
+    if (percentage >= 100) return true;
+    return Number.parseInt(hash(uid + ':' + String(flag.key || 'logistics')).slice(0, 8), 16) % 100 < percentage;
+  }
+  async function enabled(transaction, businessId, uid) {
     const snapshot = await transaction.get(business(businessId).collection('featureConfig').doc('main'));
     const config = snapshot.exists ? snapshot.data() || {} : {};
     const flag = config.featureFlags?.logisticsEnabled || {};
-    if (config.modules?.logistics !== true || flag.enabled !== true || flag.killSwitch === true) {
+    if (config.modules?.logistics !== true || flag.enabled !== true || flag.killSwitch === true || !flagAllows(flag, businessId, uid)) {
       throw new LogisticsError('logistics_module_disabled', 403);
     }
   }
@@ -167,7 +176,7 @@ function createP2LogisticsService({ db, FieldValue, idFactory = randomUUID }) {
     return transaction({
       action, businessId, uid, idempotencyKey, requestId,
       execute: async (tx) => {
-        await enabled(tx, businessId);
+        await enabled(tx, businessId, uid);
         if (action === 'createVehicle') {
           const currentActor = await actor(tx, businessId, uid, 'routes.write');
           requireRouteManager(currentActor);
@@ -303,6 +312,13 @@ function createP2LogisticsService({ db, FieldValue, idFactory = randomUUID }) {
             totalCashSales: money(Number(resolved.currentRoute.totalCashSales || 0) + (paymentType === 'cash' ? amount : 0)),
             version: Number(resolved.currentRoute.version || 0) + 1, updatedBy: uid, updatedAt: serverTime()
           });
+          if (paymentType === 'cash') {
+            tx.create(business(businessId).collection('routeCashMovements').doc('cash_sale_' + hash(idempotencyKey).slice(0, 24)), {
+              schemaFamily: 'p2', businessId, routeId, saleId, amount, type: 'route_cash_sale', direction: 'in',
+              status: 'confirmed', idempotencyKey: hash(idempotencyKey), version: 1,
+              createdBy: uid, updatedBy: uid, createdAt: serverTime(), updatedAt: serverTime()
+            });
+          }
           return { result: { saleId, total: amount, balance }, routeId };
         }
         if (action === 'recordCollection') {
@@ -326,6 +342,11 @@ function createP2LogisticsService({ db, FieldValue, idFactory = randomUUID }) {
           });
           tx.update(saleRef, { balance, collectedAmount: money(Number(sale.collectedAmount || 0) + amount), status: balance === 0 ? 'paid' : 'open', version: Number(sale.version || 0) + 1, updatedBy: uid, updatedAt: serverTime() });
           tx.update(routeRef(businessId, routeId), { totalCollections: money(Number(resolved.currentRoute.totalCollections || 0) + amount), version: Number(resolved.currentRoute.version || 0) + 1, updatedBy: uid, updatedAt: serverTime() });
+          tx.create(business(businessId).collection('routeCashMovements').doc('cash_collection_' + hash(idempotencyKey).slice(0, 24)), {
+            schemaFamily: 'p2', businessId, routeId, collectionId, saleId, amount, type: 'route_collection', direction: 'in',
+            status: 'confirmed', idempotencyKey: hash(idempotencyKey), version: 1,
+            createdBy: uid, updatedBy: uid, createdAt: serverTime(), updatedAt: serverTime()
+          });
           return { result: { collectionId, balance }, routeId };
         }
         if (action === 'recordReturn') {
@@ -371,6 +392,11 @@ function createP2LogisticsService({ db, FieldValue, idFactory = randomUUID }) {
             status: 'confirmed', version: 1, createdBy: uid, updatedBy: uid, createdAt: serverTime(), updatedAt: serverTime()
           });
           tx.update(routeRef(businessId, routeId), { totalExpenses: money(Number(resolved.currentRoute.totalExpenses || 0) + amount), version: Number(resolved.currentRoute.version || 0) + 1, updatedBy: uid, updatedAt: serverTime() });
+          tx.create(business(businessId).collection('routeCashMovements').doc('cash_expense_' + hash(idempotencyKey).slice(0, 24)), {
+            schemaFamily: 'p2', businessId, routeId, expenseId, amount, type: 'route_expense', direction: 'out',
+            status: 'confirmed', idempotencyKey: hash(idempotencyKey), version: 1,
+            createdBy: uid, updatedBy: uid, createdAt: serverTime(), updatedAt: serverTime()
+          });
           return { result: { expenseId, status: 'confirmed' }, routeId };
         }
         if (action === 'createRouteSettlement') {
@@ -413,9 +439,16 @@ function createP2LogisticsService({ db, FieldValue, idFactory = randomUUID }) {
           const returnLedger = business(businessId).collection('routeInventoryAdjustments').doc(settlementId);
           const priorLedger = await tx.get(returnLedger);
           if (!priorLedger.exists) {
+            const routeReturns = await tx.get(business(businessId).collection('returns').where('routeId', '==', routeId));
+            const items = routeReturns.docs
+              .map((snapshot) => snapshot.data() || {})
+              .filter((entry) => entry.businessId === businessId && entry.condition === 'sellable' && Number(entry.qty || 0) > 0)
+              .map((entry) => ({ returnId: entry.id, productId: entry.productId, qty: Number(entry.qty), condition: entry.condition }));
             tx.create(returnLedger, {
               schemaFamily: 'p2', businessId, routeId, settlementId, status: 'committed',
-              type: 'sellable_return_restore', version: 1, createdBy: uid, updatedBy: uid, createdAt: serverTime(), updatedAt: serverTime()
+              type: 'sellable_return_restore', items,
+              totalQty: items.reduce((sum, entry) => sum + Number(entry.qty || 0), 0),
+              version: 1, createdBy: uid, updatedBy: uid, createdAt: serverTime(), updatedAt: serverTime()
             });
           }
           tx.update(settlementRef, { status: 'closed', closedBy: uid, closedAt: serverTime(), inventoryReturnCommitted: true, version: Number(settlement.version || 0) + 1, updatedBy: uid, updatedAt: serverTime() });

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -eu
+set -euo pipefail
 
 if [ ! -d functions/node_modules ]; then
   echo "Run npm ci --prefix functions before P2 Cloud emulator QA." >&2
@@ -20,6 +20,10 @@ if ! command -v java >/dev/null 2>&1 || ! java -version >/dev/null 2>&1; then
   exit 1
 fi
 
+isolated_home="$(mktemp -d)"
+trap 'rm -rf "$isolated_home"' EXIT
+export HOME="$isolated_home"
+export CLOUDSDK_CONFIG="$isolated_home/gcloud"
 unset GOOGLE_APPLICATION_CREDENTIALS
 unset CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE
 unset GOOGLE_CLOUD_QUOTA_PROJECT

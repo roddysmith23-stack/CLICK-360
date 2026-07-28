@@ -23,6 +23,8 @@ const files = [
   'p2-platform-domain.js',
   'platform-admin-repository.js',
   'workers-repository.js',
+  'restaurant-repository.js',
+  'logistics-repository.js',
   'p2-restaurant-domain.js',
   'p2-logistics-domain.js',
   'universal-label-canvas.js',

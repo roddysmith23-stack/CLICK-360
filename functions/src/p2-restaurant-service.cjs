@@ -114,11 +114,20 @@ function createP2RestaurantService({ db, FieldValue, clock = () => Date.now(), i
     if (!permitted(current, permission)) throw new RestaurantError('permission_denied:' + permission, 403);
     return current;
   }
-  async function enabled(transaction, businessId) {
+  function flagAllows(flag, businessId, uid) {
+    const allowedBusinesses = Array.isArray(flag.allowedBusinessIds) ? flag.allowedBusinessIds : [];
+    const allowedUids = Array.isArray(flag.allowedUids) ? flag.allowedUids : [];
+    if (allowedBusinesses.length && !allowedBusinesses.includes(businessId)) return false;
+    if (allowedUids.length && !allowedUids.includes(uid)) return false;
+    const percentage = Math.max(0, Math.min(100, Number(flag.rolloutPercentage == null ? 100 : flag.rolloutPercentage)));
+    if (percentage >= 100) return true;
+    return Number.parseInt(hash(uid + ':' + String(flag.key || 'restaurant')).slice(0, 8), 16) % 100 < percentage;
+  }
+  async function enabled(transaction, businessId, uid) {
     const snapshot = await transaction.get(business(businessId).collection('featureConfig').doc('main'));
     const config = snapshot.exists ? snapshot.data() || {} : {};
     const flag = config.featureFlags?.restaurantAdvancedEnabled || {};
-    if (config.modules?.restaurant !== true || flag.enabled !== true || flag.killSwitch === true) {
+    if (config.modules?.restaurant !== true || flag.enabled !== true || flag.killSwitch === true || !flagAllows(flag, businessId, uid)) {
       throw new RestaurantError('restaurant_module_disabled', 403);
     }
   }
@@ -173,7 +182,7 @@ function createP2RestaurantService({ db, FieldValue, clock = () => Date.now(), i
     return transactional({
       action, businessId, uid, idempotencyKey, requestId,
       execute: async (transaction) => {
-        await enabled(transaction, businessId);
+        await enabled(transaction, businessId, uid);
         if (action === 'createRestaurantOrder') {
           await actor(transaction, businessId, uid, 'orders.create');
           const orderId = id(payload.orderId, 'order_id');
@@ -265,6 +274,15 @@ function createP2RestaurantService({ db, FieldValue, clock = () => Date.now(), i
           const paymentRef = business(businessId).collection('restaurantPayments').doc(paymentId);
           const previousPayment = await transaction.get(paymentRef);
           if (previousPayment.exists) return { result: { order: publicOrder(current), paymentId }, orderId };
+          const cashMovementRef = business(businessId).collection('restaurantCashMovements').doc('cash_' + hash(idempotencyKey).slice(0, 24));
+          const inventoryRef = business(businessId).collection('restaurantInventoryAdjustments').doc(orderId);
+          const saleRef = business(businessId).collection('restaurantSales').doc(orderId);
+          const existingCashMovement = await transaction.get(cashMovementRef);
+          const existingInventory = await transaction.get(inventoryRef);
+          const existingSale = await transaction.get(saleRef);
+          if (existingCashMovement.exists || existingInventory.exists && current.status !== 'paid' || existingSale.exists && current.status !== 'paid') {
+            throw new RestaurantError('restaurant_financial_ledger_inconsistent', 409);
+          }
           const paidAmount = money(Number(current.paidAmount || 0) + amount);
           const remaining = Math.max(0, money(Number(current.total || 0) - paidAmount));
           const paid = remaining === 0;
@@ -294,19 +312,53 @@ function createP2RestaurantService({ db, FieldValue, clock = () => Date.now(), i
             createdAt: serverTime(),
             updatedAt: serverTime()
           });
+          transaction.create(cashMovementRef, {
+            schemaFamily: 'p2',
+            businessId,
+            orderId,
+            paymentId,
+            amount,
+            method,
+            type: 'restaurant_payment',
+            status: 'confirmed',
+            idempotencyKey: hash(idempotencyKey),
+            version: 1,
+            createdBy: uid,
+            updatedBy: uid,
+            createdAt: serverTime(),
+            updatedAt: serverTime()
+          });
           if (paid) {
-            transaction.set(business(businessId).collection('restaurantInventoryAdjustments').doc(orderId), {
-              schemaFamily: 'p2',
-              businessId,
-              orderId,
-              status: 'committed',
-              items: current.items || [],
-              version: 1,
-              createdBy: uid,
-              updatedBy: uid,
-              createdAt: serverTime(),
-              updatedAt: serverTime()
-            }, { merge: false });
+            if (!existingInventory.exists) {
+              transaction.create(inventoryRef, {
+                schemaFamily: 'p2',
+                businessId,
+                orderId,
+                status: 'committed',
+                items: current.items || [],
+                version: 1,
+                createdBy: uid,
+                updatedBy: uid,
+                createdAt: serverTime(),
+                updatedAt: serverTime()
+              });
+            }
+            if (!existingSale.exists) {
+              transaction.create(saleRef, {
+                schemaFamily: 'p2',
+                id: orderId,
+                businessId,
+                orderId,
+                total: current.total,
+                paidAmount,
+                status: 'paid',
+                version: 1,
+                createdBy: uid,
+                updatedBy: uid,
+                createdAt: serverTime(),
+                updatedAt: serverTime()
+              });
+            }
           }
           transaction.update(ref, next);
           return { result: { order: publicOrder(next), paymentId }, orderId };

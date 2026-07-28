@@ -36,8 +36,9 @@ production project ID unconditionally.
 
 ## Safety controls
 
-- Functions reject the production project and any project that is not explicitly
-  non-production.
+- Functions accept only `demo-click360-p2-staging` or the comma-separated
+  project ID allowlist in `CLICK360_STAGING_PROJECT_ID`. They reject
+  `click-360`, an unspecified project, and every unlisted project.
 - All P2 mutations use Functions transactions and idempotency keys.
 - The browser repositories have no Admin SDK and only obtain an ID token for
   the authenticated emulator user.

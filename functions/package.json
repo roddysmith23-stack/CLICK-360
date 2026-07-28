@@ -7,9 +7,10 @@
     "node": "20"
   },
   "scripts": {
-    "check": "node --check src/index.cjs && node --check src/p2-admin-service.cjs",
-    "qa:unit": "node qa/p2-admin-service.unit.cjs",
-    "qa:cloud": "node qa/p2-cloud-emulator.cjs"
+    "check": "node --check src/index.cjs && node --check src/p2-project-boundary.cjs && node --check src/p2-admin-service.cjs && node --check src/p2-restaurant-service.cjs && node --check src/p2-logistics-service.cjs",
+    "qa:unit": "node qa/p2-project-boundary.unit.cjs && node qa/p2-admin-service.unit.cjs",
+    "qa:cloud": "node qa/p2-cloud-emulator.cjs",
+    "qa:cloud:multiuser": "node qa/p2-cloud-multiuser-emulator.cjs"
   },
   "dependencies": {
     "firebase-admin": "13.10.0",

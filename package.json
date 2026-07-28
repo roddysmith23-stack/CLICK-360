@@ -19,7 +19,11 @@
     "qa:module-visuals:e2e": "sh qa/run-p2-module-visual-browser-e2e.sh",
     "qa:integration": "node qa-p2-universal-platform-integration-harness.cjs && npm run qa:workers:e2e && npm run qa:restaurant:e2e && npm run qa:logistics:e2e && npm run qa:module-visuals:e2e && npm run qa:labels:e2e",
     "qa:p2:rules": "sh scripts/run-p2-cloud-rules-emulator-qa.sh",
-    "qa:p2:cloud": "sh scripts/run-p2-cloud-emulator-qa.sh"
+    "qa:p2:cloud": "sh scripts/run-p2-cloud-emulator-qa.sh",
+    "qa:p2:multiuser": "sh scripts/run-p2-cloud-multiuser-emulator-qa.sh",
+    "qa:p2:browser": "sh scripts/run-p2-cloud-multiuser-browser-e2e.sh",
+    "qa:p2:migration": "node qa-p2-cloud-migration-dry-run-harness.cjs",
+    "qa:p2:client": "node qa-p2-cloud-client-harness.cjs"
   },
   "dependencies": {
     "@zxing/browser": "^0.1.5",

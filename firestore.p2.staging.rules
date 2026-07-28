@@ -744,6 +744,21 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /businesses/{businessId}/restaurantCashMovements/{movementId} {
+      allow read: if p2Has(businessId, "cash.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/restaurantSales/{saleId} {
+      allow read: if p2Has(businessId, "sales.read") || p2Has(businessId, "cash.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/restaurantInventoryAdjustments/{adjustmentId} {
+      allow read: if p2Has(businessId, "inventory.read") || p2Manager(businessId);
+      allow create, update, delete: if false;
+    }
+
     match /businesses/{businessId}/restaurantEvents/{eventId} {
       allow read: if p2RestaurantReader(businessId);
       allow create, update, delete: if false;
@@ -765,6 +780,16 @@ service cloud.firestore {
     }
 
     match /businesses/{businessId}/loadSheets/{sheetId} {
+      allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "inventory.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routeInventoryReservations/{reservationId} {
+      allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "inventory.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routeInventoryAdjustments/{adjustmentId} {
       allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "inventory.read");
       allow create, update, delete: if false;
     }
@@ -791,6 +816,11 @@ service cloud.firestore {
 
     match /businesses/{businessId}/routeExpenses/{expenseId} {
       allow read: if p2Has(businessId, "routes.read") || p2Has(businessId, "cash.read");
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/routeCashMovements/{movementId} {
+      allow read: if p2Has(businessId, "cash.read") || p2Has(businessId, "routes.read");
       allow create, update, delete: if false;
     }
 

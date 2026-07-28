@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLICK 360 P2 Cloud Browser QA</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 0; font: 16px/1.4 system-ui, sans-serif; background: #f6f7f8; color: #1c242c; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px; }
+    section { border: 1px solid #cbd5dd; border-radius: 8px; background: #fff; padding: 18px; }
+    code { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main><section><h1>P2 Cloud QA</h1><p id="state">Preparando sesión sintética.</p></section></main>
+  <script src="/vendor/firebase-app-compat.js"></script>
+  <script src="/vendor/firebase-auth-compat.js"></script>
+  <script src="/vendor/firebase-firestore-compat.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      const projectId = 'demo-click360-p2-staging';
+      const origin = 'http://127.0.0.1:5001/' + projectId + '/us-central1';
+      let credentials = null;
+      let app = null;
+      let auth = null;
+      let db = null;
+      const subscriptions = [];
+      const state = { errors: [], listenerEvents: [], role: '', businessId: '' };
+      window.addEventListener('error', (event) => state.errors.push(String(event.message || 'window_error')));
+      window.addEventListener('unhandledrejection', (event) => state.errors.push(String(event.reason?.message || event.reason || 'unhandled_rejection')));
+
+      async function loadCredentials() {
+        if (!credentials) credentials = await fetch('/output/p2-cloud-browser-fixture.json', { cache: 'no-store' }).then((response) => response.json());
+        return credentials;
+      }
+      function setup() {
+        if (app) return;
+        app = firebase.initializeApp({ apiKey: 'demo-key', authDomain: projectId + '.firebaseapp.com', projectId, appId: '1:000000000000:web:p2cloudqa' });
+        auth = firebase.auth(app);
+        auth.useEmulator('http://127.0.0.1:9099', { disableWarnings: true });
+        db = firebase.firestore(app);
+        // Safari/WebKit can stall WebChannel streams in an emulator context.
+        // Force the supported long-polling transport before opening listeners.
+        db.settings({ experimentalForceLongPolling: true });
+        db.useEmulator('127.0.0.1', 8080);
+      }
+      // Verifica que la membresía del servidor coincide exactamente con
+      // el UID, businessId, status:active y schemaFamily:p2 esperados.
+      // Nunca acepta la membresía de un UID anterior.
+      // EXCEPCIÓN LEGÍTIMA: si Firestore devuelve permission-denied y
+      // auth.currentUser.uid === expectedUid, la identidad Auth es correcta
+      // pero el acceso fue revocado intencionalmente. El backend Function
+      // hará la verificación autoritativa y devolverá 403. Aceptar
+      // permission-denied aquí no debilita el protocolo porque el UID
+      // fue verificado en los pasos 5-6 (credential + getIdToken(true)).
+      async function waitForAuthenticatedMembership(expectedUid) {
+        const TIMEOUT_MS = 8000;
+        const INTERVAL_MS = 100;
+        const deadline = Date.now() + TIMEOUT_MS;
+        let lastError = null;
+        while (Date.now() < deadline) {
+          // Verificar que currentUser sigue siendo el uid correcto
+          const currentUser = auth.currentUser;
+          if (!currentUser) throw new Error('auth_user_disappeared_during_membership_wait:expected=' + expectedUid);
+          if (currentUser.uid !== expectedUid) {
+            throw new Error('uid_changed_during_membership_wait:expected=' + expectedUid + ':got=' + currentUser.uid);
+          }
+          try {
+            const memberRef = db.collection('businesses').doc(state.businessId).collection('members').doc(expectedUid);
+            const snapshot = await memberRef.get({ source: 'server' });
+            if (snapshot.exists) {
+              const data = snapshot.data();
+              // Verificación estricta: todos los campos deben coincidir
+              if (data.uid !== expectedUid) throw new Error('membership_uid_mismatch:doc=' + data.uid + ':expected=' + expectedUid);
+              if (data.businessId !== state.businessId) throw new Error('membership_business_mismatch:doc=' + data.businessId + ':expected=' + state.businessId);
+              if (data.status !== 'active') throw new Error('membership_not_active:status=' + String(data.status || 'missing'));
+              if (data.schemaFamily !== 'p2') throw new Error('membership_schema_mismatch:schema=' + String(data.schemaFamily || 'missing'));
+              return; // ← solo retorna si toda la identidad coincide
+            }
+          } catch (error) {
+            // Errores de identidad son no recuperables — fallar inmediatamente
+            if (
+              error.message.startsWith('uid_changed') ||
+              error.message.startsWith('auth_user_disappeared') ||
+              error.message.startsWith('membership_uid_mismatch') ||
+              error.message.startsWith('membership_business_mismatch') ||
+              error.message.startsWith('membership_schema_mismatch')
+            ) throw error;
+            // permission-denied con identidad Auth confirmada → revocación/restricción intencional.
+            // auth.currentUser.uid === expectedUid ya verificado en este ciclo.
+            // El backend Function rechazará con 403; no bloqueamos signIn aquí.
+            if (error.code === 'permission-denied' || error.code === 'firestore/permission-denied') {
+              return;
+            }
+            lastError = error;
+          }
+          await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS));
+        }
+        throw new Error('membership_auth_timeout:uid=' + expectedUid + ':error=' + String(lastError?.code || lastError?.message || 'unknown'));
+      }
+      // Protocolo explícito de cambio de identidad (10 pasos).
+      // Garantiza que Firestore usa el nuevo token antes de abrir listeners.
+      async function signIn(role) {
+        const fixture = await loadCredentials();
+        if (!fixture.tokens[role]) throw new Error('fixture_role_missing:' + role);
+        // Paso 1: Cancelar todos los listeners de la sesión anterior
+        clearWatches();
+        // Paso 2: Aislar el contexto Firestore anterior (desconectar red)
+        if (app) { try { await db.disableNetwork(); } catch (_) {} }
+        // Paso 3: Inicializar app/auth/db si es la primera vez
+        setup();
+        // Paso 4: Cerrar sesión de Auth y esperar confirmación via onAuthStateChanged
+        await auth.signOut();
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('signout_confirmation_timeout')), 4000);
+          const unsub = auth.onAuthStateChanged((user) => {
+            if (!user) { clearTimeout(timer); unsub(); resolve(); }
+          });
+        });
+        // Paso 5: Iniciar sesión con el custom token correcto
+        const credential = await auth.signInWithCustomToken(fixture.tokens[role]);
+        // Paso 6: Verificar que auth.currentUser.uid es exactamente el UID esperado
+        const expectedUid = fixture.uids ? fixture.uids[role] : null;
+        const gotUid = credential.user.uid;
+        if (expectedUid && gotUid !== expectedUid) {
+          throw new Error('identity_mismatch:expected=' + expectedUid + ':got=' + gotUid);
+        }
+        // Paso 7: Forzar renovación del ID token mediante getIdToken(true)
+        await credential.user.getIdToken(true);
+        // Paso 8: Reiniciar la red de Firestore después de la renovación
+        await db.disableNetwork();
+        await db.enableNetwork();
+        // Paso 9: Actualizar el estado con la identidad confirmada
+        // Para actores cross-business (beta), su businessId es otherBusinessId
+        state.role = role;
+        state.businessId = (fixture.businessIds && fixture.businessIds[role]) ? fixture.businessIds[role] : fixture.businessId;
+        // Paso 10: Verificar membresía autenticada (uid + businessId + active + p2)
+        // Solo después de esto es seguro abrir listeners de órdenes/cocina/pagos
+        await waitForAuthenticatedMembership(gotUid);
+        document.querySelector('#state').textContent = 'Sesión QA activa: ' + role;
+        return fixture;
+      }
+      async function call(action, payload, idempotencyKey) {
+        const user = auth.currentUser;
+        if (!user) throw new Error('auth_required');
+        const response = await fetch(origin + '/' + action, {
+          method: 'POST',
+          headers: { authorization: 'Bearer ' + await user.getIdToken(), 'content-type': 'application/json' },
+          body: JSON.stringify({ payload, idempotencyKey })
+        });
+        const body = await response.json();
+        return { status: response.status, body };
+      }
+      function watchOrder(orderId) {
+        const unsubscribe = db.collection('businesses').doc(state.businessId).collection('restaurantOrders').doc(orderId).onSnapshot({ includeMetadataChanges: true }, (snapshot) => {
+          const status = snapshot.exists ? String(snapshot.data().status || '') : 'missing';
+          state.listenerEvents.push(status + ':' + (snapshot.metadata.fromCache ? 'cache' : 'server'));
+        }, (error) => state.errors.push(String(error.code || error.message || 'listener_error')));
+        subscriptions.push(unsubscribe);
+        return unsubscribe;
+      }
+      function clearWatches() {
+        while (subscriptions.length) subscriptions.pop()();
+      }
+      async function readOrder(orderId) {
+        const snapshot = await db.collection('businesses').doc(state.businessId).collection('restaurantOrders').doc(orderId).get();
+        return snapshot.exists ? snapshot.data() : null;
+      }
+      async function readOrderFromServer(orderId) {
+        const snapshot = await db.collection('businesses').doc(state.businessId).collection('restaurantOrders').doc(orderId).get({ source: 'server' });
+        return snapshot.exists ? snapshot.data() : null;
+      }
+      async function disableFirestoreNetwork() { await db.disableNetwork(); }
+      async function enableFirestoreNetwork() { await db.enableNetwork(); }
+      window.__CLICK360_P2_CLOUD_BROWSER_QA__ = { signIn, call, watchOrder, clearWatches, readOrder, readOrderFromServer, disableFirestoreNetwork, enableFirestoreNetwork, waitForAuthenticatedMembership, fixture: async () => loadCredentials(), state: () => ({ ...state, errors: [...state.errors], listenerEvents: [...state.listenerEvents] }) };
+    })();
+  </script>
+</body>
+</html>

@@ -11,7 +11,7 @@ const PERMISSIONS = new Set([
   'business.read', 'business.manage', 'inventory.read', 'inventory.write',
   'sales.create', 'sales.read', 'sales.cancel', 'cash.open', 'cash.close', 'cash.read',
   'reports.read', 'labels.read', 'labels.write', 'tables.read', 'tables.write',
-  'orders.create', 'orders.update', 'kitchen.read', 'kitchen.update', 'routes.read',
+  'orders.create', 'orders.update', 'orders.cancel', 'kitchen.read', 'kitchen.update', 'routes.read',
   'routes.write', 'collections.read', 'collections.write', 'members.read',
   'members.manage', 'settings.read', 'settings.manage'
 ]);

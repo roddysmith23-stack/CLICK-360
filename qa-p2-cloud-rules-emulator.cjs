@@ -100,8 +100,14 @@ async function main() {
       await setDoc(doc(db, 'businesses', 'biz-alpha', 'restaurantOrders', 'order-a'), { ...p2Doc('biz-alpha'), tableId: 't-1', serverId: 'server-a', total: 12 });
       await setDoc(doc(db, 'businesses', 'biz-bravo', 'restaurantOrders', 'order-b'), { ...p2Doc('biz-bravo', 'owner-b'), tableId: 't-2', total: 9 });
       await setDoc(doc(db, 'businesses', 'biz-alpha', 'restaurantPayments', 'payment-a'), { ...p2Doc('biz-alpha'), orderId: 'order-a', amount: 12 });
+      await setDoc(doc(db, 'businesses', 'biz-alpha', 'restaurantCashMovements', 'cash-a'), { ...p2Doc('biz-alpha'), orderId: 'order-a', amount: 12 });
+      await setDoc(doc(db, 'businesses', 'biz-alpha', 'restaurantSales', 'sale-a'), { ...p2Doc('biz-alpha'), orderId: 'order-a', total: 12 });
+      await setDoc(doc(db, 'businesses', 'biz-alpha', 'restaurantInventoryAdjustments', 'adjustment-a'), { ...p2Doc('biz-alpha'), orderId: 'order-a' });
       await setDoc(doc(db, 'businesses', 'biz-alpha', 'routes', 'route-a'), { ...p2Doc('biz-alpha'), sellerId: 'seller-a' });
       await setDoc(doc(db, 'businesses', 'biz-alpha', 'collections', 'collection-a'), { ...p2Doc('biz-alpha'), routeId: 'route-a', collectorId: 'collector-a' });
+      await setDoc(doc(db, 'businesses', 'biz-alpha', 'routeInventoryReservations', 'reservation-a'), { ...p2Doc('biz-alpha'), routeId: 'route-a' });
+      await setDoc(doc(db, 'businesses', 'biz-alpha', 'routeInventoryAdjustments', 'route-adjustment-a'), { ...p2Doc('biz-alpha'), routeId: 'route-a' });
+      await setDoc(doc(db, 'businesses', 'biz-alpha', 'routeCashMovements', 'route-cash-a'), { ...p2Doc('biz-alpha'), routeId: 'route-a', amount: 12 });
       await setDoc(doc(db, 'businesses', 'biz-alpha', 'invitations', 'invite-pending'), {
         ...p2Doc('biz-alpha'), email: 'invitee@example.test', status: 'pending', tokenHash: 'a'.repeat(64), roleId: 'server', permissions: permissions.server
       });
@@ -117,6 +123,7 @@ async function main() {
     const cashier = env.authenticatedContext('cashier-a', { email: 'cashier-a@example.test' }).firestore();
     const seller = env.authenticatedContext('seller-a', { email: 'seller-a@example.test' }).firestore();
     const collector = env.authenticatedContext('collector-a', { email: 'collector-a@example.test' }).firestore();
+    const readonly = env.authenticatedContext('readonly-a', { email: 'readonly-a@example.test' }).firestore();
     const revoked = env.authenticatedContext('revoked-a', { email: 'revoked-a@example.test' }).firestore();
     const otherBusiness = env.authenticatedContext('owner-b', { email: 'owner-b@example.test' }).firestore();
     const invitee = env.authenticatedContext('invitee', { email: 'invitee@example.test' }).firestore();
@@ -134,14 +141,23 @@ async function main() {
     await assertSucceeds(getDoc(doc(server, 'businesses', 'biz-alpha', 'restaurantOrders', 'order-a')));
     await assertSucceeds(getDoc(doc(kitchen, 'businesses', 'biz-alpha', 'restaurantOrders', 'order-a')));
     await assertSucceeds(getDoc(doc(cashier, 'businesses', 'biz-alpha', 'restaurantPayments', 'payment-a')));
+    await assertSucceeds(getDoc(doc(cashier, 'businesses', 'biz-alpha', 'restaurantCashMovements', 'cash-a')));
+    await assertSucceeds(getDoc(doc(owner, 'businesses', 'biz-alpha', 'restaurantInventoryAdjustments', 'adjustment-a')));
     await assertFails(getDoc(doc(server, 'businesses', 'biz-alpha', 'restaurantPayments', 'payment-a')));
+    await assertFails(getDoc(doc(server, 'businesses', 'biz-alpha', 'restaurantCashMovements', 'cash-a')));
+    await assertFails(getDoc(doc(kitchen, 'businesses', 'biz-alpha', 'restaurantSales', 'sale-a')));
     await assertFails(getDoc(doc(server, 'businesses', 'biz-bravo', 'restaurantOrders', 'order-b')));
     await assertFails(setDoc(doc(owner, 'businesses', 'biz-alpha', 'restaurantOrders', 'forged'), { ...p2Doc('biz-alpha'), tableId: 'forged' }));
 
     await assertSucceeds(getDoc(doc(seller, 'businesses', 'biz-alpha', 'routes', 'route-a')));
+    await assertSucceeds(getDoc(doc(seller, 'businesses', 'biz-alpha', 'routeInventoryReservations', 'reservation-a')));
+    await assertSucceeds(getDoc(doc(seller, 'businesses', 'biz-alpha', 'routeCashMovements', 'route-cash-a')));
     await assertFails(getDoc(doc(seller, 'businesses', 'biz-alpha', 'collections', 'collection-a')));
     await assertSucceeds(getDoc(doc(collector, 'businesses', 'biz-alpha', 'collections', 'collection-a')));
     await assertFails(getDoc(doc(collector, 'businesses', 'biz-alpha', 'routes', 'route-a')));
+    await assertFails(getDoc(doc(collector, 'businesses', 'biz-alpha', 'routeInventoryReservations', 'reservation-a')));
+    await assertSucceeds(getDoc(doc(readonly, 'businesses', 'biz-alpha', 'routes', 'route-a')));
+    await assertSucceeds(getDoc(doc(readonly, 'businesses', 'biz-alpha', 'routeCashMovements', 'route-cash-a')));
     await assertFails(getDoc(doc(otherBusiness, 'businesses', 'biz-alpha', 'routes', 'route-a')));
 
     await assertSucceeds(getDoc(doc(invitee, 'businesses', 'biz-alpha', 'invitations', 'invite-pending')));
@@ -153,6 +169,8 @@ async function main() {
     await assertSucceeds(setDoc(ownDevice, device('biz-alpha', 'server-a')));
     await assertSucceeds(updateDoc(ownDevice, { deviceName: 'QA device updated', version: 2, updatedBy: 'server-a', updatedAt: 2 }));
     await assertFails(setDoc(doc(server, 'businesses', 'biz-alpha', 'devices', 'device-forged'), device('biz-alpha', 'owner-a')));
+    await assertFails(setDoc(doc(cashier, 'businesses', 'biz-alpha', 'restaurantCashMovements', 'cash-forged'), { ...p2Doc('biz-alpha'), amount: 1 }));
+    await assertFails(setDoc(doc(seller, 'businesses', 'biz-alpha', 'routeCashMovements', 'route-cash-forged'), { ...p2Doc('biz-alpha'), amount: 1 }));
     await assertFails(getDoc(doc(otherBusiness, 'businesses', 'biz-alpha', 'devices', 'device-server-a')));
     await assertFails(getDoc(doc(owner, 'organizations', 'org-alpha')));
 
