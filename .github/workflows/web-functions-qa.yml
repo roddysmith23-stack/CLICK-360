@@ -1,0 +1,121 @@
+name: CLICK 360 Web and Functions QA
+
+on:
+  pull_request:
+  push:
+    branches: [main, feat/v16-commercial-beta]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.scope.outputs.web }}
+      functions: ${{ steps.scope.outputs.functions }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          base="$BASE_SHA"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD~1"; fi
+          files="$(git diff --name-only "$base" "$GITHUB_SHA")"
+
+          if printf '%s\n' "$files" | grep -Eq '^(app\.js|access-flow\.js|firebase-service\.js|runtime-guard\.js|service-worker\.js|index\.html|styles\.css|manifest\.webmanifest|package(-lock)?\.json|firebase\.json|firestore\.rules|firestore\.p2\.staging\.rules|firebase\.p2-emulator\.json|qa/.*|scripts/(build-static-release|run-firestore-emulator-qa|run-p2-cloud-).*|p2-cloud-.*\.js|.*-repository\.js|\.github/workflows/web-functions-qa\.yml)$'; then
+            echo 'web=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'web=false' >> "$GITHUB_OUTPUT"
+          fi
+
+          if printf '%s\n' "$files" | grep -Eq '^(functions/.*|firestore\.p2\.staging\.rules|firebase\.p2-emulator\.json|scripts/run-p2-cloud-.*\.sh|qa-p2-cloud-.*\.cjs|qa/fixtures/p2-cloud-.*|p2-cloud-.*\.js|.*-repository\.js|\.github/workflows/web-functions-qa\.yml)$'; then
+            echo 'functions=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'functions=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  web-runtime-qa:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npm run qa
+      - run: npm run qa:rules
+      - run: npm run qa:simulator:quick
+      - run: npm run qa:simulator:full
+      - run: npm run build:static
+      - run: npm audit --omit=dev --audit-level=moderate
+      - name: Basic secret check
+        run: |
+          ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- . ':!tools/admin/fixtures/**' ':!vendor/**' ':!.github/workflows/web-functions-qa.yml'
+
+  functions-fixture-qa:
+    needs: changes
+    if: needs.changes.outputs.functions == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_APPLICATION_CREDENTIALS: ''
+      CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE: ''
+      FIREBASE_TOKEN: ''
+      NO_GCE_CHECK: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            functions/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install web emulator runner
+        run: npm ci
+      - name: Install Functions package
+        working-directory: functions
+        run: npm ci
+      - name: Check Functions source
+        working-directory: functions
+        run: npm run check
+      - name: Run Functions unit harnesses
+        working-directory: functions
+        run: npm run qa:unit
+      - name: Run P2 Rules and Functions emulators
+        run: |
+          npm run qa:p2:rules
+          npm run qa:p2:cloud
+          npm run qa:p2:multiuser
+
+  functions-security-audit:
+    needs: changes
+    if: needs.changes.outputs.functions == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: functions
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=moderate

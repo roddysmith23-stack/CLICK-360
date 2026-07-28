@@ -1,9 +1,12 @@
-name: CLICK 360 QA
+name: CLICK 360 Admin Tools QA
 
 on:
   pull_request:
   push:
     branches: [main, feat/v16-commercial-beta]
+
+permissions:
+  contents: read
 
 jobs:
   changes:
@@ -13,41 +16,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          set -euo pipefail
           base="$BASE_SHA"
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD~1"; fi
-          if git diff --name-only "$base" "$GITHUB_SHA" | grep -Eq '^(functions/|tools/admin/|scripts/admin-tool-wrapper\.mjs|scripts/(admin-access-v16|audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs|\.github/workflows/p0-qa\.yml)'; then
+          files="$(git diff --name-only "$base" "$GITHUB_SHA")"
+
+          # Package checks are driven by the package surface, never by P2
+          # Functions. A workflow-only edit is checked when it is isolated;
+          # this prevents a Functions PR from inheriting the admin audit.
+          admin_code=false
+          admin_workflow=false
+          non_admin_runtime=false
+          if printf '%s\n' "$files" | grep -Eq '^(tools/admin/.*|scripts/admin-tool-wrapper\.mjs|scripts/(admin-access-v16|audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs)$'; then admin_code=true; fi
+          if printf '%s\n' "$files" | grep -Eq '^\.github/workflows/admin-qa\.yml$'; then admin_workflow=true; fi
+          if printf '%s\n' "$files" | grep -Eq '^(functions/.*|firestore\.p2\.staging\.rules|firebase\.p2-emulator\.json|scripts/run-p2-cloud-.*\.sh|qa-p2-cloud-.*\.cjs|qa/fixtures/p2-cloud-.*|p2-cloud-.*\.js|.*-repository\.js|\.github/workflows/web-functions-qa\.yml)$'; then non_admin_runtime=true; fi
+
+          if [ "$admin_code" = true ] || { [ "$admin_workflow" = true ] && [ "$non_admin_runtime" = false ]; }; then
             echo 'admin=true' >> "$GITHUB_OUTPUT"
           else
             echo 'admin=false' >> "$GITHUB_OUTPUT"
           fi
-
-  web-runtime-qa:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - run: npm ci
-      - run: npm run qa
-      - run: npm run qa:rules
-      - run: npm run qa:simulator:quick
-      - run: npm run qa:simulator:full
-      - run: npm run build:static
-      - run: npm audit --omit=dev --audit-level=moderate
-      - name: Basic secret check
-        run: |
-          ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- . ':!tools/admin/fixtures/**' ':!vendor/**' ':!.github/workflows/p0-qa.yml'
 
   admin-fixture-qa:
     needs: changes
