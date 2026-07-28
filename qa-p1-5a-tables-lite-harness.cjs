@@ -153,7 +153,9 @@ assert.match(app, /tableReservedQuantity/, 'open table orders reserve stock acro
 assert.match(app, /isRestaurantBusiness|restaurante|cafeter[ií]a|bar/i, 'table module is gated by business type');
 assert.match(styles, /tableCard|tablesGrid|restaurant|mesa/i, 'Mesas Lite has dedicated responsive styles');
 assert.match(html, /viewport/, 'mobile viewport remains configured for table operation');
-assert(!/\bKDS\b|mapa.{0,20}3D|reservas avanzadas/i.test(app), 'P1.5A does not activate advanced restaurant scope');
+assert.match(app, /featureFlag:\{ key:'restaurantAdvancedEnabled', enabled:false/, 'advanced restaurant starts disabled and cannot replace Mesas Lite by default');
+assert.match(app, /if \(!restaurantAdvancedEnabled\(\)\) return restaurantGuardView\(\)/, 'advanced restaurant remains behind its feature gate');
+assert.match(app, /Mesas Lite continúa disponible|Mesas Lite/, 'the legacy table flow remains available while advanced restaurant is gated');
 
 assert(app.includes(`const APP_RELEASE_VERSION = '${RELEASE}'`), 'app has the P1.5A release version');
 assert(app.includes(`const APP_ASSET_VERSION = '${ASSET}'`), 'app has the P1.5A asset version');

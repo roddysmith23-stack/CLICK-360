@@ -1245,7 +1245,7 @@
 	    setAppBlocked(true);
 	  }
 
-	  // Legacy data is migrated only by scripts/migrate-legacy-v9-to-v10.mjs with
+	  // Legacy data is migrated only by tools/admin/scripts/migrate-legacy-v9-to-v10.mjs with
 	  // administrative credentials. A public browser must never rewrite it.
 	  window.click360MigrateLegacyRemote = async function() {
 	    throw new Error('La migración legacy es administrativa. Este tenant permanece protegido hasta completar el proceso verificado.');
