@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 Universal Label Canvas QA</title>
+  <link rel="icon" type="image/png" href="../../assets/favicon.png">
+  <link rel="stylesheet" href="../../styles.css">
+  <style>
+    body{margin:0;background:#090909}.qaPrintOutput{position:fixed;left:-10000px;top:0;display:grid;gap:10px;padding:16px;background:#ececec;color:#111}.qaPrintOutput h1{font:800 15px/1.3 system-ui;margin:0}.qaPrintPage{position:relative;overflow:hidden;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.2)}.qaPrintCell{position:absolute;overflow:hidden}.qaPrintCell img{display:block;width:100%;height:100%}@media print{html,body{background:#fff!important;color:#000!important}.modalOverlay{display:none!important}.qaPrintOutput{position:absolute!important;left:0!important;top:0!important;padding:0;background:#fff!important}.qaPrintOutput h1{display:none}.qaPrintPage{box-shadow:none;break-after:page;page-break-after:always}.qaPrintPage:last-child{break-after:auto;page-break-after:auto}}
+  </style>
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../vendor/html2pdf.bundle.min.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../universal-label-editor.js"></script>
+</head>
+<body>
+  <div id="modalRoot"></div>
+  <section id="click360PrintPortal" class="qaPrintOutput" aria-live="polite"><h1>Salida QA de impresión/PDF</h1><p id="qaPrintStatus">Aún no se generó salida.</p></section>
+  <style id="qaPrintPageStyle"></style>
+  <script>
+    (() => {
+      const canvasEngine = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+      const product = { id:'qa-product-001', name:'Producto de prueba', code:'QA-001', price:12.5 };
+      const templates = [];
+      const profiles = [];
+      const messages = [];
+      const errors = [];
+      window.prompt = () => 'Plantilla QA universal';
+      let printResult = null;
+      let sequence = 0;
+      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const showModal = (html) => {
+        document.getElementById('modalRoot').innerHTML = `<div class="modalOverlay show"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
+        document.querySelectorAll('[data-close]').forEach((button) => button.onclick = closeModal);
+      };
+      const closeModal = () => { document.getElementById('modalRoot').innerHTML = ''; };
+      const output = document.getElementById('click360PrintPortal');
+      const nonWhitePixels = (node, bounds = {}) => {
+        const data = node.getContext('2d').getImageData(0, 0, node.width, node.height).data;
+        const left = Math.max(0, Math.floor(bounds.left || 0));
+        const top = Math.max(0, Math.floor(bounds.top || 0));
+        const right = Math.min(node.width, Math.ceil(bounds.right || node.width));
+        const bottom = Math.min(node.height, Math.ceil(bounds.bottom || node.height));
+        let count = 0;
+        for (let y = top; y < bottom; y += 2) for (let x = left; x < right; x += 2) {
+          const index = (y * node.width + x) * 4;
+          if (data[index] < 245 || data[index + 1] < 245 || data[index + 2] < 245) count += 1;
+        }
+        return count;
+      };
+      const print = async (documentModel, provider) => {
+        const normalized = canvasEngine.normalizeDocument(documentModel);
+        const plan = canvasEngine.buildPrintPlan([{ product, copies:normalized.quantity }], normalized, { startSlot:normalized.startSlot });
+        const mediaWidth = plan.paper.mediaWidthMm || plan.paper.marginLeftMm + plan.paper.marginRightMm + plan.paper.columns * plan.paper.labelWidthMm + Math.max(0, plan.paper.columns - 1) * plan.paper.gapHorizontalMm;
+        const mediaHeight = plan.paper.mediaHeightMm || plan.paper.marginTopMm + plan.paper.marginBottomMm + plan.paper.rows * plan.paper.labelHeightMm + Math.max(0, plan.paper.rows - 1) * plan.paper.gapVerticalMm;
+        document.getElementById('qaPrintPageStyle').textContent = `@page{size:${mediaWidth}mm ${mediaHeight}mm;margin:0}`;
+        const printable = document.createElement('section');
+        printable.dataset.plan = canvasEngine.planFingerprint(plan);
+        printable.dataset.renderer = 'universal-mm-v2';
+        let firstCanvas = null;
+        for (const page of plan.pages) {
+          const mediaWidth = page.cells.reduce((maximum, cell) => Math.max(maximum, cell.xMm + normalized.paper.widthMm), 0);
+          const mediaHeight = page.cells.reduce((maximum, cell) => Math.max(maximum, cell.yMm + normalized.paper.heightMm), 0);
+          const pageNode = document.createElement('section');
+          pageNode.className = 'qaPrintPage labelPrintPage';
+          pageNode.style.width = `${mediaWidth}mm`;
+          pageNode.style.height = `${mediaHeight}mm`;
+          for (const cell of page.cells) {
+            if (cell.status !== 'filled') continue;
+            const node = document.createElement('div');
+            node.className = 'qaPrintCell';
+            node.style.left = `${cell.xMm}mm`;
+            node.style.top = `${cell.yMm}mm`;
+            node.style.width = `${normalized.paper.widthMm}mm`;
+            node.style.height = `${normalized.paper.heightMm}mm`;
+            const label = document.createElement('canvas');
+            await canvasEngine.renderLabelToCanvas(label, normalized, { product, price:'$12.50', sku:product.code, qrPayload:`CLICK360:${product.id}` });
+            firstCanvas ||= label;
+            const image = document.createElement('img');
+            image.src = label.toDataURL('image/png');
+            image.alt = `Etiqueta QA ${cell.item.copy}`;
+            node.appendChild(image);
+            pageNode.appendChild(node);
+          }
+          printable.appendChild(pageNode);
+        }
+        output.replaceChildren(Object.assign(document.createElement('h1'), { textContent:'Salida QA de impresión/PDF' }), printable);
+        const pixelCount = firstCanvas ? nonWhitePixels(firstCanvas) : 0;
+        const qr = normalized.objects.find((object) => object.type === 'qr');
+        const pxPerMm = firstCanvas ? firstCanvas.width / normalized.paper.widthMm : 0;
+        const qrPixels = qr && firstCanvas ? nonWhitePixels(firstCanvas, { left:qr.xMm * pxPerMm, top:qr.yMm * pxPerMm, right:(qr.xMm + qr.widthMm) * pxPerMm, bottom:(qr.yMm + qr.heightMm) * pxPerMm }) : 0;
+        let realPdfBytes = 0;
+        if (provider === 'pdf') {
+          const pdfBuffer = await window.html2pdf()
+            .set({ margin:0, filename:'click360-qa.pdf', html2canvas:{ scale:2, backgroundColor:'#ffffff' }, jsPDF:{ unit:'mm', format:[mediaWidth, mediaHeight], orientation:mediaWidth > mediaHeight ? 'landscape' : 'portrait' } })
+            .from(printable)
+            .outputPdf('arraybuffer');
+          realPdfBytes = pdfBuffer?.byteLength || 0;
+        }
+        printResult = { provider, plan, fingerprint:canvasEngine.planFingerprint(plan), widthPx:firstCanvas?.width || 0, heightPx:firstCanvas?.height || 0, nonWhitePixels:pixelCount, qrPixels, pages:plan.pages.length, exactQuantity:plan.count, realPdfBytes };
+        output.dataset.ready = String(plan.valid && pixelCount > 20 && qrPixels > 20 && plan.count === normalized.quantity);
+        return printResult;
+      };
+      const initial = canvasEngine.normalizeDocument({
+        schemaVersion:2,
+        paper:{ id:'qa-roll-2', mediaType:'roll-2', widthMm:40, heightMm:60, mediaWidthMm:82, mediaHeightMm:60, columns:2, rows:1, gapXmm:2, dpi:203 },
+        objects:[
+          { id:'qr-main', type:'qr', xMm:3, yMm:3, widthMm:17, heightMm:17 },
+          { id:'name-main', type:'name', xMm:22, yMm:5, widthMm:15, heightMm:7 },
+          { id:'price-main', type:'price', xMm:22, yMm:14, widthMm:15, heightMm:7 },
+          { id:'sku-main', type:'sku', xMm:22, yMm:24, widthMm:15, heightMm:5 }
+        ], quantity:2, startSlot:1
+      });
+      window.addEventListener('error', (event) => errors.push(String(event.error?.message || event.message || 'error')));
+      window.addEventListener('unhandledrejection', (event) => errors.push(String(event.reason?.message || event.reason || 'rejection')));
+      window.__CLICK360_P2_UNIVERSAL_LABEL_QA__ = {
+        product: clone(product),
+        state: () => ({ messages:clone(messages), errors:clone(errors), templates:clone(templates), profiles:clone(profiles), print:clone(printResult), overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth }),
+        plan: () => printResult?.fingerprint || '',
+        initial: clone(initial)
+      };
+      window.CLICK360_UNIVERSAL_LABEL_EDITOR.open({
+        product,
+        initialDocument:initial,
+        formatPrice:(value) => `$${Number(value).toFixed(2)}`,
+        productPayload:(item) => `CLICK360:${item.id}`,
+        showModal,
+        closeModal,
+        toast:(message, kind='') => messages.push({ message:String(message), kind }),
+        getTemplates:() => templates,
+        getProfiles:() => profiles,
+        saveTemplate:async (name, documentModel, id='') => {
+          const saved = { id:id || `template-${++sequence}`, name, universalDocument:canvasEngine.normalizeDocument(documentModel) };
+          const index = templates.findIndex((item) => item.id === saved.id);
+          if (index >= 0) templates[index] = saved; else templates.push(saved);
+          return saved;
+        },
+        deleteTemplate:async (id) => { const index = templates.findIndex((item) => item.id === id); if (index >= 0) templates.splice(index, 1); },
+        saveProfile:async (documentModel, id='', name='') => {
+          const saved = { id:id || `profile-${++sequence}`, name:String(name || 'Perfil QA provisional'), universalPaper:canvasEngine.normalizeDocument(documentModel).paper };
+          const index = profiles.findIndex((item) => item.id === saved.id);
+          if (index >= 0) profiles[index] = saved; else profiles.push(saved);
+          return saved;
+        },
+        print,
+        printCalibration:async (documentModel) => print({ ...canvasEngine.addObject(documentModel, 'text', { text:'Calibración X/Y', xMm:2, yMm:50, widthMm:30, heightMm:5 }), quantity:2 }, 'system'),
+        openAdvanced:() => messages.push({ message:'advanced-requested', kind:'info' })
+      });
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>

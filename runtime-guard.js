@@ -1,8 +1,8 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.0.4-p2';
-  const ASSET_VERSION = 'mvp-launch-v16-2-p1-5c-r1';
+  const APP_VERSION = '1.0.5';
+  const ASSET_VERSION = 'commercial-1-0-5-r1';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
@@ -336,6 +336,7 @@
     detectedFirefox,
     record,
     setReleaseMetadata,
+    getReleaseMetadata: () => ({ ...releaseMetadata }),
     displayMode,
     setContext,
     clearContext,
