@@ -1,4 +1,4 @@
-const CACHE = 'click360-mvp-launch-v16-2-p1-5c-r1';
+const CACHE = 'click360-mvp-launch-v16-2-p2-web-safe-r1';
 const ASSETS = [
   './',
   './index.html',
@@ -13,6 +13,7 @@ const ASSETS = [
   './firebase-service.js',
   './printing-service.js',
   './smart-print-core.js',
+  './p2-web-safe-flags.js',
   './universal-label-canvas.js',
   './universal-label-editor.js',
   './manifest.webmanifest',

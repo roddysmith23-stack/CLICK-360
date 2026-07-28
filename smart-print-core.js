@@ -1,7 +1,7 @@
 (function initClick360SmartPrint(root) {
   'use strict';
 
-  const VERSION = '1.0.4-p2';
+  const VERSION = '1.0.5-p2-web-safe';
   const MAX_COPIES = 500;
   const ROTATIONS = Object.freeze([0, 90, 180, 270]);
   const PROFILE_STATUSES = Object.freeze(['provisional', 'verified', 'certified']);

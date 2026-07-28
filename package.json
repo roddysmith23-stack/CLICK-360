@@ -1,6 +1,6 @@
 {
   "name": "click360-p0-security-tools",
-  "version": "1.0.4-p2",
+  "version": "1.0.5-p2-web-safe",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,8 @@
     "qa:simulator:quick": "node qa/simulator/business-simulator.cjs --mode=quick",
     "qa:simulator:full": "node qa/simulator/business-simulator.cjs --mode=full",
     "qa:labels:e2e": "sh qa/run-p2-universal-label-browser-e2e.sh",
+    "qa:integration": "npm run qa:labels:e2e",
+    "qa:p2:web-safe": "node qa-p2-web-safe-release-harness.cjs",
     "admin:v16": "node scripts/admin-access-v16.mjs"
   },
   "dependencies": {

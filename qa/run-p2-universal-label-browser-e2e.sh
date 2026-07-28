@@ -128,8 +128,23 @@ run_chromium() {
   }"
   test -s "$OUT/universal-label-e2e.pdf"
   test "$(wc -c < "$OUT/universal-label-e2e.pdf")" -gt 2000
-  pdfinfo "$OUT/universal-label-e2e.pdf" | grep -Eq '^Pages:[[:space:]]*2$'
-  pdftoppm -f 1 -l 1 -singlefile -png "$OUT/universal-label-e2e.pdf" "$OUT/universal-label-e2e-page-1"
+  node - "$OUT/universal-label-e2e.pdf" <<'NODE'
+const assert = require('node:assert');
+const fs = require('node:fs');
+const pdf = fs.readFileSync(process.argv[2]);
+assert(pdf.subarray(0, 4).toString('ascii') === '%PDF', 'generated artifact is a PDF');
+assert(pdf.length > 2000, 'generated PDF has meaningful content');
+const pages = (pdf.toString('latin1').match(/\/Type\s*\/Page\b/g) || []).length;
+assert(pages === 2, `expected two physical PDF pages, found ${pages}`);
+NODE
+  if command -v sips >/dev/null 2>&1; then
+    sips -s format png "$OUT/universal-label-e2e.pdf" --out "$OUT/universal-label-e2e-page-1.png" >/dev/null
+  elif command -v pdftoppm >/dev/null 2>&1; then
+    pdftoppm -f 1 -l 1 -singlefile -png "$OUT/universal-label-e2e.pdf" "$OUT/universal-label-e2e-page-1"
+  else
+    echo "No supported local PDF rasterizer is available." >&2
+    exit 1
+  fi
   node qa/check-png-nonblank.cjs "$OUT/universal-label-e2e-page-1.png" 500
 }
 

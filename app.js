@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p1-5c-r1';
-  const APP_RELEASE_VERSION = '1.0.4-p2';
+  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p2-web-safe-r1';
+  const APP_RELEASE_VERSION = '1.0.5-p2-web-safe';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -6922,6 +6922,9 @@ function parseMoney(value) {
   async function openLabelModal(product, initialTemplateId = '') {
     const editor = window.CLICK360_UNIVERSAL_LABEL_EDITOR;
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (window.CLICK360_P2_WEB_SAFE_FLAGS?.p2UniversalLabelsEnabled !== true) {
+      return openAdvancedLabelModal(product, initialTemplateId);
+    }
     const editorBusiness = currentBusiness();
     const businessId = editorBusiness?.id || '';
     if (!editor || !canvasApi) return openAdvancedLabelModal(product, initialTemplateId);

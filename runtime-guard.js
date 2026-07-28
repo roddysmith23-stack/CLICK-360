@@ -1,8 +1,8 @@
 (function (root) {
   'use strict';
 
-  const APP_VERSION = '1.0.4-p2';
-  const ASSET_VERSION = 'mvp-launch-v16-2-p1-5c-r1';
+  const APP_VERSION = '1.0.5-p2-web-safe';
+  const ASSET_VERSION = 'mvp-launch-v16-2-p2-web-safe-r1';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
