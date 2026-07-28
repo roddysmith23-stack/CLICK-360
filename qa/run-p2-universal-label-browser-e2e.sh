@@ -14,8 +14,8 @@ WEBKIT_SESSION="click360-label-e2e-webkit"
 mkdir -p "$OUT"
 
 cleanup() {
-  "$PWCLI" --session "$CHROMIUM_SESSION" close >/dev/null 2>&1 || true
-  "$PWCLI" --session "$WEBKIT_SESSION" close >/dev/null 2>&1 || true
+  pw --session "$CHROMIUM_SESSION" close >/dev/null 2>&1 || true
+  pw --session "$WEBKIT_SESSION" close >/dev/null 2>&1 || true
   if [ "${SERVER_PID:-}" != "" ]; then
     kill "$SERVER_PID" >/dev/null 2>&1 || true
     wait "$SERVER_PID" 2>/dev/null || true
@@ -24,7 +24,14 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 command -v npx >/dev/null 2>&1
-test -x "$PWCLI"
+
+pw() {
+  if [ -x "$PWCLI" ]; then
+    "$PWCLI" "$@"
+  else
+    npx --yes --package @playwright/cli playwright-cli "$@"
+  fi
+}
 
 cd "$ROOT"
 npx --yes http-server . -p "$PORT" -c-1 >"$SERVER_LOG" 2>&1 &
@@ -41,10 +48,10 @@ until curl -fsS "$URL" >/dev/null 2>&1; do
 done
 
 run_chromium() {
-  "$PWCLI" --session "$CHROMIUM_SESSION" close >/dev/null 2>&1 || true
-  "$PWCLI" --session "$CHROMIUM_SESSION" open "$URL" --browser=chrome >/dev/null
-  "$PWCLI" --session "$CHROMIUM_SESSION" snapshot >/dev/null
-  "$PWCLI" --session "$CHROMIUM_SESSION" run-code "async page => {
+  pw --session "$CHROMIUM_SESSION" close >/dev/null 2>&1 || true
+  pw --session "$CHROMIUM_SESSION" open "$URL" --browser=chrome >/dev/null
+  pw --session "$CHROMIUM_SESSION" snapshot >/dev/null
+  pw --session "$CHROMIUM_SESSION" run-code "async page => {
     const first = page.locator('[data-ulc-object]').first();
     const box = await first.boundingBox();
     if (!box) throw new Error('canvas object is not visible');
@@ -53,7 +60,7 @@ run_chromium() {
     await page.mouse.move(box.x + 45, box.y + 38, { steps: 4 });
     await page.mouse.up();
   }"
-  "$PWCLI" --session "$CHROMIUM_SESSION" run-code "async page => {
+  pw --session "$CHROMIUM_SESSION" run-code "async page => {
     const resize = page.locator('[data-ulc-handle=\"resize\"]');
     const resizeBox = await resize.boundingBox();
     if (!resizeBox) throw new Error('resize handle is not visible');
@@ -92,7 +99,7 @@ run_chromium() {
     });
     if (Math.abs(calibrated.left - calibrated.xMm * 3.779527559 * calibrated.scaleX) > 0.5 || Math.abs(calibrated.top - calibrated.yMm * 3.779527559 * calibrated.scaleY) > 0.5) throw new Error('calibrated overlay diverged from the physical renderer');
   }"
-  "$PWCLI" --session "$CHROMIUM_SESSION" run-code "async page => {
+  pw --session "$CHROMIUM_SESSION" run-code "async page => {
     await page.locator('#ulcDuplicate').click();
     await page.locator('#ulcUndo').click();
     await page.locator('#ulcRedo').click();
@@ -102,18 +109,18 @@ run_chromium() {
     await page.locator('#ulcPrint').click();
     await page.waitForSelector('#click360PrintPortal[data-ready=\"true\"]');
   }"
-  "$PWCLI" --session "$CHROMIUM_SESSION" run-code "async page => {
+  pw --session "$CHROMIUM_SESSION" run-code "async page => {
     await page.screenshot({ path: 'output/playwright/p2/universal-label-e2e-chromium.png', fullPage: true });
     await page.pdf({ path: 'output/playwright/p2/universal-label-e2e.pdf', printBackground: true, preferCSSPageSize: true });
   }"
-  chromium_state=$("$PWCLI" --session "$CHROMIUM_SESSION" eval "() => JSON.stringify(window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state())")
+  chromium_state=$(pw --session "$CHROMIUM_SESSION" eval "() => JSON.stringify(window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state())")
   printf '%s\n' "$chromium_state"
   printf '%s' "$chromium_state" | grep -q '\\"exactQuantity\\":3'
   printf '%s' "$chromium_state" | grep -q '\\"pages\\":2'
   printf '%s' "$chromium_state" | grep -q '\\"nonWhitePixels\\":[1-9]'
   printf '%s' "$chromium_state" | grep -q '\\"qrPixels\\":[1-9]'
   printf '%s' "$chromium_state" | grep -q '\\"errors\\":\[\]'
-  "$PWCLI" --session "$CHROMIUM_SESSION" run-code "async page => {
+  pw --session "$CHROMIUM_SESSION" run-code "async page => {
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     if (overflow) throw new Error('Chromium overflow detected');
@@ -149,10 +156,10 @@ NODE
 }
 
 run_webkit() {
-  "$PWCLI" --session "$WEBKIT_SESSION" close >/dev/null 2>&1 || true
-  "$PWCLI" --session "$WEBKIT_SESSION" open "$URL" --browser=webkit --mobile >/dev/null
-  "$PWCLI" --session "$WEBKIT_SESSION" snapshot >/dev/null
-  "$PWCLI" --session "$WEBKIT_SESSION" run-code "async page => {
+  pw --session "$WEBKIT_SESSION" close >/dev/null 2>&1 || true
+  pw --session "$WEBKIT_SESSION" open "$URL" --browser=webkit --mobile >/dev/null
+  pw --session "$WEBKIT_SESSION" snapshot >/dev/null
+  pw --session "$WEBKIT_SESSION" run-code "async page => {
     const box = await page.locator('[data-ulc-object]').first().boundingBox();
     if (!box) throw new Error('touch object is not visible');
     await page.evaluate(({ startX, startY, endX, endY }) => {
@@ -162,23 +169,23 @@ run_webkit() {
       window.dispatchEvent(new PointerEvent('pointerup', { bubbles:true, pointerId:77, pointerType:'touch', clientX:endX, clientY:endY }));
     }, { startX:box.x + 10, startY:box.y + 10, endX:box.x + 42, endY:box.y + 36 });
   }"
-  "$PWCLI" --session "$WEBKIT_SESSION" run-code "async page => {
+  pw --session "$WEBKIT_SESSION" run-code "async page => {
     await page.locator('#ulcQuantity').fill('2');
     await page.locator('#ulcStartSlot').fill('1');
     await page.locator('#ulcPrint').click();
     await page.waitForSelector('#click360PrintPortal[data-ready=\"true\"]');
   }"
-  "$PWCLI" --session "$WEBKIT_SESSION" run-code "async page => {
+  pw --session "$WEBKIT_SESSION" run-code "async page => {
     await page.screenshot({ path: 'output/playwright/p2/universal-label-e2e-webkit.png', fullPage: true });
   }"
-  webkit_state=$("$PWCLI" --session "$WEBKIT_SESSION" eval "() => JSON.stringify(window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state())")
+  webkit_state=$(pw --session "$WEBKIT_SESSION" eval "() => JSON.stringify(window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state())")
   printf '%s\n' "$webkit_state"
   printf '%s' "$webkit_state" | grep -q '\\"exactQuantity\\":2'
   printf '%s' "$webkit_state" | grep -q '\\"pages\\":1'
   printf '%s' "$webkit_state" | grep -q '\\"nonWhitePixels\\":[1-9]'
   printf '%s' "$webkit_state" | grep -q '\\"qrPixels\\":[1-9]'
   printf '%s' "$webkit_state" | grep -q '\\"errors\\":\[\]'
-  "$PWCLI" --session "$WEBKIT_SESSION" run-code "async page => {
+  pw --session "$WEBKIT_SESSION" run-code "async page => {
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     if (overflow) throw new Error('WebKit overflow detected');

@@ -1,6 +1,6 @@
 # CLICK 360 P2 Web/Admin Dependency Boundary
 
-Status: `READY_FOR_DEPENDENCY_BOUNDARY_REVIEW`
+Status: `NO_GO_DEPENDENCY_SCOPE_RISK`
 Scope: source layout, scripts, package locks, and CI only. No Firebase service, production data, Rules, Authentication, Hosting, or deployment is changed.
 
 ## Package Map
@@ -30,7 +30,13 @@ Root compatibility wrappers delegate explicitly to this package. They do not imp
 
 ## CI Routing
 
-`web-runtime-qa` always runs. A `changes` job enables both administrative jobs only when an administrative package, compatibility wrapper, or this workflow changes. No job uses `continue-on-error`.
+`web-runtime-qa`, `web-audit`, `web-rules-qa`, `web-simulators`, `labels-e2e`, and `web-safe-harness` run independently. A `changes` job enables both administrative jobs only when an administrative package, compatibility wrapper, or this workflow changes; `functions-qa` is skipped unless `functions/` changes. No job uses `continue-on-error`.
+
+The Label Canvas E2E uses the local Codex Playwright wrapper when available and falls back to the same `@playwright/cli` through `npx` in CI. The fallback was executed locally with `CODEX_HOME` intentionally absent.
+
+## Merge Gate
+
+The PWA's product audit is green and its static `dist/` contains no administrative SDK, `google-gax`, or private-key material. This first boundary change also modifies `tools/admin`, so `admin-security-audit` must run and must remain red until a stable compatible upstream remediation exists. It cannot be skipped or made non-blocking without hiding the administrative dependency risk.
 
 ## Rollback
 

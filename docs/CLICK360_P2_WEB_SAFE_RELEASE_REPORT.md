@@ -13,11 +13,12 @@
 - Existing label templates, profiles and print history remain compatible. The canvas reads them and writes only after an explicit user save or delete action in the existing label workflow.
 - Safer print resource validation and browser regression fixtures.
 - App-only cache refresh: only Cache Storage entries beginning with `click360-` are removed; tenant state, IndexedDB, local storage, Google session and Firestore documents are untouched.
+- A physical dependency boundary: the PWA remains at the repository root, while Node-only audit, migration, and account-access tools live under `tools/admin` with an independent lockfile.
 
 ## Explicitly Excluded
 
 - P2 Functions, Cloud Run, repositories, Functions deployment and staging cloud configuration.
-- Firestore Rules, Auth, OAuth, claims, `accountAccess`, migrations, administrative tools and all real-data scripts.
+- Firestore Rules, Auth, OAuth, claims, `accountAccess`, Functions, migrations against Firebase, and all real-data scripts.
 - Changes to `businesses/*/state/main`, inventory, sales, cash, reports or customer records.
 - P2 workers, restaurant advanced, logistics and Owner Preview in the customer app. Their static gates remain false because their cloud contracts are not part of this release.
 
@@ -42,7 +43,7 @@ The audit uses `rg`, excluding generated dependencies and `dist`.
 | `deleteDoc` | Safe | No source result in this release. |
 | `writeBatch`, `setDoc` | Test only | Existing Firestore emulator fixtures; no changed production client code. |
 | `businesses/*/state/main` | Existing documentation and tests | No changed path or client mutation in this release. |
-| `migration` | Existing admin/fixture tooling | Not included, invoked, or changed. |
+| `migration` | Admin-only tooling | Moved to `tools/admin`; only synthetic fixture dry-runs are executed. |
 | `firebase deploy` | No release change | No workflow, script, or deployment command is added. |
 | `localStorage.clear` | Safe | No use added. The cache refresh only touches named Cache Storage entries. |
 
@@ -62,21 +63,22 @@ npm run qa:labels:e2e
 npm run build:static
 npm audit --omit=dev --audit-level=moderate
 node qa-p2-web-safe-release-harness.cjs
+node qa-p2-web-admin-boundary-harness.cjs
 ```
 
 No test in this release uses ADC, Firebase production, real accounts, Functions deployment or a production Rules deploy.
 
 ## Dependency Security Status
 
-`npm audit --omit=dev --audit-level=moderate` is currently **not green** on this branch or its `main` base. It reports five high-severity findings through the pre-existing administrative dependency chain:
+The root PWA package now passes `npm audit --omit=dev --audit-level=moderate` with **0 vulnerabilities**. `firebase-admin` is not a root dependency, and the static build scan finds no `firebase-admin`, `google-gax`, or `private_key` value in `dist/`.
+
+The independent `tools/admin` package intentionally remains visible to its own audit. It reports 11 findings (5 high, 6 moderate), including:
 
 `google-gax -> rimraf -> glob -> minimatch -> brace-expansion`.
 
-This release does not update, suppress, reclassify, or move that chain. The dependency-boundary remediation remains a separate Draft workstream. The finding is not bundled into the browser `dist/` allowlist, but it remains a repository-level merge blocker until the dedicated remediation has a compatible stable fix.
+No force fix, override, release candidate, downgrade, audit suppression, or `continue-on-error` is used. The administrative audit remains a blocking job when `tools/admin` changes. Future PWA-only releases skip administrative jobs through path routing.
 
-GitHub Actions run `30350150929` confirms the same result: `npm ci` and `npm run qa` pass, then the audit fails and the remaining workflow steps are skipped by the existing blocking policy. The workflow was not weakened for this release; local Rules, simulator, label E2E, and static-build evidence was collected separately using only emulators and synthetic data.
-
-**Current security result: `NO_GO_DATA_SAFETY_RISK` for merge.** The branch is intentionally a Draft review artifact only.
+**Current security result: `NO_GO_DEPENDENCY_SCOPE_RISK` for merge.** The boundary is applied and the PWA is clean, but this first boundary PR necessarily changes `tools/admin`, so its truthful audit still blocks the Draft PR.
 
 ## Rollback
 
