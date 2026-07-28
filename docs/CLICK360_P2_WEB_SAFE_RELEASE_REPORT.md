@@ -66,6 +66,16 @@ node qa-p2-web-safe-release-harness.cjs
 
 No test in this release uses ADC, Firebase production, real accounts, Functions deployment or a production Rules deploy.
 
+## Dependency Security Status
+
+`npm audit --omit=dev --audit-level=moderate` is currently **not green** on this branch or its `main` base. It reports five high-severity findings through the pre-existing administrative dependency chain:
+
+`google-gax -> rimraf -> glob -> minimatch -> brace-expansion`.
+
+This release does not update, suppress, reclassify, or move that chain. The dependency-boundary remediation remains a separate Draft workstream. The finding is not bundled into the browser `dist/` allowlist, but it remains a repository-level merge blocker until the dedicated remediation has a compatible stable fix.
+
+**Current security result: `NO_GO_DATA_SAFETY_RISK` for merge.** The branch is intentionally a Draft review artifact only.
+
 ## Rollback
 
 The pre-release production source is `58b3f8558c639a534a2c5e3b2da65f4e88e7ce60`. After a separately approved hosting-only deployment, rollback is source and Hosting only:
