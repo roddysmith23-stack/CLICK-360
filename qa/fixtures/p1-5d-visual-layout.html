@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="icon" href="../../assets/favicon.png">
+  <link rel="stylesheet" href="../../styles.css">
+  <title>CLICK 360 1.0.5 Visual Layout QA</title>
+  <style>
+    body{padding:16px;background:#050505}
+    .qa-shell{width:min(760px,100%);margin:0 auto;display:grid;gap:14px}
+    .qa-icon{width:20px;height:20px;flex:0 0 20px;stroke:currentColor;fill:none;stroke-width:2}
+    .qa-actions{display:flex;gap:8px;flex-wrap:wrap}
+  </style>
+</head>
+<body>
+  <main class="qa-shell" aria-label="Prueba de integridad visual">
+    <header class="pageHead">
+      <div>
+        <h1>Configuración de impresión con un nombre extraordinariamente largo</h1>
+        <p>Los títulos y mensajes conservan su orden y sus márgenes sin crear desplazamiento horizontal.</p>
+      </div>
+      <div class="toolbar">
+        <button class="btn primary">Guardar configuración del dispositivo actual</button>
+        <button class="btn">Abrir diagnóstico de compatibilidad</button>
+      </div>
+    </header>
+
+    <section class="card sectionCard">
+      <button class="bigRow" type="button">
+        <span>Centro de impresión y perfiles de calibración por dispositivo</span>
+        <svg class="qa-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+      <button class="bigRow" type="button">
+        <span>Hay un conflicto de sincronización pendiente que necesita una explicación visible y clara</span>
+        <svg class="qa-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+    </section>
+
+    <section class="card sectionCard">
+      <div class="modalHeader">
+        <h2>Editar una configuración muy detallada de impresora y papel para etiquetas</h2>
+        <button class="closeBtn" aria-label="Cerrar">x</button>
+      </div>
+      <div class="movement">
+        <span><b>Producto con descripción extensa que debe permanecer dentro de la tarjeta</b><small>SKU largo y observaciones que no pueden salir de la estructura</small></span>
+        <span class="qa-actions"><button class="btn">Actualizar desde nube</button><button class="btn danger">Cancelar operación</button></span>
+      </div>
+    </section>
+
+    <nav class="bottomNav" aria-label="Navegación de prueba">
+      <button class="navBtn"><span class="navIcon">H</span><span>Inicio</span></button>
+      <button class="navBtn"><span class="navIcon">I</span><span>Inventario</span></button>
+      <button class="navBtn"><span class="navIcon">V</span><span>Vender</span></button>
+      <button class="navBtn"><span class="navIcon">C</span><span>Caja</span></button>
+      <button class="navBtn"><span class="navIcon">M</span><span>Más opciones</span></button>
+    </nav>
+  </main>
+  <script>
+    const evaluateLayout = () => {
+      const elements = [...document.querySelectorAll('button, h1, h2, p, small, b, span')];
+      const overflow = elements.filter((element) => {
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const clipsContent = ['auto', 'hidden', 'clip', 'scroll'].includes(style.overflowX);
+        return box.width > 0 && box.height > 0 && element.clientWidth > 0
+          && clipsContent && element.scrollWidth > element.clientWidth + 2;
+      }).map((element) => element.textContent.trim());
+      return {
+        pass: overflow.length === 0 && document.documentElement.scrollWidth <= window.innerWidth,
+        viewport: window.innerWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        overflow
+      };
+    };
+    window.__CLICK360_105_VISUAL_QA__ = { evaluate:evaluateLayout };
+    document.body.dataset.result = evaluateLayout().pass ? 'pass' : 'fail';
+  </script>
+</body>
+</html>

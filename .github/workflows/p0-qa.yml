@@ -1,4 +1,4 @@
-name: CLICK 360 V16 QA
+name: CLICK 360 1.0.5 Web Release QA
 
 on:
   pull_request:
@@ -6,7 +6,34 @@ on:
     branches: [main, feat/v16-commercial-beta]
 
 jobs:
-  v16-qa:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      admin: ${{ steps.scope.outputs.admin }}
+      functions: ${{ steps.scope.outputs.functions }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE_SHA"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD~1"; fi
+          changed="$(git diff --name-only "$base" "$GITHUB_SHA")"
+          if printf '%s\n' "$changed" | grep -Eq '^(tools/admin/|scripts/(admin-access-v16|audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs)'; then
+            echo 'admin=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'admin=false' >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "$changed" | grep -Eq '^functions/'; then
+            echo 'functions=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'functions=false' >> "$GITHUB_OUTPUT"
+          fi
+
+  web-runtime-qa:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,10 +47,102 @@ jobs:
           java-version: '21'
       - run: npm ci
       - run: npm run qa
-      - run: npm audit --omit=dev --audit-level=moderate
-      - run: npm run qa:rules
-      - run: node scripts/audit-firestore-legacy.mjs --fixture fixtures/firebase-audit-fixture.json --out artifacts/firebase-audit
-      - run: node scripts/migrate-legacy-v9-to-v10.mjs --fixture fixtures/firebase-audit-fixture.json --dry-run
       - name: Basic secret check
         run: |
           ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- . ':!fixtures/**' ':!vendor/**' ':!.github/workflows/p0-qa.yml'
+
+  web-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=moderate
+
+  web-rules-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npm run qa:rules
+
+  web-simulators:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run qa:simulator:quick
+      - run: npm run qa:simulator:full
+
+  labels-e2e:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install playwright install chromium webkit firefox
+      - run: npm run qa:integration
+
+  admin-jobs:
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject administrative scope in web release
+        run: |
+          echo "Administrative changes are outside this web-only release."
+          exit 1
+
+  functions-jobs:
+    needs: changes
+    if: needs.changes.outputs.functions == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject Functions scope in web release
+        run: |
+          echo "Functions changes are outside this web-only release."
+          exit 1
+
+  web-release-gate:
+    if: always()
+    needs:
+      - web-runtime-qa
+      - web-audit
+      - web-rules-qa
+      - web-simulators
+      - labels-e2e
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emit release decision
+        env:
+          WEB_RUNTIME: ${{ needs.web-runtime-qa.result }}
+          WEB_AUDIT: ${{ needs.web-audit.result }}
+          RULES_QA: ${{ needs.web-rules-qa.result }}
+          SIMULATORS: ${{ needs.web-simulators.result }}
+          LABELS: ${{ needs.labels-e2e.result }}
+        run: |
+          results="$WEB_RUNTIME $WEB_AUDIT $RULES_QA $SIMULATORS $LABELS"
+          if [ "$results" != "success success success success success" ]; then
+            echo "NO_GO"
+            echo "Required web checks: $results"
+            exit 1
+          fi
+          echo "GO"

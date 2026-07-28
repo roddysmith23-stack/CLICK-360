@@ -38,19 +38,23 @@
     return `@page{size:${pageSize};margin:${margin}}`;
   }
 
-  async function waitForResources(element, timeoutMs = 2500) {
+  async function waitForResources(element, timeoutMs = 5000) {
+    if (!element?.childElementCount || !String(element.textContent || '').trim() && !element.querySelector('img,canvas,svg')) {
+      throw Object.assign(new Error('El plan de impresión no contiene contenido renderizable.'), { code: 'print-plan-empty' });
+    }
     const images = [...element.querySelectorAll('img')];
-    const waits = images.map((image) => image.complete
-      ? Promise.resolve()
-      : new Promise((resolve) => {
-          image.addEventListener('load', resolve, { once: true });
-          image.addEventListener('error', resolve, { once: true });
-        }));
-    if (document.fonts?.ready) waits.push(document.fonts.ready.catch(() => {}));
-    await Promise.race([
-      Promise.all(waits),
-      new Promise((resolve) => setTimeout(resolve, timeoutMs))
-    ]);
+    const waits = images.map(async (image) => {
+      if (!image.complete) await new Promise((resolve, reject) => {
+        image.addEventListener('load', resolve, { once: true });
+        image.addEventListener('error', () => reject(Object.assign(new Error('No se pudo cargar un recurso de impresión.'), { code: 'print-resource-error' })), { once: true });
+      });
+      if (!image.naturalWidth || !image.naturalHeight) throw Object.assign(new Error('La imagen de impresión está vacía.'), { code: 'print-resource-empty' });
+      if (typeof image.decode === 'function') await image.decode().catch(() => {});
+    });
+    if (document.fonts?.ready) waits.push(document.fonts.ready);
+    const ready = Promise.all(waits).then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('Los recursos de impresión no quedaron listos.'), { code: 'print-resource-timeout' })), timeoutMs));
+    await Promise.race([ready, timeout]);
   }
 
   function mountJob(job = {}) {
