@@ -27,7 +27,7 @@ Root compatibility wrappers delegate explicitly to this package. They do not imp
 
 - Root: `npm ci`, PWA QA, Rules emulator QA, simulators, static build, and `npm audit --omit=dev` passed with 0 vulnerabilities.
 - P2 Functions: syntax and unit QA, Rules emulator, Functions/Auth/Firestore emulator, multiuser emulator, and Chromium/WebKit E2E passed using only `demo-click360-p2-staging`.
-- Functions production audit: failed with 8 moderate findings. The concrete chain is `firebase-admin@13.10.0 -> @google-cloud/firestore@7.11.6 -> google-gax@4.6.1 -> uuid@9.0.1`, with an additional storage path through `retry-request@7.0.2 -> teeny-request@9.0.0 -> uuid@9.0.1`. `npm audit` identifies `firebase-admin@14.2.0` as the available major-version remediation.
+- Functions production audit: blocking. The local audit reports 8 moderate findings and the GitHub Actions audit reports 9 moderate findings from the same locked dependency family; the discrepancy is retained as audit-tooling evidence rather than suppressed. The concrete locked chain is `firebase-admin@13.10.0 -> @google-cloud/firestore@7.11.6 -> google-gax@4.6.1 -> uuid@9.0.1`, with an additional storage path through `retry-request@7.0.2 -> teeny-request@9.0.0 -> uuid@9.0.1`. The CI job prints this resolved tree before auditing and remains blocking until a stable compatible remediation is reviewed.
 - Administration: remains a separate package and remains blocking when its own package surface changes. It was intentionally not executed for this P2 Functions-only CI routing correction.
 
 ## CI Routing

@@ -26,6 +26,7 @@ for (const file of ['admin-access-v16.mjs', 'audit-firestore-legacy.mjs', 'migra
 assert.match(webFunctionsWorkflow, /^  web-runtime-qa:/m, 'web runtime QA is independent');
 assert.match(webFunctionsWorkflow, /^  functions-fixture-qa:/m, 'Functions fixture QA is independent');
 assert.match(webFunctionsWorkflow, /^  functions-security-audit:/m, 'Functions security audit remains blocking');
+assert.match(webFunctionsWorkflow, /Show resolved Functions production dependency tree/, 'Functions audit publishes its resolved dependency tree');
 assert.equal(webFunctionsWorkflow.includes('working-directory: tools/admin'), false, 'P2 Functions workflow never routes to the admin package');
 assert.match(webFunctionsWorkflow, /functions\/\.\*/, 'nested Functions paths are detected');
 assert.match(adminWorkflow, /^  admin-fixture-qa:/m, 'admin fixture QA is independent');

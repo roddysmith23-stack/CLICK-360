@@ -118,4 +118,6 @@ jobs:
           cache: npm
           cache-dependency-path: functions/package-lock.json
       - run: npm ci
+      - name: Show resolved Functions production dependency tree
+        run: npm ls firebase-admin @google-cloud/firestore @google-cloud/storage google-gax gaxios retry-request teeny-request uuid --omit=dev
       - run: npm audit --omit=dev --audit-level=moderate
