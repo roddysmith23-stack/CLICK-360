@@ -1,7 +1,7 @@
 const assert = require('assert');
 
 (async () => {
-  const core = await import('./scripts/lib/click360-data-core.mjs');
+  const core = await import('../lib/click360-data-core.mjs');
   const fixture = await import('node:fs/promises').then((fs) => fs.readFile('./fixtures/firebase-audit-fixture.json', 'utf8')).then(JSON.parse);
   const clear = fixture.tenants[1];
   const ambiguous = { pathBusinessId: 'owner-b', businessId: 'owner-b', updatedBy: 'owner-b', localStorage: { click360_mvp_qa_final_state_v1: '{invalid' } };
