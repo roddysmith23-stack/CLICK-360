@@ -74,6 +74,8 @@ No test in this release uses ADC, Firebase production, real accounts, Functions 
 
 This release does not update, suppress, reclassify, or move that chain. The dependency-boundary remediation remains a separate Draft workstream. The finding is not bundled into the browser `dist/` allowlist, but it remains a repository-level merge blocker until the dedicated remediation has a compatible stable fix.
 
+GitHub Actions run `30350150929` confirms the same result: `npm ci` and `npm run qa` pass, then the audit fails and the remaining workflow steps are skipped by the existing blocking policy. The workflow was not weakened for this release; local Rules, simulator, label E2E, and static-build evidence was collected separately using only emulators and synthetic data.
+
 **Current security result: `NO_GO_DATA_SAFETY_RISK` for merge.** The branch is intentionally a Draft review artifact only.
 
 ## Rollback
