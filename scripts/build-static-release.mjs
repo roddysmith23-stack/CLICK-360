@@ -7,6 +7,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, 'dist');
 const files = [
   'index.html',
+  'owner-preview.html',
+  'owner-preview.css',
+  'owner-preview.js',
   'styles.css',
   'runtime-guard.js',
   'app.js',
@@ -57,6 +60,13 @@ const appSource = await readFile(appPath, 'utf8');
 await writeFile(appPath, appSource.replace(
   "const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';",
   `const APP_BUILD_SHA = '${shortSha}';`
+));
+
+const previewPath = join(output, 'owner-preview.js');
+const previewSource = await readFile(previewPath, 'utf8');
+await writeFile(previewPath, previewSource.replace(
+  "const BUILD_SHA = '__CLICK360_BUILD_SHA__';",
+  `const BUILD_SHA = '${shortSha}';`
 ));
 
 console.log(`CLICK 360 static release: ${files.length} allowlisted entries copied to dist/`);

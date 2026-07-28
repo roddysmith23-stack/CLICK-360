@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:static": "node scripts/build-static-release.mjs",
+    "preview:owner:serve": "node scripts/serve-owner-preview.mjs",
     "qa": "node --check app.js && node --check universal-label-canvas.js && node --check universal-label-editor.js && node --check firebase-service.js && node --check p0-tenant-guard.js && node --check service-worker.js && node --check runtime-guard.js && node --check access-flow.js && node --check printing-service.js && node --check smart-print-core.js && node --check p2-platform-domain.js && node --check p2-restaurant-domain.js && node --check p2-logistics-domain.js && node --check scripts/build-static-release.mjs && node --check qa/simulator/business-simulator.cjs && node --check qa/simulator/fake-storage.cjs && node --check qa/simulator/invariants.cjs && node --check qa/simulator/report.cjs && node --check qa/simulator/scenarios.cjs && node --check qa/simulator/seed-data.cjs && node qa-check.cjs && node qa-p0-isolation-harness.cjs && node qa-p0-offline-harness.cjs && node qa-p0-production-harness.cjs && node qa-mvp-launch-harness.cjs && node qa-financial-integrity.cjs && node qa-firestore-rules-contract.cjs && node qa-v16-domain-harness.mjs && node qa-v16-storage-harness.mjs && node qa-v16-contract.cjs && node qa-v16-1-commercial-harness.cjs && node qa-v16-1-2-auth-printing-harness.cjs && node qa-v16-1-2-runtime-harness.cjs && node qa-v16-2-regression-harness.mjs && node qa-business-switch-harness.cjs && node qa-p1-1-write-cash-harness.cjs && node qa-p1-1b-sync-guard-harness.cjs && node qa-p1-1c-reliability-sync-recovery-harness.cjs && node qa-p1-1d-cash-close-reliability-harness.cjs && node qa-p1-5a-barcode-scanner-harness.cjs && node qa-p1-5a-label-printing-harness.cjs && node qa-p1-5a-tables-lite-harness.cjs && node qa-p1-5a-finance-help-harness.cjs && node qa-p1-5a-launch-regression-harness.cjs && node qa-p1-5b-production-ux-polish-harness.cjs && node qa-p1-5c-print-profile-harness.cjs && node qa-p1-5c-paper-geometry-harness.cjs && node qa-p1-5c-exact-copy-harness.cjs && node qa-p1-5c-layout-collision-harness.cjs && node qa-p1-5c-calibration-harness.cjs && node qa-p1-5c-help-diagnostic-harness.cjs && node qa-p1-5c-regression-harness.cjs && node qa-p2-web-admin-boundary-harness.cjs && node qa-p2-platform-modules-workers-harness.cjs && node qa-p2-platform-workers-visual-harness.cjs && node qa-p2-universal-label-canvas-harness.cjs && npm run qa:simulator:quick && npm run build:static",
     "qa:rules": "sh scripts/run-firestore-emulator-qa.sh",
     "qa:simulator:quick": "node qa/simulator/business-simulator.cjs --mode=quick",
@@ -23,7 +24,8 @@
     "qa:p2:multiuser": "bash scripts/run-p2-cloud-multiuser-emulator-qa.sh",
     "qa:p2:browser": "bash scripts/run-p2-cloud-multiuser-browser-e2e.sh",
     "qa:p2:migration": "node qa-p2-cloud-migration-dry-run-harness.cjs",
-    "qa:p2:client": "node qa-p2-cloud-client-harness.cjs"
+    "qa:p2:client": "node qa-p2-cloud-client-harness.cjs",
+    "qa:owner-preview": "node qa-p2-owner-preview-harness.cjs && sh qa/run-p2-owner-preview-browser-e2e.sh"
   },
   "dependencies": {
     "@zxing/browser": "^0.1.5",
