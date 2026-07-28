@@ -20,6 +20,7 @@ const files = [
   'smart-print-core.js',
   'p2-web-safe-flags.js',
   'p2-restaurant-domain.js',
+  'p2-logistics-domain.js',
   'universal-label-canvas.js',
   'universal-label-editor.js',
   'service-worker.js',
