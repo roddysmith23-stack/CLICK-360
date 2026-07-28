@@ -36,14 +36,23 @@ async function token(uid, email) {
   return body.idToken;
 }
 
-async function call(action, bearer, payload, idempotencyKey) {
-  const response = await fetch(origin + '/' + action, {
-    method: 'POST',
-    headers: { authorization: 'Bearer ' + bearer, 'content-type': 'application/json' },
-    body: JSON.stringify({ payload, idempotencyKey })
-  });
-  const body = await response.json();
-  return { status: response.status, body };
+async function call(action, bearer, payload, idempotencyKey, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const response = await fetch(origin + '/' + action, {
+        method: 'POST',
+        headers: { authorization: 'Bearer ' + bearer, 'content-type': 'application/json' },
+        body: JSON.stringify({ payload, idempotencyKey })
+      });
+      const body = await response.json();
+      return { status: response.status, body };
+    } catch (err) {
+      lastError = err;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw lastError;
 }
 
 function expectStatus(result, status, label) {
