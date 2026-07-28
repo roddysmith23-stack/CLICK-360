@@ -1,7 +1,7 @@
 (function initClick360SmartPrint(root) {
   'use strict';
 
-  const VERSION = '1.0.5-p2-web-safe';
+  const VERSION = '1.0.5';
   const MAX_COPIES = 500;
   const ROTATIONS = Object.freeze([0, 90, 180, 270]);
   const PROFILE_STATUSES = Object.freeze(['provisional', 'verified', 'certified']);
@@ -729,17 +729,24 @@
   function normalizeLocalDeviceState(input = {}, context = {}) {
     const source = input && typeof input === 'object' ? input : {};
     const selectedProfileId = safeId(source.selectedProfileId);
+    const universalProfileId = safeId(source.universalProfileId);
     const calibrations = {};
     for (const [key, calibration] of Object.entries(source.calibrations || {})) {
       const safeKey = safeId(key, '').slice(0, 120);
       if (!safeKey || !calibration || typeof calibration !== 'object') continue;
       const xOffsetMm = Number(calibration.xOffsetMm);
       const yOffsetMm = Number(calibration.yOffsetMm);
+      const scaleX = Number(calibration.scaleX ?? 1);
+      const scaleY = Number(calibration.scaleY ?? 1);
       if (!Number.isFinite(xOffsetMm) || !Number.isFinite(yOffsetMm)
-        || Math.abs(xOffsetMm) > 10 || Math.abs(yOffsetMm) > 10) continue;
+        || Math.abs(xOffsetMm) > 10 || Math.abs(yOffsetMm) > 10
+        || !Number.isFinite(scaleX) || scaleX < 0.8 || scaleX > 1.2
+        || !Number.isFinite(scaleY) || scaleY < 0.8 || scaleY > 1.2) continue;
       calibrations[safeKey] = {
         xOffsetMm:Number(xOffsetMm.toFixed(2)),
         yOffsetMm:Number(yOffsetMm.toFixed(2)),
+        scaleX:Number(scaleX.toFixed(3)),
+        scaleY:Number(scaleY.toFixed(3)),
         status:calibration.status === 'verified' ? 'verified' : 'provisional',
         geometryFingerprint:text(calibration.geometryFingerprint).slice(0, 240),
         attemptId:safeId(calibration.attemptId),
@@ -753,7 +760,54 @@
       businessId:safeId(context.businessId),
       deviceId:safeId(context.deviceId),
       selectedProfileId,
+      universalProfileId,
       calibrations
+    };
+  }
+
+  function universalPaperGeometryFingerprint(input = {}) {
+    const paper = input && typeof input === 'object' ? input : {};
+    return [
+      text(paper.mediaType || 'roll-1'),
+      number(paper.widthMm, 0),
+      number(paper.heightMm, 0),
+      number(paper.mediaWidthMm, 0),
+      number(paper.mediaHeightMm, 0),
+      Math.max(1, Math.trunc(number(paper.columns, 1))),
+      Math.max(1, Math.trunc(number(paper.rows, 1))),
+      number(paper.gapXmm, 0),
+      number(paper.gapYmm, 0),
+      number(paper.marginTopMm, 0),
+      number(paper.marginRightMm, 0),
+      number(paper.marginBottomMm, 0),
+      number(paper.marginLeftMm, 0),
+      number(paper.pitchMm, 0),
+      Math.max(72, Math.trunc(number(paper.dpi, 203))),
+      paper.orientation === 'landscape' ? 'landscape' : 'portrait'
+    ].join('|');
+  }
+
+  function universalCalibrationKey(profileId) {
+    const id = safeId(profileId);
+    return id ? `universal-${id}` : '';
+  }
+
+  function applyUniversalDeviceCalibration(profile = {}, deviceState = {}) {
+    if (!profile || typeof profile !== 'object' || !profile.universalPaper) return profile;
+    const copy = JSON.parse(JSON.stringify(profile));
+    const key = universalCalibrationKey(profile.id);
+    const calibration = key ? deviceState?.calibrations?.[key] : null;
+    const fingerprint = universalPaperGeometryFingerprint(profile.universalPaper);
+    if (!calibration || calibration.geometryFingerprint !== fingerprint) return copy;
+    return {
+      ...copy,
+      universalPaper:{
+        ...copy.universalPaper,
+        xOffsetMm:number(calibration.xOffsetMm, 0),
+        yOffsetMm:number(calibration.yOffsetMm, 0),
+        scaleX:number(calibration.scaleX, 1),
+        scaleY:number(calibration.scaleY, 1)
+      }
     };
   }
 
@@ -920,6 +974,9 @@
     paperGeometryFingerprint,
     localDeviceStorageKey,
     normalizeLocalDeviceState,
+    universalPaperGeometryFingerprint,
+    universalCalibrationKey,
+    applyUniversalDeviceCalibration,
     sanitizeDiagnostic,
     supportCode,
     searchHelp

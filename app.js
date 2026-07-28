@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p2-web-safe-r1';
-  const APP_RELEASE_VERSION = '1.0.5-p2-web-safe';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r1';
+  const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -1330,7 +1330,7 @@ function parseMoney(value) {
       finance:{ payments: [], loans: [], envelopes: [], goals: [] },
       notifications:[],
       legalAcceptances:[],
-      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: '16.2.0' }
+      settings:{ workers: [], labelTemplates: [], labelProfiles: [], userProfiles: {}, customers: [], reminders: [], onboarding: {}, activationRequests: [], policies: {}, legal: {}, appVersion: APP_RELEASE_VERSION }
     };
   }
 
@@ -1757,7 +1757,7 @@ function parseMoney(value) {
 	    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
-		          <div class="logoMark sidebarBrand" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconSide}<div class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">${escapeHtml(APP_VISIBLE_VERSION)}</small><small class="brandSlogan">Control total de tu negocio</small></div></div>
+		          <button type="button" class="logoMark sidebarBrand" onclick="window.location.hash='#home'" aria-label="Ir a Inicio">${logoIconSide}<span class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">${escapeHtml(APP_VISIBLE_VERSION)}</small><small class="brandSlogan">Control total de tu negocio</small></span></button>
 	          <div class="field"><label>Negocio activo</label>${businessSwitcher('businessPickerSide')}</div>
 	          <nav class="sideNav">${navButtons(active, true)}</nav>
 	        </div>
@@ -1765,14 +1765,14 @@ function parseMoney(value) {
 		          <div class="sidebarStatusRow"><span class="sidebarStatusLabel">Actividad</span><button type="button" id="notificationBellSide" class="iconBtn notificationBell" title="Notificaciones" aria-label="Notificaciones${unreadCount ? `, ${unreadCount} sin leer` : ''}">${icon('bell')}${unreadCount ? `<b>${unreadCount > 99 ? '99+' : unreadCount}</b>` : ''}</button></div>
 	          ${syncPillHtml(false)}
 	          <div style="display:flex; align-items:center; gap:10px;">
-	            <div class="profileAvatar" onclick="window.location.hash='#settings'" style="background:#1a1a1a; color:var(--gold); width:32px; height:32px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</div>
+	            <button type="button" class="profileAvatar" onclick="window.location.hash='#settings'" aria-label="Abrir ajustes" style="background:#1a1a1a; color:var(--gold); width:44px; height:44px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; font-weight:bold; border: 1px solid var(--gold); overflow:hidden;" title="Ajustes">${avatarHtml}</button>
 	            <button class="logoutBtn logoutBtnWide" id="logoutSide" title="Cerrar sesión">${icon('log-out')}<span>Cerrar sesión</span></button>
 	          </div>
 	        </div>
 	      </aside>
       <div>
         <header class="topbar">
-          <div class="logoMark" onclick="window.location.hash='#home'" style="cursor:pointer;">${logoIconTop}<div class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></div></div>
+          <button type="button" class="logoMark" onclick="window.location.hash='#home'" aria-label="Ir a Inicio">${logoIconTop}<span class="logoText" style="font-size:24px;"><b>CLICK</b><span>360</span><small>Control total</small></span></button>
 	          <div style="flex:1; display:flex; justify-content:center; min-width:0; padding:0 8px;">
 	            ${businessSwitcher('businessPickerTop', 'businessSelect')}
 	          </div>
@@ -1802,9 +1802,9 @@ function parseMoney(value) {
       ['cash', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg>', 'Caja'],
       ['more', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>', 'Más']
     ].filter(x=>allowedRoutes().includes(x[0]));
-    return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}">${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${label}</span></button>`).join('');
+    return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}"${active===key?' aria-current="page"':''}>${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${label}</span></button>`).join('');
   }
-	  function bottomNav(active){ return `<nav class="bottomNav">${navButtons(active)}</nav>`; }
+	  function bottomNav(active){ return `<nav class="bottomNav" aria-label="Navegación principal">${navButtons(active)}</nav>`; }
 	  function openBusinessSwitcher() {
 	    // P1 FIX: No abrir el switcher si ya hay un cambio en curso
 	    if (BUSINESS_SWITCH_GUARD) return;
@@ -6932,7 +6932,8 @@ function parseMoney(value) {
     const templates = labelTemplatesForBiz(businessId);
     const initialTemplate = templates.find((template) => template.id === initialTemplateId) || templates.find((template) => template.isDefault) || null;
     const deviceState = loadPrintDeviceState(businessId);
-    const initialProfile = labelProfilesForBiz(businessId).find((profile) => profile.id === deviceState.universalProfileId) || null;
+    const deviceProfile = (profile) => window.CLICK360_SMART_PRINT?.applyUniversalDeviceCalibration(profile, loadPrintDeviceState(businessId)) || profile;
+    const initialProfile = deviceProfile(labelProfilesForBiz(businessId).find((profile) => profile.id === deviceState.universalProfileId) || null);
     const editorBusinessIsActive = () => currentBusiness()?.id === businessId;
     editor.open({
       product,
@@ -6946,7 +6947,11 @@ function parseMoney(value) {
       closeModal,
       toast,
       getTemplates:() => labelTemplatesForBiz(businessId).filter((template) => template.universalDocument || template.layout),
-      getProfiles:() => labelProfilesForBiz(businessId).filter((profile) => profile.universalPaper),
+      getProfiles:() => labelProfilesForBiz(businessId).filter((profile) => profile.universalPaper).map(deviceProfile),
+      selectProfile:(profileId) => {
+        const next = loadPrintDeviceState(businessId);
+        savePrintDeviceState({ ...next, universalProfileId:profileId || '' }, businessId);
+      },
       saveTemplate:async (name, universalDocument, templateId = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo para guardar con seguridad.', 'err');
         state.settings ||= {}; state.settings.labelTemplates ||= [];
@@ -6977,13 +6982,30 @@ function parseMoney(value) {
         const previous = [...state.settings.labelProfiles];
         const existing = state.settings.labelProfiles.find((profile) => profile.id === profileId && profile.businessId === businessId);
         const name = String(profileName || existing?.name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`).trim().slice(0, 80);
-        const profile = { ...(existing || {}), id:existing?.id || uid('print-profile'), businessId, name:name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`, status:'provisional', universalPaper:universalDocument.paper, createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() };
+        const normalizedPaper = canvasApi.normalizeDocument(universalDocument).paper;
+        const sharedPaper = { ...normalizedPaper, xOffsetMm:0, yOffsetMm:0, scaleX:1, scaleY:1 };
+        const profile = { ...(existing || {}), id:existing?.id || uid('print-profile'), businessId, name:name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`, status:'provisional', universalPaper:sharedPaper, createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString() };
         const index = state.settings.labelProfiles.findIndex((item) => item.id === profile.id && item.businessId === businessId);
         if (index >= 0) state.settings.labelProfiles[index] = profile; else state.settings.labelProfiles.push(profile);
         addAudit('universal_label_profile_saved', { profileId:profile.id, businessId, status:'provisional' });
         if (!save()) { state.settings.labelProfiles = previous; toast('No se pudo guardar el perfil.', 'err'); return null; }
-        savePrintDeviceState({ ...loadPrintDeviceState(businessId), selectedProfileId:profile.id, universalProfileId:profile.id }, businessId);
-        return profile;
+        const localState = loadPrintDeviceState(businessId);
+        const calibrationKey = window.CLICK360_SMART_PRINT?.universalCalibrationKey(profile.id);
+        const geometryFingerprint = window.CLICK360_SMART_PRINT?.universalPaperGeometryFingerprint(sharedPaper) || '';
+        const calibrations = { ...(localState.calibrations || {}) };
+        if (calibrationKey) {
+          calibrations[calibrationKey] = {
+            xOffsetMm:normalizedPaper.xOffsetMm,
+            yOffsetMm:normalizedPaper.yOffsetMm,
+            scaleX:normalizedPaper.scaleX,
+            scaleY:normalizedPaper.scaleY,
+            status:'provisional',
+            geometryFingerprint,
+            updatedAt:new Date().toISOString()
+          };
+        }
+        savePrintDeviceState({ ...localState, universalProfileId:profile.id, calibrations }, businessId);
+        return deviceProfile(profile);
       },
       print:(universalDocument, providerId) => printUniversalLabels(product, universalDocument, providerId),
       printCalibration:(universalDocument) => printUniversalCalibration(universalDocument),

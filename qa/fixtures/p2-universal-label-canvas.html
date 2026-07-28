@@ -11,6 +11,7 @@
   </style>
   <script src="../../vendor/qrcode-generator.js"></script>
   <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../vendor/html2pdf.bundle.min.js"></script>
   <script src="../../smart-print-core.js"></script>
   <script src="../../universal-label-canvas.js"></script>
   <script src="../../universal-label-editor.js"></script>
@@ -91,7 +92,15 @@
         const qr = normalized.objects.find((object) => object.type === 'qr');
         const pxPerMm = firstCanvas ? firstCanvas.width / normalized.paper.widthMm : 0;
         const qrPixels = qr && firstCanvas ? nonWhitePixels(firstCanvas, { left:qr.xMm * pxPerMm, top:qr.yMm * pxPerMm, right:(qr.xMm + qr.widthMm) * pxPerMm, bottom:(qr.yMm + qr.heightMm) * pxPerMm }) : 0;
-        printResult = { provider, plan, fingerprint:canvasEngine.planFingerprint(plan), widthPx:firstCanvas?.width || 0, heightPx:firstCanvas?.height || 0, nonWhitePixels:pixelCount, qrPixels, pages:plan.pages.length, exactQuantity:plan.count };
+        let realPdfBytes = 0;
+        if (provider === 'pdf') {
+          const pdfBuffer = await window.html2pdf()
+            .set({ margin:0, filename:'click360-qa.pdf', html2canvas:{ scale:2, backgroundColor:'#ffffff' }, jsPDF:{ unit:'mm', format:[mediaWidth, mediaHeight], orientation:mediaWidth > mediaHeight ? 'landscape' : 'portrait' } })
+            .from(printable)
+            .outputPdf('arraybuffer');
+          realPdfBytes = pdfBuffer?.byteLength || 0;
+        }
+        printResult = { provider, plan, fingerprint:canvasEngine.planFingerprint(plan), widthPx:firstCanvas?.width || 0, heightPx:firstCanvas?.height || 0, nonWhitePixels:pixelCount, qrPixels, pages:plan.pages.length, exactQuantity:plan.count, realPdfBytes };
         output.dataset.ready = String(plan.valid && pixelCount > 20 && qrPixels > 20 && plan.count === normalized.quantity);
         return printResult;
       };

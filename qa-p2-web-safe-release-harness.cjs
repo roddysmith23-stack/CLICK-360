@@ -19,7 +19,7 @@ const changedFiles = execFileSync('git', ['diff', '--name-only', main], { cwd:ro
   .split('\n').filter(Boolean);
 
 const allowed = new Set([
-  'app.js', 'firebase-service.js', 'index.html', 'manifest.webmanifest', 'package-lock.json', 'package.json',
+  'CHANGELOG.md', 'app.js', 'firebase-service.js', 'index.html', 'manifest.webmanifest', 'package-lock.json', 'package.json',
   'p2-web-safe-flags.js', 'printing-service.js', 'runtime-guard.js', 'service-worker.js', 'smart-print-core.js', 'styles.css',
   'universal-label-canvas.js', 'universal-label-editor.js', 'scripts/build-static-release.mjs',
   'qa-business-switch-harness.cjs', 'qa-check.cjs', 'qa-p1-1-write-cash-harness.cjs',
@@ -30,8 +30,13 @@ const allowed = new Set([
   'qa-p1-5b-production-ux-polish-harness.cjs', 'qa-p1-5c-help-diagnostic-harness.cjs',
   'qa-p1-5c-regression-harness.cjs', 'qa-v16-1-2-runtime-harness.cjs',
   'qa-v16-1-commercial-harness.cjs', 'qa-v16-2-regression-harness.mjs', 'qa-v16-contract.cjs',
-  'qa-p1-5c-print-profile-harness.cjs', 'qa-p2-universal-label-canvas-harness.cjs', 'qa-p2-web-safe-release-harness.cjs',
-  'qa/check-png-nonblank.cjs', 'qa/fixtures/p2-universal-label-canvas.html', 'qa/run-p2-universal-label-browser-e2e.sh',
+  'qa-p1-5c-print-profile-harness.cjs', 'qa-p1-5d-visual-layout-harness.cjs',
+  'qa-p2-universal-label-canvas-harness.cjs', 'qa-p2-web-safe-release-harness.cjs',
+  'qa/built-artifact-smoke.mjs', 'qa/check-png-nonblank.cjs',
+  'qa/fixtures/p1-5d-visual-layout.html', 'qa/fixtures/p2-universal-label-canvas.html',
+  'qa/run-p2-universal-label-browser-e2e.sh',
+  'qa/universal-label-browser-e2e.mjs', 'qa/visual-browser-e2e.mjs',
+  'docs/CLICK360_1_0_5_COMMERCIAL_RELEASE.md',
   'docs/CLICK360_P2_LABEL_CALIBRATION_SMOKE.md', 'docs/CLICK360_P2_UNIVERSAL_LABEL_CANVAS.md',
   'docs/CLICK360_P2_WEB_SAFE_RELEASE_REPORT.md'
 ]);
@@ -66,11 +71,11 @@ const app = fs.readFileSync(`${root}/app.js`, 'utf8');
 const firebase = fs.readFileSync(`${root}/firebase-service.js`, 'utf8');
 const rootPackage = JSON.parse(fs.readFileSync(`${root}/package.json`, 'utf8'));
 const rootLock = JSON.parse(fs.readFileSync(`${root}/package-lock.json`, 'utf8'));
-assert(app.includes("const APP_RELEASE_VERSION = '1.0.5-p2-web-safe'"), 'visible release version must be current');
-assert(app.includes("const APP_ASSET_VERSION = 'mvp-launch-v16-2-p2-web-safe-r1'"), 'app asset version must be current');
+assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'visible release version must be current');
+assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r1'"), 'app asset version must be current');
 assert(app.includes('p2UniversalLabelsEnabled !== true'), 'universal labels must honor the release gate');
-assert(firebase.includes("const APP_ASSET_VERSION = 'mvp-launch-v16-2-p2-web-safe-r1'"), 'only the app cache generation changes in Firebase service');
+assert(firebase.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r1'"), 'only the app cache generation changes in Firebase service');
 assert.equal(Object.hasOwn(rootPackage.dependencies || {}, 'firebase-admin'), false, 'web runtime excludes firebase-admin');
 assert.equal(Object.hasOwn(rootLock.packages[''].dependencies || {}, 'firebase-admin'), false, 'web lockfile excludes firebase-admin');
 
-console.log(`P2 web-safe release harness: PASS (${changedFiles.length} approved paths; web runtime has no cloud mutation surface)`);
+console.log(`P2 web-safe release harness: PASS (${changedFiles.length} approved paths; no new direct or destructive cloud mutation path)`);

@@ -83,11 +83,18 @@ assert.equal(pitchedPlan.pages[0].cells[1].yMm, 35);
 
 const app = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
 const editor = fs.readFileSync(path.join(ROOT, 'universal-label-editor.js'), 'utf8');
+const styles = fs.readFileSync(path.join(ROOT, 'styles.css'), 'utf8');
 const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 const worker = fs.readFileSync(path.join(ROOT, 'service-worker.js'), 'utf8');
 const build = fs.readFileSync(path.join(ROOT, 'scripts/build-static-release.mjs'), 'utf8');
 const printing = fs.readFileSync(path.join(ROOT, 'printing-service.js'), 'utf8');
 assert.match(app, /async function openAdvancedLabelModal/);
+assert.match(app, /applyUniversalDeviceCalibration/);
+assert.match(app, /universalProfileId:profile\.id, calibrations/);
+assert.match(app, /xOffsetMm:0, yOffsetMm:0, scaleX:1, scaleY:1/);
+assert.match(editor, /api\.selectProfile\?\.\(activeProfileId\)/);
+assert.match(styles, /\.ulcWorkspace\{display:flex;flex:1 1 auto;/);
+assert.match(styles, /\.ulcFooter\{position:relative;z-index:5;flex:none;/);
 assert.match(app, /async function openLabelModal/);
 assert.match(app, /CLICK360_UNIVERSAL_LABEL_EDITOR/);
 assert.match(app, /buildUniversalLabelPrintNode/);
@@ -121,7 +128,7 @@ assert.match(build, /'universal-label-editor\.js'/);
 assert.match(printing, /print-plan-empty/);
 assert.match(printing, /print-resource-empty/);
 assert.match(fs.readFileSync(path.join(ROOT, 'qa/fixtures/p2-universal-label-canvas.html'), 'utf8'), /@page\{size:\$\{mediaWidth\}mm \$\{mediaHeight\}mm;margin:0\}/);
-assert.match(fs.readFileSync(path.join(ROOT, 'qa/run-p2-universal-label-browser-e2e.sh'), 'utf8'), /\[320, 360, 390, 430, 768, 1024, 1366, 1440\]/);
+assert.match(fs.readFileSync(path.join(ROOT, 'qa/universal-label-browser-e2e.mjs'), 'utf8'), /\[320, 360, 375, 390, 414, 430, 768, 820, 1024, 1280, 1366, 1440, 1920\]/);
 assert.doesNotMatch(app, /Shary\s*·|shary-ltt214/i);
 assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'smart-print-core.js'), 'utf8'), /shary-ltt214/i);
 

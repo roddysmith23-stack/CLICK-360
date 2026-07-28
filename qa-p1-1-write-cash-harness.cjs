@@ -68,7 +68,7 @@ assert(app.includes('No pudimos cerrar la caja') && app.includes('Sin permiso pa
 assert(app.includes('window.click360GetCashCloseDiagnostics') && runtime.includes('cashClose:') && runtime.includes('uiHandled'), 'cash close exposes sanitized diagnostics without generic handled-error toast');
 assert(firebase.includes('window.click360WriteGate = writeGateStatus'), 'Firebase service publishes structured write gate status');
 assert(firebase.includes('if (accessDoesNotExpire()) return true'), 'permanent access is not degraded by offline clock revalidation');
-assert(runtime.includes("const APP_VERSION = '1.0.5-p2-web-safe'"), 'runtime error report version is the release version');
+assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime error report version is the release version');
 assert(runtime.includes('buildSha') && runtime.includes('displayMode') && runtime.includes('effectiveAccess'), 'runtime report includes build, PWA and access diagnostics');
 assert(styles.includes('.cashClosePreview') && styles.includes('.cashCloseActions') && styles.includes('bottom:calc(108px + var(--safe-bottom))'), 'mobile UI protects cash close actions and toasts');
 

@@ -2,7 +2,6 @@ import { initializeApp, applicationDefault } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import {
-  REQUIRED_PROJECT_ID,
   activationConfirmation,
   activationFields,
   assertAdminScope,
@@ -12,6 +11,7 @@ import {
   stateIdentitySummary,
   suspendConfirmation
 } from '../lib/click360-v16-admin-core.mjs';
+import { resolveAdminExecutionScope } from '../lib/live-safety-guard.mjs';
 
 function parseArgs(argv) {
   const result = {};
@@ -33,13 +33,12 @@ function expiryTimestamp(period) {
 
 const args = parseArgs(process.argv.slice(2));
 const command = String(args.command || 'inspect').toLowerCase();
-const projectId = String(args.project || REQUIRED_PROJECT_ID);
+const apply = args.apply === true;
+const { projectId } = resolveAdminExecutionScope({ explicitProject:args.project, apply });
 const actorEmail = normalizeEmail(args.actor);
 const expectedEmail = normalizeEmail(args.email);
 const expectedUid = String(args.uid || '');
-const apply = args.apply === true;
 
-if (projectId !== REQUIRED_PROJECT_ID) throw new Error(`Refusing project ${projectId}. Only ${REQUIRED_PROJECT_ID} is allowed.`);
 if (!actorEmail) throw new Error('--actor is required.');
 if (!expectedEmail) throw new Error('--email is required.');
 if (!['inspect', 'activate', 'suspend'].includes(command)) throw new Error('Use --command inspect, activate, or suspend.');

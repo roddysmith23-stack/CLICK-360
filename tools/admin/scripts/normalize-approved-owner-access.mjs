@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { stableHash } from '../lib/click360-data-core.mjs';
 import { normalizeOwnerAccessAssessment } from '../lib/click360-owner-access-core.mjs';
+import { resolveAdminExecutionScope } from '../lib/live-safety-guard.mjs';
 
 function parseArgs(argv) {
   const result = {};
@@ -14,10 +15,8 @@ function parseArgs(argv) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-const REQUIRED_PROJECT_ID = 'click-360';
-const projectId = args.project || REQUIRED_PROJECT_ID;
-if (projectId !== REQUIRED_PROJECT_ID) throw new Error(`Refusing project ${projectId}. Only ${REQUIRED_PROJECT_ID} is allowed.`);
 const apply = args.apply === true;
+const { projectId } = resolveAdminExecutionScope({ explicitProject:args.project, apply });
 if (apply && !args.uid && !args.allowlist) throw new Error('--apply requires --uid or --allowlist. Bulk normalization is not supported.');
 
 async function readAllowlist(file) {

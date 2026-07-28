@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'mvp-launch-v16-2-p2-web-safe-r1';
+		  const APP_ASSET_VERSION = 'commercial-1-0-5-r1';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -603,7 +603,7 @@
 		      uidHash: String(uidHash || '').slice(0, 16),
 		      businessId,
 		      tenantKey,
-		      appVersion: '16.2.0',
+		      appVersion: '1.0.5',
 		      requestId: String(details.requestId || window.crypto?.randomUUID?.() || eventRef.id).slice(0, 64),
 		      mode: String(details.mode || window.click360AccessState?.mode || syncStatus.status || '').slice(0, 40),
 		      errorCode: String(details.errorCode || '').replace(/[^a-z0-9_./-]/gi, '').slice(0, 80),
@@ -1100,7 +1100,7 @@
 	          policies: settings.policies && typeof settings.policies === 'object' ? settings.policies : {},
 	          legal: settings.legal && typeof settings.legal === 'object' ? settings.legal : {},
               legacyDataBusinessId: String(settings.legacyDataBusinessId || ''),
-	          appVersion: '16.2.0'
+	          appVersion: '1.0.5'
 	        },
 	        updatedAtMs: Number(state.updatedAtMs || Date.now()),
 	        updatedAt: state.updatedAt || new Date().toISOString()
@@ -1663,7 +1663,7 @@
       status: 'pending',
       notes: String(selection.notes || '').slice(0, 500),
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-	      appVersion: '16.2.0'
+	      appVersion: '1.0.5'
 	    });
 	    recordTelemetry('plan_request', { requestId: requestRef.id, mode: plan }).catch(() => {});
 	    return { requestId: requestRef.id, requestCode, plan, period, price, currency: 'USD' };
@@ -1688,7 +1688,7 @@
         locale: String(acceptance.locale || navigator.language || 'es-EC').slice(0, 20),
         source: String(acceptance.source || 'app').slice(0, 40),
         acceptedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        appVersion: '16.2.0'
+        appVersion: '1.0.5'
       });
     });
     return { acceptanceId, termsVersion };
@@ -1729,7 +1729,7 @@
 	      singleUse: true,
 	      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
 	      createdBy: ownerId,
-	      appVersion: '16.2.0'
+	      appVersion: '1.0.5'
 	    });
 	    batch.set(secret, {
 	      inviteHash,
@@ -2278,7 +2278,7 @@
 	      gate.innerHTML = `
 	        <div class="c360-gate-shell">
 	          <section class="c360-gate-hero" aria-label="CLICK 360">
-		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>V16.2</small></div>
+		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>1.0.5</small></div>
 	            <h1>Todo tu negocio en una sola aplicación</h1>
 	            <p>Controla inventario, ventas, caja, clientes y productos desde tu celular, de forma sencilla.</p>
 	            <p class="c360-gate-promise">Menos papeles. Menos confusión. Más control.</p>

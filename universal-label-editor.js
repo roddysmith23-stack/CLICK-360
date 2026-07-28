@@ -179,7 +179,13 @@
     modalRoot.addEventListener('change', async (event) => {
       if (event.target.id === 'ulcPreset') { updatePaper(PRESETS[event.target.value] || PRESETS.custom); return; }
       if (event.target.id === 'ulcTemplates') { activeTemplateId = event.target.value || ''; const template = (api.getTemplates?.() || []).find((item) => item.id === activeTemplateId); if (template) { history = engine.createHistory(template.universalDocument || template); selectedIds = new Set(history.present.objects.slice(0, 1).map((object) => object.id)); } render(); return; }
-      if (event.target.id === 'ulcProfiles') { activeProfileId = event.target.value || ''; const profile = (api.getProfiles?.() || []).find((item) => item.id === activeProfileId); if (profile?.universalPaper) commit({ ...current(), paper: { ...current().paper, ...profile.universalPaper } }); return; }
+      if (event.target.id === 'ulcProfiles') {
+        activeProfileId = event.target.value || '';
+        api.selectProfile?.(activeProfileId);
+        const profile = (api.getProfiles?.() || []).find((item) => item.id === activeProfileId);
+        if (profile?.universalPaper) commit({ ...current(), paper: { ...current().paper, ...profile.universalPaper } });
+        return;
+      }
       if (event.target.id === 'ulcImageInput') {
         const input = event.target;
         const appendImage = (imageData) => {

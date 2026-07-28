@@ -94,8 +94,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx --yes --package @playwright/cli playwright-cli install-browser webkit
-      - run: npm run qa:labels:e2e
+      - run: npx --no-install playwright install chromium webkit firefox
+      - run: npm run qa:integration
 
   web-safe-harness:
     runs-on: ubuntu-latest
@@ -155,3 +155,31 @@ jobs:
       - run: test -f functions/package.json
       - run: npm ci --prefix functions
       - run: npm test --prefix functions
+
+  web-release-gate:
+    if: always()
+    needs:
+      - web-runtime-qa
+      - web-audit
+      - web-rules-qa
+      - web-simulators
+      - labels-e2e
+      - web-safe-harness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emit release decision
+        env:
+          WEB_RUNTIME: ${{ needs.web-runtime-qa.result }}
+          WEB_AUDIT: ${{ needs.web-audit.result }}
+          RULES_QA: ${{ needs.web-rules-qa.result }}
+          SIMULATORS: ${{ needs.web-simulators.result }}
+          E2E: ${{ needs.labels-e2e.result }}
+          WEB_SAFE: ${{ needs.web-safe-harness.result }}
+        run: |
+          results="$WEB_RUNTIME $WEB_AUDIT $RULES_QA $SIMULATORS $E2E $WEB_SAFE"
+          if [ "$results" != "success success success success success success" ]; then
+            echo "NO_GO"
+            echo "Required web checks: $results"
+            exit 1
+          fi
+          echo "GO"

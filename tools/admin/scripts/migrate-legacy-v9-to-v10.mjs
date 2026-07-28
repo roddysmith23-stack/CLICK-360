@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { classifyTenant, domainCounts, equalCounts, stableHash, toV10Document } from '../lib/click360-data-core.mjs';
+import { resolveAdminExecutionScope } from '../lib/live-safety-guard.mjs';
 
 function parseArgs(argv) {
   const result = {};
@@ -12,10 +13,8 @@ function parseArgs(argv) {
   return result;
 }
 const args = parseArgs(process.argv.slice(2));
-const REQUIRED_PROJECT_ID = 'click-360';
-const projectId = args.project || REQUIRED_PROJECT_ID;
-if (projectId !== REQUIRED_PROJECT_ID) throw new Error(`Refusing project ${projectId}. Only ${REQUIRED_PROJECT_ID} is allowed.`);
 const apply = args.apply === true;
+const { projectId } = resolveAdminExecutionScope({ explicitProject:args.project, fixture:Boolean(args.fixture), apply });
 if (apply && !args.businessId && !args.allowlist) throw new Error('--apply requires --businessId or --allowlist. --apply-all is not supported.');
 if (apply && args.fixture) throw new Error('--apply cannot be used with fixture data.');
 
