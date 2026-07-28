@@ -86,7 +86,7 @@ jobs:
       - run: npm run qa:simulator:full
 
   labels-e2e:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -94,8 +94,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: sudo apt-get update && sudo apt-get install -y poppler-utils
-      - run: npx --yes --package @playwright/cli playwright-cli install-browser webkit --with-deps
+      - run: npx --yes --package @playwright/cli playwright-cli install-browser webkit
       - run: npm run qa:labels:e2e
 
   web-safe-harness:
