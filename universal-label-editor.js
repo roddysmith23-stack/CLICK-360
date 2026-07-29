@@ -19,7 +19,7 @@
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
   function editorMarkup() {
-    return `<div class="ulcHeader"><div><h2>Lienzo universal de etiquetas</h2><p>Medidas reales en milimetros. El zoom nunca altera el plan fisico.</p></div><div class="ulcHeaderActions"><button type="button" class="btn" id="ulcUndo" title="Deshacer">Deshacer</button><button type="button" class="btn" id="ulcRedo" title="Rehacer">Rehacer</button><button type="button" class="btn" id="ulcAdvanced">Asistente avanzado</button><button type="button" class="closeBtn" data-close aria-label="Cerrar">x</button></div></div>
+    return `<div class="ulcHeader"><div><h2>Lienzo universal de etiquetas</h2><p>Medidas reales en milimetros. El zoom nunca altera el plan fisico.</p></div><div class="ulcHeaderActions"><button type="button" class="btn active" id="ulcSimpleMode" aria-current="true">Modo simple · Lienzo</button><button type="button" class="btn" id="ulcUndo" title="Deshacer">Deshacer</button><button type="button" class="btn" id="ulcRedo" title="Rehacer">Rehacer</button><button type="button" class="btn" id="ulcAdvanced">Modo experto · Asistente</button><button type="button" class="closeBtn" data-close aria-label="Cerrar">x</button></div></div>
       <div class="ulcWorkspace">
         <aside class="ulcPanel ulcLeft" aria-label="Papel y objetos">
           <h3>Papel</h3>
@@ -40,7 +40,7 @@
           <h3>Propiedades</h3><p id="ulcEmptySelection">Selecciona un objeto en el lienzo.</p><div id="ulcProperties" hidden><label>Objeto<select id="ulcObjectSelect"></select></label><div class="ulcFields two"><label>X mm<input id="ulcX" type="number" step="0.1"></label><label>Y mm<input id="ulcY" type="number" step="0.1"></label><label>Ancho mm<input id="ulcObjectWidth" type="number" min="2" step="0.1"></label><label>Alto mm<input id="ulcObjectHeight" type="number" min="2" step="0.1"></label></div><label>Rotacion <input id="ulcRotation" type="range" min="-180" max="180" step="1"><output id="ulcRotationValue"></output></label><label id="ulcTextField">Texto<input id="ulcText" maxlength="160"></label><div class="ulcObjectActions"><button type="button" id="ulcDuplicate">Duplicar</button><button type="button" id="ulcDelete">Eliminar</button><button type="button" id="ulcLock">Bloquear</button><button type="button" id="ulcCopy">Copiar</button><button type="button" id="ulcPaste">Pegar</button><button type="button" id="ulcFront">Al frente</button><button type="button" id="ulcBack">Al fondo</button></div><fieldset><legend>Alinear seleccion</legend><div class="ulcAlign"><button type="button" data-ulc-align="left">Izq.</button><button type="button" data-ulc-align="center">Centro</button><button type="button" data-ulc-align="right">Der.</button><button type="button" data-ulc-align="top">Arriba</button><button type="button" data-ulc-align="middle">Medio</button><button type="button" data-ulc-align="bottom">Abajo</button></div></fieldset></div>
         </aside>
       </div>
-      <footer class="ulcFooter"><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div><div class="ulcInline" id="ulcPrintActions"><button type="button" class="btn primary" id="ulcPrint">Imprimir o guardar como PDF</button><button type="button" class="btn" id="ulcPdf">Guardar PDF</button></div><div id="ulcPrintWarnings" class="ulcPrintWarnings" aria-live="polite"></div></footer>`;
+      <footer class="ulcFooter"><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div><div class="ulcInline" id="ulcPrintActions"><button type="button" class="btn primary" id="ulcPrint">Guardar PDF limpio</button><button type="button" class="btn" id="ulcPdf">Guardar PDF</button><button type="button" class="btn" id="ulcSystemPrint">Imprimir con navegador</button></div><div id="ulcPrintWarnings" class="ulcPrintWarnings" aria-live="polite"></div></footer>`;
   }
 
   function open(api) {
@@ -62,7 +62,7 @@
     function _setUlcPrintState(state) {
       _ulcPrintState = state;
       const busy = state !== 'idle' && state !== 'finished';
-      ['ulcPrint', 'ulcPdf'].forEach((id) => {
+      ['ulcPrint', 'ulcPdf', 'ulcSystemPrint'].forEach((id) => {
         const el = modalRoot?.querySelector(`#${id}`);
         if (el) el.disabled = busy;
       });
@@ -113,7 +113,7 @@
       if (templateListEl) {
         const templates = api.getTemplates?.() || [];
         templateListEl.innerHTML = templates.length
-          ? templates.map((tpl) => `<div class="ulcTemplateCard${tpl.id === activeTemplateId ? ' active' : ''}" data-ulc-tpl-id="${escape(tpl.id)}"><span class="ulcTemplateName">${escape(tpl.name)}</span><div class="ulcTemplateCardActions"><button type="button" class="ulcTplBtn primary" data-ulc-tpl-print="${escape(tpl.id)}" title="Imprimir esta plantilla">🖨</button><button type="button" class="ulcTplBtn" data-ulc-tpl-pdf="${escape(tpl.id)}" title="Guardar PDF">📄</button><button type="button" class="ulcTplBtn" data-ulc-tpl-edit="${escape(tpl.id)}" title="Editar">✏</button><button type="button" class="ulcTplBtn danger" data-ulc-tpl-delete="${escape(tpl.id)}" title="Eliminar">🗑</button></div></div>`).join('')
+          ? templates.map((tpl) => `<div class="ulcTemplateCard${tpl.id === activeTemplateId ? ' active' : ''}" data-ulc-tpl-id="${escape(tpl.id)}"><span class="ulcTemplateName">${escape(tpl.name)}</span><div class="ulcTemplateCardActions"><button type="button" class="ulcTplBtn primary" data-ulc-tpl-print="${escape(tpl.id)}" title="Generar PDF limpio">📄</button><button type="button" class="ulcTplBtn" data-ulc-tpl-pdf="${escape(tpl.id)}" title="Guardar PDF">📄</button><button type="button" class="ulcTplBtn" data-ulc-tpl-edit="${escape(tpl.id)}" title="Editar">✏</button><button type="button" class="ulcTplBtn danger" data-ulc-tpl-delete="${escape(tpl.id)}" title="Eliminar">🗑</button></div></div>`).join('')
           : '<p class="ulcNoTemplates">Sin plantillas. Guarda una para verla aqui.</p>';
       }
       const active = primary();
@@ -217,6 +217,7 @@
       if (event.target.closest('#ulcSaveTemplate')) { const existing = (api.getTemplates?.() || []).find((template) => template.id === activeTemplateId); const name = root.prompt('Nombre de la plantilla:', existing?.name || 'Etiqueta universal'); if (name?.trim()) { const saved = await api.saveTemplate?.(name.trim(), engine.normalizeDocument(current()), activeTemplateId); activeTemplateId = String(saved?.id || activeTemplateId); } render(); return; }
       if (event.target.closest('#ulcSaveProfile')) { const saved = await api.saveProfile?.(current(), activeProfileId, inputValue(modalRoot, 'ulcProfileName')); activeProfileId = String(saved?.id || activeProfileId); api.toast?.('Perfil provisional guardado en este negocio y dispositivo.', 'ok'); render(); return; }
       if (event.target.closest('#ulcCalibrationSheet')) { await api.printCalibration?.(current()); return; }
+      if (event.target.closest('#ulcSimpleMode')) { api.toast?.('Ya estás en Modo simple · Lienzo.', 'info'); return; }
       if (event.target.closest('#ulcAdvanced')) { api.closeModal?.(); api.openAdvanced?.(); return; }
       // --- Template card quick actions ---
       const tplPrint = event.target.closest('[data-ulc-tpl-print]');
@@ -229,7 +230,7 @@
         if (!template) { api.toast?.('Plantilla no encontrada.', 'err'); return; }
         // Load template document snapshot — does NOT change active editor state
         const tplDoc = engine.normalizeDocument(template.universalDocument || template);
-        await executePrint(tplDoc, tplPdf ? 'pdf' : 'system');
+        await executePrint(tplDoc, 'pdf');
         return;
       }
       if (tplEdit) {
@@ -240,12 +241,21 @@
       }
       if (tplDelete) {
         const tplId = tplDelete.dataset.ulcTplDelete;
-        if (tplId) { await api.deleteTemplate?.(tplId); if (activeTemplateId === tplId) activeTemplateId = ''; render(); }
+        const template = (api.getTemplates?.() || []).find((t) => t.id === tplId);
+        const confirmed = tplId && root.confirm?.(`¿Eliminar la plantilla "${template?.name || 'sin nombre'}"? Esta acción solo borra el diseño guardado.`) !== false;
+        if (confirmed) {
+          const deleted = await api.deleteTemplate?.(tplId);
+          if (deleted !== false) {
+            if (activeTemplateId === tplId) activeTemplateId = '';
+            api.toast?.('Plantilla eliminada.', 'ok');
+          }
+          render();
+        }
         return;
       }
       // --- Print / PDF buttons with state machine guard ---
-      if (event.target.closest('#ulcPrint') || event.target.closest('#ulcPdf')) {
-        const mode = event.target.closest('#ulcPdf') ? 'pdf' : 'system';
+      if (event.target.closest('#ulcPrint') || event.target.closest('#ulcPdf') || event.target.closest('#ulcSystemPrint')) {
+        const mode = event.target.closest('#ulcSystemPrint') ? 'system' : 'pdf';
         await executePrint(engine.normalizeDocument(current()), mode);
         return;
       }

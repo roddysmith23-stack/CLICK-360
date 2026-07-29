@@ -41,6 +41,9 @@ async function assertResponsiveLayout(page, browserName) {
     const layout = await page.evaluate(() => {
       const footerBox = document.querySelector('.ulcFooter')?.getBoundingClientRect();
       const actionBox = document.querySelector('#ulcPrint')?.getBoundingClientRect();
+      const simpleBox = document.querySelector('#ulcSimpleMode')?.getBoundingClientRect();
+      const advancedBox = document.querySelector('#ulcAdvanced')?.getBoundingClientRect();
+      const previewBox = document.querySelector('.ulcCanvasRegion, .labelPreviewDisclosure')?.getBoundingClientRect();
       return {
         hasOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         footerVisible: !!footerBox && footerBox.top >= 0 && footerBox.bottom <= innerHeight + 1,
@@ -48,10 +51,28 @@ async function assertResponsiveLayout(page, browserName) {
           && actionBox.top >= 0
           && actionBox.bottom <= innerHeight + 1
           && actionBox.left >= 0
-          && actionBox.right <= innerWidth + 1
+          && actionBox.right <= innerWidth + 1,
+        simpleVisible: !!simpleBox
+          && simpleBox.width > 0
+          && simpleBox.height > 0
+          && simpleBox.left >= 0
+          && simpleBox.right <= innerWidth + 1,
+        advancedVisible: !!advancedBox
+          && advancedBox.width > 0
+          && advancedBox.height > 0
+          && advancedBox.left >= 0
+          && advancedBox.right <= innerWidth + 1,
+        previewVisible: !!previewBox
+          && previewBox.width > 0
+          && previewBox.height > 0
+          && previewBox.left >= 0
+          && previewBox.right <= innerWidth + 1
       };
     });
     if (layout.hasOverflow) throw new Error(`${browserName} overflow at ${width}px`);
+    if (!layout.previewVisible) throw new Error(`${browserName} label preview is not visible at ${width}px`);
+    if (width <= 720 && !layout.simpleVisible) throw new Error(`${browserName} simple mode button is hidden at ${width}px`);
+    if (width <= 720 && !layout.advancedVisible) throw new Error(`${browserName} advanced mode button is hidden at ${width}px`);
     if (!layout.footerVisible || !layout.actionVisible) {
       throw new Error(`${browserName} primary print action is not visible at ${width}px`);
     }
@@ -139,7 +160,7 @@ async function runChromium() {
     await page.waitForSelector('#click360PrintPortal[data-ready="true"]');
 
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());
-    if (state.print?.exactQuantity !== 3 || state.print?.pages !== 2) {
+    if (state.print?.provider !== 'pdf' || state.print?.exactQuantity !== 3 || state.print?.pages !== 2) {
       throw new Error(`Chromium physical plan mismatch: ${JSON.stringify(state.print)}`);
     }
     if (state.print.realPdfBytes < 2000 || state.print.nonWhitePixels < 1 || state.print.qrPixels < 1) {
@@ -148,6 +169,14 @@ async function runChromium() {
     if (state.errors.length || errors.length) {
       throw new Error(`Chromium unexpected errors: ${JSON.stringify([...errors, ...state.errors])}`);
     }
+
+    await page.locator('#ulcSystemPrint').click();
+    await page.waitForFunction(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state().print?.provider === 'system');
+    await page.locator('[data-ulc-tpl-delete]').first().click();
+    await page.waitForFunction(() => {
+      const state = window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state();
+      return state.templates.length === 0 && state.deletedTemplates === 1;
+    });
 
     await mkdir(output, { recursive: true });
     await page.screenshot({ path: path.join(output, 'universal-label-e2e-chromium.png'), fullPage: true });
@@ -176,6 +205,8 @@ async function runWebKit() {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const errors = collectUnexpectedErrors(page);
     await page.goto(url, { waitUntil: 'networkidle' });
+    if (!(await page.locator('#ulcSimpleMode').isVisible())) throw new Error('WebKit mobile simple mode button is hidden.');
+    if (!(await page.locator('#ulcAdvanced').isVisible())) throw new Error('WebKit mobile advanced mode button is hidden.');
     const box = await page.locator('[data-ulc-object]').first().boundingBox();
     if (!box) throw new Error('Touch object is not visible.');
     const before = Number(await page.locator('#ulcX').inputValue());
@@ -200,7 +231,7 @@ async function runWebKit() {
     await page.locator('#ulcPrint').click();
     await page.waitForSelector('#click360PrintPortal[data-ready="true"]');
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());
-    if (state.print?.exactQuantity !== 2 || state.print?.pages !== 1
+    if (state.print?.provider !== 'pdf' || state.print?.exactQuantity !== 2 || state.print?.pages !== 1
       || state.print?.nonWhitePixels < 1 || state.print?.qrPixels < 1) {
       throw new Error(`WebKit physical plan mismatch: ${JSON.stringify(state.print)}`);
     }

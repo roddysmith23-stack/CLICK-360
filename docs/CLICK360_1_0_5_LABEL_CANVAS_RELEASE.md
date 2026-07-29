@@ -2,11 +2,11 @@
 
 ## Identity
 
-- Branch: `release/1.0.5-label-canvas-production`
+- Branch: `hotfix/1.0.5-label-mobile-layout-print-clean`
 - Version: `1.0.5`
-- Asset and Service Worker cache: `commercial-1-0-5-r4`
+- Asset and Service Worker cache: `commercial-1-0-5-r5`
 - Base: `main`
-- Status: Draft, not merged and not deployed
+- Status: Hosting-only frontend hotfix candidate
 
 ## Included
 
@@ -18,6 +18,13 @@
   lock, copy, paste, duplicate, undo and redo.
 - Exact quantity, starting slot, paper profiles and per-device calibration.
 - Responsive containment and accessible controls for mobile and desktop.
+- Mobile controls for **Modo simple - Lienzo** and **Modo experto -
+  Asistente avanzado** remain visible inside the canvas modal.
+- Template cards delete saved QR templates through the guarded tenant save
+  path and reload the list immediately after success.
+- Clean PDF is the default output for canvas, wizard and template quick
+  actions; browser printing remains an explicit separate option.
+- The QR preview panel remains visible while scrolling label settings.
 - Release identity, PWA manifest and Service Worker cache update.
 
 ## Excluded
@@ -66,10 +73,14 @@ identity. Admin and Functions jobs must be skipped by path scope.
 - Firestore Rules emulator: PASS.
 - Simulator quick: PASS, 240 actions and 20 reports.
 - Simulator full: PASS, 2,600 actions and 100 reports.
-- Universal Canvas Chromium mouse and WebKit touch E2E: PASS.
-- Responsive Chromium, WebKit and Firefox: PASS, 320 through 1920 px.
+- Universal Canvas browser E2E: run before release; this environment may
+  report a browser-launch failure before app code executes.
+- Responsive Chromium, WebKit and Firefox: validated by E2E when browser launch
+  is available; static containment checks cover the hotfix contract.
 - PDF: PASS, two pages with nonblank raster and QR region.
-- Production dependency audit: PASS, 0 vulnerabilities.
+- Production dependency audit: BLOCKED in this local run by DNS
+  `ENOTFOUND registry.npmjs.org`; rerun when npm registry resolution is
+  available.
 - `dist` scan for `firebase-admin`, `google-gax` and private keys: zero matches.
 
 ## Rollback

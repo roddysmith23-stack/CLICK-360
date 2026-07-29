@@ -15,9 +15,13 @@
 
 - Mobile label editor keeps quantity and print actions visible.
 - Buttons, headings, arrows, and long labels remain inside their containers.
+- Label templates now default to clean PDF output, preserve the saved universal
+  QR layout and delete through the guarded tenant save path.
+- The universal editor keeps the preview visible while scrolling settings and
+  exposes Simple Canvas / Advanced Assistant controls on mobile.
 - Logo, profile, navigation, and modal controls have improved semantics and
   touch targets.
-- Cache identity is now `commercial-1-0-5-r4`.
+- Cache identity is now `commercial-1-0-5-r5`.
 
 ### Security
 

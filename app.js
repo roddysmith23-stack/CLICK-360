@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r4';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r5';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -321,7 +321,7 @@
     _printDialogState = state;
     // Disable/enable primary print buttons while printing is active
     if (typeof document !== 'undefined') {
-      ['printOne', 'savePdfBtn', 'ulcPrint', 'ulcPdf'].forEach(id => {
+      ['printOne', 'savePdfBtn', 'browserPrintBtn', 'ulcPrint', 'ulcPdf', 'ulcSystemPrint'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = (state !== 'idle' && state !== 'finished');
       });
@@ -1974,7 +1974,7 @@ function parseMoney(value) {
                 </div>
                 ${t.social ? `<div style="font-size:12px; color:#ccc;">📱 ${escapeHtml(t.social)}</div>` : ''}
                 ${t.address ? `<div style="font-size:12px; color:#ccc; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">📍 ${escapeHtml(t.address)}</div>` : ''}
-                <div class="templateActions"><button class="btn primary small" data-print-tpl="${escapeHtml(t.id)}" title="Imprimir esta plantilla">🖨 Imprimir</button><button class="btn small" data-pdf-tpl="${escapeHtml(t.id)}" title="Guardar PDF de esta plantilla">📄 PDF</button><button class="btn silver" data-edit-tpl="${escapeHtml(t.id)}">✏ Editar</button><button class="btn silver" data-rename-tpl="${escapeHtml(t.id)}">Renombrar</button><button class="btn silver" data-duplicate-tpl="${escapeHtml(t.id)}">Duplicar</button><button class="btn silver" data-default-tpl="${escapeHtml(t.id)}">Predeterminada</button><button class="iconBtn danger small-del-btn" data-del-tpl="${escapeHtml(t.id)}" title="Eliminar plantilla" aria-label="Eliminar plantilla">&#128465;</button></div>
+                <div class="templateActions"><button class="btn primary small" data-print-tpl="${escapeHtml(t.id)}" title="Generar PDF limpio de esta plantilla">📄 PDF limpio</button><button class="btn small" data-pdf-tpl="${escapeHtml(t.id)}" title="Guardar PDF de esta plantilla">📄 PDF</button><button class="btn silver" data-edit-tpl="${escapeHtml(t.id)}">✏ Editar</button><button class="btn silver" data-rename-tpl="${escapeHtml(t.id)}">Renombrar</button><button class="btn silver" data-duplicate-tpl="${escapeHtml(t.id)}">Duplicar</button><button class="btn silver" data-default-tpl="${escapeHtml(t.id)}">Predeterminada</button><button class="iconBtn danger small-del-btn" data-del-tpl="${escapeHtml(t.id)}" title="Eliminar plantilla" aria-label="Eliminar plantilla">&#128465;</button></div>
               </div>
             `).join('')}
           </div>
@@ -3375,7 +3375,7 @@ function parseMoney(value) {
 	      if (typeof _printDialogState !== 'undefined' && _printDialogState !== 'idle') {
 	        return toast('Ya hay una impresión activa. Espera a que termine.', 'warn');
 	      }
-	      runTemplateOutput(button.dataset.printTpl, 'system');
+	      runTemplateOutput(button.dataset.printTpl, 'pdf');
 	    });
 
     $$('[data-pdf-tpl]').forEach((button) => button.onclick = async () => {
@@ -3422,14 +3422,21 @@ function parseMoney(value) {
           if (confirm('¿Estás seguro de eliminar esta plantilla de etiquetas?')) {
              const tplId = btn.dataset.delTpl;
              state.settings ||= {};
+             state.settings.labelTemplates ||= [];
              const businessId = currentBusiness().id;
-             state.settings.labelTemplates = (state.settings.labelTemplates || []).filter((template) =>
-               template.id !== tplId || template.businessId !== businessId);
+             const previous = [...state.settings.labelTemplates];
+             state.settings.labelTemplates = previous.filter((template) =>
+               template.id !== tplId || !(
+                 template.businessId === businessId
+                 || (!template.businessId && state.settings?.legacyDataBusinessId === businessId)
+               ));
+             if (state.settings.labelTemplates.length === previous.length) return toast('Plantilla no encontrada.', 'err');
              const remainingTemplates = labelTemplatesForBiz();
              if (remainingTemplates.length && !remainingTemplates.some((template) => template.isDefault)) remainingTemplates[0].isDefault = true;
-             if(!save()) return;
+             addAudit('label_template_deleted', { templateId: tplId, businessId });
+             if(!save()) { state.settings.labelTemplates = previous; return toast('No se pudo eliminar la plantilla.', 'err'); }
              renderApp('inventory');
-             toast('Plantilla eliminada');
+             toast('Plantilla eliminada', 'ok');
           }
        };
     });
@@ -5761,7 +5768,7 @@ function parseMoney(value) {
 	      <div class="labelCustomizerLayout">
 		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Lienzo visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><div class="labelCanvasActions" role="toolbar" aria-label="Acciones del lienzo"><button type="button" class="btn" id="labelCanvasUndo" title="Deshacer">${icon('undo-2')}</button><button type="button" class="btn" id="labelCanvasRedo" title="Rehacer">${icon('redo-2')}</button><button type="button" class="btn" id="labelCanvasDuplicate">${icon('copy')} Duplicar</button><button type="button" class="btn" id="labelCanvasRotate">${icon('rotate-cw')} Rotar</button><button type="button" class="btn" id="labelCanvasAlign">${icon('align-center')} Alinear</button></div><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
-		          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="system" checked><span>${icon('printer')}<b>Impresora instalada</b><small>CLICK abrirá el diálogo de Chrome o Windows.</small></span></label><label><input type="radio" name="smartPrintOutput" value="pdf"><span>${icon('file-down')}<b>Guardar como PDF</b><small>Genera un archivo con la misma geometría.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
+		          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="pdf" checked><span>${icon('file-down')}<b>PDF limpio recomendado</b><small>No agrega fecha, hora ni URL. Luego puedes imprimir el PDF.</small></span></label><label><input type="radio" name="smartPrintOutput" value="system"><span>${icon('printer')}<b>Imprimir con navegador</b><small>Abre el diálogo del sistema; desactiva encabezado y pie si aparecen.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
 		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
 		          <div class="field" data-smart-step="1"><label for="applyTemplateSelect">Diseño guardado</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
 		          <section class="smartPrintPanel" data-smart-step="2"><h3>¿Qué tipo de papel tienes?</h3><div class="smartMediaGrid"><button type="button" data-smart-paper="thermal-60x40">${icon('rectangle-horizontal')}<b>Rollo · 1 columna</b></button><button type="button" data-smart-paper="roll-2-custom">${icon('columns-2')}<b>Rollo · 2 columnas</b></button><button type="button" data-smart-paper="roll-3-custom">${icon('columns-3')}<b>Rollo · 3 columnas</b></button><button type="button" data-smart-paper="sheet-2">${icon('file-spreadsheet')}<b>Hoja con stickers</b></button><button type="button" data-smart-paper="round-50">${icon('circle')}<b>Redondas</b></button><button type="button" data-smart-paper="square-50">${icon('square')}<b>Cuadradas</b></button><button type="button" data-smart-paper="ticket-80">${icon('receipt')}<b>Ticket térmico</b></button><button type="button" data-smart-paper="continuous">${icon('scroll-text')}<b>Papel continuo</b></button><button type="button" data-smart-paper="unsure">${icon('circle-help')}<b>No estoy seguro</b></button><button type="button" data-smart-paper="custom">${icon('ruler')}<b>Personalizado</b></button></div><p id="smartPaperHint" class="wizardHelp">Elige el dibujo que más se parece a tu material.</p></section>
@@ -5785,7 +5792,7 @@ function parseMoney(value) {
 	          <section class="smartPrintPanel" data-smart-step="6"><h3>¿Desde dónde quieres empezar?</h3><div class="formGrid"><div class="field"><label>Primera casilla</label><input id="labelStartSlot" type="number" min="1" max="120" step="1" value="1"></div><div class="field"><label>Acceso rápido</label><select id="labelStartPreset"><option value="first">Primera disponible</option><option value="left">Columna izquierda</option><option value="right">Columna derecha</option><option value="custom">Casilla específica</option></select></div></div><p class="wizardHelp">Toca casillas para marcarlas como ya usadas. Se mostrarán en gris y CLICK no imprimirá sobre ellas.</p><div id="labelStartGrid" class="labelStartGrid" aria-label="Selector de casilla inicial"></div></section>
 	          <section class="labelSheetPreviewPanel" data-smart-step="7"><div><h3>Así quedará tu papel completo</h3><p id="labelValidationSummary" class="fieldHint"></p><p id="labelPhysicalSummary" class="fieldHint"></p></div><div id="labelSheetPreview" class="labelSheetPreview" aria-label="Distribución física de etiquetas"></div></section>
 	          <section class="smartPrintPanel smartPreflight" data-smart-step="8"><h3>Revisión antes de imprimir</h3><div id="labelPreflightList" class="smartPreflightList" role="status" aria-live="polite"></div><div class="labelPrimaryActions"><button type="button" class="btn" id="labelAutoCorrect">${icon('wand-sparkles')} Corregir automáticamente</button><button type="button" class="btn" id="labelUseCompact">${icon('layout-template')} Usar diseño compacto</button><button type="button" class="btn" id="copyPrintDiagnostic">${icon('clipboard-copy')} Copiar diagnóstico</button></div></section>
-	          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><div class="systemPrintChecklist"><b>Revisa en Chrome, Windows o el driver:</b><ul><li>Copias: 1</li><li>Escala: 100 % o Tamaño real</li><li>Páginas por hoja: 1</li><li>Márgenes: ninguno</li><li>Encabezados y pies: desactivados</li><li>Ajustar a página: desactivado</li></ul><p>Para rollos: Térmica directa · Etiquetas con espacios/Gap · DPI y tamaño personalizado correctos.</p></div><div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('printer')} Imprimir</button><button type="button" class="btn" id="savePdfBtn">${icon('file-down')} Guardar PDF</button><button type="button" class="btn" id="savePrintProfileBtn">${icon('save')} Guardar perfil</button><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Imprimir prueba de alineación</button><button type="button" class="btn" id="openCalibrationBtn">${icon('crosshair')} Calibrar X/Y</button></div><section id="labelCalibrationPanel" class="labelCalibrationPanel" hidden><h4>Calibración guiada X/Y</h4><p>Imprime la cuadrícula y toca el número que quedó mejor centrado. CLICK guardará el ajuste solo en este dispositivo y negocio.</p><div class="formGrid"><div class="field"><label>Ajuste X actual (mm)</label><input id="labelXOffset" value="0" readonly></div><div class="field"><label>Ajuste Y actual (mm)</label><input id="labelYOffsetMm" value="0" readonly></div></div><div id="labelCalibrationGrid" class="labelCalibrationGrid" aria-label="Casilla centrada"></div><p id="labelCalibrationStatus" class="fieldHint">Estado provisional hasta comprobar una prueba física.</p><div class="labelPrimaryActions"><button type="button" class="btn" id="resetCalibrationBtn">${icon('rotate-ccw')} Restablecer calibración</button><button type="button" class="btn" id="repeatCalibrationBtn">${icon('repeat-2')} Repetir prueba</button></div></section><div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="duplicatePrintProfileBtn">${icon('copy')} Duplicar perfil</button><button type="button" class="btn danger" id="deletePrintProfileBtn">${icon('trash-2')} Eliminar perfil</button></div></section>
+	          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><div class="systemPrintChecklist"><b>Salida recomendada:</b><p>Usa PDF limpio para guardar o imprimir sin fecha, hora, título ni URL del navegador.</p><details><summary>Usar diálogo del navegador</summary><ul><li>Copias: 1</li><li>Escala: 100 % o Tamaño real</li><li>Páginas por hoja: 1</li><li>Márgenes: ninguno</li><li>Encabezados y pies: desactivados</li><li>Ajustar a página: desactivado</li></ul><p>Para rollos: Térmica directa · Etiquetas con espacios/Gap · DPI y tamaño personalizado correctos.</p></details></div><div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('file-down')} Imprimir o guardar PDF limpio</button><button type="button" class="btn" id="savePdfBtn">${icon('file-down')} Guardar PDF</button><button type="button" class="btn" id="browserPrintBtn">${icon('printer')} Imprimir con navegador</button><button type="button" class="btn" id="savePrintProfileBtn">${icon('save')} Guardar perfil</button><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Imprimir prueba de alineación</button><button type="button" class="btn" id="openCalibrationBtn">${icon('crosshair')} Calibrar X/Y</button></div><section id="labelCalibrationPanel" class="labelCalibrationPanel" hidden><h4>Calibración guiada X/Y</h4><p>Imprime la cuadrícula y toca el número que quedó mejor centrado. CLICK guardará el ajuste solo en este dispositivo y negocio.</p><div class="formGrid"><div class="field"><label>Ajuste X actual (mm)</label><input id="labelXOffset" value="0" readonly></div><div class="field"><label>Ajuste Y actual (mm)</label><input id="labelYOffsetMm" value="0" readonly></div></div><div id="labelCalibrationGrid" class="labelCalibrationGrid" aria-label="Casilla centrada"></div><p id="labelCalibrationStatus" class="fieldHint">Estado provisional hasta comprobar una prueba física.</p><div class="labelPrimaryActions"><button type="button" class="btn" id="resetCalibrationBtn">${icon('rotate-ccw')} Restablecer calibración</button><button type="button" class="btn" id="repeatCalibrationBtn">${icon('repeat-2')} Repetir prueba</button></div></section><div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="duplicatePrintProfileBtn">${icon('copy')} Duplicar perfil</button><button type="button" class="btn danger" id="deletePrintProfileBtn">${icon('trash-2')} Eliminar perfil</button></div></section>
 	          <div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar diseño</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nuevo</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
 	          <details class="settingsDisclosure expertOnly"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
 	        </div>
@@ -5799,7 +5806,7 @@ function parseMoney(value) {
 	    let runPrintJob = async () => null;
 	    const editorBusinessIsActive = () => currentBusiness()?.id === editorBusinessId;
     const smartStepHelp = {
-      1:'CLICK abre el diálogo del navegador; la impresora se elige allí.',
+      1:'PDF limpio no agrega fecha, hora ni URL. Usa navegador solo si necesitas el diálogo del sistema.',
       2:'Cuenta cuántos stickers aparecen lado a lado en una fila.',
       3:'Mide por separado un sticker y el ancho total del soporte.',
       4:'La URL queda oculta porque el QR ya contiene el enlace.',
@@ -5807,13 +5814,13 @@ function parseMoney(value) {
       6:'Marca las casillas ya usadas para no desperdiciar material.',
       7:'La vista usa la misma geometría que la salida imprimible.',
       8:'Los errores rojos deben corregirse; las advertencias explican el driver.',
-      9:'Usa escala 100 %, márgenes ninguno y encabezados desactivados.'
+      9:'El botón principal genera un PDF limpio. El botón de navegador puede requerir desactivar encabezados y pies.'
     };
     const showSmartPrintStep = (requestedStep) => {
       smartPrintStep = Math.max(1, Math.min(9, Number(requestedStep) || 1));
       const simple = labelEditorModal.dataset.labelMode === 'simple';
       $$('[data-smart-step]', labelEditorModal).forEach((panel) => {
-        panel.hidden = simple && Number(panel.dataset.smartStep) !== smartPrintStep;
+        panel.hidden = simple && Number(panel.dataset.smartStep) !== smartPrintStep && !panel.classList.contains('labelPreviewDisclosure');
       });
       $$('[data-smart-step-nav]', labelEditorModal).forEach((item) => {
         const step = Number(item.dataset.smartStepNav);
@@ -5825,9 +5832,9 @@ function parseMoney(value) {
       $('#smartPrintProgress').value = smartPrintStep;
       $('#smartPrintBack').disabled = smartPrintStep === 1;
 	      $('#smartPrintNext').hidden = !simple;
-	      const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'system';
+	      const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'pdf';
 	      $('#smartPrintNext').innerHTML = smartPrintStep === 9
-	        ? `${outputMode === 'pdf' ? 'Guardar PDF' : 'Imprimir o guardar PDF'} ${icon(outputMode === 'pdf' ? 'file-down' : 'printer')}`
+	        ? `${outputMode === 'system' ? 'Imprimir con navegador' : 'Imprimir o guardar PDF limpio'} ${icon(outputMode === 'system' ? 'printer' : 'file-down')}`
 	        : `Continuar ${icon('arrow-right')}`;
       labelEditorModal.querySelector(`[data-smart-step="${smartPrintStep}"]`)?.scrollIntoView({ block:'nearest' });
     };
@@ -5853,8 +5860,8 @@ function parseMoney(value) {
         return toast('Corrige los errores rojos antes de imprimir.', 'err');
       }
 	      if (smartPrintStep === 9) {
-	        const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'system';
-	        return runPrintJob(outputMode === 'pdf' ? 'pdf' : '');
+	        const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'pdf';
+	        return runPrintJob(outputMode === 'system' ? 'system' : 'pdf');
 	      }
 	      showSmartPrintStep(smartPrintStep + 1);
 	    };
@@ -5941,7 +5948,7 @@ function parseMoney(value) {
 	          yOffsetMm:Math.max(-10, Math.min(10, Number($('#labelYOffsetMm')?.value || 0))),
           measurementsConfirmed: $('#labelMeasurementsConfirmed')?.checked === true,
           profileStatus: activePrintProfileId ? (labelProfilesForBiz(editorBusinessId).find(profile => profile.id === activePrintProfileId)?.status || 'provisional') : 'provisional',
-          outputMode: $$('input[name="smartPrintOutput"]', labelEditorModal).find(input => input.checked)?.value || 'system',
+          outputMode: $$('input[name="smartPrintOutput"]', labelEditorModal).find(input => input.checked)?.value || 'pdf',
           startSlot: Math.max(1, Number($('#labelStartSlot')?.value || 1)),
           usedSlots: [...usedPrintSlots],
           showUrl: $('#labelShowUrl')?.checked === true,
@@ -6084,6 +6091,7 @@ function parseMoney(value) {
       $('#labelPreflightList').innerHTML = checks.map((check) => `<div class="${check.status}"><span>${check.status === 'pass' ? '✓' : check.status === 'error' ? '×' : '!'}</span><p>${escapeHtml(check.message || '')}</p></div>`).join('');
       $('#printOne').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
       $('#savePdfBtn').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
+      $('#browserPrintBtn').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
       return latestSmartPreflight;
     };
 
@@ -6506,17 +6514,18 @@ function parseMoney(value) {
 	      const current = labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	      if (!current || !confirm(`¿Eliminar la plantilla "${current.name}"?`)) return;
 	      const businessId = editorBusinessId;
-	      state.settings.labelTemplates = state.settings.labelTemplates.filter((template) =>
+	      const previous = [...(state.settings.labelTemplates || [])];
+	      state.settings.labelTemplates = previous.filter((template) =>
 	        template.id !== activeTemplateId || !(
 	          template.businessId === businessId
 	          || (!template.businessId && state.settings?.legacyDataBusinessId === businessId)
 	        ));
 	      addAudit('label_template_deleted', { templateId: activeTemplateId, name: current.name });
 	      activeTemplateId = '';
-	      if (!save()) return;
+	      if (!save()) { state.settings.labelTemplates = previous; activeTemplateId = current.id; return toast('No se pudo eliminar la plantilla.', 'err'); }
 	      refreshTemplateSelect();
 	      refreshInventoryTemplateSection();
-	      toast('Plantilla eliminada');
+	      toast('Plantilla eliminada', 'ok');
 	    };
 
 	    const refreshPrintProfileSelect = () => {
@@ -6895,11 +6904,12 @@ function parseMoney(value) {
 		         const selected = labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
 		         if (selected?.status !== 'certified') return toast('Selecciona un perfil certificado por CLICK.', 'err');
 		       }
-		       const outputProvider = providerId || (options.outputMode === 'pdf' ? 'pdf' : 'system');
+		       const outputProvider = providerId || (options.outputMode === 'system' || options.outputMode === 'certified' ? 'system' : 'pdf');
 		       return printLabels([{ product, copies:preflight.quantity.count }], options, outputProvider);
 		    };
-		    $('#printOne').onclick = () => runPrintJob();
+		    $('#printOne').onclick = () => runPrintJob('pdf');
 		    $('#savePdfBtn').onclick = () => runPrintJob('pdf');
+		    $('#browserPrintBtn').onclick = () => runPrintJob('system');
 
         if (options.directPrint) setTimeout(() => runPrintJob(), 150);
         if (options.directPdf) setTimeout(() => runPrintJob('pdf'), 150);
@@ -7137,10 +7147,15 @@ function parseMoney(value) {
         refreshInventoryTemplateSection(); toast('Plantilla del lienzo guardada.', 'ok'); return template;
       },
       deleteTemplate:async (templateId) => {
-        if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');
-        state.settings.labelTemplates = (state.settings.labelTemplates || []).filter((template) => !(template.id === templateId && template.businessId === businessId));
-        if (!save()) return toast('No se pudo eliminar la plantilla.', 'err');
-        refreshInventoryTemplateSection(); toast('Plantilla eliminada.');
+        if (!editorBusinessIsActive()) { toast('El negocio activo cambió. Reabre el lienzo.', 'err'); return false; }
+        state.settings ||= {}; state.settings.labelTemplates ||= [];
+        const previous = [...state.settings.labelTemplates];
+        const beforeCount = previous.length;
+        state.settings.labelTemplates = previous.filter((template) => !(template.id === templateId && template.businessId === businessId));
+        if (state.settings.labelTemplates.length === beforeCount) { toast('Plantilla no encontrada.', 'err'); return false; }
+        addAudit('universal_label_template_deleted', { templateId, businessId, renderer:'universal-mm-v2' });
+        if (!save()) { state.settings.labelTemplates = previous; toast('No se pudo eliminar la plantilla.', 'err'); return false; }
+        refreshInventoryTemplateSection(); toast('Plantilla eliminada.', 'ok'); return true;
       },
       saveProfile:async (universalDocument, profileId = '', profileName = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');

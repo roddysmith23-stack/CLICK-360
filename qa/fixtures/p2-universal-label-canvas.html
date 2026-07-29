@@ -29,8 +29,10 @@
       const messages = [];
       const errors = [];
       window.prompt = () => 'Plantilla QA universal';
+      window.confirm = () => true;
       let printResult = null;
       let sequence = 0;
+      let deletedTemplates = 0;
       const clone = (value) => JSON.parse(JSON.stringify(value));
       const showModal = (html) => {
         document.getElementById('modalRoot').innerHTML = `<div class="modalOverlay show"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
@@ -118,7 +120,7 @@
       window.addEventListener('unhandledrejection', (event) => errors.push(String(event.reason?.message || event.reason || 'rejection')));
       window.__CLICK360_P2_UNIVERSAL_LABEL_QA__ = {
         product: clone(product),
-        state: () => ({ messages:clone(messages), errors:clone(errors), templates:clone(templates), profiles:clone(profiles), print:clone(printResult), overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth }),
+        state: () => ({ messages:clone(messages), errors:clone(errors), templates:clone(templates), profiles:clone(profiles), deletedTemplates, print:clone(printResult), overflow:document.documentElement.scrollWidth > document.documentElement.clientWidth }),
         plan: () => printResult?.fingerprint || '',
         initial: clone(initial)
       };
@@ -138,7 +140,7 @@
           if (index >= 0) templates[index] = saved; else templates.push(saved);
           return saved;
         },
-        deleteTemplate:async (id) => { const index = templates.findIndex((item) => item.id === id); if (index >= 0) templates.splice(index, 1); },
+        deleteTemplate:async (id) => { const index = templates.findIndex((item) => item.id === id); if (index < 0) return false; templates.splice(index, 1); deletedTemplates += 1; return true; },
         saveProfile:async (documentModel, id='', name='') => {
           const saved = { id:id || `profile-${++sequence}`, name:String(name || 'Perfil QA provisional'), universalPaper:canvasEngine.normalizeDocument(documentModel).paper };
           const index = profiles.findIndex((item) => item.id === saved.id);
