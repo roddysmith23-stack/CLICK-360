@@ -24,7 +24,7 @@
   covering cards on mobile or desktop.
 - Logo, profile, navigation, and modal controls have improved semantics and
   touch targets.
-- Cache identity is now `commercial-1-0-5-r6`.
+- Cache identity is now `commercial-1-0-5-r7`.
 
 ### Security
 

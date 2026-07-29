@@ -10,17 +10,19 @@
 </head>
 <body>
   <main class="modalOverlay show">
-    <section class="modal labelEditorModal" role="dialog" aria-modal="true" aria-labelledby="fixture-title" data-label-mode="simple">
+    <section class="modal labelEditorModal" role="dialog" aria-modal="true" aria-labelledby="fixture-title" data-label-mode="simple" data-smart-step-current="7">
       <div class="modalHeader"><div><h2 id="fixture-title">Asistente de impresión</h2><p class="fieldHint">Fixture sintético sin datos reales.</p></div><button class="closeBtn" aria-label="Cerrar">×</button></div>
-      <div class="labelModeSwitch"><button class="active">Modo simple</button><button>Modo experto</button></div>
-      <div class="smartPrintProgress"><span>Paso 7 de 9</span><progress max="9" value="7"></progress></div>
-      <ol class="labelGuideSteps smartPrintSteps">
-        <li class="complete"><b>1</b><span>Salida</span></li><li class="complete"><b>2</b><span>Papel</span></li><li class="complete"><b>3</b><span>Medidas</span></li><li class="complete"><b>4</b><span>Contenido</span></li><li class="complete"><b>5</b><span>Cantidad</span></li><li class="complete"><b>6</b><span>Inicio</span></li><li class="active"><b>7</b><span>Vista</span></li><li><b>8</b><span>Revisión</span></li><li><b>9</b><span>Imprimir</span></li>
-      </ol>
+      <div class="labelWizardRail" aria-label="Progreso del asistente de etiquetas">
+        <div class="labelModeSwitch"><button class="active">Modo simple · Lienzo</button><button>Modo experto · Asistente avanzado</button></div>
+        <div class="smartPrintProgress"><span>Paso 7 de 9</span><progress max="9" value="7"></progress></div>
+        <ol class="labelGuideSteps smartPrintSteps">
+          <li class="complete"><b>1</b><span>Salida</span></li><li class="complete"><b>2</b><span>Papel</span></li><li class="complete"><b>3</b><span>Medidas</span></li><li class="complete"><b>4</b><span>Contenido</span></li><li class="complete"><b>5</b><span>Cantidad</span></li><li class="complete"><b>6</b><span>Inicio</span></li><li class="active"><b>7</b><span>Vista</span></li><li><b>8</b><span>Revisión</span></li><li><b>9</b><span>Imprimir</span></li>
+        </ol>
+      </div>
       <div class="labelCustomizerLayout">
-        <details class="labelPreviewDisclosure" open><summary>Vista previa del sticker</summary><div class="labelPreviewSticky"><canvas width="260" height="173" aria-label="Etiqueta sintética"></canvas><button class="btn">Ver grande</button></div></details>
+        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="fixtureLabelCanvas" width="260" height="173" aria-label="Etiqueta sintética"></canvas><div class="labelCanvasActions"><button class="btn">Deshacer</button><button class="btn">Rehacer</button><button class="btn">Duplicar</button><button class="btn">Rotar</button></div><button class="btn" id="labelPreviewLarge">Ver grande</button></div></details>
         <div class="labelControls">
-          <section class="labelSheetPreviewPanel"><div><h3>Así quedará tu papel completo</h3><p class="fieldHint">7 etiquetas · 3 columnas · 1 hoja.</p><p class="fieldHint">60 mm × 35 mm por sticker · A4.</p></div>
+          <section class="labelSheetPreviewPanel" data-smart-step="7"><div><h3>Así quedará tu papel completo</h3><p class="fieldHint">7 etiquetas · 3 columnas · 1 hoja.</p><p class="fieldHint">60 mm × 35 mm por sticker · A4.</p></div>
             <div class="labelSheetPreview">
               <section class="labelPreviewPage" style="--media-aspect:.707"><header>Hoja 1</header><div class="labelPreviewCells">
                 <span class="filled start" style="left:3.33%;top:2.36%;width:28.57%;height:11.78%">1</span>
@@ -33,7 +35,8 @@
               </div></section>
             </div>
           </section>
-          <section class="smartPrintPanel smartPreflight"><h3>Revisión antes de imprimir</h3><div class="smartPreflightList"><div class="pass"><span>✓</span><p>Perfil de papel válido</p></div><div class="warning"><span>!</span><p>En Chrome usa escala 100 %.</p></div></div></section>
+          <section class="smartPrintPanel smartPreflight" data-smart-step="8"><h3>Revisión antes de imprimir</h3><div class="smartPreflightList"><div class="pass"><span>✓</span><p>Perfil de papel válido</p></div><div class="warning"><span>!</span><p>En Chrome usa escala 100 %.</p></div></div></section>
+          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><p>El PDF limpio no agrega fecha, hora ni URL.</p><div class="labelPrimaryActions"><button class="btn primary">Imprimir o guardar PDF limpio</button><button class="btn">Guardar diseño</button><button class="btn">Guardar perfil</button></div></section>
         </div>
       </div>
       <footer class="smartWizardFooter"><button class="btn">Atrás</button><button class="btn">Ayuda de este paso</button><button class="btn primary">Continuar</button></footer>
@@ -57,6 +60,23 @@
         columns:plan.columns,
         pages:plan.pages.length
       });
+      const canvas = document.querySelector('#fixtureLabelCanvas');
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ff1010';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(28, 22, 84, 84);
+      ctx.fillRect(128, 22, 84, 84);
+      ctx.fillStyle = '#111';
+      for (let y = 0; y < 7; y += 1) {
+        for (let x = 0; x < 7; x += 1) {
+          if ((x + y) % 2 === 0) ctx.fillRect(38 + x * 10, 32 + y * 10, 8, 8);
+          if ((x * y) % 3 === 0) ctx.fillRect(138 + x * 10, 32 + y * 10, 8, 8);
+        }
+      }
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 18px Arial';
+      ctx.fillText('INDUSTRIAS OMEGA', 28, 145);
     })();
   </script>
 </body>

@@ -4,7 +4,7 @@
 
 - Branch: `hotfix/1.0.5-label-mobile-layout-print-clean`
 - Version: `1.0.5`
-- Asset and Service Worker cache: `commercial-1-0-5-r6`
+- Asset and Service Worker cache: `commercial-1-0-5-r7`
 - Base: `main`
 - Status: Hosting-only frontend hotfix candidate
 

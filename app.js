@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r6';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r7';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -5762,9 +5762,9 @@ function parseMoney(value) {
     }
 
 	    showModal(`<div class="modalHeader"><div><h2>Lienzo universal de etiquetas</h2><p class="fieldHint">Diseña con medidas físicas. La vista, el PDF y la impresión comparten un único plan.</p></div><button class="closeBtn" data-close>×</button></div>
-	      <div class="labelModeSwitch" role="group" aria-label="Modo del lienzo"><button type="button" class="active" data-label-mode="simple">Modo simple · Lienzo</button><button type="button" data-label-mode="expert">Modo experto · Asistente avanzado</button></div>
+	      <div class="labelWizardRail" aria-label="Progreso del asistente de etiquetas"><div class="labelModeSwitch" role="group" aria-label="Modo del lienzo"><button type="button" class="active" data-label-mode="simple">Modo simple · Lienzo</button><button type="button" data-label-mode="expert">Modo experto · Asistente avanzado</button></div>
 	      <div class="smartPrintProgress"><span id="smartPrintStepText">Paso 1 de 9</span><progress id="smartPrintProgress" max="9" value="1">1 de 9</progress></div>
-	      <ol class="labelGuideSteps smartPrintSteps"><li class="active" data-smart-step-nav="1"><b>1</b><span>Salida</span></li><li data-smart-step-nav="2"><b>2</b><span>Papel</span></li><li data-smart-step-nav="3"><b>3</b><span>Medidas</span></li><li data-smart-step-nav="4"><b>4</b><span>Contenido</span></li><li data-smart-step-nav="5"><b>5</b><span>Cantidad</span></li><li data-smart-step-nav="6"><b>6</b><span>Inicio</span></li><li data-smart-step-nav="7"><b>7</b><span>Vista</span></li><li data-smart-step-nav="8"><b>8</b><span>Revisión</span></li><li data-smart-step-nav="9"><b>9</b><span>Imprimir</span></li></ol>
+	      <ol class="labelGuideSteps smartPrintSteps"><li class="active" data-smart-step-nav="1"><b>1</b><span>Salida</span></li><li data-smart-step-nav="2"><b>2</b><span>Papel</span></li><li data-smart-step-nav="3"><b>3</b><span>Medidas</span></li><li data-smart-step-nav="4"><b>4</b><span>Contenido</span></li><li data-smart-step-nav="5"><b>5</b><span>Cantidad</span></li><li data-smart-step-nav="6"><b>6</b><span>Inicio</span></li><li data-smart-step-nav="7"><b>7</b><span>Vista</span></li><li data-smart-step-nav="8"><b>8</b><span>Revisión</span></li><li data-smart-step-nav="9"><b>9</b><span>Imprimir</span></li></ol></div>
 	      <div class="labelCustomizerLayout">
 		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Lienzo visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><div class="labelCanvasActions" role="toolbar" aria-label="Acciones del lienzo"><button type="button" class="btn" id="labelCanvasUndo" title="Deshacer">${icon('undo-2')}</button><button type="button" class="btn" id="labelCanvasRedo" title="Rehacer">${icon('redo-2')}</button><button type="button" class="btn" id="labelCanvasDuplicate">${icon('copy')} Duplicar</button><button type="button" class="btn" id="labelCanvasRotate">${icon('rotate-cw')} Rotar</button><button type="button" class="btn" id="labelCanvasAlign">${icon('align-center')} Alinear</button></div><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
@@ -5792,7 +5792,7 @@ function parseMoney(value) {
 	          <section class="smartPrintPanel" data-smart-step="6"><h3>¿Desde dónde quieres empezar?</h3><div class="formGrid"><div class="field"><label>Primera casilla</label><input id="labelStartSlot" type="number" min="1" max="120" step="1" value="1"></div><div class="field"><label>Acceso rápido</label><select id="labelStartPreset"><option value="first">Primera disponible</option><option value="left">Columna izquierda</option><option value="right">Columna derecha</option><option value="custom">Casilla específica</option></select></div></div><p class="wizardHelp">Toca casillas para marcarlas como ya usadas. Se mostrarán en gris y CLICK no imprimirá sobre ellas.</p><div id="labelStartGrid" class="labelStartGrid" aria-label="Selector de casilla inicial"></div></section>
 	          <section class="labelSheetPreviewPanel" data-smart-step="7"><div><h3>Así quedará tu papel completo</h3><p id="labelValidationSummary" class="fieldHint"></p><p id="labelPhysicalSummary" class="fieldHint"></p></div><div id="labelSheetPreview" class="labelSheetPreview" aria-label="Distribución física de etiquetas"></div></section>
 	          <section class="smartPrintPanel smartPreflight" data-smart-step="8"><h3>Revisión antes de imprimir</h3><div id="labelPreflightList" class="smartPreflightList" role="status" aria-live="polite"></div><div class="labelPrimaryActions"><button type="button" class="btn" id="labelAutoCorrect">${icon('wand-sparkles')} Corregir automáticamente</button><button type="button" class="btn" id="labelUseCompact">${icon('layout-template')} Usar diseño compacto</button><button type="button" class="btn" id="copyPrintDiagnostic">${icon('clipboard-copy')} Copiar diagnóstico</button></div></section>
-	          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><div class="systemPrintChecklist"><b>Salida recomendada:</b><p>Usa PDF limpio para guardar o imprimir sin fecha, hora, título ni URL del navegador.</p><details><summary>Usar diálogo del navegador</summary><ul><li>Copias: 1</li><li>Escala: 100 % o Tamaño real</li><li>Páginas por hoja: 1</li><li>Márgenes: ninguno</li><li>Encabezados y pies: desactivados</li><li>Ajustar a página: desactivado</li></ul><p>Para rollos: Térmica directa · Etiquetas con espacios/Gap · DPI y tamaño personalizado correctos.</p></details></div><div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('file-down')} Imprimir o guardar PDF limpio</button><button type="button" class="btn" id="savePdfBtn">${icon('file-down')} Guardar PDF</button><button type="button" class="btn" id="browserPrintBtn">${icon('printer')} Imprimir con navegador</button><button type="button" class="btn" id="savePrintProfileBtn">${icon('save')} Guardar perfil</button><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Imprimir prueba de alineación</button><button type="button" class="btn" id="openCalibrationBtn">${icon('crosshair')} Calibrar X/Y</button></div><section id="labelCalibrationPanel" class="labelCalibrationPanel" hidden><h4>Calibración guiada X/Y</h4><p>Imprime la cuadrícula y toca el número que quedó mejor centrado. CLICK guardará el ajuste solo en este dispositivo y negocio.</p><div class="formGrid"><div class="field"><label>Ajuste X actual (mm)</label><input id="labelXOffset" value="0" readonly></div><div class="field"><label>Ajuste Y actual (mm)</label><input id="labelYOffsetMm" value="0" readonly></div></div><div id="labelCalibrationGrid" class="labelCalibrationGrid" aria-label="Casilla centrada"></div><p id="labelCalibrationStatus" class="fieldHint">Estado provisional hasta comprobar una prueba física.</p><div class="labelPrimaryActions"><button type="button" class="btn" id="resetCalibrationBtn">${icon('rotate-ccw')} Restablecer calibración</button><button type="button" class="btn" id="repeatCalibrationBtn">${icon('repeat-2')} Repetir prueba</button></div></section><div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="duplicatePrintProfileBtn">${icon('copy')} Duplicar perfil</button><button type="button" class="btn danger" id="deletePrintProfileBtn">${icon('trash-2')} Eliminar perfil</button></div></section>
+	          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><div class="systemPrintChecklist"><b>Salida recomendada:</b><p>Usa PDF limpio para guardar o imprimir sin fecha, hora, título ni URL del navegador.</p><details><summary>Usar diálogo del navegador</summary><ul><li>Copias: 1</li><li>Escala: 100 % o Tamaño real</li><li>Páginas por hoja: 1</li><li>Márgenes: ninguno</li><li>Encabezados y pies: desactivados</li><li>Ajustar a página: desactivado</li></ul><p>Para rollos: Térmica directa · Etiquetas con espacios/Gap · DPI y tamaño personalizado correctos.</p></details></div><div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('file-down')} Imprimir o guardar PDF limpio</button><button type="button" class="btn" id="savePdfBtn">${icon('file-down')} Guardar PDF</button><button type="button" class="btn" id="browserPrintBtn">${icon('printer')} Imprimir con navegador</button><button type="button" class="btn" id="saveTemplateFromPrintBtn">${icon('save')} Guardar diseño</button><button type="button" class="btn" id="savePrintProfileBtn">${icon('save')} Guardar perfil</button><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Imprimir prueba de alineación</button><button type="button" class="btn" id="openCalibrationBtn">${icon('crosshair')} Calibrar X/Y</button></div><section id="labelCalibrationPanel" class="labelCalibrationPanel" hidden><h4>Calibración guiada X/Y</h4><p>Imprime la cuadrícula y toca el número que quedó mejor centrado. CLICK guardará el ajuste solo en este dispositivo y negocio.</p><div class="formGrid"><div class="field"><label>Ajuste X actual (mm)</label><input id="labelXOffset" value="0" readonly></div><div class="field"><label>Ajuste Y actual (mm)</label><input id="labelYOffsetMm" value="0" readonly></div></div><div id="labelCalibrationGrid" class="labelCalibrationGrid" aria-label="Casilla centrada"></div><p id="labelCalibrationStatus" class="fieldHint">Estado provisional hasta comprobar una prueba física.</p><div class="labelPrimaryActions"><button type="button" class="btn" id="resetCalibrationBtn">${icon('rotate-ccw')} Restablecer calibración</button><button type="button" class="btn" id="repeatCalibrationBtn">${icon('repeat-2')} Repetir prueba</button></div></section><div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="duplicatePrintProfileBtn">${icon('copy')} Duplicar perfil</button><button type="button" class="btn danger" id="deletePrintProfileBtn">${icon('trash-2')} Eliminar perfil</button></div></section>
 	          <div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar diseño</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nuevo</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
 	          <details class="settingsDisclosure expertOnly"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
 	        </div>
@@ -5816,6 +5816,17 @@ function parseMoney(value) {
       8:'Los errores rojos deben corregirse; las advertencias explican el driver.',
       9:'El botón principal genera un PDF limpio. El botón de navegador puede requerir desactivar encabezados y pies.'
     };
+	    const scrollSmartPanelIntoView = (targetPanel) => {
+	      if (!targetPanel) return;
+	      const controls = targetPanel.closest('.labelControls');
+	      if (!controls) return;
+	      requestAnimationFrame(() => {
+	        const panelBox = targetPanel.getBoundingClientRect();
+	        const controlsBox = controls.getBoundingClientRect();
+	        const nextTop = controls.scrollTop + panelBox.top - controlsBox.top - 8;
+	        controls.scrollTo({ top: Math.max(0, nextTop), behavior:'smooth' });
+	      });
+	    };
 	    const showSmartPrintStep = (requestedStep) => {
 	      smartPrintStep = Math.max(1, Math.min(9, Number(requestedStep) || 1));
 	      const simple = labelEditorModal.dataset.labelMode === 'simple';
@@ -5842,15 +5853,8 @@ function parseMoney(value) {
 	      $('#smartPrintNext').innerHTML = smartPrintStep === 9
 	        ? `${outputMode === 'system' ? 'Imprimir con navegador' : 'Imprimir o guardar PDF limpio'} ${icon(outputMode === 'system' ? 'printer' : 'file-down')}`
 	        : `Continuar ${icon('arrow-right')}`;
-	      const targetPanel = smartPrintStep === 7
-	        ? previewDisclosure
-	        : labelEditorModal.querySelector(`.labelControls [data-smart-step="${smartPrintStep}"]`);
-	      const isMobileLayout = typeof matchMedia === 'function' && matchMedia('(max-width: 899px)').matches;
-	      if (targetPanel && isMobileLayout) {
-	        requestAnimationFrame(() => targetPanel.scrollIntoView({ block:'start', inline:'nearest' }));
-	      } else {
-	        targetPanel?.scrollIntoView({ block:'nearest', inline:'nearest' });
-	      }
+	      const targetPanel = labelEditorModal.querySelector(`.labelControls [data-smart-step="${smartPrintStep}"]`);
+	      if (smartPrintStep !== 7) scrollSmartPanelIntoView(targetPanel);
 	    };
     $$('[data-label-mode]', labelEditorModal).forEach((button) => button.onclick = () => {
       labelEditorModal.dataset.labelMode = button.dataset.labelMode;
@@ -6441,13 +6445,13 @@ function parseMoney(value) {
 	      $('#applyTemplateSelect').value = activeTemplateId;
 	      $('#deleteTemplateBtn').disabled = !activeTemplateId;
 	    };
-	    const persistTemplate = ({ forceNew = false, suggestedName = '' } = {}) => {
+	    const persistTemplate = ({ forceNew = false, suggestedName = '', nameOverride = '', silent = false, deferSave = false } = {}) => {
 		       if (!editorBusinessIsActive()) {
 		         toast('El negocio activo cambió. Reabre el asistente para guardar con seguridad.', 'err');
 		         return null;
 		       }
 		       const existing = forceNew ? null : labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
-	       const name = prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
+	       const name = nameOverride || prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
 		       if (!name?.trim()) return null;
 		       const currentOpts = getOptions();
 	       const universalDocument = universalDocumentFromTemplate({
@@ -6500,6 +6504,8 @@ function parseMoney(value) {
        };
        state.settings ||= {};
        state.settings.labelTemplates ||= [];
+	       const previousTemplates = JSON.parse(JSON.stringify(state.settings.labelTemplates || []));
+	       const previousTemplateId = activeTemplateId;
 	       const index = state.settings.labelTemplates.findIndex((template) =>
 	         template.id === tpl.id && (template.businessId === editorBusinessId
 	           || (!template.businessId && state.settings?.legacyDataBusinessId === editorBusinessId)));
@@ -6507,16 +6513,26 @@ function parseMoney(value) {
        else state.settings.labelTemplates.push(tpl);
 	       activeTemplateId = tpl.id;
 	       addAudit('label_template_saved', { templateId: tpl.id, name: tpl.name, updated: index >= 0 });
-	       if(!save()) {
-	          window.click360RecordTelemetry?.('template_save_failure', { requestId: tpl.id, errorCode: 'local_save_rejected' }).catch?.(() => {});
-	          return;
+	       if (deferSave) {
+	         refreshTemplateSelect();
+	         refreshInventoryTemplateSection();
+	         return tpl;
 	       }
-	       toast('Plantilla guardada correctamente', 'ok');
+	       if(!save()) {
+	          state.settings.labelTemplates = previousTemplates;
+	          activeTemplateId = previousTemplateId;
+	          window.click360RecordTelemetry?.('template_save_failure', { requestId: tpl.id, errorCode: 'local_save_rejected' }).catch?.(() => {});
+	          refreshTemplateSelect();
+	          refreshInventoryTemplateSection();
+	          return null;
+	       }
+	       if (!silent) toast('Plantilla guardada correctamente', 'ok');
 	       refreshTemplateSelect();
 	       refreshInventoryTemplateSection();
 	       return tpl;
 	    };
 	    $('#saveTemplateBtn').onclick = () => persistTemplate();
+	    $('#saveTemplateFromPrintBtn').onclick = () => persistTemplate({ suggestedName: activeTemplateId ? '' : 'Mi Plantilla QR' });
 	    $('#saveTemplateAsNewBtn').onclick = () => persistTemplate({ forceNew: true });
 	    $('#duplicateTemplateBtn').onclick = () => {
 	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
@@ -6608,6 +6624,25 @@ function parseMoney(value) {
 	      if (!name?.trim()) return null;
 	      const options = getOptions();
 	      const core = window.CLICK360_SMART_PRINT;
+	      const previousTemplates = JSON.parse(JSON.stringify(state.settings?.labelTemplates || []));
+	      const previousTemplateId = activeTemplateId;
+	      const templateName = activeTemplateId
+	        ? (labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId)?.name || `${name.trim()} - diseño`)
+	        : `${name.trim()} - diseño`;
+	      const templateSnapshot = persistTemplate({
+	        forceNew: !activeTemplateId,
+	        suggestedName: templateName,
+	        nameOverride: templateName,
+	        silent: true,
+	        deferSave: true
+	      });
+	      if (!templateSnapshot) {
+	        state.settings.labelTemplates = previousTemplates;
+	        activeTemplateId = previousTemplateId;
+	        refreshTemplateSelect();
+	        refreshInventoryTemplateSection();
+	        return toast('No se pudo preparar el diseño para este perfil.', 'err');
+	      }
 	      const profileInput = {
 	        id:existing?.id || uid('printprofile'),
 	        businessId:editorBusinessId,
@@ -6624,11 +6659,12 @@ function parseMoney(value) {
 	        },
 	        paper:smartPaperFromOptions(options),
 	        design:{
-	          id:activeTemplateId || 'design-safe',
+	          id:templateSnapshot.id,
 	          businessId:editorBusinessId,
-	          name:activeTemplateId ? (labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId)?.name || 'Diseño') : 'Diseño seguro',
+	          name:templateSnapshot.name || 'Diseño seguro',
 	          layoutPreset:'custom',
-	          elements:normalizedLabelLayout(editorLayout),
+	          elements:normalizedLabelLayout(templateSnapshot.layout || editorLayout),
+	          universalDocument:templateSnapshot.universalDocument,
 	          showUrl:options.showUrl,
 	          showPrice:editorLayout.price?.visible !== false,
 	          showBusiness:editorLayout.business?.visible !== false,
@@ -6651,9 +6687,15 @@ function parseMoney(value) {
 	      addAudit('label_print_profile_saved', { profileId:profile.id, status:profile.status, updated:index >= 0 });
 	      if (!save()) {
 	        state.settings.labelProfiles = previous;
+	        state.settings.labelTemplates = previousTemplates;
+	        activeTemplateId = previousTemplateId;
+	        refreshTemplateSelect();
+	        refreshInventoryTemplateSection();
 	        return toast('No se pudo guardar el perfil. Tus datos anteriores siguen intactos.', 'err');
 	      }
 	      printDeviceState = savePrintDeviceState({ ...printDeviceState, selectedProfileId:profile.id }, editorBusinessId);
+	      refreshTemplateSelect();
+	      refreshInventoryTemplateSection();
 	      refreshPrintProfileSelect();
 	      toast('Perfil de impresión guardado.', 'ok');
 	      return profile;
