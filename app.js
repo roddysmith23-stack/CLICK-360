@@ -5543,8 +5543,7 @@ function parseMoney(value) {
       if (element.visible === false) return;
       const bounds = labelElementBounds(key, element);
       if (bounds.left < 0 || bounds.top < 0 || bounds.right > baseWidth || bounds.bottom > baseHeight) {
-        const target = ['qr','barcode'].includes(key) ? errors : warnings;
-        target.push(`${key} queda fuera de la zona segura.`);
+        warnings.push(`${key} queda fuera de la zona segura.`);
       }
     });
     const qr = normalizedLabelLayout(layout).qr;
@@ -5556,8 +5555,7 @@ function parseMoney(value) {
         const b = labelElementBounds(visible[second][0], visible[second][1]);
         if (a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top) {
           const keys = [visible[first][0], visible[second][0]];
-          const target = keys.some((key) => ['qr','barcode'].includes(key)) ? errors : warnings;
-          target.push(`Hay elementos superpuestos: ${keys[0]} y ${keys[1]}.`);
+          warnings.push(`Hay elementos superpuestos: ${keys[0]} y ${keys[1]}.`);
         }
       }
     }
@@ -6034,7 +6032,7 @@ function parseMoney(value) {
         showUrl:options.showUrl,
         visibleUrl:options.showUrl ? productPayload(product) : ''
       });
-	      const blocking = !quantity.valid || !paperValidation.valid || sheetPlan.valid === false || !validation.valid || corePreflight?.blocking === true;
+	      const blocking = !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
       latestSmartPreflight = {
         blocking,
         quantity,
@@ -6062,8 +6060,8 @@ function parseMoney(value) {
 	        { status:'warning', message:'En Windows o Chrome usa escala 100 % y desactiva encabezados y pies' }
 	      ];
       $('#labelPreflightList').innerHTML = checks.map((check) => `<div class="${check.status}"><span>${check.status === 'pass' ? '✓' : check.status === 'error' ? '×' : '!'}</span><p>${escapeHtml(check.message || '')}</p></div>`).join('');
-      $('#printOne').disabled = blocking || copies < 1;
-      $('#savePdfBtn').disabled = blocking || copies < 1;
+      $('#printOne').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
+      $('#savePdfBtn').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
       return latestSmartPreflight;
     };
 
