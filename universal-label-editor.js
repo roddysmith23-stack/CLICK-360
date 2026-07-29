@@ -30,7 +30,7 @@
           <div class="ulcFields two"><label>Orientacion<select id="ulcOrientation"><option value="portrait">Vertical</option><option value="landscape">Horizontal</option></select></label><label>DPI<input id="ulcDpi" type="number" min="72" max="1200" step="1"></label></div>
           <details class="ulcMeasurement"><summary>Medicion y calibracion</summary><p>Perfil provisional por negocio y dispositivo. Mide antes de certificar.</p><label>Perfil de impresora<select id="ulcProfiles"><option value="">Perfil nuevo</option></select></label><label>Nombre del perfil<input id="ulcProfileName" maxlength="80" placeholder="Impresora / papel"></label><div class="ulcFields two"><label>Ancho total<input id="ulcMediaWidth" type="number" min="0" max="1000" step="0.1"></label><label>Pitch mm<input id="ulcPitch" type="number" min="0" max="500" step="0.1"></label><label>Offset X<input id="ulcOffsetX" type="number" min="-50" max="50" step="0.1"></label><label>Offset Y<input id="ulcOffsetY" type="number" min="-50" max="50" step="0.1"></label><label>Escala X<input id="ulcScaleX" type="number" min="0.8" max="1.2" step="0.001"></label><label>Escala Y<input id="ulcScaleY" type="number" min="0.8" max="1.2" step="0.001"></label></div><button type="button" class="btn" id="ulcSaveProfile">Guardar perfil provisional</button><button type="button" class="btn" id="ulcCalibrationSheet">Hoja de calibracion</button></details>
           <h3>Agregar</h3><div class="ulcObjectButtons"><button type="button" data-ulc-add="qr">QR</button><button type="button" data-ulc-add="barcode">Codigo</button><button type="button" data-ulc-add="name">Nombre</button><button type="button" data-ulc-add="price">Precio</button><button type="button" data-ulc-add="sku">SKU</button><button type="button" data-ulc-add="text">Texto</button><button type="button" id="ulcAddImage">Imagen</button><input id="ulcImageInput" type="file" accept="image/*" hidden></div>
-          <h3>Plantillas</h3><select id="ulcTemplates"><option value="">Nueva plantilla</option></select><div class="ulcInline"><button type="button" class="btn" id="ulcSaveTemplate">Guardar plantilla</button><button type="button" class="btn" id="ulcDeleteTemplate">Eliminar</button></div>
+          <h3>Plantillas</h3><div id="ulcTemplateList" class="ulcTemplateList" aria-label="Plantillas guardadas"></div><div class="ulcInline"><button type="button" class="btn" id="ulcSaveTemplate">Guardar plantilla</button></div>
         </aside>
         <section class="ulcCanvasRegion" aria-label="Lienzo de etiquetas">
           <div class="ulcCanvasToolbar"><label>Zoom <input id="ulcZoom" type="range" min="0.5" max="2" step="0.1" value="1"></label><output id="ulcZoomValue">100%</output><label><input id="ulcGrid" type="checkbox" checked> Cuadricula</label><label><input id="ulcSnap" type="checkbox" checked> Ajustar</label><span id="ulcPhysicalSize"></span></div>
@@ -40,7 +40,7 @@
           <h3>Propiedades</h3><p id="ulcEmptySelection">Selecciona un objeto en el lienzo.</p><div id="ulcProperties" hidden><label>Objeto<select id="ulcObjectSelect"></select></label><div class="ulcFields two"><label>X mm<input id="ulcX" type="number" step="0.1"></label><label>Y mm<input id="ulcY" type="number" step="0.1"></label><label>Ancho mm<input id="ulcObjectWidth" type="number" min="2" step="0.1"></label><label>Alto mm<input id="ulcObjectHeight" type="number" min="2" step="0.1"></label></div><label>Rotacion <input id="ulcRotation" type="range" min="-180" max="180" step="1"><output id="ulcRotationValue"></output></label><label id="ulcTextField">Texto<input id="ulcText" maxlength="160"></label><div class="ulcObjectActions"><button type="button" id="ulcDuplicate">Duplicar</button><button type="button" id="ulcDelete">Eliminar</button><button type="button" id="ulcLock">Bloquear</button><button type="button" id="ulcCopy">Copiar</button><button type="button" id="ulcPaste">Pegar</button><button type="button" id="ulcFront">Al frente</button><button type="button" id="ulcBack">Al fondo</button></div><fieldset><legend>Alinear seleccion</legend><div class="ulcAlign"><button type="button" data-ulc-align="left">Izq.</button><button type="button" data-ulc-align="center">Centro</button><button type="button" data-ulc-align="right">Der.</button><button type="button" data-ulc-align="top">Arriba</button><button type="button" data-ulc-align="middle">Medio</button><button type="button" data-ulc-align="bottom">Abajo</button></div></fieldset></div>
         </aside>
       </div>
-      <footer class="ulcFooter"><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div><div class="ulcInline"><select id="ulcOutput"><option value="system">Impresion del sistema</option><option value="pdf">Guardar PDF</option></select><button type="button" class="btn primary" id="ulcPrint">Imprimir o guardar como PDF</button></div></footer>`;
+      <footer class="ulcFooter"><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div><div class="ulcInline" id="ulcPrintActions"><button type="button" class="btn primary" id="ulcPrint">Imprimir</button><button type="button" class="btn" id="ulcPdf">Guardar PDF</button></div><div id="ulcPrintWarnings" class="ulcPrintWarnings" aria-live="polite"></div></footer>`;
   }
 
   function open(api) {
@@ -48,7 +48,7 @@
     if (!engine) throw new Error('El motor del lienzo no esta disponible.');
     const initialBase = api.initialDocument || api.initialTemplate?.universalDocument || api.initialTemplate || { paper: PRESETS.roll, quantity: 1 };
     const initial = api.initialProfile?.universalPaper ? { ...initialBase, paper: { ...(initialBase.paper || {}), ...api.initialProfile.universalPaper } } : initialBase;
-    let history = engine.createHistory(initial);
+    let history = engine.createHistory(engine.normalizeDocument(initial));
     let selectedIds = new Set(history.present.objects.slice(0, 1).map((object) => object.id));
     let clipboard = null;
     let zoom = 1;
@@ -56,6 +56,19 @@
     let renderToken = 0;
     let activeTemplateId = String(api.initialTemplate?.id || '');
     let activeProfileId = String(api.initialProfile?.id || '');
+    // Print dialog state machine: IDLE → PREPARING → OPEN → WAITING → FINISHED
+    // Prevents multiple concurrent print/PDF invocations and dialog loops after cancel.
+    let _ulcPrintState = 'idle'; // 'idle' | 'preparing' | 'open' | 'finished'
+    function _setUlcPrintState(state) {
+      _ulcPrintState = state;
+      const busy = state !== 'idle' && state !== 'finished';
+      ['ulcPrint', 'ulcPdf'].forEach((id) => {
+        const el = modalRoot?.querySelector(`#${id}`);
+        if (el) el.disabled = busy;
+      });
+      // Also disable template card print/pdf buttons while active
+      modalRoot?.querySelectorAll('[data-ulc-tpl-print],[data-ulc-tpl-pdf]').forEach((el) => { el.disabled = busy; });
+    }
     api.showModal(editorMarkup());
     const modalRoot = root.document.querySelector('#modalRoot');
     const modal = modalRoot.querySelector('.modal');
@@ -95,7 +108,14 @@
       const paper = document.paper;
       const scale = pxPerMm();
       const stage = $('#ulcStage');
-      const templateSelect = $('#ulcTemplates');
+      // Render template cards (replaces old <select>)
+      const templateListEl = $('#ulcTemplateList');
+      if (templateListEl) {
+        const templates = api.getTemplates?.() || [];
+        templateListEl.innerHTML = templates.length
+          ? templates.map((tpl) => `<div class="ulcTemplateCard${tpl.id === activeTemplateId ? ' active' : ''}" data-ulc-tpl-id="${escape(tpl.id)}"><span class="ulcTemplateName">${escape(tpl.name)}</span><div class="ulcTemplateCardActions"><button type="button" class="ulcTplBtn primary" data-ulc-tpl-print="${escape(tpl.id)}" title="Imprimir esta plantilla">🖨</button><button type="button" class="ulcTplBtn" data-ulc-tpl-pdf="${escape(tpl.id)}" title="Guardar PDF">📄</button><button type="button" class="ulcTplBtn" data-ulc-tpl-edit="${escape(tpl.id)}" title="Editar">✏</button><button type="button" class="ulcTplBtn danger" data-ulc-tpl-delete="${escape(tpl.id)}" title="Eliminar">🗑</button></div></div>`).join('')
+          : '<p class="ulcNoTemplates">Sin plantillas. Guarda una para verla aqui.</p>';
+      }
       const active = primary();
       $('#ulcPreset').value = Object.entries(PRESETS).find(([, preset]) => preset.id === paper.id)?.[0] || 'custom';
       $('#ulcWidth').value = paper.widthMm; $('#ulcHeight').value = paper.heightMm; $('#ulcColumns').value = paper.columns; $('#ulcRows').value = paper.rows;
@@ -123,16 +143,41 @@
         $('#ulcRotation').value = active.rotation; $('#ulcRotationValue').textContent = `${active.rotation}°`; $('#ulcText').value = active.text || '';
         $('#ulcTextField').hidden = !['text'].includes(active.type); $('#ulcLock').textContent = active.locked ? 'Desbloquear' : 'Bloquear';
       }
-      templateSelect.innerHTML = '<option value="">Nueva plantilla</option>' + (api.getTemplates?.() || []).map((template) => `<option value="${escape(template.id)}">${escape(template.name)}</option>`).join('');
-      templateSelect.value = activeTemplateId;
       const profileSelect = $('#ulcProfiles');
       profileSelect.innerHTML = '<option value="">Perfil nuevo</option>' + (api.getProfiles?.() || []).map((profile) => `<option value="${escape(profile.id)}">${escape(profile.name || 'Perfil provisional')}</option>`).join('');
       profileSelect.value = activeProfileId;
       const activeProfile = (api.getProfiles?.() || []).find((profile) => profile.id === activeProfileId);
       $('#ulcProfileName').value = activeProfile?.name || `Perfil ${paper.widthMm}x${paper.heightMm} mm`;
       const token = ++renderToken;
-      paintPreview(document, token).catch((error) => api.toast?.(`No se pudo renderizar la etiqueta: ${error.message}`, 'err'));
+      // Agent 2: use a normalized snapshot to guarantee preview === PDF === print
+      const previewSnapshot = engine.normalizeDocument(document);
+      paintPreview(previewSnapshot, token).catch((error) => api.toast?.(`No se pudo renderizar la etiqueta: ${error.message}`, 'err'));
     }
+    // --- Agent 3: print state machine executePrint helper ---
+    // Validates, guards against concurrent invocations, resets on afterprint.
+    async function executePrint(docSnapshot, mode) {
+      if (_ulcPrintState === 'preparing' || _ulcPrintState === 'open') {
+        api.toast?.('Ya hay una impresión activa. Cancela el diálogo o espera.', 'warn');
+        return;
+      }
+      // Validation: only CRITICAL errors block. Warnings allow print.
+      const paper = docSnapshot.paper;
+      const objects = docSnapshot.objects || [];
+      if (!objects.length) { api.toast?.('El documento está vacío. Agrega al menos un elemento.', 'err'); return; }
+      const warnings = [];
+      const outsideObjects = objects.filter((o) => o.xMm + o.widthMm > paper.widthMm || o.yMm + o.heightMm > paper.heightMm);
+      if (outsideObjects.length) warnings.push(`Advertencia: ${outsideObjects.length} elemento(s) fuera de la zona segura.`);
+      if (warnings.length) { const warnEl = $('#ulcPrintWarnings'); if (warnEl) { warnEl.textContent = warnings.join(' '); warnEl.style.display = 'block'; setTimeout(() => { if (warnEl) warnEl.style.display = ''; }, 6000); } }
+      _setUlcPrintState('preparing');
+      try {
+        _setUlcPrintState('open');
+        await api.print?.(docSnapshot, mode);
+      } finally {
+        _setUlcPrintState('idle');
+      }
+    }
+    // Reset print state when browser dialog closes (cancel OR print)
+    root.addEventListener('afterprint', () => { if (_ulcPrintState !== 'idle') _setUlcPrintState('idle'); });
     function stagePoint(event) {
       const rect = $('#ulcStage').getBoundingClientRect();
       const paper = current().paper;
@@ -169,16 +214,44 @@
       if (event.target.closest('#ulcPaste') && clipboard) { const next = engine.addObject(current(), clipboard.type, { ...clipboard, id: undefined, xMm: clipboard.xMm + 2, yMm: clipboard.yMm + 2 }); commit(next); setSelection([next.objects.at(-1).id]); return; }
       if (event.target.closest('#ulcFront') && primary()) { commit(engine.arrangeObject(current(), primary().id, 'front')); return; }
       if (event.target.closest('#ulcBack') && primary()) { commit(engine.arrangeObject(current(), primary().id, 'back')); return; }
-      if (event.target.closest('#ulcSaveTemplate')) { const existing = (api.getTemplates?.() || []).find((template) => template.id === activeTemplateId); const name = root.prompt('Nombre de la plantilla:', existing?.name || 'Etiqueta universal'); if (name?.trim()) { const saved = await api.saveTemplate?.(name.trim(), current(), activeTemplateId); activeTemplateId = String(saved?.id || activeTemplateId); } render(); return; }
-      if (event.target.closest('#ulcDeleteTemplate')) { const id = inputValue(modalRoot, 'ulcTemplates'); if (id) { await api.deleteTemplate?.(id); activeTemplateId = ''; render(); } return; }
+      if (event.target.closest('#ulcSaveTemplate')) { const existing = (api.getTemplates?.() || []).find((template) => template.id === activeTemplateId); const name = root.prompt('Nombre de la plantilla:', existing?.name || 'Etiqueta universal'); if (name?.trim()) { const saved = await api.saveTemplate?.(name.trim(), engine.normalizeDocument(current()), activeTemplateId); activeTemplateId = String(saved?.id || activeTemplateId); } render(); return; }
       if (event.target.closest('#ulcSaveProfile')) { const saved = await api.saveProfile?.(current(), activeProfileId, inputValue(modalRoot, 'ulcProfileName')); activeProfileId = String(saved?.id || activeProfileId); api.toast?.('Perfil provisional guardado en este negocio y dispositivo.', 'ok'); render(); return; }
       if (event.target.closest('#ulcCalibrationSheet')) { await api.printCalibration?.(current()); return; }
       if (event.target.closest('#ulcAdvanced')) { api.closeModal?.(); api.openAdvanced?.(); return; }
-      if (event.target.closest('#ulcPrint')) { await api.print?.(current(), inputValue(modalRoot, 'ulcOutput', 'system')); return; }
+      // --- Template card quick actions ---
+      const tplPrint = event.target.closest('[data-ulc-tpl-print]');
+      const tplPdf = event.target.closest('[data-ulc-tpl-pdf]');
+      const tplEdit = event.target.closest('[data-ulc-tpl-edit]');
+      const tplDelete = event.target.closest('[data-ulc-tpl-delete]');
+      if (tplPrint || tplPdf) {
+        const tplId = (tplPrint || tplPdf).dataset.ulcTplPrint || (tplPrint || tplPdf).dataset.ulcTplPdf;
+        const template = (api.getTemplates?.() || []).find((t) => t.id === tplId);
+        if (!template) { api.toast?.('Plantilla no encontrada.', 'err'); return; }
+        // Load template document snapshot — does NOT change active editor state
+        const tplDoc = engine.normalizeDocument(template.universalDocument || template);
+        await executePrint(tplDoc, tplPdf ? 'pdf' : 'system');
+        return;
+      }
+      if (tplEdit) {
+        const tplId = tplEdit.dataset.ulcTplEdit;
+        const template = (api.getTemplates?.() || []).find((t) => t.id === tplId);
+        if (template) { activeTemplateId = tplId; history = engine.createHistory(engine.normalizeDocument(template.universalDocument || template)); selectedIds = new Set(history.present.objects.slice(0, 1).map((object) => object.id)); render(); }
+        return;
+      }
+      if (tplDelete) {
+        const tplId = tplDelete.dataset.ulcTplDelete;
+        if (tplId) { await api.deleteTemplate?.(tplId); if (activeTemplateId === tplId) activeTemplateId = ''; render(); }
+        return;
+      }
+      // --- Print / PDF buttons with state machine guard ---
+      if (event.target.closest('#ulcPrint') || event.target.closest('#ulcPdf')) {
+        const mode = event.target.closest('#ulcPdf') ? 'pdf' : 'system';
+        await executePrint(engine.normalizeDocument(current()), mode);
+        return;
+      }
     });
     modalRoot.addEventListener('change', async (event) => {
       if (event.target.id === 'ulcPreset') { updatePaper(PRESETS[event.target.value] || PRESETS.custom); return; }
-      if (event.target.id === 'ulcTemplates') { activeTemplateId = event.target.value || ''; const template = (api.getTemplates?.() || []).find((item) => item.id === activeTemplateId); if (template) { history = engine.createHistory(template.universalDocument || template); selectedIds = new Set(history.present.objects.slice(0, 1).map((object) => object.id)); } render(); return; }
       if (event.target.id === 'ulcProfiles') {
         activeProfileId = event.target.value || '';
         api.selectProfile?.(activeProfileId);
