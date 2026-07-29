@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r5';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r6';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -5816,12 +5816,18 @@ function parseMoney(value) {
       8:'Los errores rojos deben corregirse; las advertencias explican el driver.',
       9:'El botón principal genera un PDF limpio. El botón de navegador puede requerir desactivar encabezados y pies.'
     };
-    const showSmartPrintStep = (requestedStep) => {
-      smartPrintStep = Math.max(1, Math.min(9, Number(requestedStep) || 1));
-      const simple = labelEditorModal.dataset.labelMode === 'simple';
-      $$('[data-smart-step]', labelEditorModal).forEach((panel) => {
-        panel.hidden = simple && Number(panel.dataset.smartStep) !== smartPrintStep && !panel.classList.contains('labelPreviewDisclosure');
-      });
+	    const showSmartPrintStep = (requestedStep) => {
+	      smartPrintStep = Math.max(1, Math.min(9, Number(requestedStep) || 1));
+	      const simple = labelEditorModal.dataset.labelMode === 'simple';
+	      labelEditorModal.dataset.smartStepCurrent = String(smartPrintStep);
+	      const previewDisclosure = labelEditorModal.querySelector('.labelPreviewDisclosure');
+	      if (previewDisclosure) {
+	        previewDisclosure.dataset.previewMode = smartPrintStep === 7 ? 'full' : 'compact';
+	        previewDisclosure.open = true;
+	      }
+	      $$('[data-smart-step]', labelEditorModal).forEach((panel) => {
+	        panel.hidden = simple && Number(panel.dataset.smartStep) !== smartPrintStep && !panel.classList.contains('labelPreviewDisclosure');
+	      });
       $$('[data-smart-step-nav]', labelEditorModal).forEach((item) => {
         const step = Number(item.dataset.smartStepNav);
         item.classList.toggle('active', step === smartPrintStep);
@@ -5836,8 +5842,16 @@ function parseMoney(value) {
 	      $('#smartPrintNext').innerHTML = smartPrintStep === 9
 	        ? `${outputMode === 'system' ? 'Imprimir con navegador' : 'Imprimir o guardar PDF limpio'} ${icon(outputMode === 'system' ? 'printer' : 'file-down')}`
 	        : `Continuar ${icon('arrow-right')}`;
-      labelEditorModal.querySelector(`[data-smart-step="${smartPrintStep}"]`)?.scrollIntoView({ block:'nearest' });
-    };
+	      const targetPanel = smartPrintStep === 7
+	        ? previewDisclosure
+	        : labelEditorModal.querySelector(`.labelControls [data-smart-step="${smartPrintStep}"]`);
+	      const isMobileLayout = typeof matchMedia === 'function' && matchMedia('(max-width: 899px)').matches;
+	      if (targetPanel && isMobileLayout) {
+	        requestAnimationFrame(() => targetPanel.scrollIntoView({ block:'start', inline:'nearest' }));
+	      } else {
+	        targetPanel?.scrollIntoView({ block:'nearest', inline:'nearest' });
+	      }
+	    };
     $$('[data-label-mode]', labelEditorModal).forEach((button) => button.onclick = () => {
       labelEditorModal.dataset.labelMode = button.dataset.labelMode;
       $$('[data-label-mode]', labelEditorModal).forEach((candidate) => candidate.classList.toggle('active', candidate === button));

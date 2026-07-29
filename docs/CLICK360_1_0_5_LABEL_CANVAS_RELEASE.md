@@ -4,7 +4,7 @@
 
 - Branch: `hotfix/1.0.5-label-mobile-layout-print-clean`
 - Version: `1.0.5`
-- Asset and Service Worker cache: `commercial-1-0-5-r5`
+- Asset and Service Worker cache: `commercial-1-0-5-r6`
 - Base: `main`
 - Status: Hosting-only frontend hotfix candidate
 
@@ -25,6 +25,10 @@
 - Clean PDF is the default output for canvas, wizard and template quick
   actions; browser printing remains an explicit separate option.
 - The QR preview panel remains visible while scrolling label settings.
+- Mobile wizard steps scroll to the active controls instead of leaving the
+  preview and footer mounted over the step cards.
+- The wizard footer is no longer sticky, so it cannot cover cards on desktop
+  or mobile.
 - Release identity, PWA manifest and Service Worker cache update.
 
 ## Excluded
@@ -73,14 +77,15 @@ identity. Admin and Functions jobs must be skipped by path scope.
 - Firestore Rules emulator: PASS.
 - Simulator quick: PASS, 240 actions and 20 reports.
 - Simulator full: PASS, 2,600 actions and 100 reports.
-- Universal Canvas browser E2E: run before release; this environment may
-  report a browser-launch failure before app code executes.
-- Responsive Chromium, WebKit and Firefox: validated by E2E when browser launch
-  is available; static containment checks cover the hotfix contract.
-- PDF: PASS, two pages with nonblank raster and QR region.
-- Production dependency audit: BLOCKED in this local run by DNS
-  `ENOTFOUND registry.npmjs.org`; rerun when npm registry resolution is
-  available.
+- Universal Canvas browser E2E: blocked in this macOS session before app code
+  executes because Playwright Chromium exits with
+  `MachPortRendezvousServer ... unknown error code (141)`.
+- Responsive Chromium, WebKit and Firefox: static containment checks pass; the
+  browser visual gate must be rerun in an environment where Playwright can
+  launch browsers.
+- PDF: clean-output contract verified by harnesses; browser PDF raster E2E is
+  blocked here by the same Playwright launch failure.
+- Production dependency audit: PASS, 0 vulnerabilities.
 - `dist` scan for `firebase-admin`, `google-gax` and private keys: zero matches.
 
 ## Rollback

@@ -19,9 +19,12 @@
   QR layout and delete through the guarded tenant save path.
 - The universal editor keeps the preview visible while scrolling settings and
   exposes Simple Canvas / Advanced Assistant controls on mobile.
+- The mobile QR wizard now scrolls to the active step controls, keeps the
+  preview compact outside the preview step, and prevents the footer from
+  covering cards on mobile or desktop.
 - Logo, profile, navigation, and modal controls have improved semantics and
   touch targets.
-- Cache identity is now `commercial-1-0-5-r5`.
+- Cache identity is now `commercial-1-0-5-r6`.
 
 ### Security
 
