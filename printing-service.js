@@ -84,6 +84,8 @@
   function cleanupJob() {
     const element = document.getElementById('click360PrintPortal');
     if (element) {
+      element.classList.remove('click360PdfExportActive');
+      element.removeAttribute('style');
       element.replaceChildren();
       delete element.dataset.printMedia;
     }
@@ -143,6 +145,8 @@
     async print(job) {
       if (!this.isSupported()) throw Object.assign(new Error('PDF no disponible.'), { code: 'pdf-unavailable' });
       const element = mountJob(job);
+      element.classList.add('click360PdfExportActive');
+      element.style.cssText = 'display:block;position:fixed;left:0;top:0;width:auto;height:auto;max-width:none;max-height:none;overflow:visible;background:#ffffff;color:#000000;pointer-events:none;z-index:-1;';
       await waitForResources(element);
       const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
       const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));

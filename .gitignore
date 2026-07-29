@@ -3,6 +3,7 @@ artifacts/
 .playwright-cli/
 output/
 dist/
+.firebase/
 qa/reports/
 .env
 .env.*

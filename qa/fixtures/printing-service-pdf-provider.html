@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CLICK 360 PDF Provider QA</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../vendor/html2pdf.bundle.min.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../printing-service.js"></script>
+</head>
+<body>
+  <button id="runPdf">Generar PDF QA</button>
+  <script>
+    (() => {
+      const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+      const product = { id:'pdf-provider-product', name:'QR Persistente', code:'PDF-QR-001', price:19.99 };
+      const documentModel = canvasApi.normalizeDocument({
+        paper:{ id:'qa-40x60', mediaType:'roll-1', widthMm:40, heightMm:60, mediaWidthMm:40, mediaHeightMm:60, columns:1, rows:1, dpi:203 },
+        objects:[
+          { id:'qr-main', type:'qr', xMm:3, yMm:3, widthMm:22, heightMm:22, z:1 },
+          { id:'name-main', type:'name', xMm:4, yMm:29, widthMm:32, heightMm:7, z:2 },
+          { id:'price-main', type:'price', xMm:4, yMm:39, widthMm:32, heightMm:8, z:2 },
+          { id:'sku-main', type:'sku', xMm:4, yMm:50, widthMm:32, heightMm:5, z:2 }
+        ],
+        quantity:1,
+        startSlot:1
+      });
+      async function buildNode() {
+        const plan = canvasApi.buildPrintPlan([{ product, copies:documentModel.quantity }], documentModel, { startSlot:1 });
+        const wrap = document.createElement('section');
+        wrap.className = 'printLabels universalPrintLabels';
+        wrap.dataset.renderer = 'universal-mm-v2';
+        wrap.dataset.printPlan = canvasApi.planFingerprint(plan);
+        for (const page of plan.pages) {
+          const pageNode = document.createElement('section');
+          pageNode.className = 'labelPrintPage';
+          pageNode.style.cssText = 'position:relative;width:40mm;height:60mm;overflow:hidden;';
+          for (const cell of page.cells) {
+            if (cell.status !== 'filled') continue;
+            const cellNode = document.createElement('div');
+            cellNode.className = 'labelPrintCell filled';
+            cellNode.style.cssText = `position:absolute;left:${cell.xMm}mm;top:${cell.yMm}mm;width:40mm;height:60mm;overflow:hidden;`;
+            const canvas = document.createElement('canvas');
+            await canvasApi.renderLabelToCanvas(canvas, documentModel, {
+              product,
+              price:'$19.99',
+              sku:product.code,
+              qrPayload:`CLICK360:${product.id}`
+            });
+            const image = document.createElement('img');
+            image.src = canvas.toDataURL('image/png');
+            image.alt = 'Etiqueta PDF QA';
+            image.style.cssText = 'display:block;width:40mm;height:60mm;';
+            cellNode.appendChild(image);
+            pageNode.appendChild(cellNode);
+          }
+          wrap.appendChild(pageNode);
+        }
+        return { node:wrap, plan };
+      }
+      window.__CLICK360_PDF_PROVIDER_QA__ = {
+        async run() {
+          const built = await buildNode();
+          if (!built.node.querySelector('img')) throw new Error('No printable image was generated.');
+          return window.CLICK360_PRINTING.print('pdf', {
+            node:built.node,
+            media:'label',
+            mediaWidthMm:40,
+            mediaHeightMm:60,
+            widthMm:40,
+            heightMm:60,
+            copiesHandled:true,
+            printPlan:built.plan,
+            filename:'click360-pdf-provider-qa.pdf'
+          });
+        }
+      };
+      document.getElementById('runPdf').onclick = () => window.__CLICK360_PDF_PROVIDER_QA__.run();
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>

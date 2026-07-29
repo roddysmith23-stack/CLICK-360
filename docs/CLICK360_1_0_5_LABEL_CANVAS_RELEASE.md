@@ -4,7 +4,7 @@
 
 - Branch: `release/1.0.5-label-canvas-production`
 - Version: `1.0.5`
-- Asset and Service Worker cache: `commercial-1-0-5-r1`
+- Asset and Service Worker cache: `commercial-1-0-5-r4`
 - Base: `main`
 - Status: Draft, not merged and not deployed
 

@@ -96,8 +96,12 @@ async function runChromium() {
     await page.waitForFunction((count) => document.querySelectorAll('[data-ulc-object]').length === count, objectCount);
 
     await page.locator('#ulcSaveTemplate').click();
-    await page.waitForFunction(() => document.querySelector('#ulcTemplates').options.length > 1);
-    await page.locator('#ulcTemplates').selectOption({ index: 1 });
+    await page.waitForSelector('.ulcTemplateCard');
+    const savedTemplate = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state().templates[0]);
+    if (!savedTemplate?.universalDocument?.objects?.some((object) => object.type === 'qr')) {
+      throw new Error(`Saved template did not preserve its universal QR document: ${JSON.stringify(savedTemplate)}`);
+    }
+    await page.locator('[data-ulc-tpl-edit]').first().click();
     await page.locator('.ulcMeasurement summary').click();
     await page.locator('#ulcProfileName').fill('Perfil QA 40x60');
     await page.locator('#ulcSaveProfile').click();
@@ -131,8 +135,7 @@ async function runChromium() {
     await page.locator('#ulcRedo').click();
     await page.locator('#ulcQuantity').fill('3');
     await page.locator('#ulcStartSlot').fill('2');
-    await page.locator('#ulcOutput').selectOption('pdf');
-    await page.locator('#ulcPrint').click();
+    await page.locator('#ulcPdf').click();
     await page.waitForSelector('#click360PrintPortal[data-ready="true"]');
 
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());

@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r1';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r4';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -3349,27 +3349,41 @@ function parseMoney(value) {
     }
 
     // Bind template deletion
-    const labelSample = productsForBiz()[0] || { id: 'sample', businessId: currentBusiness().id, code: 'CLICK360', category: 'Ejemplo', name: 'Producto de ejemplo', qty: 1, price: 10, cardPrice: 10, taxMode: 'inherit', imageData: '' };
-    
-    $$('[data-print-tpl]').forEach((button) => button.onclick = async () => {
-      if (typeof _printDialogState !== 'undefined' && _printDialogState !== 'idle') {
-        return toast('Ya hay una impresión activa. Espera a que termine.', 'warn');
-      }
-      const tplId = button.dataset.printTpl;
-      const template = labelTemplatesForBiz().find(t => t.id === tplId);
+	    const labelSample = productsForBiz()[0] || { id: 'sample', businessId: currentBusiness().id, code: 'CLICK360', category: 'Ejemplo', name: 'Producto de ejemplo', qty: 1, price: 10, cardPrice: 10, taxMode: 'inherit', imageData: '' };
+    const runTemplateOutput = (templateId, mode = 'system') => {
+      const template = labelTemplatesForBiz().find((item) => item.id === templateId);
       if (!template) return toast('Plantilla no encontrada.', 'err');
-      openLabelModal(labelSample, tplId, { directPrint: true });
-    });
+      const products = productsForBiz();
+      const options = mode === 'pdf' ? { directPdf:true } : { directPrint:true };
+      if (products.length <= 1) {
+        return openLabelModal(products[0] || labelSample, templateId, options);
+      }
+      showModal(`<div class="modalHeader"><div><h2>Elegir producto para esta plantilla</h2><p class="fieldHint">El diseño se conserva; el QR y el código se generan con el producto seleccionado.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div><div class="businessSwitchList">${products.map((item) => `<button type="button" class="businessSwitchOption" data-template-product="${actionId(item.id)}"><span>${icon('tag')}<b>${escapeHtml(item.name || 'Producto')}</b><small>${escapeHtml(item.code || '')}</small></span>${icon('chevron-right')}</button>`).join('')}</div>`);
+      $$('[data-template-product]').forEach((itemButton) => {
+        itemButton.onclick = () => {
+          const productId = decodeActionId(itemButton.dataset.templateProduct);
+          const selected = productsForBiz().find((item) => item.id === productId);
+          closeModal();
+          if (!selected) return toast('Producto no encontrado.', 'err');
+          return openLabelModal(selected, templateId, options);
+        };
+      });
+      return null;
+    };
+
+	    $$('[data-print-tpl]').forEach((button) => button.onclick = async () => {
+	      if (typeof _printDialogState !== 'undefined' && _printDialogState !== 'idle') {
+	        return toast('Ya hay una impresión activa. Espera a que termine.', 'warn');
+	      }
+	      runTemplateOutput(button.dataset.printTpl, 'system');
+	    });
 
     $$('[data-pdf-tpl]').forEach((button) => button.onclick = async () => {
       if (typeof _printDialogState !== 'undefined' && _printDialogState !== 'idle') {
         return toast('Ya hay una generación de PDF activa. Espera a que termine.', 'warn');
       }
-      const tplId = button.dataset.pdfTpl;
-      const template = labelTemplatesForBiz().find(t => t.id === tplId);
-      if (!template) return toast('Plantilla no encontrada.', 'err');
-      openLabelModal(labelSample, tplId, { directPdf: true });
-    });
+	      runTemplateOutput(button.dataset.pdfTpl, 'pdf');
+	    });
 
     $$('[data-edit-tpl]').forEach((button) => button.onclick = () => openLabelModal(labelSample, button.dataset.editTpl));
     $$('[data-rename-tpl]').forEach((button) => button.onclick = () => {
@@ -5779,10 +5793,11 @@ function parseMoney(value) {
 	      <footer class="smartWizardFooter"><button type="button" class="btn" id="smartPrintBack">${icon('arrow-left')} Atrás</button><button type="button" class="btn" id="smartPrintHelp">${icon('circle-help')} Ayuda de este paso</button><button type="button" class="btn primary" id="smartPrintNext">Continuar ${icon('arrow-right')}</button></footer>`);
 
     $('#modalRoot .modal')?.classList.add('labelEditorModal');
-    const labelEditorModal = $('#modalRoot .labelEditorModal');
-    labelEditorModal.dataset.labelMode = 'simple';
-    let latestSmartPreflight = null;
-    const editorBusinessIsActive = () => currentBusiness()?.id === editorBusinessId;
+	    const labelEditorModal = $('#modalRoot .labelEditorModal');
+	    labelEditorModal.dataset.labelMode = 'simple';
+	    let latestSmartPreflight = null;
+	    let runPrintJob = async () => null;
+	    const editorBusinessIsActive = () => currentBusiness()?.id === editorBusinessId;
     const smartStepHelp = {
       1:'CLICK abre el diálogo del navegador; la impresora se elige allí.',
       2:'Cuenta cuántos stickers aparecen lado a lado en una fila.',
@@ -5809,8 +5824,11 @@ function parseMoney(value) {
       $('#smartPrintStepText').textContent = `Paso ${smartPrintStep} de 9`;
       $('#smartPrintProgress').value = smartPrintStep;
       $('#smartPrintBack').disabled = smartPrintStep === 1;
-      $('#smartPrintNext').hidden = !simple || smartPrintStep === 9;
-      $('#smartPrintNext').innerHTML = `Continuar ${icon('arrow-right')}`;
+	      $('#smartPrintNext').hidden = !simple;
+	      const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'system';
+	      $('#smartPrintNext').innerHTML = smartPrintStep === 9
+	        ? `${outputMode === 'pdf' ? 'Guardar PDF' : 'Imprimir o guardar PDF'} ${icon(outputMode === 'pdf' ? 'file-down' : 'printer')}`
+	        : `Continuar ${icon('arrow-right')}`;
       labelEditorModal.querySelector(`[data-smart-step="${smartPrintStep}"]`)?.scrollIntoView({ block:'nearest' });
     };
     $$('[data-label-mode]', labelEditorModal).forEach((button) => button.onclick = () => {
@@ -5834,8 +5852,12 @@ function parseMoney(value) {
       if (smartPrintStep === 8 && latestSmartPreflight?.blocking) {
         return toast('Corrige los errores rojos antes de imprimir.', 'err');
       }
-      showSmartPrintStep(smartPrintStep + 1);
-    };
+	      if (smartPrintStep === 9) {
+	        const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'system';
+	        return runPrintJob(outputMode === 'pdf' ? 'pdf' : '');
+	      }
+	      showSmartPrintStep(smartPrintStep + 1);
+	    };
     $('#smartPrintHelp').onclick = () => toast(smartStepHelp[smartPrintStep], 'ok');
     showSmartPrintStep(1);
 	    const canvas = $('#labelPreviewCanvas');
@@ -6117,7 +6139,9 @@ function parseMoney(value) {
 	      editorLayout.customText.visible = $('#labelShowUrl').checked;
 	      updatePreview();
 	    };
-	    $$('input[name="smartPrintOutput"]', labelEditorModal).forEach((input) => { input.onchange = updateSheetPreview; });
+	    $$('input[name="smartPrintOutput"]', labelEditorModal).forEach((input) => {
+	      input.onchange = () => { updateSheetPreview(); showSmartPrintStep(smartPrintStep); };
+	    });
 
     // Wire range inputs
     $('#labelYOffset').oninput = (e) => { $('#yOffsetVal').textContent = e.target.value + 'px'; updatePreview(); };
@@ -6340,8 +6364,10 @@ function parseMoney(value) {
 	       if (tpl) {
 	          activeTemplateId = tpl.id;
 	          $('#deleteTemplateBtn').disabled = false;
-	          editorLayout = normalizedLabelLayout(tpl.layout);
-	          if (!tpl.layout) {
+	          const universalDoc = tpl.universalDocument ? universalDocumentFromTemplate(tpl) : null;
+	          const universalPaper = universalDoc?.paper || null;
+	          editorLayout = universalDoc ? legacyLayoutFromUniversalDocument(universalDoc) : normalizedLabelLayout(tpl.layout);
+	          if (!tpl.layout && !universalDoc) {
 	            const legacyOffset = Number(tpl.yOffsetAdj || 0);
 	            Object.values(editorLayout).forEach((element) => { element.y = Number(element.y || 0) + legacyOffset; });
 	            editorLayout.name.size *= Number(tpl.nameScale || 1);
@@ -6355,20 +6381,20 @@ function parseMoney(value) {
 	          $('#labelYOffset').value = tpl.layout ? (tpl.yOffsetAdj || 0) : 0;
 	          $('#labelNameScale').value = tpl.layout ? (tpl.nameScale || 1.0) : 1.0;
 	          $('#labelPriceScale').value = tpl.layout ? (tpl.priceScale || 1.0) : 1.0;
-          $('#labelWidthMm').value = tpl.widthMm || 60;
-          $('#labelHeightMm').value = tpl.heightMm || 88;
-	          $('#labelPaperType').value = legacyPaperMap[tpl.paperType] || tpl.paperType || 'thermal-60x40';
-	          $('#labelMediaWidth').value = tpl.mediaWidthMm || 0;
-	          $('#labelMediaHeight').value = tpl.mediaHeightMm || 0;
-	          $('#labelColumns').value = tpl.columns || 1;
-	          $('#labelRows').value = tpl.rows || 1;
-	          $('#labelMarginTop').value = tpl.marginTopMm || 0;
-	          $('#labelMarginRight').value = tpl.marginRightMm || 0;
-	          $('#labelMarginBottom').value = tpl.marginBottomMm || 0;
-	          $('#labelMarginLeft').value = tpl.marginLeftMm || 0;
-          $('#labelGapX').value = tpl.gapXmm ?? 2;
-          $('#labelGapY').value = tpl.gapYmm ?? 2;
-          $('#labelDpi').value = tpl.dpi || 203;
+          $('#labelWidthMm').value = universalPaper?.widthMm || tpl.widthMm || 60;
+          $('#labelHeightMm').value = universalPaper?.heightMm || tpl.heightMm || 88;
+	          $('#labelPaperType').value = legacyPaperMap[tpl.paperType] || tpl.paperType || universalPaper?.id || 'thermal-60x40';
+	          $('#labelMediaWidth').value = universalPaper?.mediaWidthMm || tpl.mediaWidthMm || 0;
+	          $('#labelMediaHeight').value = universalPaper?.mediaHeightMm || tpl.mediaHeightMm || 0;
+	          $('#labelColumns').value = universalPaper?.columns || tpl.columns || 1;
+	          $('#labelRows').value = universalPaper?.rows || tpl.rows || 1;
+	          $('#labelMarginTop').value = universalPaper?.marginTopMm || tpl.marginTopMm || 0;
+	          $('#labelMarginRight').value = universalPaper?.marginRightMm || tpl.marginRightMm || 0;
+	          $('#labelMarginBottom').value = universalPaper?.marginBottomMm || tpl.marginBottomMm || 0;
+	          $('#labelMarginLeft').value = universalPaper?.marginLeftMm || tpl.marginLeftMm || 0;
+          $('#labelGapX').value = universalPaper?.gapXmm ?? tpl.gapXmm ?? 2;
+          $('#labelGapY').value = universalPaper?.gapYmm ?? tpl.gapYmm ?? 2;
+          $('#labelDpi').value = universalPaper?.dpi || tpl.dpi || 203;
 	          $('#labelContentRotation').value = [0,90,180,270].includes(Number(tpl.contentRotation)) ? String(tpl.contentRotation) : '0';
 	          $('#labelMeasurementsConfirmed').checked = tpl.measurementsConfirmed === true;
 	          $('#labelShowUrl').checked = tpl.showUrl === true;
@@ -6400,9 +6426,16 @@ function parseMoney(value) {
 		       }
 		       const existing = forceNew ? null : labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	       const name = prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
-	       if (!name?.trim()) return null;
-	       const currentOpts = getOptions();
-	       const tpl = {
+		       if (!name?.trim()) return null;
+		       const currentOpts = getOptions();
+	       const universalDocument = universalDocumentFromTemplate({
+	         ...currentOpts,
+	         layout:currentOpts.layout,
+	         paperType:currentOpts.paperType,
+	         quantity:resolveLabelCopyResult($('#labelCopies')?.value, product.qty, $('#labelUseStock')?.checked === true).count,
+	         startSlot:currentOpts.startSlot
+	       });
+		       const tpl = {
           id: existing?.id || uid('tpl'),
           name: name.trim(),
           bgColor: currentOpts.bgColor,
@@ -6431,9 +6464,11 @@ function parseMoney(value) {
 	          measurementsConfirmed:currentOpts.measurementsConfirmed,
 	          showUrl:currentOpts.showUrl,
 	          showBarcode: currentOpts.showBarcode,
-	          shape: currentOpts.shape,
-	          businessId: editorBusinessId,
+		          shape: currentOpts.shape,
+		          businessId: editorBusinessId,
           layout: currentOpts.layout,
+          universalDocument,
+          renderer:'universal-mm-v2',
           yOffsetAdj: currentOpts.yOffsetAdj,
           nameScale: currentOpts.nameScale,
           priceScale: currentOpts.priceScale,
@@ -6844,12 +6879,12 @@ function parseMoney(value) {
 	      }).catch((error) => toast(error.message || 'No se pudo preparar la prueba.', 'err'));
 	    };
 
-		    const runPrintJob = async (providerId = '') => {
+	    runPrintJob = async (providerId = '') => {
 		       if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
 		       const preflight = updateSheetPreview();
 		       if (!preflight.quantity.valid || preflight.quantity.count < 1) return toast(preflight.quantity.error || 'No hay etiquetas para imprimir.', 'err');
 		       // Solo errores críticos bloquean. Las advertencias (elementos montados, fuera de zona segura) permiten continuar.
-		       const criticalErrors = (preflight.validation?.errors || []).filter(e => 
+		       const criticalErrors = (preflight.validation?.errors || []).filter(e =>
 		         /vacío|inválido|plan|perfil/.test(e.toLowerCase())
 		       );
 		       if (preflight.plan?.valid === false) return toast(preflight.paper.errors?.[0] || 'El plan de impresión no es válido.', 'err');
@@ -6898,8 +6933,83 @@ function parseMoney(value) {
   function universalLabelDocument(template = {}) {
     const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvas) return null;
-    const source = template.universalDocument || template;
-    return canvas.normalizeDocument(source);
+    return universalDocumentFromTemplate(template);
+  }
+  function universalPaperFromTemplate(template = {}) {
+    const preset = LABEL_PAPER_PRESETS[template.paperType] || {};
+    const paper = template.paper || {};
+    const columns = Math.max(1, Number(template.columns ?? paper.columns ?? preset.columns ?? 1));
+    return {
+      id:template.paperType || paper.id || preset.id || 'custom',
+      mediaType:template.mediaType || paper.mediaType || preset.mediaType || (columns > 1 ? `roll-${Math.min(3, columns)}` : 'roll-1'),
+      widthMm:Number(template.widthMm ?? paper.widthMm ?? preset.width ?? 60),
+      heightMm:Number(template.heightMm ?? paper.heightMm ?? preset.height ?? 40),
+      mediaWidthMm:Number(template.mediaWidthMm ?? paper.mediaWidthMm ?? preset.mediaWidth ?? 0),
+      mediaHeightMm:Number(template.mediaHeightMm ?? paper.mediaHeightMm ?? preset.mediaHeight ?? 0),
+      columns,
+      rows:Math.max(1, Number(template.rows ?? paper.rows ?? preset.rows ?? 1)),
+      gapXmm:Number(template.gapXmm ?? template.gapHorizontalMm ?? paper.gapXmm ?? preset.gapX ?? 0),
+      gapYmm:Number(template.gapYmm ?? template.gapVerticalMm ?? paper.gapYmm ?? preset.gapY ?? 0),
+      marginTopMm:Number(template.marginTopMm ?? paper.marginTopMm ?? preset.marginTop ?? 0),
+      marginRightMm:Number(template.marginRightMm ?? paper.marginRightMm ?? preset.marginRight ?? 0),
+      marginBottomMm:Number(template.marginBottomMm ?? paper.marginBottomMm ?? preset.marginBottom ?? 0),
+      marginLeftMm:Number(template.marginLeftMm ?? paper.marginLeftMm ?? preset.marginLeft ?? 0),
+      pitchMm:Number(template.pitchMm ?? paper.pitchMm ?? 0),
+      xOffsetMm:Number(template.xOffsetMm ?? paper.xOffsetMm ?? 0),
+      yOffsetMm:Number(template.yOffsetMm ?? paper.yOffsetMm ?? 0),
+      scaleX:Number(template.scaleX ?? paper.scaleX ?? 1),
+      scaleY:Number(template.scaleY ?? paper.scaleY ?? 1),
+      dpi:Number(template.dpi ?? paper.dpi ?? preset.dpi ?? 203),
+      orientation:template.orientation || paper.orientation || 'portrait'
+    };
+  }
+  function universalDocumentFromTemplate(template = {}) {
+    const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvas) return null;
+    if (template.universalDocument) return canvas.normalizeDocument(template.universalDocument);
+    if (Array.isArray(template.objects) || template.schemaVersion === 2) return canvas.normalizeDocument(template);
+    return canvas.normalizeDocument({
+      schemaVersion:2,
+      paper:universalPaperFromTemplate(template),
+      layout:normalizedLabelLayout(template.layout),
+      quantity:Math.max(1, Number(template.quantity || template.copies || 1)),
+      startSlot:Math.max(1, Number(template.startSlot || 1)),
+      gridMm:Number(template.gridMm || 2),
+      snap:template.snap !== false
+    });
+  }
+  function legacyLayoutFromUniversalDocument(sourceDocument = {}) {
+    const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvas) return normalizedLabelLayout();
+    const documentModel = canvas.normalizeDocument(sourceDocument);
+    const paper = documentModel.paper;
+    const baseWidth = Math.round(Math.max(10, paper.widthMm) * (260 / 60));
+    const baseHeight = Math.round(Math.max(10, paper.heightMm) * (380 / 88));
+    const layout = normalizedLabelLayout();
+    Object.keys(layout).forEach((key) => { layout[key].visible = false; });
+    const keyForType = { qr:'qr', barcode:'barcode', name:'name', price:'price', sku:'code', text:'customText', image:'image' };
+    documentModel.objects.forEach((object) => {
+      const key = keyForType[object.type];
+      if (!key || !layout[key]) return;
+      const width = object.widthMm / Math.max(1, paper.widthMm) * baseWidth;
+      const height = object.heightMm / Math.max(1, paper.heightMm) * baseHeight;
+      const originX = object.xMm / Math.max(1, paper.widthMm) * baseWidth;
+      const originY = object.yMm / Math.max(1, paper.heightMm) * baseHeight;
+      const isBox = ['qr','barcode','logo','image'].includes(key);
+      layout[key] = {
+        ...layout[key],
+        visible:object.visible !== false,
+        locked:object.locked === true,
+        rotation:object.rotation || 0,
+        z:object.z,
+        x:isBox ? originX : originX + width / 2,
+        y:isBox ? originY : originY + height,
+        width,
+        ...(isBox ? { height } : { size:Math.max(6, height / 1.35) })
+      };
+      if (key === 'customText') layout[key].text = object.text || layout[key].text || '';
+    });
+    return normalizedLabelLayout(layout);
   }
   function universalMediaSize(document) {
     const paper = document.paper;
@@ -6981,7 +7091,7 @@ function parseMoney(value) {
       const templates = labelTemplatesForBiz(businessId);
       const template = templates.find((t) => t.id === initialTemplateId) || templates.find((t) => t.isDefault) || null;
       if (!template) return toast('Plantilla no encontrada.', 'err');
-      const documentModel = canvasApi.normalizeDocument(template.universalDocument || template);
+      const documentModel = universalLabelDocument(template);
       const providerId = options.directPdf ? 'pdf' : 'system';
       return printUniversalLabels(product, documentModel, providerId);
     }

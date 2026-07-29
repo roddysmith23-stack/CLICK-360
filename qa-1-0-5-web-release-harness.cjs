@@ -43,19 +43,29 @@ const index = read('index.html');
 const worker = read('service-worker.js');
 const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
+const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r1'/);
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r1/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r1/);
-assert.match(worker, /click360-commercial-1-0-5-r1/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r4'/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r4/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r4/);
+assert.match(worker, /click360-commercial-1-0-5-r4/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2RestaurantAdvancedEnabled', 'p2LogisticsEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
 }
 for (const asset of ['universal-label-canvas.js', 'universal-label-editor.js']) {
-  assert.match(build, new RegExp(`'${asset.replace('.', '\\.')}'`));
+assert.match(build, new RegExp(`'${asset.replace('.', '\\.')}'`));
 }
 assert.doesNotMatch(build, /node_modules|tools\/admin|functions\//);
+assert.match(app, /runTemplateOutput/);
+assert.match(app, /Elegir producto para esta plantilla/);
+assert.doesNotMatch(app, /openLabelModal\(labelSample,\s*tplId/);
+assert.match(app, /universalDocumentFromTemplate/);
+assert.match(app, /universalDocument,/);
+assert.match(app, /renderer:'universal-mm-v2'/);
+assert.match(app, /smartPrintStep === 9[\s\S]{0,260}runPrintJob/);
+assert.match(printing, /click360PdfExportActive/);
+assert.match(printing, /display:block;position:fixed/);
 
 const runtimeFiles = changed.filter((file) => [
   'app.js', 'firebase-service.js', 'printing-service.js', 'runtime-guard.js',

@@ -17,7 +17,7 @@
 - Buttons, headings, arrows, and long labels remain inside their containers.
 - Logo, profile, navigation, and modal controls have improved semantics and
   touch targets.
-- Cache identity is now `commercial-1-0-5-r1`.
+- Cache identity is now `commercial-1-0-5-r4`.
 
 ### Security
 
