@@ -30,8 +30,11 @@
   function pageCss(job = {}) {
     const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
     const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));
+    const receiptMatch = /^receipt-(\d+)$/i.exec(String(job.media || ''));
+    const receiptWidth = width || (receiptMatch ? Number(receiptMatch[1]) : 0);
     const pageSize = job.media === 'label' && width && height
       ? `${width}mm ${height}mm`
+      : String(job.media || '').startsWith('receipt') && receiptWidth ? `${receiptWidth}mm auto`
       : job.media === 'receipt-80' ? '80mm auto'
         : job.media === 'receipt-57' ? '57mm auto' : 'A4';
     const margin = job.media === 'a4' || !job.media ? '8mm' : '0';
@@ -150,9 +153,12 @@
       await waitForResources(element);
       const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
       const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));
+      const receiptMatch = /^receipt-(\d+)$/i.exec(String(job.media || ''));
+      const receiptWidth = width || (receiptMatch ? Number(receiptMatch[1]) : 0);
       const format = job.media === 'label' ? [width, height]
-        : job.media === 'receipt-80' ? [80, 220]
-          : job.media === 'receipt-57' ? [57, 220] : 'a4';
+        : String(job.media || '').startsWith('receipt') && receiptWidth ? [receiptWidth, 220]
+          : job.media === 'receipt-80' ? [80, 220]
+            : job.media === 'receipt-57' ? [57, 220] : 'a4';
       try {
         await root.html2pdf().set({
           margin: job.media === 'label' ? 0 : job.media?.startsWith('receipt') ? 2 : 8,

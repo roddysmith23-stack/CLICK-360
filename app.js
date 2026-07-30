@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r10';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r11';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -27,6 +27,16 @@
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
   const WORKER_TENANT_ACCESS_ENABLED = true;
+  const RECEIPT_FOOTER_TEXT = 'Control total de tu negocio con CLICK 360';
+  const RECEIPT_DEFAULT_NOTE = 'Comprobante interno. No válido como factura electrónica.';
+  const RECEIPT_WIDTH_PRESETS = Object.freeze({
+    'receipt-57': { label:'Ticket 57 mm centrado', widthMm:57 },
+    'receipt-58': { label:'Ticket 58 mm', widthMm:58 },
+    'receipt-60': { label:'Ticket 60 mm', widthMm:60 },
+    'receipt-76': { label:'Ticket 76 mm', widthMm:76 },
+    'receipt-80': { label:'Ticket 80 mm', widthMm:80 },
+    'receipt-custom': { label:'Personalizado', widthMm:80 }
+  });
 
   // P1 FIX: Guard para cambio atómico de negocio.
   // Previene doble-tap, herencia de readOnly entre negocios y estado visual contradictorio.
@@ -92,6 +102,16 @@
     if (reason === 'auth_not_ready') return 'La sesión aún se está verificando. Intenta nuevamente en unos segundos.';
     if (reason === 'tenant_guard_not_ready') return 'La cuenta aún está preparando la protección de datos. Intenta nuevamente en unos segundos.';
     return gate.message || 'No se pudo guardar ahora. Tus datos anteriores siguen intactos.';
+  }
+  function clampNumber(value, min, max, fallback = min) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.max(min, Math.min(max, number));
+  }
+  function markAppReady(stage = 'app') {
+    window.__click360AppReady = true;
+    window.dispatchEvent(new CustomEvent('click360:ready', { detail:{ stage, appVersion:APP_RELEASE_VERSION, assetVersion:APP_ASSET_VERSION } }));
+    if (typeof window.click360MarkSplashReady === 'function') window.click360MarkSplashReady();
   }
 
   /**
@@ -1521,6 +1541,45 @@ function parseMoney(value) {
   function restaurantRecipesForBiz(bid=currentBusiness()?.id){ return (state.restaurantRecipes || []).filter(recipe=>recipe.businessId===bid); }
   function logisticsForBiz(kind, bid=currentBusiness()?.id){ return (state.logistics?.[kind] || []).filter(entry=>entry.businessId===bid); }
   function financeForBiz(kind, bid=currentBusiness()?.id){ return (state.finance?.[kind] || []).filter(entry=>entry.businessId===bid); }
+  function businessHasMeaningfulProfile(business = currentBusiness()) {
+    const settings = business?.settings || {};
+    const name = String(business?.name || '').trim().toLowerCase();
+    const defaultNames = new Set(['', 'mi negocio', 'nuevo negocio', 'empresa 001', 'empresa-001']);
+    return !defaultNames.has(name)
+      || !!String(settings.ruc || '').trim()
+      || !!String(settings.phone || '').trim()
+      || !!String(settings.address || '').trim()
+      || !!String(settings.logoUrl || '').trim()
+      || !!String(settings.ownerName || '').trim();
+  }
+  function businessMaterialRecordCount(businessId = currentBusiness()?.id) {
+    if (!businessId) return 0;
+    const byBiz = (list = []) => Array.isArray(list) ? list.filter((item) => item?.businessId === businessId).length : 0;
+    const logisticsCount = Object.values(state.logistics || {}).reduce((sum, list) => sum + byBiz(list), 0);
+    const financeCount = Object.values(state.finance || {}).reduce((sum, list) => sum + byBiz(list), 0);
+    const legacyBusinessId = state.settings?.legacyDataBusinessId;
+    const customers = (state.settings?.customers || []).filter((item) => item.businessId === businessId || (!item.businessId && legacyBusinessId === businessId)).length;
+    const reminders = (state.settings?.reminders || []).filter((item) => item.businessId === businessId || (!item.businessId && legacyBusinessId === businessId)).length;
+    const labels = (state.settings?.labelTemplates || []).filter((item) => item.businessId === businessId || (!item.businessId && legacyBusinessId === businessId)).length;
+    return productsForBiz(businessId).length
+      + salesForBiz(businessId).length
+      + movementsForBiz(businessId).length
+      + tablesForBiz(businessId).length
+      + tableOrdersForBiz(businessId).length
+      + restaurantRecipesForBiz(businessId).length
+      + byBiz(state.invoices || [])
+      + customers
+      + reminders
+      + labels
+      + logisticsCount
+      + financeCount;
+  }
+  function shouldPromptInitialBusinessSetup(access, business = currentBusiness()) {
+    if (onboardingPrompted || access.source !== 'accountAccess' || access.readOnly || !isOwnerUser()) return false;
+    if (state.settings?.onboarding?.completedAt) return false;
+    if (!business || state.businesses.length > 1) return false;
+    return !businessHasMeaningfulProfile(business) && businessMaterialRecordCount(business.id) === 0;
+  }
   function labelTemplatesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
     return (state.settings?.labelTemplates || []).filter((template) => template.businessId === bid
@@ -1586,7 +1645,7 @@ function parseMoney(value) {
   }
   function isLogisticsBusiness(business=currentBusiness()) {
     const type = String(business?.type || '').toLowerCase();
-    return ['minimarket', 'ferreteria', 'ropa', 'ganaderia', 'otro'].includes(type);
+    return ['logistica', 'distribucion', 'transporte'].includes(type);
   }
   function logisticsModuleEnabled(business=currentBusiness()) {
     return isLogisticsBusiness(business) && p2Flag('p2LogisticsEnabled');
@@ -1794,11 +1853,13 @@ function parseMoney(value) {
           </div>
         </section>
       </main>`;
+    markAppReady('login');
   }
 
   function renderPaused(b) {
     app.innerHTML = `<main class="pausedPage"><section class="card"><div class="logoMark" style="justify-content:center;margin-bottom:18px"><div class="logoIcon"></div><div class="logoText"><b>CLICK</b><span>360</span></div></div><h1>Cuenta ${escapeHtml(b.status)}</h1><p>Tu cuenta está ${escapeHtml(b.status)}. Contacta a CLICK 360 para reactivar tu servicio.</p><button class="btn primary block" id="logoutPaused">Cerrar sesión</button></section></main>`;
     $('#logoutPaused').onclick=()=>window.click360AppLogout();
+    markAppReady('paused');
   }
 
 	  function shell(content, active='home') {
@@ -1869,7 +1930,8 @@ function parseMoney(value) {
 	  function primaryRouteKeys() {
 	    const routes = ['home','inventory','sell','cash'];
 	    if (restaurantModuleEnabled()) routes.push('tables','kitchen','bar');
-	    routes.push('finance','workers','reminders','more');
+	    if (logisticsModuleEnabled()) routes.push('logistics');
+	    routes.push('finance','workers','reminders','reports','crm','more');
 	    return routes;
 	  }
 	  function allowedRoutes(){
@@ -1883,7 +1945,8 @@ function parseMoney(value) {
     const iconMap = {
       home:['home', 'Inicio'], inventory:['package', 'Inventario'], sell:['shopping-cart', 'Vender'], cash:['credit-card', 'Caja'],
       tables:['armchair', 'Mesas'], kitchen:['chef-hat', 'Cocina'], bar:['wine', 'Barra'], finance:['wallet-cards', 'Finanzas'],
-      workers:['users-round', 'Trabajadores'], reminders:['alarm-clock', 'Recordatorios'], more:['menu', 'Más']
+      logistics:['truck', 'Rutas'], workers:['users-round', 'Trabajadores'], reminders:['alarm-clock', 'Recordatorios'],
+      reports:['chart-no-axes-combined', 'Reportes'], crm:['contact-round', 'Clientes'], more:['menu', 'Más']
     };
     const items = allowedRoutes().map((key) => [key, icon(iconMap[key]?.[0] || 'circle'), iconMap[key]?.[1] || key]);
     return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}"${active===key?' aria-current="page"':''}>${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${label}</span></button>`).join('');
@@ -1948,6 +2011,7 @@ function parseMoney(value) {
       bindShell(); bindView(r);
       checkDueReminders();
       if (r === 'home') setTimeout(showOnboardingForNewAccount, 0);
+      markAppReady(`route:${r}`);
 	    } catch(e) {
 	      console.error("Error al renderizar la app:", e);
 	      const report = window.CLICK360_RUNTIME_GUARD?.record?.({
@@ -1957,6 +2021,7 @@ function parseMoney(value) {
 	      });
 	      app.innerHTML = `<main class="friendlyError" role="alert"><div>${icon('refresh-cw')}<h2>No pudimos abrir esta sección</h2><p>Tu información sigue protegida. Actualiza CLICK 360 e inténtalo nuevamente.</p>${report?.reportId ? `<small>Código de ayuda: ${escapeHtml(report.reportId)}</small>` : ''}<button class="btn primary" onclick="location.reload()">Actualizar aplicación</button></div></main>`;
 	      refreshIcons();
+	      markAppReady('error');
 	    }
   }
 
@@ -2721,9 +2786,9 @@ function parseMoney(value) {
 	  }
 	  function showOnboardingForNewAccount() {
 	    const access = accessInfo();
-    if (onboardingPrompted || access.source !== 'accountAccess' || access.readOnly || !isOwnerUser() || state.settings?.onboarding?.completedAt) return;
-    onboardingPrompted = true;
 	    const business = currentBusiness();
+    if (!shouldPromptInitialBusinessSetup(access, business)) return;
+    onboardingPrompted = true;
 		    const onboardingAction = ['trial', 'trial_active'].includes(access.mode) ? 'Comenzar prueba' : 'Guardar y continuar';
 		    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Apellido</label><input id="onboardingLastName" autocomplete="family-name"></div><div class="field"><label>Teléfono</label><input id="onboardingPhone" type="tel" autocomplete="tel" required placeholder="0999999999"></div><div class="field"><label>País</label><select id="onboardingCountry"><option value="EC">Ecuador</option><option value="CO">Colombia</option><option value="PE">Perú</option><option value="MX">México</option><option value="US">Estados Unidos</option><option value="other">Otro</option></select></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><div class="field"><label>Moneda</label><select id="onboardingCurrency"><option value="USD">USD</option><option value="COP">COP</option><option value="PEN">PEN</option><option value="MXN">MXN</option><option value="EUR">EUR</option></select></div><div class="field"><label>Zona horaria</label><select id="onboardingTimezone"><option value="America/Guayaquil">America/Guayaquil</option><option value="America/Bogota">America/Bogota</option><option value="America/Lima">America/Lima</option><option value="America/Mexico_City">America/Mexico_City</option><option value="America/New_York">America/New_York</option><option value="Europe/Madrid">Europe/Madrid</option></select></div><label class="consentCheck full"><input id="onboardingTerms" type="checkbox" required><span>Acepto los Términos y la Política de privacidad de CLICK 360, versión ${escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14')}.</span></label><button class="btn primary block" type="submit">${onboardingAction}</button></form>`);
 	    $('#onboardingForm').onsubmit = async (event) => {
@@ -3303,8 +3368,8 @@ function parseMoney(value) {
 	  }
 	  function logisticsView() {
 	    if (!logisticsModuleEnabled()) {
-	      return `<div class="pageHead"><div><h1>Logística</h1><p>Disponible para minimarkets, tiendas, distribución y rutas.</p></div></div>
-	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">Selecciona Minimarket, Ferretería, Tienda o Distribución en Ajustes para usar rutas locales.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
+	      return `<div class="pageHead"><div><h1>Logística</h1><p>Disponible al configurar el negocio como logística, distribución o transporte.</p></div></div>
+	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">Selecciona Logística / distribución / transporte en Ajustes para activar rutas, vehículos, carga y liquidación.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
 	    }
 	    const vehicles = logisticsForBiz('vehicles');
 	    const routes = logisticsForBiz('routes').slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
@@ -3592,14 +3657,7 @@ function parseMoney(value) {
 
 		function moreView(){
 		    const ownerTools = isOwnerUser() ? `
-		      <button class="card bigRow" data-more="reports"><span>${icon('chart-no-axes-combined')} Reportes</span>${icon('chevron-right')}</button>
-	      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
-	      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
-	      ${restaurantModuleEnabled() ? `<button class="card bigRow" data-more="tables"><span>${icon('utensils')} Mesas / Restaurante</span>${icon('chevron-right')}</button>` : ''}
-	      ${logisticsModuleEnabled() ? `<button class="card bigRow" data-more="logistics"><span>${icon('truck')} Logística y rutas</span>${icon('chevron-right')}</button>` : ''}
-	      <button class="card bigRow" data-more="finance"><span>${icon('wallet-cards')} Finanzas</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
-		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
 		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
@@ -3623,18 +3681,36 @@ function parseMoney(value) {
 		  function printingPreferences() {
 		    try {
 		      const parsed = JSON.parse(localStorage.getItem(printingPreferencesKey()) || '{}');
-		      return { provider: ['system', 'pdf', 'm02x-bluetooth', 'native-bridge'].includes(parsed.provider) ? parsed.provider : 'system', media: ['receipt-80', 'receipt-57', 'a4'].includes(parsed.media) ? parsed.media : 'receipt-80', copies: Math.max(1, Math.min(20, Number(parsed.copies || 1))) };
+		      return { provider: ['system', 'pdf', 'm02x-bluetooth', 'native-bridge'].includes(parsed.provider) ? parsed.provider : 'system', media: [...Object.keys(RECEIPT_WIDTH_PRESETS), 'a4'].includes(parsed.media) ? parsed.media : 'receipt-80', copies: Math.max(1, Math.min(20, Number(parsed.copies || 1))) };
 		    } catch { return { provider: 'system', media: 'receipt-80', copies: 1 }; }
 		  }
 			  function savePrintingPreferences(next) {
 			    try { localStorage.setItem(printingPreferencesKey(), JSON.stringify(next)); } catch {}
 			  }
+      function receiptWidthOptionsHtml(selected = 'receipt-80') {
+        return Object.entries(RECEIPT_WIDTH_PRESETS)
+          .map(([value, preset]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${escapeHtml(preset.label)}</option>`)
+          .join('');
+      }
+      function receiptWidthMmFromTemplate(template = {}) {
+        if (template.width === 'receipt-custom') return clampNumber(template.customWidthMm, 45, 110, 80);
+        return RECEIPT_WIDTH_PRESETS[template.width]?.widthMm || 80;
+      }
+      function receiptPrintMedia(template = {}) {
+        const widthMm = receiptWidthMmFromTemplate(template);
+        if (template.width && template.width !== 'receipt-custom') return template.width;
+        if (widthMm <= 60) return 'receipt-57';
+        if (widthMm <= 76) return 'receipt-76';
+        return 'receipt-80';
+      }
 			  function receiptTemplatePreferences() {
 			    const template = currentBusiness()?.settings?.receiptTemplate || {};
+          const width = RECEIPT_WIDTH_PRESETS[template.width] ? template.width : 'receipt-80';
 			    return {
-			      footer: String(template.footer || 'Control total de tu negocio con CLICK 360').slice(0, 120),
-			      note: String(template.note || 'Comprobante interno. No válido como factura electrónica.').slice(0, 160),
-			      width: ['receipt-57','receipt-80'].includes(template.width) ? template.width : 'receipt-80',
+			      footer: RECEIPT_FOOTER_TEXT,
+			      note: String(template.note || RECEIPT_DEFAULT_NOTE).slice(0, 160),
+			      width,
+            customWidthMm: clampNumber(template.customWidthMm, 45, 110, RECEIPT_WIDTH_PRESETS[width]?.widthMm || 80),
 			      showLogo: template.showLogo !== false
 			    };
 			  }
@@ -3642,7 +3718,7 @@ function parseMoney(value) {
 			    const business = currentBusiness();
 			    if (!business) return false;
 			    business.settings ||= {};
-			    business.settings.receiptTemplate = { ...receiptTemplatePreferences(), ...next, updatedAt:new Date().toISOString() };
+			    business.settings.receiptTemplate = { ...receiptTemplatePreferences(), ...next, footer:RECEIPT_FOOTER_TEXT, updatedAt:new Date().toISOString() };
 			    addAudit('receipt_template_updated', { businessId:business.id, width:business.settings.receiptTemplate.width });
 			    return save();
 			  }
@@ -3661,7 +3737,7 @@ function parseMoney(value) {
 		      <section class="card sectionCard printingControlPanel">
 		        <div class="formGrid">
 		          <div class="field"><label>Salida</label><select id="printingProvider"><option value="system" ${preferences.provider === 'system' ? 'selected' : ''}>Impresión del sistema</option><option value="pdf" ${preferences.provider === 'pdf' ? 'selected' : ''}>Guardar PDF</option><option value="m02x-bluetooth" ${preferences.provider === 'm02x-bluetooth' ? 'selected' : ''}>M02X Bluetooth</option><option value="native-bridge" ${preferences.provider === 'native-bridge' ? 'selected' : ''}>Puente nativo</option></select></div>
-		          <div class="field"><label>Formato</label><select id="printingMedia"><option value="receipt-80" ${preferences.media === 'receipt-80' ? 'selected' : ''}>Ticket 80 mm</option><option value="receipt-57" ${preferences.media === 'receipt-57' ? 'selected' : ''}>Ticket 57 mm</option><option value="a4" ${preferences.media === 'a4' ? 'selected' : ''}>A4</option></select></div>
+		          <div class="field"><label>Formato</label><select id="printingMedia">${receiptWidthOptionsHtml(preferences.media)}<option value="a4" ${preferences.media === 'a4' ? 'selected' : ''}>A4</option></select></div>
 		          <div class="field"><label>Copias</label><input id="printingCopies" type="number" min="1" max="20" value="${preferences.copies}"></div>
 		        </div>
 		        <div class="printerPrimaryActions"><button class="btn primary" id="printerConnect">${icon('search')} Buscar o preparar</button><button class="btn" id="printerTest">${icon('printer-check')} Imprimir prueba</button><button class="btn" id="printerDisconnect">${icon('unplug')} Desconectar</button><button class="btn" id="printerForget">${icon('trash-2')} Olvidar dispositivo</button></div>
@@ -3677,9 +3753,10 @@ function parseMoney(value) {
 			        <h3>Plantilla de comprobante de venta</h3>
 			        <p class="fieldHint">Ajusta el ticket de ventas. El pie de CLICK 360 se conserva para identificar el sistema.</p>
 			        <div class="formGrid">
-			          <div class="field"><label>Ancho</label><select id="receiptTemplateWidth"><option value="receipt-80" ${receiptTemplate.width === 'receipt-80' ? 'selected' : ''}>Ticket 80 mm</option><option value="receipt-57" ${receiptTemplate.width === 'receipt-57' ? 'selected' : ''}>Ticket 57 mm</option></select></div>
+			          <div class="field"><label>Ancho</label><select id="receiptTemplateWidth">${receiptWidthOptionsHtml(receiptTemplate.width)}</select></div>
+			          <div class="field"><label>Ancho personalizado (mm)</label><input id="receiptTemplateCustomWidth" type="number" min="45" max="110" step="1" value="${numericInputValue(receiptTemplate.customWidthMm, receiptWidthMmFromTemplate(receiptTemplate))}"></div>
 			          <label class="consentCheck"><input type="checkbox" id="receiptTemplateLogo" ${receiptTemplate.showLogo ? 'checked' : ''}><span>Mostrar logo del negocio</span></label>
-			          <div class="field full"><label>Pie principal</label><input id="receiptTemplateFooter" maxlength="120" value="${escapeHtml(receiptTemplate.footer)}"></div>
+			          <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
 			          <div class="field full"><label>Nota legal / interna</label><textarea id="receiptTemplateNote" maxlength="160">${escapeHtml(receiptTemplate.note)}</textarea></div>
 			        </div>
 			        <button type="button" class="btn primary block" id="saveReceiptTemplateBtn">Guardar plantilla de comprobante</button>
@@ -3812,6 +3889,7 @@ function parseMoney(value) {
       </section>
 
 	      ${isRestaurantBusiness(b) ? `<section class="card sectionCard" style="margin-top:14px;${ownerOnlyStyle}"><h3>Distribuci\u00f3n de mesas</h3><p class="fieldHint">Organiza formas, colores y posiciones para este negocio.</p><button type="button" class="btn silver block" id="configureTablesBtn">${icon('layout-grid')} Configurar plano de mesas</button></section>` : ''}
+	      ${isLogisticsBusiness(b) ? `<section class="card sectionCard" style="margin-top:14px;${ownerOnlyStyle}"><h3>Logística y rutas</h3><p class="fieldHint">Este negocio usa vehículos, rutas, hojas de carga, cobranzas y liquidación diaria.</p><button type="button" class="btn silver block" id="configureLogisticsBtn">${icon('truck')} Abrir rutas y logística</button></section>` : ''}
 
 	      <section class="card sectionCard" style="margin-top:14px;${ownerOnlyStyle}">
 	        <h3>Agregar otro negocio</h3>
@@ -3842,6 +3920,7 @@ function parseMoney(value) {
     ['barberia','Barbería'],
     ['ganaderia','Ganadería'],
     ['ferreteria','Ferretería'],
+    ['logistica','Logística / distribución / transporte'],
     ['otro','Otro']
   ].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
 
@@ -5272,11 +5351,12 @@ function parseMoney(value) {
 		    });
 			    $('#printingReportAction')?.addEventListener('click', () => renderApp('reports'));
 			    $('#saveReceiptTemplateBtn')?.addEventListener('click', () => {
+			      const requestedWidth = $('#receiptTemplateWidth')?.value || 'receipt-80';
 			      const ok = saveReceiptTemplatePreferences({
-			        width: $('#receiptTemplateWidth')?.value === 'receipt-57' ? 'receipt-57' : 'receipt-80',
+			        width: RECEIPT_WIDTH_PRESETS[requestedWidth] ? requestedWidth : 'receipt-80',
+			        customWidthMm: clampNumber($('#receiptTemplateCustomWidth')?.value, 45, 110, 80),
 			        showLogo: $('#receiptTemplateLogo')?.checked === true,
-			        footer: ($('#receiptTemplateFooter')?.value || '').trim() || 'Control total de tu negocio con CLICK 360',
-			        note: ($('#receiptTemplateNote')?.value || '').trim() || 'Comprobante interno. No válido como factura electrónica.'
+			        note: ($('#receiptTemplateNote')?.value || '').trim() || RECEIPT_DEFAULT_NOTE
 			      });
 			      if (!ok) return;
 			      renderApp('printing');
@@ -5550,6 +5630,7 @@ function parseMoney(value) {
 
   function bindSettings(){
     $('#configureTablesBtn')?.addEventListener('click', () => renderApp('tables'));
+    $('#configureLogisticsBtn')?.addEventListener('click', () => renderApp('logistics'));
     let pendingLogoUrl = safeImageSrc((currentBusiness().settings || {}).logoUrl);
     const logoUpload = $('#bizLogoUpload');
     if (logoUpload) {
@@ -8545,19 +8626,22 @@ function parseMoney(value) {
 	    const bizSettings = business.settings || {};
 	    const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
 	    const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
-		    const address = bizSettings.address ? `<div style="text-align:center; font-size:10px;">${escapeHtml(bizSettings.address)}</div>` : '';
+	    const address = bizSettings.address ? `<div style="text-align:center; font-size:10px;">${escapeHtml(bizSettings.address)}</div>` : '';
 	    const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
 	    const receiptTemplate = receiptTemplatePreferences();
-	    const receiptWidthMm = receiptTemplate.width === 'receipt-57' ? 57 : 80;
-	    const logoUrl = receiptLogoSrc && receiptTemplate.showLogo ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:${receiptWidthMm === 57 ? 44 : 60}mm; max-height:26mm; object-fit:contain;"></div>` : '';
+	    const receiptWidthMm = receiptWidthMmFromTemplate(receiptTemplate);
+      const compactReceipt = receiptWidthMm <= 60;
+      const receiptPaddingMm = compactReceipt ? 2 : 3;
+      const receiptMedia = receiptPrintMedia(receiptTemplate);
+	    const logoUrl = receiptLogoSrc && receiptTemplate.showLogo ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:${compactReceipt ? Math.max(32, receiptWidthMm - 13) : Math.min(60, receiptWidthMm - 16)}mm; max-height:${compactReceipt ? 20 : 26}mm; object-fit:contain;"></div>` : '';
 		    const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
 
     const receiptHtml = `
-	      <div style="box-sizing:border-box;font-family:monospace; color:#000; font-size:${receiptWidthMm === 57 ? 10 : 12}px; margin:0; padding:3mm; width:${receiptWidthMm}mm; max-width:${receiptWidthMm}mm; background:white; line-height:1.35; overflow-wrap:anywhere;">
+	      <div style="box-sizing:border-box;font-family:monospace; color:#000; font-size:${compactReceipt ? 9.5 : 12}px; margin:0 auto; padding:${receiptPaddingMm}mm; width:${receiptWidthMm}mm; max-width:${receiptWidthMm}mm; background:white; line-height:${compactReceipt ? 1.25 : 1.35}; overflow-wrap:anywhere;text-align:left;">
         ${logoUrl}
-		        <h2 style="font-size:${receiptWidthMm === 57 ? 12 : 16}px; margin:0 0 2px; text-align:center; font-weight:bold;word-break:break-word;">${escapeHtml(business.name)}</h2>
+		        <h2 style="font-size:${compactReceipt ? 11.5 : 16}px; margin:0 0 2px; text-align:center; font-weight:bold;word-break:break-word;">${escapeHtml(business.name)}</h2>
 	        ${ruc}${phone}${address}
-        <div style="text-align:center; margin:8px 0; font-weight:bold; font-size:13px; border-top:1px dashed #000; border-bottom:1px dashed #000; padding:4px 0;">COMPROBANTE DE VENTA</div>
+        <div style="text-align:center; margin:8px 0; font-weight:bold; font-size:${compactReceipt ? 11 : 13}px; border-top:1px dashed #000; border-bottom:1px dashed #000; padding:4px 0;">COMPROBANTE DE VENTA</div>
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>No. Ticket:</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Fecha/Hora:</span><span>${escapeHtml(s.when)}</span></div>
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Método:</span><span>${escapeHtml(s.method)}</span></div>
@@ -8566,26 +8650,26 @@ function parseMoney(value) {
         ${s.customerPhone ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Teléfono:</span><span>${escapeHtml(s.customerPhone)}</span></div>` : ''}
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendedor:</span><span>${escapeHtml(s.createdBy || s.user || 'Sistema')}</span></div>
         <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-	        <table style="width:100%; font-size:${receiptWidthMm === 57 ? 9 : 11}px; border-collapse:collapse;table-layout:fixed;">
+	        <table style="width:100%; font-size:${compactReceipt ? 8.5 : 11}px; border-collapse:collapse;table-layout:fixed;">
           <thead>
             <tr style="border-bottom:1px solid #000;"><th style="text-align:left;">Detalle</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Total</th></tr>
           </thead>
           <tbody>
-		            ${saleItems(s).map(i=>`<tr><td style="padding:4px 3px 4px 0;word-break:break-word;">${escapeHtml(i.name)}</td><td style="text-align:center;width:12mm;">${i.qty}</td><td style="text-align:right;width:${receiptWidthMm === 57 ? 17 : 22}mm;">${fmt(i.total ?? (i.price*i.qty))}</td></tr>`).join('')}
+		            ${saleItems(s).map(i=>`<tr><td style="padding:4px 3px 4px 0;word-break:break-word;">${escapeHtml(i.name)}</td><td style="text-align:center;width:${compactReceipt ? 8 : 12}mm;">${i.qty}</td><td style="text-align:right;width:${compactReceipt ? 15 : 22}mm;word-break:normal;">${fmt(i.total ?? (i.price*i.qty))}</td></tr>`).join('')}
           </tbody>
         </table>
         <div style="border-top:1px dashed #000; margin:8px 0;"></div>
 	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.receiptSubtotal ?? (Number(s.subtotal || 0) + Number(s.discount || 0)))}</span></div>
         ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA (${currentIva}%):</span><span>${fmt(s.iva)}</span></div>` : ''}
         ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
-        <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px; font-weight:bold; border-top:1px solid #000; padding-top:4px;"><span>TOTAL:</span><span>${fmt(s.total)}</span></div>
+        <div style="display:flex; justify-content:space-between; gap:6px; margin-bottom:4px; font-size:${compactReceipt ? 12 : 14}px; font-weight:bold; border-top:1px solid #000; padding-top:4px;"><span>TOTAL:</span><span style="text-align:right;">${fmt(s.total)}</span></div>
 	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(collectedAmount(s))}</span></div>
 	        ${s.method === 'Efectivo' && Number(s.tendered || 0) > 0 ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo entregado:</span><span>${fmt(s.tendered)}</span></div>` : ''}
         ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#d9534f; font-weight:bold;"><span>Saldo Pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
 	        ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha de retiro:</span><span>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(`${s.dueDate}T12:00:00`, 'es-EC', businessTimeZone(), false) || s.dueDate)}</span></div>` : ''}
 	        ${s.termsAccepted ? `<div style="border-top:1px dashed #000;margin-top:8px;padding-top:6px;font-size:9px;"><b>Términos de apartado v${escapeHtml(s.termsVersion || '1')} aceptados:</b><br>${escapeHtml(s.terms || '')}</div>` : ''}
         <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
-		        <div style="text-align:center; font-size:${receiptWidthMm === 57 ? 8 : 10}px;word-break:break-word;">¡Gracias por su compra!<br><small>${escapeHtml(receiptTemplate.footer || 'Control total de tu negocio con CLICK 360')}</small><br><small style="display:block;margin-top:5px;">${escapeHtml(receiptTemplate.note || 'Comprobante interno. No válido como factura electrónica.')}</small></div>
+		        <div style="text-align:center; font-size:${compactReceipt ? 7.5 : 10}px;word-break:break-word;">¡Gracias por su compra!<br><small>${escapeHtml(RECEIPT_FOOTER_TEXT)}</small><br><small style="display:block;margin-top:5px;">${escapeHtml(receiptTemplate.note || RECEIPT_DEFAULT_NOTE)}</small></div>
 	      </div>
     `;
 
@@ -8619,8 +8703,8 @@ function parseMoney(value) {
        };
     }
 
-		    $('#printReceiptBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptTemplate.width, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'system');
-		    $('#downloadPdfBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptTemplate.width, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'pdf');
+		    $('#printReceiptBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptMedia, mediaWidthMm:receiptWidthMm, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'system');
+		    $('#downloadPdfBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptMedia, mediaWidthMm:receiptWidthMm, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'pdf');
 
     $('#downloadImgBtn').onclick = () => {
       downloadHtmlAsPng(receiptHtml, `Recibo_${s.id.slice(-6).toUpperCase()}.png`);
