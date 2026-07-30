@@ -172,6 +172,6 @@ assert(app.includes('window.click360GetReliabilityDiagnostics'), 'UI exposes saf
 assert(runtime.includes('reliability:') && runtime.includes('lockAgeMs') && runtime.includes('hasDirtyFields'), 'runtime reports sanitized reliability fields');
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');
 assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is current candidate');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r10'"), 'service worker cache is current');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r11'"), 'service worker cache is current');
 
 console.log('PASS P1.1c reliability sync recovery harness: stale locks recover, real pending/conflicts stay protected');

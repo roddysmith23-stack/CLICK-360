@@ -4,7 +4,7 @@
 
 - Branch: `hotfix/1-0-5-restaurant-logistics-ux`
 - Version: `1.0.5`
-- Asset and Service Worker cache: `commercial-1-0-5-r10`
+- Asset and Service Worker cache: `commercial-1-0-5-r11`
 - Base: `main`
 - Status: Hosting-only frontend hotfix candidate
 
