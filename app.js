@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r9';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r10';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -26,7 +26,7 @@
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
-  const WORKER_TENANT_ACCESS_ENABLED = false;
+  const WORKER_TENANT_ACCESS_ENABLED = true;
 
   // P1 FIX: Guard para cambio atómico de negocio.
   // Previene doble-tap, herencia de readOnly entre negocios y estado visual contradictorio.
@@ -321,7 +321,7 @@
     _printDialogState = state;
     // Disable/enable primary print buttons while printing is active
     if (typeof document !== 'undefined') {
-      ['printOne', 'savePdfBtn', 'browserPrintBtn', 'ulcPrint', 'ulcPdf', 'ulcSystemPrint'].forEach(id => {
+      ['printOne', 'savePdfBtn', 'browserPrintBtn', 'ulcPrint', 'ulcSystemPrint'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = (state !== 'idle' && state !== 'finished');
       });
@@ -1801,7 +1801,7 @@ function parseMoney(value) {
     $('#logoutPaused').onclick=()=>window.click360AppLogout();
   }
 
-  function shell(content, active='home') {
+	  function shell(content, active='home') {
     const isWorkingDateActive = !!workingDate;
     const badgeBorder = isWorkingDateActive ? 'border:2px solid var(--gold); background:rgba(244,196,49,0.25);' : 'border:1px solid rgba(244,196,49,0.25); background:rgba(244,196,49,0.12);';
     const clearDateBtn = isWorkingDateActive ? `<button type="button" id="clearWorkingDateBtn" style="background:none; border:none; color:#ff4d4d; cursor:pointer; font-size:14px; margin-left:6px; padding:0; display:inline-flex; align-items:center;" title="Volver a hoy">✕</button>` : '';
@@ -1833,7 +1833,7 @@ function parseMoney(value) {
         : (authUser().name || 'U').charAt(0).toUpperCase());
     const unreadCount = notificationItems().filter((item) => !item.read).length;
 
-	    return `<div class="app"><div class="desktopLayout">
+		    return `<div class="app"><div class="desktopLayout">
 	      <aside class="sidebar flex-sidebar">
 	        <div>
 		          <button type="button" class="logoMark sidebarBrand" onclick="window.location.hash='#home'" aria-label="Ir a Inicio">${logoIconSide}<span class="logoText" style="font-size:28px;"><b>CLICK</b><span>360</span><small class="versionBadge">${escapeHtml(APP_VISIBLE_VERSION)}</small><small class="brandSlogan">Control total de tu negocio</small></span></button>
@@ -1864,23 +1864,28 @@ function parseMoney(value) {
           ${content}
         </main>
       </div>
-    </div>${bottomNav(active)}<div id="modalRoot"></div><div id="printRoot" class="printSheet"></div></div>`;
+	    </div>${bottomNav(active)}<button type="button" id="floatingCalcBtn" class="floatingCalcBtn" aria-label="Abrir calculadora" title="Calculadora">${icon('calculator')}</button><div id="modalRoot"></div><div id="printRoot" class="printSheet"></div></div>`;
   }
+	  function primaryRouteKeys() {
+	    const routes = ['home','inventory','sell','cash'];
+	    if (restaurantModuleEnabled()) routes.push('tables','kitchen','bar');
+	    routes.push('finance','workers','reminders','more');
+	    return routes;
+	  }
 	  function allowedRoutes(){
 	    const r=currentUser()?.role;
-	    if(r==='cashier') return ['home','sell','cash','more'];
-	    if(r==='inventory') return ['home','inventory','more'];
-	    if(r==='worker') return ['home','inventory','sell','cash','more'];
-	    return ['home','inventory','sell','cash','more'];
+	    if(r==='cashier') return ['home','sell','cash', ...(restaurantModuleEnabled() ? ['tables','bar'] : []), 'more'];
+	    if(r==='inventory') return ['home','inventory','reminders','more'];
+	    if(r==='worker') return ['home','inventory','sell','cash', ...(restaurantModuleEnabled() ? ['tables','kitchen','bar'] : []), 'reminders','more'];
+	    return primaryRouteKeys();
 	  }
   function navButtons(active, side=false) {
-    const items = [
-      ['home', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>', 'Inicio'],
-      ['inventory', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>', 'Inventario'],
-      ['sell', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>', 'Vender'],
-      ['cash', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"></rect><line x1="2" y1="10" x2="22" y2="10"></line></svg>', 'Caja'],
-      ['more', '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>', 'Más']
-    ].filter(x=>allowedRoutes().includes(x[0]));
+    const iconMap = {
+      home:['home', 'Inicio'], inventory:['package', 'Inventario'], sell:['shopping-cart', 'Vender'], cash:['credit-card', 'Caja'],
+      tables:['armchair', 'Mesas'], kitchen:['chef-hat', 'Cocina'], bar:['wine', 'Barra'], finance:['wallet-cards', 'Finanzas'],
+      workers:['users-round', 'Trabajadores'], reminders:['alarm-clock', 'Recordatorios'], more:['menu', 'Más']
+    };
+    const items = allowedRoutes().map((key) => [key, icon(iconMap[key]?.[0] || 'circle'), iconMap[key]?.[1] || key]);
     return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}"${active===key?' aria-current="page"':''}>${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${label}</span></button>`).join('');
   }
 	  function bottomNav(active){ return `<nav class="bottomNav" aria-label="Navegación principal">${navButtons(active)}</nav>`; }
@@ -1913,8 +1918,9 @@ function parseMoney(value) {
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
     $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
     $('#notificationBell')?.addEventListener('click', openNotificationCenter);
-	    $('#notificationBellSide')?.addEventListener('click', openNotificationCenter);
-	    refreshIcons();
+		    $('#notificationBellSide')?.addEventListener('click', openNotificationCenter);
+		    bindFloatingCalculator();
+		    refreshIcons();
 
     const dateInput = $('#workingDateInput');
     if (dateInput) {
@@ -1937,7 +1943,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,logistics:logisticsView,finance:financeView,help:helpView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2678,11 +2684,29 @@ function parseMoney(value) {
 	          window.open(`https://wa.me/593969399562?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
 	          renderApp('access');
 	          toast('Solicitud de activacion creada');
-	        } catch (error) {
-	          toast(error.message || 'No se pudo crear la solicitud.', 'err');
-	          button.disabled = false;
-	          button.textContent = `Solicitar ${plan}`;
-	        }
+		        } catch (error) {
+		          const planName = window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.[plan]?.name || plan;
+		          const fallbackCode = `LOCAL-${Date.now().toString(36).toUpperCase()}`;
+		          state.settings.activationRequests ||= [];
+		          state.settings.activationRequests.push({
+		            id: uid('activation-local'),
+		            plan,
+		            period,
+		            requestCode: fallbackCode,
+		            status: 'pending_whatsapp',
+		            source: 'local_permission_fallback',
+		            errorCode: String(error?.code || 'activation_request_permission_fallback'),
+		            createdAt: new Date().toISOString(),
+		            businessId: currentBusiness()?.id || ''
+		          });
+		          save();
+		          const message = `Hola, quiero activar CLICK 360.\nNegocio: ${currentBusiness()?.name || ''}\nCorreo: ${authUser()?.email || ''}\nPlan: ${planName}\nPeriodo: ${period}\nCodigo: ${fallbackCode}`;
+		          window.open(`https://wa.me/593969399562?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+		          renderApp('access');
+		          toast('Solicitud preparada por WhatsApp. No se mostrará error técnico al cliente.');
+		          button.disabled = false;
+		          button.textContent = `Solicitar ${planName}`;
+		        }
 	      };
 	    });
 	  }
@@ -2784,14 +2808,43 @@ function parseMoney(value) {
 	      color:TABLE_VISUAL_COLORS[layout.color] ? layout.color : 'gold'
 	    };
 	  }
+	  function tableElapsedMinutes(order) {
+	    if (!order) return 0;
+	    const started = Number(order.openedAtMs || Date.parse(order.openedAt || '') || Date.now());
+	    return Math.max(0, Math.floor((Date.now() - started) / 60000));
+	  }
+	  function tableWaitClass(order) {
+	    const minutes = tableElapsedMinutes(order);
+	    if (minutes >= 45) return 'danger';
+	    if (minutes >= 20) return 'warning';
+	    return 'ok';
+	  }
+	  function tableKitchenStatus(order) {
+	    if (!order) return 'Libre';
+	    if (order.status === 'paid') return 'Pagada';
+	    if (order.readyToCharge) return 'Por cobrar';
+	    if (order.kitchenStatus === 'ready') return 'Lista';
+	    if (order.kitchenStatus === 'preparing') return 'Preparando';
+	    if (order.sentToKitchen) return 'En cocina';
+	    return 'Abierta';
+	  }
+	  function tableSeatDots(table = {}, order = null) {
+	    const seats = Math.max(1, Math.min(12, Math.trunc(Number(table.seats || table.capacity || 4))));
+	    const party = Math.max(0, Math.min(seats, Math.trunc(Number(table.partySize || table.people || (order ? seats : 0)))));
+	    return `<span class="tableSeats" aria-hidden="true">${Array.from({ length: seats }, (_, index) => {
+	      const angle = -90 + (360 / seats) * index;
+	      return `<i class="${index < party ? 'occupied' : 'free'}" style="--seat-angle:${angle}deg"></i>`;
+	    }).join('')}</span>`;
+	  }
 	  function tableMapCard(table, index) {
 	    const order = activeTableOrder(table.id);
 	    const status = order ? (order.readyToCharge ? 'por-cobrar' : 'ocupada') : 'libre';
 	    const layout = normalizedTableLayout(table, index);
 	    const color = TABLE_VISUAL_COLORS[layout.color];
 	    return `<article class="tableMapItem ${layout.shape} ${status.replace(' ', '-')}" data-table-map-item="${actionId(table.id)}" style="--table-x:${layout.x}%;--table-y:${layout.y}%;--table-w:${layout.width}%;--table-h:${layout.height}%;--table-color:${color}">
+	      ${tableSeatDots(table, order)}
 	      <button type="button" data-table-open="${actionId(table.id)}" aria-label="Abrir ${escapeHtml(table.name)}">
-	        <b>${escapeHtml(table.name)}</b><span class="tableMetaPill">${escapeHtml(status)}</span><small>${escapeHtml(tablePeopleLabel(table))}</small><strong>${fmt(tableOrderTotal(order))}</strong>
+	        <b>${escapeHtml(table.name)}</b><span class="tableMetaPill">${escapeHtml(tableKitchenStatus(order))}</span><small>${escapeHtml(tablePeopleLabel(table))}</small><strong>${fmt(tableOrderTotal(order))}</strong>${order ? `<em class="tableWait ${tableWaitClass(order)}">${tableElapsedMinutes(order)} min</em>` : ''}
 	      </button>
 	      <button type="button" class="tableStyleBtn" data-table-style="${actionId(table.id)}" title="Forma y color" aria-label="Editar forma y color">${icon('palette')}</button>
 	      <span class="tableResizeHandle" data-table-resize="${actionId(table.id)}" title="Cambiar tamaño" aria-hidden="true"></span>
@@ -2809,7 +2862,7 @@ function parseMoney(value) {
 	      return a.y - b.y || a.x - b.x;
 	    });
 	    return `<div class="pageHead"><div><h1>Mesas</h1><p>Plano de ${escapeHtml(currentBusiness().name)}</p></div><div class="toolbar"><button class="btn" id="toggleTableLayout">${icon('move')} Editar plano</button><button class="btn primary" id="newTableBtn">${icon('plus')} Nueva mesa</button></div></div>
-	      <section class="card tableMapShell"><header><span><b>Distribución del local</b><small>Arrastra y cambia tamaño para organizar el salón. Registra personas para medir ocupación.</small></span><span class="tableMapLegend"><i class="free"></i> Libre <i class="busy"></i> Ocupada <i class="charge"></i> Por cobrar</span></header>
+	      <section class="card tableMapShell"><header><span><b>Distribución del local</b><small>Arrastra, cambia tamaño y controla espera, personas y cocina desde el plano.</small></span><span class="tableMapLegend"><i class="free"></i> Libre <i class="busy"></i> Ocupada <i class="charge"></i> Por cobrar</span></header>
 	        <div class="tableMap tableLayoutSurface" id="tableMap">${visualTables.length ? visualTables.map(tableMapCard).join('') : '<div class="tableMapEmpty">Crea Mesa 1, Barra, Patio o Delivery.</div>'}</div>
 	        <p class="fieldHint tableMapHint">Activa “Editar plano” para arrastrar las mesas. Los cambios se guardan únicamente en este negocio.</p>
 	      </section>
@@ -2874,7 +2927,7 @@ function parseMoney(value) {
 	    if (!table) return toast('Mesa no encontrada.', 'err');
 	    let order = activeTableOrder(table.id);
 	    if (!order) {
-	      order = { id: uid('tableorder'), tableId: table.id, businessId: currentBusiness().id, items: [], status: 'open', openedAt: new Date().toISOString(), openedAtMs: Date.now(), updatedAtMs: Date.now() };
+	      order = { id: uid('tableorder'), tableId: table.id, businessId: currentBusiness().id, items: [], status: 'open', kitchenStatus:'draft', sentToKitchen:false, openedAt: new Date().toISOString(), openedAtMs: Date.now(), updatedAtMs: Date.now() };
 	      state.tableOrders.push(order);
 	      table.status = 'occupied';
 	      addAudit('table_opened', { tableId: table.id, orderId: order.id });
@@ -2886,14 +2939,15 @@ function parseMoney(value) {
 	        available: Math.max(0, Number(product.qty || 0) - tableReservedQuantity(product.id, order.id))
 	      })).filter(({ available }) => available > 0).map(({ product, available }) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${fmt(product.price)} · ${available} disp.</option>`).join('');
 	      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(table.name)}</h2><p class="fieldHint">${escapeHtml(tableElapsedLabel(order))}</p></div><button class="closeBtn" data-close>×</button></div>
-	        <section class="tableOrderSummary">${(order.items || []).length ? order.items.map((item) => `<div class="movement tableLineRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}${item.nonInventory ? ' · directo' : ''}${item.area ? ` · ${escapeHtml(item.area === 'bar' ? 'barra' : 'cocina')}` : ''}</small></span><span><b>${fmt(item.qty * item.price)}</b><button class="iconBtn danger" data-table-item-remove="${actionId(item.id)}" aria-label="Quitar producto">${icon('trash-2')}</button></span></div>`).join('') : '<p class="empty">La mesa todavía no tiene productos.</p>'}</section>
+	        <section class="tableOrderStatusStrip"><span class="${order.sentToKitchen ? 'sent' : ''}">${icon(order.sentToKitchen ? 'chef-hat' : 'notebook-pen')} ${escapeHtml(tableKitchenStatus(order))}</span><span>${icon('clock')} ${tableElapsedMinutes(order)} min de espera</span><span>${icon('users-round')} ${escapeHtml(tablePeopleLabel(table))}</span></section>
+	        <section class="tableOrderSummary">${(order.items || []).length ? order.items.map((item) => `<div class="movement tableLineRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}${item.nonInventory ? ' · directo' : ''}${item.area ? ` · ${escapeHtml(item.area === 'bar' ? 'barra' : 'cocina')}` : ''}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</small></span><span><b>${fmt(item.qty * item.price)}</b><button class="iconBtn danger" data-table-item-remove="${actionId(item.id)}" aria-label="Quitar producto">${icon('trash-2')}</button></span></div>`).join('') : '<p class="empty">La mesa todavía no tiene productos.</p>'}</section>
 	        <div class="tableQuickPanels">
 	          <form id="tableAddItemForm" class="tableAddItem"><div class="field"><label>Producto de inventario</label><select id="tableProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin productos con stock</option>'}</select></div><div class="field"><label>Cantidad</label><input id="tableQty" type="number" min="1" max="99" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>${icon('plus')} Agregar</button></form>
-	          <form id="tableQuickItemForm" class="tableAddItem tableDirectItem"><div class="field"><label>Producto directo</label><input id="tableQuickName" maxlength="60" placeholder="Ej. Menú del día, plato extra"></div><div class="field"><label>Precio</label><input id="tableQuickPrice" type="number" min="0" step="0.01" inputmode="decimal" value="0"></div><div class="field"><label>Cant.</label><input id="tableQuickQty" type="number" min="1" max="99" value="1"></div><div class="field"><label>Área</label><select id="tableQuickArea"><option value="kitchen">Cocina</option><option value="bar">Barra</option></select></div><button class="btn silver" type="submit">${icon('plus')} Agregar directo</button></form>
+	          <form id="tableQuickItemForm" class="tableAddItem tableDirectItem"><div class="field"><label>Producto directo</label><input id="tableQuickName" maxlength="60" placeholder="Ej. Menú del día, plato extra"></div><div class="field"><label>Precio</label><input id="tableQuickPrice" type="number" min="0" step="0.01" inputmode="decimal" value="0"></div><div class="field"><label>Cant.</label><input id="tableQuickQty" type="number" min="1" max="99" value="1"></div><div class="field"><label>Área</label><select id="tableQuickArea"><option value="kitchen">Cocina</option><option value="bar">Barra</option></select></div><div class="field"><label>Detalle</label><input id="tableQuickNote" maxlength="120" placeholder="Sin lechuga, sin azúcar..."></div><button class="btn silver" type="submit">${icon('plus')} Agregar directo</button></form>
 	        </div>
 	        ${order.splitPlan ? `<div class="tableSplitPreview"><b>Cuenta dividida</b><span>${escapeHtml(splitPlanSummary(order))}</span></div>` : ''}
 	        <div class="tableOrderTotal"><span>Total</span><strong>${fmt(tableOrderTotal(order))}</strong></div>
-	        <div class="tableCheckoutActions"><button class="btn" type="button" id="tableSplitBtn">Dividir cuenta</button><button class="btn" type="button" id="tableRecipesBtn">Recetas</button><button class="btn" type="button" id="tableReadyBtn">${order.readyToCharge ? 'Seguir agregando' : 'Marcar por cobrar'}</button><button class="btn primary" type="button" id="tableChargeBtn" ${(order.items || []).length ? '' : 'disabled'}>Cobrar mesa</button></div>`);
+	        <div class="tableCheckoutActions"><button class="btn primary" type="button" id="tableSendKitchenBtn" ${(order.items || []).length ? '' : 'disabled'}>${icon('chef-hat')} Enviar a cocina</button><button class="btn" type="button" id="tableSplitBtn">Dividir cuenta</button><button class="btn" type="button" id="tableDetailsBtn">Detalles del pedido</button><button class="btn" type="button" id="tableReadyBtn">${order.readyToCharge ? 'Seguir agregando' : 'Marcar por cobrar'}</button><button class="btn primary" type="button" id="tableChargeBtn" ${(order.items || []).length ? '' : 'disabled'}>Cobrar mesa</button></div>`);
 	      $$('[data-table-item-remove]').forEach((button) => button.onclick = () => {
 	        order.items = order.items.filter((item) => item.id !== decodeActionId(button.dataset.tableItemRemove));
 	        order.updatedAtMs = Date.now();
@@ -2910,8 +2964,9 @@ function parseMoney(value) {
 	        const available = Number(product?.qty || 0) - tableReservedQuantity(productId, order.id);
 	        if (!product || requested > available) return toast('No hay stock suficiente.', 'err');
 	        if (existing) existing.qty = requested;
-	        else order.items.push({ id: product.id, name: product.name, code: product.code, price: product.price, cardPrice: product.cardPrice || product.price, taxMode: product.taxMode || 'inherit', qty });
+	        else order.items.push({ id: product.id, name: product.name, code: product.code, price: product.price, cardPrice: product.cardPrice || product.price, taxMode: product.taxMode || 'inherit', qty, area:'kitchen', note:'' });
 	        order.readyToCharge = false;
+	        order.kitchenStatus = order.sentToKitchen ? 'preparing' : 'draft';
 	        order.updatedAtMs = Date.now();
 	        if (!save()) return;
 	        render();
@@ -2922,10 +2977,12 @@ function parseMoney(value) {
 	        const price = Math.max(0, Number($('#tableQuickPrice').value || 0));
 	        const qty = Math.max(1, Math.min(99, Math.trunc(Number($('#tableQuickQty').value || 1))));
 	        const area = $('#tableQuickArea').value === 'bar' ? 'bar' : 'kitchen';
+	        const note = $('#tableQuickNote').value.trim();
 	        if (!name) return toast('Escribe el nombre del consumo directo.', 'err');
 	        if (!Number.isFinite(price) || price < 0) return toast('Precio directo inválido.', 'err');
-	        order.items.push({ id:uid('direct'), productId:'', name, code:'DIRECTO', price, cardPrice:price, taxMode:'inherit', qty, area, nonInventory:true, createdAt:new Date().toISOString() });
+	        order.items.push({ id:uid('direct'), productId:'', name, code:'DIRECTO', price, cardPrice:price, taxMode:'inherit', qty, area, note, nonInventory:true, createdAt:new Date().toISOString() });
 	        order.readyToCharge = false;
+	        order.kitchenStatus = order.sentToKitchen ? 'preparing' : 'draft';
 	        order.updatedAtMs = Date.now();
 	        addAudit('table_direct_item_added', { tableId:table.id, orderId:order.id, name, qty });
 	        if (!save()) return;
@@ -2933,12 +2990,24 @@ function parseMoney(value) {
 	      };
 	      $('#tableReadyBtn').onclick = () => {
 	        order.readyToCharge = !order.readyToCharge;
+	        order.kitchenStatus = order.readyToCharge ? 'ready' : (order.sentToKitchen ? 'preparing' : 'draft');
 	        order.updatedAtMs = Date.now();
 	        if (!save()) return;
 	        render();
 	      };
+	      $('#tableSendKitchenBtn').onclick = () => {
+	        if (!(order.items || []).length) return toast('Agrega productos antes de enviar a cocina.', 'err');
+	        order.sentToKitchen = true;
+	        order.kitchenStatus = 'preparing';
+	        order.sentToKitchenAt = order.sentToKitchenAt || new Date().toISOString();
+	        order.updatedAtMs = Date.now();
+	        addAudit('table_sent_to_kitchen', { tableId:table.id, orderId:order.id, items:(order.items || []).length });
+	        if (!save()) return;
+	        render();
+	        toast('Pedido enviado a cocina/barra');
+	      };
 	      $('#tableSplitBtn').onclick = () => openTableSplitModal(table.id, order.id);
-	      $('#tableRecipesBtn').onclick = () => openTableRecipesModal(table.id, order.id);
+	      $('#tableDetailsBtn').onclick = () => openTableDetailsModal(table.id, order.id);
 	      $('#tableChargeBtn').onclick = () => chargeTableOrder(table, order);
 	      refreshIcons();
 	    };
@@ -2991,6 +3060,35 @@ function parseMoney(value) {
 	      closeModal(); openTableOrderModal(tableId);
 	    };
 	    update();
+	  }
+	  function openTableDetailsModal(tableId = '', orderId = '') {
+	    const table = tablesForBiz().find((item) => item.id === tableId);
+	    const order = tableOrdersForBiz().find((item) => item.id === orderId);
+	    if (!table || !order) return toast('Pedido no encontrado.', 'err');
+	    const itemFields = (order.items || []).map((item, index) => `<article class="tableDetailItem">
+	      <b>${escapeHtml(item.name)}</b><small>${escapeHtml(item.area === 'bar' ? 'Barra' : 'Cocina')} · ${item.qty} unidad${Number(item.qty) === 1 ? '' : 'es'}</small>
+	      <label>Detalle para cocina/barra<input data-order-item-note="${actionId(item.id)}" maxlength="140" value="${escapeHtml(item.note || '')}" placeholder="Ej. sin tomate, sin azúcar, término medio"></label>
+	      <label>Área<select data-order-item-area="${actionId(item.id)}"><option value="kitchen" ${item.area !== 'bar' ? 'selected' : ''}>Cocina</option><option value="bar" ${item.area === 'bar' ? 'selected' : ''}>Barra</option></select></label>
+	    </article>`).join('');
+	    showModal(`<div class="modalHeader"><div><h2>Detalles del pedido</h2><p class="fieldHint">${escapeHtml(table.name)} · notas claras para cocina y barra.</p></div><button class="closeBtn" data-close>×</button></div>
+	      <form id="tableDetailsForm" class="formGrid">
+	        <div class="field full"><label>Nota general del pedido</label><textarea id="tableOrderNote" placeholder="Ej. cliente apurado, servir todo junto...">${escapeHtml(order.note || '')}</textarea></div>
+	        <section class="full tableDetailsList">${itemFields || '<p class="empty">Agrega productos para escribir detalles.</p>'}</section>
+	        <button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar detalles</button>
+	      </form>`);
+	    $('#tableDetailsForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      order.note = $('#tableOrderNote').value.trim();
+	      (order.items || []).forEach((item) => {
+	        const id = actionId(item.id);
+	        item.note = $(`[data-order-item-note="${id}"]`)?.value.trim() || '';
+	        item.area = $(`[data-order-item-area="${id}"]`)?.value === 'bar' ? 'bar' : 'kitchen';
+	      });
+	      order.updatedAtMs = Date.now();
+	      addAudit('table_order_details_saved', { tableId, orderId });
+	      if (!save()) return;
+	      closeModal(); openTableOrderModal(tableId); toast('Detalles del pedido guardados');
+	    };
 	  }
 	  function openTableRecipesModal(tableId = '', orderId = '') {
 	    const recipes = restaurantRecipesForBiz();
@@ -3145,6 +3243,50 @@ function parseMoney(value) {
 	      addAudit('table_deleted', { tableId });
 	      if (!save()) return;
 	      renderApp('tables'); toast('Mesa eliminada');
+	    });
+	  }
+
+	  function kitchenOrders(area = 'kitchen') {
+	    return tableOrdersForBiz()
+	      .filter((order) => order.status !== 'paid' && (order.items || []).some((item) => (item.area === 'bar' ? 'bar' : 'kitchen') === area))
+	      .sort((a, b) => Number(a.openedAtMs || 0) - Number(b.openedAtMs || 0));
+	  }
+	  function kitchenBoardView(area = 'kitchen') {
+	    if (!restaurantModuleEnabled()) {
+	      return `<div class="pageHead"><div><h1>${area === 'bar' ? 'Barra' : 'Cocina'}</h1><p>Activa Restaurante en Ajustes.</p></div></div>
+	        <section class="card sectionCard"><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
+	    }
+	    const orders = kitchenOrders(area);
+	    const title = area === 'bar' ? 'Barra' : 'Cocina';
+	    return `<div class="pageHead"><div><h1>${title}</h1><p>Pedidos enviados desde mesas · ${escapeHtml(currentBusiness().name)}</p></div><div class="toolbar"><button class="btn" onclick="window.click360Route('tables')">${icon('armchair')} Ver mesas</button></div></div>
+	      <section class="kitchenBoard">${orders.length ? orders.map((order) => {
+	        const table = tablesForBiz().find((item) => item.id === order.tableId);
+	        const items = (order.items || []).filter((item) => (item.area === 'bar' ? 'bar' : 'kitchen') === area);
+	        return `<article class="card kitchenTicket ${tableWaitClass(order)}">
+	          <header><span><b>${escapeHtml(table?.name || 'Mesa')}</b><small>${tableElapsedMinutes(order)} min · ${escapeHtml(tablePeopleLabel(table || {}))}</small></span><span class="badge gold">${escapeHtml(tableKitchenStatus(order))}</span></header>
+	          <div class="kitchenItems">${items.map((item) => `<div><b>${item.qty}× ${escapeHtml(item.name)}</b>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ''}</div>`).join('')}</div>
+	          ${order.note ? `<p class="kitchenNote">${escapeHtml(order.note)}</p>` : ''}
+	          <footer><button class="btn" data-kitchen-status="${actionId(order.id)}" data-kitchen-next="preparing">${icon('flame')} Preparando</button><button class="btn primary" data-kitchen-status="${actionId(order.id)}" data-kitchen-next="ready">${icon('bell-ring')} Listo</button><button class="btn silver" data-kitchen-status="${actionId(order.id)}" data-kitchen-next="delivered">${icon('check')} Entregado</button></footer>
+	        </article>`;
+	      }).join('') : `<article class="card empty">${icon('chef-hat')}<p>No hay pedidos pendientes para ${escapeHtml(title.toLowerCase())}.</p></article>`}</section>`;
+	  }
+	  function kitchenView(){ return kitchenBoardView('kitchen'); }
+	  function barView(){ return kitchenBoardView('bar'); }
+	  function bindKitchen() {
+	    $$('[data-kitchen-status]').forEach((button) => {
+	      button.onclick = () => {
+	        const order = tableOrdersForBiz().find((item) => item.id === decodeActionId(button.dataset.kitchenStatus));
+	        if (!order) return toast('Pedido no encontrado.', 'err');
+	        const next = button.dataset.kitchenNext;
+	        order.sentToKitchen = true;
+	        order.kitchenStatus = next;
+	        if (next === 'ready') order.readyToCharge = true;
+	        order.updatedAtMs = Date.now();
+	        addAudit('restaurant_kitchen_status_changed', { orderId:order.id, status:next });
+	        if (!save()) return;
+	        renderApp(route);
+	        toast(next === 'ready' ? 'Pedido listo para cobrar' : 'Estado actualizado');
+	      };
 	    });
 	  }
 
@@ -3484,10 +3626,27 @@ function parseMoney(value) {
 		      return { provider: ['system', 'pdf', 'm02x-bluetooth', 'native-bridge'].includes(parsed.provider) ? parsed.provider : 'system', media: ['receipt-80', 'receipt-57', 'a4'].includes(parsed.media) ? parsed.media : 'receipt-80', copies: Math.max(1, Math.min(20, Number(parsed.copies || 1))) };
 		    } catch { return { provider: 'system', media: 'receipt-80', copies: 1 }; }
 		  }
-		  function savePrintingPreferences(next) {
-		    try { localStorage.setItem(printingPreferencesKey(), JSON.stringify(next)); } catch {}
-		  }
-		  function printerStateLabel(status = {}) {
+			  function savePrintingPreferences(next) {
+			    try { localStorage.setItem(printingPreferencesKey(), JSON.stringify(next)); } catch {}
+			  }
+			  function receiptTemplatePreferences() {
+			    const template = currentBusiness()?.settings?.receiptTemplate || {};
+			    return {
+			      footer: String(template.footer || 'Control total de tu negocio con CLICK 360').slice(0, 120),
+			      note: String(template.note || 'Comprobante interno. No válido como factura electrónica.').slice(0, 160),
+			      width: ['receipt-57','receipt-80'].includes(template.width) ? template.width : 'receipt-80',
+			      showLogo: template.showLogo !== false
+			    };
+			  }
+			  function saveReceiptTemplatePreferences(next) {
+			    const business = currentBusiness();
+			    if (!business) return false;
+			    business.settings ||= {};
+			    business.settings.receiptTemplate = { ...receiptTemplatePreferences(), ...next, updatedAt:new Date().toISOString() };
+			    addAudit('receipt_template_updated', { businessId:business.id, width:business.settings.receiptTemplate.width });
+			    return save();
+			  }
+			  function printerStateLabel(status = {}) {
 		    const labels = { ready: 'Listo', disconnected: 'Desconectado', handing_off: 'Enviando', unsupported: 'No disponible', validation_required: 'Validación física pendiente', error: 'Revisar' };
 		    return labels[status.state] || 'Sin comprobar';
 		  }
@@ -3497,7 +3656,8 @@ function parseMoney(value) {
 		    const statusRows = statuses.map((status) => `<div class="printerStatusRow"><span><b>${escapeHtml(status.name)}</b><small>${escapeHtml(printerStateLabel(status))}</small></span><em class="${status.supported ? 'ready' : ''}">${status.supported ? 'Disponible' : 'Alternativa'}</em></div>`).join('');
 		    const latestSale = salesForBiz().filter((sale) => sale.status !== 'cancelled').slice(-1)[0];
 		    const firstProduct = productsForBiz()[0];
-		    return `<div class="pageHead"><div><h1>Centro de impresión</h1><p>${escapeHtml(currentBusiness().name)}</p></div></div>
+			    const receiptTemplate = receiptTemplatePreferences();
+			    return `<div class="pageHead"><div><h1>Centro de impresión</h1><p>${escapeHtml(currentBusiness().name)}</p></div></div>
 		      <section class="card sectionCard printingControlPanel">
 		        <div class="formGrid">
 		          <div class="field"><label>Salida</label><select id="printingProvider"><option value="system" ${preferences.provider === 'system' ? 'selected' : ''}>Impresión del sistema</option><option value="pdf" ${preferences.provider === 'pdf' ? 'selected' : ''}>Guardar PDF</option><option value="m02x-bluetooth" ${preferences.provider === 'm02x-bluetooth' ? 'selected' : ''}>M02X Bluetooth</option><option value="native-bridge" ${preferences.provider === 'native-bridge' ? 'selected' : ''}>Puente nativo</option></select></div>
@@ -3508,13 +3668,24 @@ function parseMoney(value) {
 		        <p id="printerFeedback" class="fieldHint" role="status" aria-live="polite"></p>
 		      </section>
 		      <section class="printingStatusList" aria-label="Estado de salidas">${statusRows}</section>
-		      <section class="printingQuickActions">
+			      <section class="printingQuickActions">
 		        <button class="card bigRow" id="printingLabelAction" ${firstProduct ? '' : 'disabled'}><span>${icon('qr-code')} Etiqueta QR de producto</span><small>${firstProduct ? escapeHtml(firstProduct.name) : 'Agrega un producto primero'}</small></button>
 		        <button class="card bigRow" id="printingReceiptAction" ${latestSale ? '' : 'disabled'}><span>${icon('receipt')} Último comprobante</span><small>${latestSale ? escapeHtml(latestSale.id.slice(-6).toUpperCase()) : 'Aún no hay ventas'}</small></button>
-		        <button class="card bigRow" id="printingReportAction"><span>${icon('file-chart-column')} Reporte actual</span><small>Impresión o PDF</small></button>
-		      </section>
-		      <section class="card sectionCard m02xNotice"><h3>M02X</h3><p>El equipo usa Bluetooth y 203 dpi. La conexión directa permanece desactivada hasta validar el protocolo y una impresión física con la unidad real. Mientras tanto, usa la salida del sistema o PDF.</p></section>`;
-		  }
+			        <button class="card bigRow" id="printingReportAction"><span>${icon('file-chart-column')} Reporte actual</span><small>Impresión o PDF</small></button>
+			      </section>
+			      <section class="card sectionCard receiptTemplatePanel">
+			        <h3>Plantilla de comprobante de venta</h3>
+			        <p class="fieldHint">Ajusta el ticket de ventas. El pie de CLICK 360 se conserva para identificar el sistema.</p>
+			        <div class="formGrid">
+			          <div class="field"><label>Ancho</label><select id="receiptTemplateWidth"><option value="receipt-80" ${receiptTemplate.width === 'receipt-80' ? 'selected' : ''}>Ticket 80 mm</option><option value="receipt-57" ${receiptTemplate.width === 'receipt-57' ? 'selected' : ''}>Ticket 57 mm</option></select></div>
+			          <label class="consentCheck"><input type="checkbox" id="receiptTemplateLogo" ${receiptTemplate.showLogo ? 'checked' : ''}><span>Mostrar logo del negocio</span></label>
+			          <div class="field full"><label>Pie principal</label><input id="receiptTemplateFooter" maxlength="120" value="${escapeHtml(receiptTemplate.footer)}"></div>
+			          <div class="field full"><label>Nota legal / interna</label><textarea id="receiptTemplateNote" maxlength="160">${escapeHtml(receiptTemplate.note)}</textarea></div>
+			        </div>
+			        <button type="button" class="btn primary block" id="saveReceiptTemplateBtn">Guardar plantilla de comprobante</button>
+			      </section>
+			      <section class="card sectionCard m02xNotice"><h3>M02X</h3><p>El equipo usa Bluetooth y 203 dpi. La conexión directa permanece desactivada hasta validar el protocolo y una impresión física con la unidad real. Mientras tanto, usa la salida del sistema o PDF.</p></section>`;
+			  }
 	  function backupView(){
 	    const yest = new Date(); yest.setDate(yest.getDate() - 1); const yesterdayStr = localDateKey(yest);
 	    const firstDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
@@ -3685,9 +3856,10 @@ function parseMoney(value) {
     if(r==='reports') bindReports();
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
-    if(r==='reminders') bindReminders();
-    if(r==='tables') bindTables();
-    if(r==='logistics') bindLogistics();
+	    if(r==='reminders') bindReminders();
+	    if(r==='tables') bindTables();
+	    if(r==='kitchen'||r==='bar') bindKitchen();
+	    if(r==='logistics') bindLogistics();
     if(r==='finance') bindFinance();
     if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();
@@ -5098,8 +5270,19 @@ function parseMoney(value) {
 		      const sale = salesForBiz().filter((item) => item.status !== 'cancelled').slice(-1)[0];
 		      if (sale) window.showSaleCompleteModal(actionId(sale.id));
 		    });
-		    $('#printingReportAction')?.addEventListener('click', () => renderApp('reports'));
-		  }
+			    $('#printingReportAction')?.addEventListener('click', () => renderApp('reports'));
+			    $('#saveReceiptTemplateBtn')?.addEventListener('click', () => {
+			      const ok = saveReceiptTemplatePreferences({
+			        width: $('#receiptTemplateWidth')?.value === 'receipt-57' ? 'receipt-57' : 'receipt-80',
+			        showLogo: $('#receiptTemplateLogo')?.checked === true,
+			        footer: ($('#receiptTemplateFooter')?.value || '').trim() || 'Control total de tu negocio con CLICK 360',
+			        note: ($('#receiptTemplateNote')?.value || '').trim() || 'Comprobante interno. No válido como factura electrónica.'
+			      });
+			      if (!ok) return;
+			      renderApp('printing');
+			      toast('Plantilla de comprobante guardada');
+			    });
+			  }
 
 		  function bindMore(){
 	     $$('[data-more]').forEach(b=>b.onclick=()=>renderApp(b.dataset.more));
@@ -5524,11 +5707,11 @@ function parseMoney(value) {
 	       }
 	       const ok = confirm('ADVERTENCIA DE SEGURIDAD\nSe borrará todo el inventario de esta empresa. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
        if (!ok) return toast('Acción cancelada', 'err');
-       downloadBackup('antes-de-reiniciar-inventario');
-       const confirmWord = prompt('Para confirmar que deseas reiniciar el inventario del negocio actual, escribe exactamente: REINICIAR');
-       if (confirmWord !== 'REINICIAR') {
-          return toast('Acción cancelada', 'err');
-       }
+	       const confirmWord = prompt('Para confirmar que deseas reiniciar el inventario del negocio actual, escribe exactamente: REINICIAR');
+	       if (confirmWord !== 'REINICIAR') {
+	          return toast('Acción cancelada', 'err');
+	       }
+	       downloadBackup('antes-de-reiniciar-inventario');
 	       const previousState = cloneState(state);
 	       const businessId = currentBusiness().id;
 	       const operationId = uid('inventoryreset');
@@ -5549,11 +5732,11 @@ function parseMoney(value) {
        }
 	       const ok = confirm('ALERTA CRÍTICA DE SEGURIDAD\nSe eliminarán de forma permanente los datos del negocio activo: productos, ventas, movimientos, facturas y reportes diarios. Los otros negocios de la cuenta no se borrarán. Se creará un respaldo automático antes de continuar.\n\n¿Deseas seguir?');
        if (!ok) return toast('Acción cancelada', 'err');
-       downloadBackup('antes-de-borrar-todo');
-       const confirmWord = prompt('Para confirmar el borrado total e irreversible de todo el sistema, escribe exactamente: BORRAR TODO');
-       if (confirmWord !== 'BORRAR TODO') {
-          return toast('Acción cancelada', 'err');
-       }
+	       const confirmWord = prompt('Para confirmar el borrado total e irreversible de todo el sistema, escribe exactamente: BORRAR TODO');
+	       if (confirmWord !== 'BORRAR TODO') {
+	          return toast('Acción cancelada', 'err');
+	       }
+	       downloadBackup('antes-de-borrar-todo');
 		       const previousState = cloneState(state);
 		       const bid = currentBusiness().id;
 		       const operationId = uid('systemreset');
@@ -5760,6 +5943,73 @@ function parseMoney(value) {
 	    if (operator === '/') return right === 0 ? null : left / right;
 	    return right;
 	  }
+	  const FLOATING_CALC_KEY = 'CLICK360:V16:FLOATING_CALCULATOR';
+	  function floatingCalculatorPrefs() {
+	    try {
+	      const parsed = JSON.parse(localStorage.getItem(FLOATING_CALC_KEY) || '{}');
+	      return {
+	        x: Math.max(8, Math.min(window.innerWidth - 74, Number(parsed.x || window.innerWidth - 86))),
+	        y: Math.max(80, Math.min(window.innerHeight - 96, Number(parsed.y || window.innerHeight - 154))),
+	        size: Math.max(48, Math.min(74, Number(parsed.size || 58)))
+	      };
+	    } catch { return { x: window.innerWidth - 86, y: window.innerHeight - 154, size: 58 }; }
+	  }
+	  function saveFloatingCalculatorPrefs(next) {
+	    try { localStorage.setItem(FLOATING_CALC_KEY, JSON.stringify(next)); } catch {}
+	  }
+	  function calculatorHistoryKey() {
+	    const uidPart = activeTenantContext?.authUid || authUser()?.uid || 'offline';
+	    const businessPart = currentBusiness()?.id || 'business';
+	    return `CLICK360:V16:CALC_HISTORY:${uidPart}:${businessPart}`;
+	  }
+	  function calculatorHistory() {
+	    try { return JSON.parse(localStorage.getItem(calculatorHistoryKey()) || '[]').slice(0, 12); } catch { return []; }
+	  }
+	  function pushCalculatorHistory(expression, result) {
+	    const entry = { expression:String(expression || ''), result:String(result || '0'), at:new Date().toISOString() };
+	    try { localStorage.setItem(calculatorHistoryKey(), JSON.stringify([entry, ...calculatorHistory()].slice(0, 12))); } catch {}
+	  }
+	  function calculatorOperatorLabel(operator) {
+	    return ({ '*':'×', '/':'÷', '+':'+', '-':'−' })[operator] || operator;
+	  }
+	  function bindFloatingCalculator() {
+	    const button = $('#floatingCalcBtn');
+	    if (!button) return;
+	    let prefs = floatingCalculatorPrefs();
+	    const apply = () => {
+	      button.style.setProperty('--calc-x', `${prefs.x}px`);
+	      button.style.setProperty('--calc-y', `${prefs.y}px`);
+	      button.style.setProperty('--calc-size', `${prefs.size}px`);
+	    };
+	    apply();
+	    let drag = null;
+	    button.onpointerdown = (event) => {
+	      drag = { startX:event.clientX, startY:event.clientY, x:prefs.x, y:prefs.y, moved:false };
+	      button.setPointerCapture?.(event.pointerId);
+	    };
+	    button.onpointermove = (event) => {
+	      if (!drag) return;
+	      const nextX = Math.max(8, Math.min(window.innerWidth - prefs.size - 8, drag.x + event.clientX - drag.startX));
+	      const nextY = Math.max(70, Math.min(window.innerHeight - prefs.size - 12, drag.y + event.clientY - drag.startY));
+	      drag.moved ||= Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY) > 8;
+	      prefs = { ...prefs, x:nextX, y:nextY };
+	      apply();
+	      event.preventDefault();
+	    };
+	    button.onpointerup = () => {
+	      const wasDrag = drag?.moved;
+	      drag = null;
+	      saveFloatingCalculatorPrefs(prefs);
+	      if (!wasDrag) openCalculator();
+	    };
+	    button.onpointercancel = () => { drag = null; saveFloatingCalculatorPrefs(prefs); };
+	    button.ondblclick = (event) => {
+	      prefs = { ...prefs, size:prefs.size >= 70 ? 50 : prefs.size + 8 };
+	      apply();
+	      saveFloatingCalculatorPrefs(prefs);
+	      event.preventDefault();
+	    };
+	  }
 	  function openCalculator(options = {}) {
 	    closeCalculator();
 	    const targets = [
@@ -5770,7 +6020,7 @@ function parseMoney(value) {
 	    const initialBase = Math.max(0, Number(options.base || parseMoney(document.getElementById(preferredTarget)?.value || 0)) || 0);
 	    const root = document.createElement('div');
 	    root.id = 'calculatorRoot';
-	    root.innerHTML = `<div class="modalOverlay show calculatorOverlay"><section class="calculatorSheet" role="dialog" aria-modal="true" aria-labelledby="calculatorTitle"><div class="modalHeader"><div><h2 id="calculatorTitle">Calculadora</h2><p class="fieldHint">El resultado no se guarda en el historial.</p></div><button type="button" class="closeBtn" data-calculator-close aria-label="Cerrar">×</button></div>${targets.length ? `<label class="field"><span>Usar resultado en</span><select id="calculatorTarget">${targets.map(([id, label]) => `<option value="${id}" ${id === preferredTarget ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>` : ''}<output id="calculatorDisplay" class="calculatorDisplay">${initialBase || 0}</output><div class="calculatorKeys" aria-label="Teclado de calculadora"><button data-calc-action="clear">C</button><button data-calc-action="back" aria-label="Borrar último">${icon('delete')}</button><button data-calc-action="percent">%</button><button class="operator" data-calc-op="/">÷</button>${['7','8','9'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="*">×</button>${['4','5','6'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="-">−</button>${['1','2','3'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="+">+</button><button data-calc-action="sign">±</button><button data-calc-key="0">0</button><button data-calc-key=".">.</button><button class="equals" data-calc-action="equals">=</button></div><div class="calculatorHelpers"><label>Porcentaje<input id="calculatorRate" type="number" min="0" max="100" step="0.01" value="15" inputmode="decimal"></label><button type="button" data-calc-helper="discount">Descuento</button><button type="button" data-calc-helper="tax">Impuesto</button></div><div class="calculatorActions"><button type="button" class="btn" id="calculatorCopy">${icon('copy')} Copiar</button><button type="button" class="btn primary" id="calculatorUse">${icon('check')} Usar resultado</button></div></section></div>`;
+	    root.innerHTML = `<div class="modalOverlay show calculatorOverlay"><section class="calculatorSheet" role="dialog" aria-modal="true" aria-labelledby="calculatorTitle"><div class="modalHeader"><div><h2 id="calculatorTitle">Calculadora</h2><p class="fieldHint">Historial local de este negocio y dispositivo.</p></div><button type="button" class="closeBtn" data-calculator-close aria-label="Cerrar">×</button></div><div class="calculatorSizeControl" aria-label="Tamaño del icono flotante"><span>Icono</span><button type="button" data-calc-size="50">Pequeño</button><button type="button" data-calc-size="58">Medio</button><button type="button" data-calc-size="72">Grande</button></div>${targets.length ? `<label class="field"><span>Usar resultado en</span><select id="calculatorTarget">${targets.map(([id, label]) => `<option value="${id}" ${id === preferredTarget ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>` : ''}<output id="calculatorDisplay" class="calculatorDisplay">${initialBase || 0}</output><div class="calculatorKeys" aria-label="Teclado de calculadora"><button data-calc-action="clear">C</button><button data-calc-action="back" aria-label="Borrar último">${icon('delete')}</button><button data-calc-action="percent">%</button><button class="operator" data-calc-op="/">÷</button>${['7','8','9'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="*">×</button>${['4','5','6'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="-">−</button>${['1','2','3'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="+">+</button><button data-calc-action="sign">±</button><button data-calc-key="0">0</button><button data-calc-key=".">.</button><button class="equals" data-calc-action="equals">=</button></div><div class="calculatorHelpers"><label>Porcentaje<input id="calculatorRate" type="number" min="0" max="100" step="0.01" value="15" inputmode="decimal"></label><button type="button" data-calc-helper="discount">Descuento</button><button type="button" data-calc-helper="tax">Impuesto</button></div><div class="calculatorHistory" id="calculatorHistory"></div><div class="calculatorActions"><button type="button" class="btn" id="calculatorCopy">${icon('copy')} Copiar</button><button type="button" class="btn primary" id="calculatorUse">${icon('check')} Usar resultado</button></div></section></div>`;
 	    document.body.appendChild(root);
 	    refreshIcons(root);
 	    let display = String(initialBase || '0');
@@ -5778,13 +6028,25 @@ function parseMoney(value) {
 	    let pendingOperator = null;
 	    let replaceDisplay = false;
 	    const output = $('#calculatorDisplay', root);
-	    const render = () => { output.textContent = display; };
+	    const renderHistory = () => {
+	      const target = $('#calculatorHistory', root);
+	      if (!target) return;
+	      const entries = calculatorHistory();
+	      target.innerHTML = entries.length
+	        ? `<b>Historial</b>${entries.map((entry) => `<button type="button" data-calc-history="${escapeHtml(entry.result)}"><span>${escapeHtml(entry.expression)}</span><strong>${escapeHtml(entry.result)}</strong></button>`).join('')}`
+	        : '<small>Sin cálculos todavía.</small>';
+	    };
+	    const render = () => { output.textContent = display; renderHistory(); };
 	    const normalizedResult = (value) => String(Math.round((Number(value) + Number.EPSILON) * 1000000) / 1000000);
 	    const calculate = () => {
 	      if (accumulator == null || !pendingOperator) return Number(display) || 0;
-	      const result = calculatorOperation(accumulator, Number(display) || 0, pendingOperator);
+	      const left = accumulator;
+	      const right = Number(display) || 0;
+	      const operator = pendingOperator;
+	      const result = calculatorOperation(left, right, operator);
 	      if (result == null || !Number.isFinite(result)) { toast('No se puede dividir para cero.', 'err'); return null; }
 	      display = normalizedResult(result);
+	      pushCalculatorHistory(`${normalizedResult(left)} ${calculatorOperatorLabel(operator)} ${normalizedResult(right)} =`, display);
 	      accumulator = null;
 	      pendingOperator = null;
 	      replaceDisplay = true;
@@ -5810,10 +6072,21 @@ function parseMoney(value) {
 	    $('[data-calc-action="percent"]', root).onclick = () => { display = normalizedResult((Number(display) || 0) / 100); render(); };
 	    $('[data-calc-action="sign"]', root).onclick = () => { display = normalizedResult(-(Number(display) || 0)); render(); };
 	    $('[data-calc-action="equals"]', root).onclick = calculate;
+	    root.addEventListener('click', (event) => {
+	      const historyButton = event.target.closest('[data-calc-history]');
+	      if (historyButton) { display = historyButton.dataset.calcHistory || '0'; replaceDisplay = true; render(); return; }
+	      const sizeButton = event.target.closest('[data-calc-size]');
+	      if (sizeButton) {
+	        const prefs = floatingCalculatorPrefs();
+	        saveFloatingCalculatorPrefs({ ...prefs, size:Number(sizeButton.dataset.calcSize || 58) });
+	        bindFloatingCalculator();
+	      }
+	    });
 	    $$('[data-calc-helper]', root).forEach((button) => { button.onclick = () => {
 	      const rate = Math.max(0, Math.min(100, Number($('#calculatorRate', root).value || 0)));
 	      const base = initialBase || Number(display) || 0;
 	      display = normalizedResult(base * rate / 100);
+	      pushCalculatorHistory(`${button.dataset.calcHelper === 'discount' ? 'Descuento' : 'Impuesto'} ${rate}% de ${normalizedResult(base)} =`, display);
 	      accumulator = null; pendingOperator = null; replaceDisplay = true; render();
 	      toast(button.dataset.calcHelper === 'discount' ? `Descuento de ${rate}% calculado` : `Impuesto de ${rate}% calculado`);
 	    }; });
@@ -5836,6 +6109,7 @@ function parseMoney(value) {
 	      closeCalculator();
 	    };
 	    $$('[data-calculator-close]', root).forEach((button) => { button.onclick = closeCalculator; });
+	    renderHistory();
 	  }
 
   function defaultLabelLayout() {
@@ -6221,7 +6495,7 @@ function parseMoney(value) {
 	      $('#smartPrintNext').hidden = !simple;
 	      const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'pdf';
 	      $('#smartPrintNext').innerHTML = smartPrintStep === 9
-	        ? `${outputMode === 'system' ? 'Imprimir con navegador' : 'Imprimir o guardar PDF limpio'} ${icon(outputMode === 'system' ? 'printer' : 'file-down')}`
+		        ? `${outputMode === 'system' ? 'Imprimir con navegador' : 'Guardar PDF limpio'} ${icon(outputMode === 'system' ? 'printer' : 'file-down')}`
 	        : `Continuar ${icon('arrow-right')}`;
 	      const targetPanel = labelEditorModal.querySelector(`.labelControls [data-smart-step="${smartPrintStep}"]`);
 	      if (smartPrintStep !== 7) scrollSmartPanelIntoView(targetPanel);
@@ -7564,6 +7838,7 @@ function parseMoney(value) {
           universalDocument:canvasApi.normalizeDocument(universalDocument), widthMm:universalDocument.paper.widthMm,
           heightMm:universalDocument.paper.heightMm, columns:universalDocument.paper.columns, rows:universalDocument.paper.rows,
           paperType:universalDocument.paper.id, dpi:universalDocument.paper.dpi,
+          renderer:'universal-mm-v2', universalProfileId:activeProfileId || '', schemaVersion:2,
           createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString(), isDefault:existing?.isDefault === true
         };
         const index = state.settings.labelTemplates.findIndex((item) => item.id === template.id && item.businessId === businessId);
@@ -8270,15 +8545,17 @@ function parseMoney(value) {
 	    const bizSettings = business.settings || {};
 	    const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
 	    const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
-	    const address = bizSettings.address ? `<div style="text-align:center; font-size:10px;">${escapeHtml(bizSettings.address)}</div>` : '';
-    const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
-    const logoUrl = receiptLogoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : '';
-	    const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
+		    const address = bizSettings.address ? `<div style="text-align:center; font-size:10px;">${escapeHtml(bizSettings.address)}</div>` : '';
+	    const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
+	    const receiptTemplate = receiptTemplatePreferences();
+	    const receiptWidthMm = receiptTemplate.width === 'receipt-57' ? 57 : 80;
+	    const logoUrl = receiptLogoSrc && receiptTemplate.showLogo ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:${receiptWidthMm === 57 ? 44 : 60}mm; max-height:26mm; object-fit:contain;"></div>` : '';
+		    const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
 
     const receiptHtml = `
-      <div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:15px; width:80mm; background:white; line-height:1.4;">
+	      <div style="box-sizing:border-box;font-family:monospace; color:#000; font-size:${receiptWidthMm === 57 ? 10 : 12}px; margin:0; padding:3mm; width:${receiptWidthMm}mm; max-width:${receiptWidthMm}mm; background:white; line-height:1.35; overflow-wrap:anywhere;">
         ${logoUrl}
-	        <h2 style="font-size:16px; margin:0 0 2px; text-align:center; font-weight:bold;">${escapeHtml(business.name)}</h2>
+		        <h2 style="font-size:${receiptWidthMm === 57 ? 12 : 16}px; margin:0 0 2px; text-align:center; font-weight:bold;word-break:break-word;">${escapeHtml(business.name)}</h2>
 	        ${ruc}${phone}${address}
         <div style="text-align:center; margin:8px 0; font-weight:bold; font-size:13px; border-top:1px dashed #000; border-bottom:1px dashed #000; padding:4px 0;">COMPROBANTE DE VENTA</div>
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>No. Ticket:</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
@@ -8289,12 +8566,12 @@ function parseMoney(value) {
         ${s.customerPhone ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Teléfono:</span><span>${escapeHtml(s.customerPhone)}</span></div>` : ''}
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendedor:</span><span>${escapeHtml(s.createdBy || s.user || 'Sistema')}</span></div>
         <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-        <table style="width:100%; font-size:11px; border-collapse:collapse;">
+	        <table style="width:100%; font-size:${receiptWidthMm === 57 ? 9 : 11}px; border-collapse:collapse;table-layout:fixed;">
           <thead>
             <tr style="border-bottom:1px solid #000;"><th style="text-align:left;">Detalle</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Total</th></tr>
           </thead>
           <tbody>
-	            ${saleItems(s).map(i=>`<tr><td style="padding:4px 0;">${escapeHtml(i.name)}</td><td style="text-align:center;">${i.qty}</td><td style="text-align:right;">${fmt(i.total ?? (i.price*i.qty))}</td></tr>`).join('')}
+		            ${saleItems(s).map(i=>`<tr><td style="padding:4px 3px 4px 0;word-break:break-word;">${escapeHtml(i.name)}</td><td style="text-align:center;width:12mm;">${i.qty}</td><td style="text-align:right;width:${receiptWidthMm === 57 ? 17 : 22}mm;">${fmt(i.total ?? (i.price*i.qty))}</td></tr>`).join('')}
           </tbody>
         </table>
         <div style="border-top:1px dashed #000; margin:8px 0;"></div>
@@ -8308,8 +8585,8 @@ function parseMoney(value) {
 	        ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha de retiro:</span><span>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(`${s.dueDate}T12:00:00`, 'es-EC', businessTimeZone(), false) || s.dueDate)}</span></div>` : ''}
 	        ${s.termsAccepted ? `<div style="border-top:1px dashed #000;margin-top:8px;padding-top:6px;font-size:9px;"><b>Términos de apartado v${escapeHtml(s.termsVersion || '1')} aceptados:</b><br>${escapeHtml(s.terms || '')}</div>` : ''}
         <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
-	        <div style="text-align:center; font-size:10px;">¡Gracias por su compra!<br><small>CLICK 360 - Control de Negocios</small><br><small style="display:block;margin-top:5px;">Comprobante interno. No válido como factura electrónica.</small></div>
-      </div>
+		        <div style="text-align:center; font-size:${receiptWidthMm === 57 ? 8 : 10}px;word-break:break-word;">¡Gracias por su compra!<br><small>${escapeHtml(receiptTemplate.footer || 'Control total de tu negocio con CLICK 360')}</small><br><small style="display:block;margin-top:5px;">${escapeHtml(receiptTemplate.note || 'Comprobante interno. No válido como factura electrónica.')}</small></div>
+	      </div>
     `;
 
     showModal(`
@@ -8342,8 +8619,8 @@ function parseMoney(value) {
        };
     }
 
-	    $('#printReceiptBtn').onclick = () => handoffPrint({ html: receiptHtml, media: 'receipt-80', filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'system');
-	    $('#downloadPdfBtn').onclick = () => handoffPrint({ html: receiptHtml, media: 'receipt-80', filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'pdf');
+		    $('#printReceiptBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptTemplate.width, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'system');
+		    $('#downloadPdfBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptTemplate.width, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'pdf');
 
     $('#downloadImgBtn').onclick = () => {
       downloadHtmlAsPng(receiptHtml, `Recibo_${s.id.slice(-6).toUpperCase()}.png`);
@@ -8846,7 +9123,7 @@ function parseMoney(value) {
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
-	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','finance','help'].includes(h)) renderApp(h); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','kitchen','bar','finance','help'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();

@@ -40,7 +40,7 @@
           <h3>Propiedades</h3><p id="ulcEmptySelection">Selecciona un objeto en el lienzo.</p><div id="ulcProperties" hidden><label>Objeto<select id="ulcObjectSelect"></select></label><div class="ulcFields two"><label>X mm<input id="ulcX" type="number" step="0.1"></label><label>Y mm<input id="ulcY" type="number" step="0.1"></label><label>Ancho mm<input id="ulcObjectWidth" type="number" min="2" step="0.1"></label><label>Alto mm<input id="ulcObjectHeight" type="number" min="2" step="0.1"></label></div><label>Rotacion <input id="ulcRotation" type="range" min="-180" max="180" step="1"><output id="ulcRotationValue"></output></label><label id="ulcTextField">Texto<input id="ulcText" maxlength="160"></label><div class="ulcObjectActions"><button type="button" id="ulcDuplicate">Duplicar</button><button type="button" id="ulcDelete">Eliminar</button><button type="button" id="ulcLock">Bloquear</button><button type="button" id="ulcCopy">Copiar</button><button type="button" id="ulcPaste">Pegar</button><button type="button" id="ulcFront">Al frente</button><button type="button" id="ulcBack">Al fondo</button></div><fieldset><legend>Alinear seleccion</legend><div class="ulcAlign"><button type="button" data-ulc-align="left">Izq.</button><button type="button" data-ulc-align="center">Centro</button><button type="button" data-ulc-align="right">Der.</button><button type="button" data-ulc-align="top">Arriba</button><button type="button" data-ulc-align="middle">Medio</button><button type="button" data-ulc-align="bottom">Abajo</button></div></fieldset></div>
         </aside>
       </div>
-      <footer class="ulcFooter"><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div><div class="ulcInline" id="ulcPrintActions"><button type="button" class="btn primary" id="ulcPrint">Guardar PDF limpio</button><button type="button" class="btn" id="ulcPdf">Guardar PDF</button><button type="button" class="btn" id="ulcSystemPrint">Imprimir con navegador</button></div><div id="ulcPrintWarnings" class="ulcPrintWarnings" aria-live="polite"></div></footer>`;
+      <footer class="ulcFooter"><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div><div class="ulcInline" id="ulcPrintActions"><button type="button" class="btn primary" id="ulcPrint">Guardar PDF limpio</button><button type="button" class="btn" id="ulcSystemPrint">Imprimir con navegador</button></div><div id="ulcPrintWarnings" class="ulcPrintWarnings" aria-live="polite"></div></footer>`;
   }
 
   function open(api) {
@@ -62,12 +62,12 @@
     function _setUlcPrintState(state) {
       _ulcPrintState = state;
       const busy = state !== 'idle' && state !== 'finished';
-      ['ulcPrint', 'ulcPdf', 'ulcSystemPrint'].forEach((id) => {
+      ['ulcPrint', 'ulcSystemPrint'].forEach((id) => {
         const el = modalRoot?.querySelector(`#${id}`);
         if (el) el.disabled = busy;
       });
       // Also disable template card print/pdf buttons while active
-      modalRoot?.querySelectorAll('[data-ulc-tpl-print],[data-ulc-tpl-pdf]').forEach((el) => { el.disabled = busy; });
+      modalRoot?.querySelectorAll('[data-ulc-tpl-print]').forEach((el) => { el.disabled = busy; });
     }
     api.showModal(editorMarkup());
     const modalRoot = root.document.querySelector('#modalRoot');
@@ -113,7 +113,7 @@
       if (templateListEl) {
         const templates = api.getTemplates?.() || [];
         templateListEl.innerHTML = templates.length
-          ? templates.map((tpl) => `<div class="ulcTemplateCard${tpl.id === activeTemplateId ? ' active' : ''}" data-ulc-tpl-id="${escape(tpl.id)}"><span class="ulcTemplateName">${escape(tpl.name)}</span><div class="ulcTemplateCardActions"><button type="button" class="ulcTplBtn primary" data-ulc-tpl-print="${escape(tpl.id)}" title="Generar PDF limpio">📄</button><button type="button" class="ulcTplBtn" data-ulc-tpl-pdf="${escape(tpl.id)}" title="Guardar PDF">📄</button><button type="button" class="ulcTplBtn" data-ulc-tpl-edit="${escape(tpl.id)}" title="Editar">✏</button><button type="button" class="ulcTplBtn danger" data-ulc-tpl-delete="${escape(tpl.id)}" title="Eliminar">🗑</button></div></div>`).join('')
+          ? templates.map((tpl) => `<div class="ulcTemplateCard${tpl.id === activeTemplateId ? ' active' : ''}" data-ulc-tpl-id="${escape(tpl.id)}"><span class="ulcTemplateName">${escape(tpl.name)}</span><div class="ulcTemplateCardActions"><button type="button" class="ulcTplBtn primary" data-ulc-tpl-print="${escape(tpl.id)}" title="Generar PDF limpio">PDF</button><button type="button" class="ulcTplBtn" data-ulc-tpl-edit="${escape(tpl.id)}" title="Editar">Editar</button><button type="button" class="ulcTplBtn danger" data-ulc-tpl-delete="${escape(tpl.id)}" title="Eliminar">Borrar</button></div></div>`).join('')
           : '<p class="ulcNoTemplates">Sin plantillas. Guarda una para verla aqui.</p>';
       }
       const active = primary();
@@ -215,17 +215,23 @@
       if (event.target.closest('#ulcFront') && primary()) { commit(engine.arrangeObject(current(), primary().id, 'front')); return; }
       if (event.target.closest('#ulcBack') && primary()) { commit(engine.arrangeObject(current(), primary().id, 'back')); return; }
       if (event.target.closest('#ulcSaveTemplate')) { const existing = (api.getTemplates?.() || []).find((template) => template.id === activeTemplateId); const name = root.prompt('Nombre de la plantilla:', existing?.name || 'Etiqueta universal'); if (name?.trim()) { const saved = await api.saveTemplate?.(name.trim(), engine.normalizeDocument(current()), activeTemplateId); activeTemplateId = String(saved?.id || activeTemplateId); } render(); return; }
-      if (event.target.closest('#ulcSaveProfile')) { const saved = await api.saveProfile?.(current(), activeProfileId, inputValue(modalRoot, 'ulcProfileName')); activeProfileId = String(saved?.id || activeProfileId); api.toast?.('Perfil provisional guardado en este negocio y dispositivo.', 'ok'); render(); return; }
+      if (event.target.closest('#ulcSaveProfile')) {
+        const saved = await api.saveProfile?.(current(), activeProfileId, inputValue(modalRoot, 'ulcProfileName'));
+        if (!saved) return;
+        activeProfileId = String(saved.id || activeProfileId);
+        api.toast?.('Perfil provisional guardado en este negocio y dispositivo.', 'ok');
+        render();
+        return;
+      }
       if (event.target.closest('#ulcCalibrationSheet')) { await api.printCalibration?.(current()); return; }
       if (event.target.closest('#ulcSimpleMode')) { api.toast?.('Ya estás en Modo simple · Lienzo.', 'info'); return; }
       if (event.target.closest('#ulcAdvanced')) { api.closeModal?.(); api.openAdvanced?.(); return; }
       // --- Template card quick actions ---
       const tplPrint = event.target.closest('[data-ulc-tpl-print]');
-      const tplPdf = event.target.closest('[data-ulc-tpl-pdf]');
       const tplEdit = event.target.closest('[data-ulc-tpl-edit]');
       const tplDelete = event.target.closest('[data-ulc-tpl-delete]');
-      if (tplPrint || tplPdf) {
-        const tplId = (tplPrint || tplPdf).dataset.ulcTplPrint || (tplPrint || tplPdf).dataset.ulcTplPdf;
+      if (tplPrint) {
+        const tplId = tplPrint.dataset.ulcTplPrint;
         const template = (api.getTemplates?.() || []).find((t) => t.id === tplId);
         if (!template) { api.toast?.('Plantilla no encontrada.', 'err'); return; }
         // Load template document snapshot — does NOT change active editor state
@@ -254,7 +260,7 @@
         return;
       }
       // --- Print / PDF buttons with state machine guard ---
-      if (event.target.closest('#ulcPrint') || event.target.closest('#ulcPdf') || event.target.closest('#ulcSystemPrint')) {
+      if (event.target.closest('#ulcPrint') || event.target.closest('#ulcSystemPrint')) {
         const mode = event.target.closest('#ulcSystemPrint') ? 'system' : 'pdf';
         await executePrint(engine.normalizeDocument(current()), mode);
         return;
