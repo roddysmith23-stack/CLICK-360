@@ -45,12 +45,12 @@ const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r9'/);
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r9/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r9/);
-assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r9/);
-assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r9/);
-assert.match(worker, /click360-commercial-1-0-5-r9/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r10'/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r10/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r10/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r10/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r10/);
+assert.match(worker, /click360-commercial-1-0-5-r10/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);

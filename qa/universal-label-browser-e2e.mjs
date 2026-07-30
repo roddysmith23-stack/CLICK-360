@@ -156,7 +156,7 @@ async function runChromium() {
     await page.locator('#ulcRedo').click();
     await page.locator('#ulcQuantity').fill('3');
     await page.locator('#ulcStartSlot').fill('2');
-    await page.locator('#ulcPdf').click();
+    await page.locator('#ulcPrint').click();
     await page.waitForSelector('#click360PrintPortal[data-ready="true"]');
 
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());

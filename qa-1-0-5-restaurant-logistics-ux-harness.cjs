@@ -10,6 +10,7 @@ const flags = fs.readFileSync('p2-web-safe-flags.js', 'utf8');
 const firebase = fs.readFileSync('firebase-service.js', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
+const editor = fs.readFileSync('universal-label-editor.js', 'utf8');
 
 assert.match(app, /function logisticsView\(\)/, 'logistics view is implemented in the PWA');
 assert.match(app, /function bindLogistics\(\)/, 'logistics interactions are bound');
@@ -22,8 +23,16 @@ assert.match(app, /if \(item\.nonInventory\) continue;/, 'direct items do not re
 assert.match(app, /if \(item\.nonInventory\) return;/, 'direct items do not decrement inventory on checkout');
 assert.match(app, /function openTableSplitModal/, 'split bill modal exists');
 assert.match(app, /function openTableRecipesModal/, 'restaurant recipes modal exists');
+assert.match(app, /function openTableDetailsModal/, 'table order details modal exists for no-lettuce/no-sugar notes');
+assert.match(app, /id="tableSendKitchenBtn"/, 'table order can be sent to kitchen');
+assert.match(app, /function kitchenView\(\)/, 'kitchen board view exists');
+assert.match(app, /function barView\(\)/, 'bar board view exists');
+assert.match(app, /table_sent_to_kitchen/, 'sending a table order to kitchen is audited');
+assert.match(app, /restaurant_kitchen_status_changed/, 'kitchen status changes are audited');
 assert.match(app, /table\.seats|tableSeats/, 'tables keep seat capacity');
 assert.match(app, /table\.partySize|tablePartySize/, 'tables keep current guest count');
+assert.match(app, /function tableSeatDots/, '2D table plan renders physical seat dots');
+assert.match(app, /function tableElapsedMinutes/, '2D table plan exposes waiting time');
 assert.match(app, /data-table-resize/, 'table map supports resize handles');
 assert.match(app, /saveTableLayoutChange/, 'table layout saves through a named sync source');
 assert.match(firebase, /restaurant_table_layout/, 'sync guard recognizes restaurant table layout changes');
@@ -35,14 +44,25 @@ assert.match(firebase, /routeSettlements: Array\.isArray\(state\.logistics\.rout
 assert.match(firebase, /debouncedSync\(ACTIVE_CONTEXT\.tenantKey, ACTIVE_CONTEXT\.authUid, AUTH_EPOCH, event\.detail\?\.syncSource/, 'local sync source survives debounced cloud sync');
 assert.match(flags, /p2RestaurantAdvancedEnabled: true/, 'restaurant frontend module flag is enabled');
 assert.match(flags, /p2LogisticsEnabled: true/, 'logistics frontend module flag is enabled');
-assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r9/, 'restaurant domain is included in the release HTML');
-assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r9/, 'logistics domain is included in the release HTML');
+assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r10/, 'restaurant domain is included in the release HTML');
+assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r10/, 'logistics domain is included in the release HTML');
 assert.match(worker, /\.\/p2-restaurant-domain\.js/, 'restaurant domain is cached for PWA use');
 assert.match(worker, /\.\/p2-logistics-domain\.js/, 'logistics domain is cached for PWA use');
 assert.match(styles, /\.tableResizeHandle/, 'resize handle has UI styling');
 assert.match(styles, /\.tableMetaPill/, 'table state/person labels are contained');
+assert.match(styles, /\.tableSeats/, 'physical chair/seat markers are styled');
+assert.match(styles, /\.kitchenTicket/, 'kitchen/bar tickets have dedicated styling');
+assert.match(styles, /\.click360Splash/, 'startup favicon animation is present');
+assert.match(styles, /\.floatingCalcBtn/, 'movable calculator button is present');
+assert.match(styles, /\.receiptTemplatePanel/, 'receipt template configuration is styled');
 assert.match(styles, /\.logisticsLayout/, 'logistics layout has dedicated CSS');
 assert.match(styles, /@media\(max-width:430px\)[\s\S]*\.tableMap\{display:block;min-height:520px;min-width:620px/, 'mobile table map remains a 2D canvas, not a collapsed card grid');
+assert.match(app, /receiptTemplatePreferences/, 'sale receipts use configurable receipt templates');
+assert.match(app, /Control total de tu negocio con CLICK 360/, 'receipt footer preserves CLICK 360 attribution');
+assert.match(app, /FLOATING_CALC_KEY/, 'floating calculator preferences are persisted');
+assert.match(app, /calculatorHistoryKey/, 'calculator history is isolated per business');
+assert.doesNotMatch(editor, /ulcPdf/, 'universal label editor has no duplicate PDF button');
+assert.match(app, /renderer:'universal-mm-v2'/, 'universal templates persist the physical renderer version');
 
 const restaurantContext = { console, globalThis:{} };
 restaurantContext.window = restaurantContext.globalThis;
@@ -88,4 +108,4 @@ assert.equal(report.sales, 4, 'logistics report scopes sales by business');
 assert.equal(report.collections, 2, 'logistics report includes collections');
 assert.equal(logistics.logisticsReport({ businessId:'biz-b', routes:[route], routeSales:[sale], collections:[collection.collection] }).sales, 0, 'logistics report does not cross business boundaries');
 
-console.log('PASS 1.0.5 restaurant/logistics UX harness: tables, split bill, recipes, direct items, logistics and sync source contracts');
+console.log('PASS 1.0.5 restaurant/logistics UX harness: tables, kitchen/bar, split bill, order details, direct items, receipts, logistics and sync source contracts');
