@@ -101,6 +101,6 @@ assert(storage.includes('materialHash: String(metadata.materialHash'), 'IndexedD
 assert(storage.includes('pendingCreatedAtMs: Number(metadata.pendingCreatedAtMs'), 'IndexedDB snapshot stores pending creation time');
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');
 assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is current candidate');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r8'"), 'service worker cache is current');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r9'"), 'service worker cache is current');
 
 console.log('PASS P1.1b sync guard harness: stale pending/conflict locks clear, real pending/conflicts remain protected');

@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'commercial-1-0-5-r8';
+		  const APP_ASSET_VERSION = 'commercial-1-0-5-r9';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -818,14 +818,27 @@
 			    try { return JSON.stringify(obj || {}); } catch (e) { return "{}"; }
 			  }
 
-			  function withoutNonMaterialSyncFields(value, key = '') {
-			    if (Array.isArray(value)) return value.map((item) => withoutNonMaterialSyncFields(item));
+			  const OPTIONAL_EMPTY_ARRAY_KEYS = new Set([
+			    'restaurantPayments', 'restaurantPrintHistory', 'restaurantEvents', 'restaurantRecipes',
+			    'vehicles', 'routes', 'loadSheets', 'routeSales', 'collections', 'returns',
+			    'routeSettlements', 'routeExpenses', 'routeCustomers', 'events', 'printHistory'
+			  ]);
+			  function withoutNonMaterialSyncFields(value, key = '', path = []) {
+			    if (Array.isArray(value)) {
+			      const items = value.map((item) => withoutNonMaterialSyncFields(item, '', [...path, key, '[]']));
+			      if (!items.length && OPTIONAL_EMPTY_ARRAY_KEYS.has(key)) return undefined;
+			      return items;
+			    }
 			    if (!value || typeof value !== 'object') return value;
 			    const output = {};
 			    Object.keys(value).sort().forEach((itemKey) => {
 			      if (['activeBusinessId', 'updatedAt', 'updatedAtMs'].includes(itemKey)) return;
-			      output[itemKey] = withoutNonMaterialSyncFields(value[itemKey], itemKey);
+			      if (itemKey === 'layout' && path.includes('tables')) return;
+			      const nextValue = withoutNonMaterialSyncFields(value[itemKey], itemKey, [...path, key].filter(Boolean));
+			      if (nextValue === undefined) return;
+			      output[itemKey] = nextValue;
 			    });
+			    if (key === 'logistics' && Object.keys(output).length === 0) return undefined;
 			    return output;
 			  }
 
@@ -1082,6 +1095,23 @@
 	        cashSessions: Array.isArray(state.cashSessions) ? state.cashSessions : [],
 	        tables: Array.isArray(state.tables) ? state.tables : [],
 	        tableOrders: Array.isArray(state.tableOrders) ? state.tableOrders : [],
+	        restaurantPayments: Array.isArray(state.restaurantPayments) ? state.restaurantPayments : [],
+	        restaurantPrintHistory: Array.isArray(state.restaurantPrintHistory) ? state.restaurantPrintHistory : [],
+	        restaurantEvents: Array.isArray(state.restaurantEvents) ? state.restaurantEvents : [],
+	        restaurantRecipes: Array.isArray(state.restaurantRecipes) ? state.restaurantRecipes : [],
+	        logistics: state.logistics && typeof state.logistics === 'object' && !Array.isArray(state.logistics) ? {
+	          vehicles: Array.isArray(state.logistics.vehicles) ? state.logistics.vehicles : [],
+	          routes: Array.isArray(state.logistics.routes) ? state.logistics.routes : [],
+	          loadSheets: Array.isArray(state.logistics.loadSheets) ? state.logistics.loadSheets : [],
+	          routeSales: Array.isArray(state.logistics.routeSales) ? state.logistics.routeSales : [],
+	          collections: Array.isArray(state.logistics.collections) ? state.logistics.collections : [],
+	          returns: Array.isArray(state.logistics.returns) ? state.logistics.returns : [],
+	          routeSettlements: Array.isArray(state.logistics.routeSettlements) ? state.logistics.routeSettlements : [],
+	          routeExpenses: Array.isArray(state.logistics.routeExpenses) ? state.logistics.routeExpenses : [],
+	          routeCustomers: Array.isArray(state.logistics.routeCustomers) ? state.logistics.routeCustomers : [],
+	          events: Array.isArray(state.logistics.events) ? state.logistics.events : [],
+	          printHistory: Array.isArray(state.logistics.printHistory) ? state.logistics.printHistory : []
+	        } : { vehicles: [], routes: [], loadSheets: [], routeSales: [], collections: [], returns: [], routeSettlements: [], routeExpenses: [], routeCustomers: [], events: [], printHistory: [] },
 	        labelPrintHistory: Array.isArray(state.labelPrintHistory) ? state.labelPrintHistory : [],
 	        finance: state.finance && typeof state.finance === 'object' && !Array.isArray(state.finance) ? {
 	          payments: Array.isArray(state.finance.payments) ? state.finance.payments : [],

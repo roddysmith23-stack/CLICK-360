@@ -27,11 +27,16 @@ assert.match(app, /table\.partySize|tablePartySize/, 'tables keep current guest 
 assert.match(app, /data-table-resize/, 'table map supports resize handles');
 assert.match(app, /saveTableLayoutChange/, 'table layout saves through a named sync source');
 assert.match(firebase, /restaurant_table_layout/, 'sync guard recognizes restaurant table layout changes');
+assert.match(firebase, /OPTIONAL_EMPTY_ARRAY_KEYS/, 'new optional P2 arrays do not create material conflicts when empty');
+assert.match(firebase, /itemKey === 'layout' && path\.includes\('tables'\)/, 'table visual layout is not treated as a commercial conflict field');
+assert.match(firebase, /restaurantRecipes: Array\.isArray\(state\.restaurantRecipes\)/, 'restaurant recipes are included in the cloud payload');
+assert.match(firebase, /logistics: state\.logistics && typeof state\.logistics === 'object'/, 'logistics state is included in the cloud payload');
+assert.match(firebase, /routeSettlements: Array\.isArray\(state\.logistics\.routeSettlements\)/, 'route settlements are preserved in the cloud payload');
 assert.match(firebase, /debouncedSync\(ACTIVE_CONTEXT\.tenantKey, ACTIVE_CONTEXT\.authUid, AUTH_EPOCH, event\.detail\?\.syncSource/, 'local sync source survives debounced cloud sync');
 assert.match(flags, /p2RestaurantAdvancedEnabled: true/, 'restaurant frontend module flag is enabled');
 assert.match(flags, /p2LogisticsEnabled: true/, 'logistics frontend module flag is enabled');
-assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r8/, 'restaurant domain is included in the release HTML');
-assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r8/, 'logistics domain is included in the release HTML');
+assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r9/, 'restaurant domain is included in the release HTML');
+assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r9/, 'logistics domain is included in the release HTML');
 assert.match(worker, /\.\/p2-restaurant-domain\.js/, 'restaurant domain is cached for PWA use');
 assert.match(worker, /\.\/p2-logistics-domain\.js/, 'logistics domain is cached for PWA use');
 assert.match(styles, /\.tableResizeHandle/, 'resize handle has UI styling');

@@ -29,7 +29,7 @@ const report = core.sanitizeDiagnostic({
   diagnosticId: 'PRNREP-7F2K9M4Q',
   release: '1.0.5',
   buildSha: 'abc123def456',
-  assetVersion: 'commercial-1-0-5-r8',
+  assetVersion: 'commercial-1-0-5-r9',
   browser: `Safari ${secrets.join(' ')}`,
   operatingSystem: `iPhone ${secrets.join(' ')}`,
   outputMode: 'system',

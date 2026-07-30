@@ -29,7 +29,7 @@
   covering cards on mobile or desktop.
 - Logo, profile, navigation, and modal controls have improved semantics and
   touch targets.
-- Cache identity is now `commercial-1-0-5-r8`.
+- Cache identity is now `commercial-1-0-5-r9`.
 - Table layout changes use a named non-commercial sync source so moving or
   resizing a table does not create a false blocking cloud conflict.
 
