@@ -45,15 +45,20 @@ const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r7'/);
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r7/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r7/);
-assert.match(worker, /click360-commercial-1-0-5-r7/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r8'/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r8/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r8/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r8/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r8/);
+assert.match(worker, /click360-commercial-1-0-5-r8/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
-for (const key of ['p2WorkersEnabled', 'p2RestaurantAdvancedEnabled', 'p2LogisticsEnabled', 'p2OwnerPreviewEnabled']) {
+for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
 }
-for (const asset of ['universal-label-canvas.js', 'universal-label-editor.js']) {
+for (const key of ['p2RestaurantAdvancedEnabled', 'p2LogisticsEnabled']) {
+  assert.match(flags, new RegExp(`${key}: true`), `${key} must be enabled for local frontend P2`);
+}
+for (const asset of ['p2-restaurant-domain.js', 'p2-logistics-domain.js', 'universal-label-canvas.js', 'universal-label-editor.js']) {
 assert.match(build, new RegExp(`'${asset.replace('.', '\\.')}'`));
 }
 assert.doesNotMatch(build, /node_modules|tools\/admin|functions\//);

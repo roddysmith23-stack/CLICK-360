@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r7';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r8';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -1251,6 +1251,22 @@ function parseMoney(value) {
     out.cashSessions ||= [];
     out.tables ||= [];
     out.tableOrders ||= [];
+    out.restaurantPayments ||= [];
+    out.restaurantPrintHistory ||= [];
+    out.restaurantEvents ||= [];
+    out.restaurantRecipes ||= [];
+    out.logistics ||= {};
+    out.logistics.vehicles ||= [];
+    out.logistics.routes ||= [];
+    out.logistics.loadSheets ||= [];
+    out.logistics.routeSales ||= [];
+    out.logistics.collections ||= [];
+    out.logistics.returns ||= [];
+    out.logistics.routeSettlements ||= [];
+    out.logistics.routeExpenses ||= [];
+    out.logistics.routeCustomers ||= [];
+    out.logistics.events ||= [];
+    out.logistics.printHistory ||= [];
     out.labelPrintHistory ||= [];
     out.notifications ||= [];
     out.legalAcceptances ||= [];
@@ -1358,6 +1374,11 @@ function parseMoney(value) {
       cashSessions:[],
       tables:[],
       tableOrders:[],
+      restaurantPayments:[],
+      restaurantPrintHistory:[],
+      restaurantEvents:[],
+      restaurantRecipes:[],
+      logistics:{ vehicles:[], routes:[], loadSheets:[], routeSales:[], collections:[], returns:[], routeSettlements:[], routeExpenses:[], routeCustomers:[], events:[], printHistory:[] },
       labelPrintHistory:[],
       finance:{ payments: [], loans: [], envelopes: [], goals: [] },
       notifications:[],
@@ -1497,6 +1518,8 @@ function parseMoney(value) {
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
   function tablesForBiz(bid=currentBusiness()?.id){ return (state.tables || []).filter(table=>table.businessId===bid); }
   function tableOrdersForBiz(bid=currentBusiness()?.id){ return (state.tableOrders || []).filter(order=>order.businessId===bid); }
+  function restaurantRecipesForBiz(bid=currentBusiness()?.id){ return (state.restaurantRecipes || []).filter(recipe=>recipe.businessId===bid); }
+  function logisticsForBiz(kind, bid=currentBusiness()?.id){ return (state.logistics?.[kind] || []).filter(entry=>entry.businessId===bid); }
   function financeForBiz(kind, bid=currentBusiness()?.id){ return (state.finance?.[kind] || []).filter(entry=>entry.businessId===bid); }
   function labelTemplatesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
@@ -1553,6 +1576,30 @@ function parseMoney(value) {
   }
   function isRestaurantBusiness(business=currentBusiness()) {
     return ['restaurante', 'cafeteria', 'bar'].includes(String(business?.type || '').toLowerCase());
+  }
+  function p2Flag(key) {
+    const flags = window.CLICK360_P2_WEB_SAFE_FLAGS || {};
+    return flags[key] === true;
+  }
+  function restaurantModuleEnabled(business=currentBusiness()) {
+    return isRestaurantBusiness(business) && p2Flag('p2RestaurantAdvancedEnabled');
+  }
+  function isLogisticsBusiness(business=currentBusiness()) {
+    const type = String(business?.type || '').toLowerCase();
+    return ['minimarket', 'ferreteria', 'ropa', 'ganaderia', 'otro'].includes(type);
+  }
+  function logisticsModuleEnabled(business=currentBusiness()) {
+    return isLogisticsBusiness(business) && p2Flag('p2LogisticsEnabled');
+  }
+  function restaurantActor() {
+    return { uid:window.click360User?.uid || 'local-owner', roleId:isOwnerUser() ? 'owner' : 'server', permissions:isOwnerUser() ? undefined : ['tables.read','orders.create','orders.update'] };
+  }
+  function logisticsActor() {
+    return { uid:window.click360User?.uid || 'local-owner', roleId:isOwnerUser() ? 'owner' : 'routeSeller' };
+  }
+  function saveTableLayoutChange() {
+    window.click360ClearStaleSyncGuard?.({ reason:'restaurant_table_layout', force:false });
+    return save({ operationId:uid('table-layout'), syncSource:'restaurant_table_layout' });
   }
   function resolveLabelCopyResult(manualCopies, stock, useStock=false) {
     return window.CLICK360_SMART_PRINT?.resolveCopies(manualCopies, useStock, stock)
@@ -1890,7 +1937,7 @@ function parseMoney(value) {
 	      stopScanner(); closeCalculator(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,finance:financeView,help:helpView};
+      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,logistics:logisticsView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -1947,7 +1994,7 @@ function parseMoney(value) {
       </section>
       <section class="split" style="margin-top:14px">
 	        <div class="card sectionCard"><h3>\u00DAltimas ventas</h3>${sales.slice(-3).reverse().map(s=>`<div class="movement"><span>${saleItems(s).map(i=>escapeHtml(i.name)).join(', ') || 'Venta sin detalle'}</span><b class="pos">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">A\u00fan no hay ventas hoy.</p>'}</div>
-        <div class="card sectionCard"><h3>Acciones r\u00e1pidas</h3><div class="quickActionGrid"><button class="btn primary" onclick="window.click360Route('sell')">Vender</button><button class="btn silver" onclick="window.click360Route('inventory')">Inventario</button>${isRestaurantBusiness(b) ? `<button class="btn silver" onclick="window.click360Route('tables')">${icon('utensils')} Mesas</button>` : ''}</div></div>
+        <div class="card sectionCard"><h3>Acciones r\u00e1pidas</h3><div class="quickActionGrid"><button class="btn primary" onclick="window.click360Route('sell')">Vender</button><button class="btn silver" onclick="window.click360Route('inventory')">Inventario</button>${restaurantModuleEnabled(b) ? `<button class="btn silver" onclick="window.click360Route('tables')">${icon('utensils')} Mesas</button>` : ''}${logisticsModuleEnabled(b) ? `<button class="btn silver" onclick="window.click360Route('logistics')">${icon('truck')} Rutas</button>` : ''}</div></div>
       </section>`;
   }
 
@@ -2705,8 +2752,23 @@ function parseMoney(value) {
 	    return tableOrdersForBiz()
 	      .filter((order) => order.status === 'open' && order.id !== excludedOrderId)
 	      .flatMap((order) => order.items || [])
-	      .filter((item) => item.id === productId)
+	      .filter((item) => !item.nonInventory && item.id === productId)
 	      .reduce((total, item) => total + Number(item.qty || 0), 0);
+	  }
+	  function tablePeopleLabel(table = {}) {
+	    const seats = Math.max(1, Math.trunc(Number(table.seats || table.capacity || 4)));
+	    const party = Math.max(0, Math.min(seats, Math.trunc(Number(table.partySize || table.people || 0))));
+	    return `${party}/${seats} personas`;
+	  }
+	  function normalizeTableSizeValue(value, fallback, min, max) {
+	    return Math.max(min, Math.min(max, Number(value || fallback)));
+	  }
+	  function splitPlanSummary(order = {}) {
+	    const plan = order.splitPlan;
+	    if (!plan) return '';
+	    if (plan.mode === 'people') return `${plan.parts || 1} personas · ${fmt(Number(plan.amountPerPart || 0))} c/u`;
+	    if (plan.mode === 'items') return `${(plan.groups || []).length} grupos por producto`;
+	    return 'División configurada';
 	  }
 	  const TABLE_VISUAL_COLORS = Object.freeze({
 	    gold:'#d6aa2c', green:'#2f9d68', blue:'#3d7ea6', red:'#a94a4a', graphite:'#4d5158'
@@ -2716,8 +2778,8 @@ function parseMoney(value) {
 	    return {
 	      x:Math.max(2, Math.min(82, Number(layout.x ?? 4 + (index % 4) * 24))),
 	      y:Math.max(2, Math.min(78, Number(layout.y ?? 5 + Math.floor(index / 4) * 24))),
-	      width:Math.max(14, Math.min(30, Number(layout.width || 18))),
-	      height:Math.max(14, Math.min(30, Number(layout.height || 18))),
+	      width:normalizeTableSizeValue(layout.width, 18, 12, 42),
+	      height:normalizeTableSizeValue(layout.height, 18, 12, 38),
 	      shape:['round','square','rectangle','bar','delivery','takeaway'].includes(layout.shape) ? layout.shape : 'round',
 	      color:TABLE_VISUAL_COLORS[layout.color] ? layout.color : 'gold'
 	    };
@@ -2729,13 +2791,14 @@ function parseMoney(value) {
 	    const color = TABLE_VISUAL_COLORS[layout.color];
 	    return `<article class="tableMapItem ${layout.shape} ${status.replace(' ', '-')}" data-table-map-item="${actionId(table.id)}" style="--table-x:${layout.x}%;--table-y:${layout.y}%;--table-w:${layout.width}%;--table-h:${layout.height}%;--table-color:${color}">
 	      <button type="button" data-table-open="${actionId(table.id)}" aria-label="Abrir ${escapeHtml(table.name)}">
-	        <b>${escapeHtml(table.name)}</b><small>${escapeHtml(status)}</small><strong>${fmt(tableOrderTotal(order))}</strong>
+	        <b>${escapeHtml(table.name)}</b><span class="tableMetaPill">${escapeHtml(status)}</span><small>${escapeHtml(tablePeopleLabel(table))}</small><strong>${fmt(tableOrderTotal(order))}</strong>
 	      </button>
 	      <button type="button" class="tableStyleBtn" data-table-style="${actionId(table.id)}" title="Forma y color" aria-label="Editar forma y color">${icon('palette')}</button>
+	      <span class="tableResizeHandle" data-table-resize="${actionId(table.id)}" title="Cambiar tamaño" aria-hidden="true"></span>
 	    </article>`;
 	  }
 	  function tablesView() {
-	    if (!isRestaurantBusiness()) {
+	    if (!restaurantModuleEnabled()) {
 	      return `<div class="pageHead"><div><h1>Mesas</h1><p>Activa este módulo desde el tipo de negocio.</p></div></div>
 	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">En Ajustes selecciona Restaurante / cafetería / bar para usar Mesas Lite.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
 	    }
@@ -2746,7 +2809,7 @@ function parseMoney(value) {
 	      return a.y - b.y || a.x - b.x;
 	    });
 	    return `<div class="pageHead"><div><h1>Mesas</h1><p>Plano de ${escapeHtml(currentBusiness().name)}</p></div><div class="toolbar"><button class="btn" id="toggleTableLayout">${icon('move')} Editar plano</button><button class="btn primary" id="newTableBtn">${icon('plus')} Nueva mesa</button></div></div>
-	      <section class="card tableMapShell"><header><span><b>Distribución del local</b><small>Libre, ocupada o por cobrar</small></span><span class="tableMapLegend"><i class="free"></i> Libre <i class="busy"></i> Ocupada <i class="charge"></i> Por cobrar</span></header>
+	      <section class="card tableMapShell"><header><span><b>Distribución del local</b><small>Arrastra y cambia tamaño para organizar el salón. Registra personas para medir ocupación.</small></span><span class="tableMapLegend"><i class="free"></i> Libre <i class="busy"></i> Ocupada <i class="charge"></i> Por cobrar</span></header>
 	        <div class="tableMap tableLayoutSurface" id="tableMap">${visualTables.length ? visualTables.map(tableMapCard).join('') : '<div class="tableMapEmpty">Crea Mesa 1, Barra, Patio o Delivery.</div>'}</div>
 	        <p class="fieldHint tableMapHint">Activa “Editar plano” para arrastrar las mesas. Los cambios se guardan únicamente en este negocio.</p>
 	      </section>
@@ -2755,7 +2818,7 @@ function parseMoney(value) {
 	        const status = order ? (order.readyToCharge ? 'por cobrar' : 'ocupada') : 'libre';
 	        return `<article class="card tableCard ${status.replace(' ', '-')}">
 	          <div class="tableCardHead"><span>${icon(order ? 'utensils' : 'armchair')}<b>${escapeHtml(table.name)}</b></span><span class="badge ${order ? 'gold' : ''}">${escapeHtml(status)}</span></div>
-	          <p>${escapeHtml(tableElapsedLabel(order))}</p>
+	          <p>${escapeHtml(tableElapsedLabel(order))} · ${escapeHtml(tablePeopleLabel(table))}</p>
 	          <strong>${fmt(tableOrderTotal(order))}</strong>
 	          <div class="tableActions"><button class="btn ${order ? 'primary' : 'silver'}" data-table-open="${actionId(table.id)}">${order ? 'Ver cuenta' : 'Abrir mesa'}</button><button class="iconBtn" data-table-rename="${actionId(table.id)}" title="Editar nombre" aria-label="Editar nombre">${icon('pencil')}</button><button class="iconBtn danger" data-table-delete="${actionId(table.id)}" title="Eliminar mesa" aria-label="Eliminar mesa">${icon('trash-2')}</button></div>
 	        </article>`;
@@ -2763,15 +2826,22 @@ function parseMoney(value) {
 	  }
 	  function openTableNameModal(tableId = '') {
 	    const table = tablesForBiz().find((item) => item.id === tableId);
+	    const seats = Math.max(1, Math.trunc(Number(table?.seats || table?.capacity || 4)));
+	    const partySize = Math.max(0, Math.min(seats, Math.trunc(Number(table?.partySize || table?.people || 0))));
 	    showModal(`<div class="modalHeader"><h2>${table ? 'Editar' : 'Nueva'} mesa</h2><button class="closeBtn" data-close>×</button></div>
-	      <form id="tableNameForm" class="formGrid"><div class="field full"><label>Nombre</label><input id="tableName" maxlength="40" required value="${escapeHtml(table?.name || '')}" placeholder="Mesa 1, Barra, Patio..."></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar mesa</button></form>`);
+	      <form id="tableNameForm" class="formGrid"><div class="field full"><label>Nombre</label><input id="tableName" maxlength="40" required value="${escapeHtml(table?.name || '')}" placeholder="Mesa 1, Barra, Patio..."></div>
+	      <div class="field"><label>Sillas / capacidad</label><input id="tableSeats" type="number" min="1" max="40" value="${seats}"></div>
+	      <div class="field"><label>Personas sentadas</label><input id="tablePartySize" type="number" min="0" max="40" value="${partySize}"></div>
+	      <button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar mesa</button></form>`);
 	    $('#tableNameForm').onsubmit = (event) => {
 	      event.preventDefault();
 	      const name = $('#tableName').value.trim();
+	      const nextSeats = Math.max(1, Math.min(40, Math.trunc(Number($('#tableSeats').value || 4))));
+	      const nextPartySize = Math.max(0, Math.min(nextSeats, Math.trunc(Number($('#tablePartySize').value || 0))));
 	      if (!name) return toast('Escribe un nombre para la mesa.', 'err');
-	      if (table) Object.assign(table, { name, updatedAt: new Date().toISOString() });
+	      if (table) Object.assign(table, { name, seats:nextSeats, partySize:nextPartySize, updatedAt: new Date().toISOString() });
 	      else {
-	        const nextTable = { id:uid('table'), businessId:currentBusiness().id, name, createdAt:new Date().toISOString(), status:'free' };
+	        const nextTable = { id:uid('table'), businessId:currentBusiness().id, name, seats:nextSeats, partySize:nextPartySize, createdAt:new Date().toISOString(), status:'free' };
 	        nextTable.layout = normalizedTableLayout(nextTable, tablesForBiz().length);
 	        state.tables.push(nextTable);
 	      }
@@ -2788,13 +2858,14 @@ function parseMoney(value) {
 	      <form id="tableStyleForm" class="formGrid"><div class="field"><label>Forma</label><select id="tableShape"><option value="round" ${layout.shape === 'round' ? 'selected' : ''}>Redonda</option><option value="square" ${layout.shape === 'square' ? 'selected' : ''}>Cuadrada</option><option value="rectangle" ${layout.shape === 'rectangle' ? 'selected' : ''}>Rectangular</option><option value="bar" ${layout.shape === 'bar' ? 'selected' : ''}>Barra</option><option value="delivery" ${layout.shape === 'delivery' ? 'selected' : ''}>Delivery</option><option value="takeaway" ${layout.shape === 'takeaway' ? 'selected' : ''}>Para llevar</option></select></div>
 	      <div class="field"><label>Color</label><select id="tableColor">${Object.keys(TABLE_VISUAL_COLORS).map((key) => `<option value="${key}" ${layout.color === key ? 'selected' : ''}>${{gold:'Dorado',green:'Verde',blue:'Azul',red:'Rojo',graphite:'Grafito'}[key]}</option>`).join('')}</select></div>
 	      <div class="field"><label>Posición horizontal</label><input id="tableLayoutX" type="range" min="2" max="82" step="2" value="${layout.x}"></div><div class="field"><label>Posición vertical</label><input id="tableLayoutY" type="range" min="2" max="78" step="2" value="${layout.y}"></div>
+	      <div class="field"><label>Ancho</label><input id="tableLayoutW" type="range" min="12" max="42" step="1" value="${layout.width}"></div><div class="field"><label>Alto</label><input id="tableLayoutH" type="range" min="12" max="38" step="1" value="${layout.height}"></div>
 	      <button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar diseño</button></form>`);
 	    $('#tableStyleForm').onsubmit = (event) => {
 	      event.preventDefault();
-	      table.layout = { ...layout, shape:$('#tableShape').value, color:$('#tableColor').value, x:Number($('#tableLayoutX').value), y:Number($('#tableLayoutY').value) };
+	      table.layout = { ...layout, shape:$('#tableShape').value, color:$('#tableColor').value, x:Number($('#tableLayoutX').value), y:Number($('#tableLayoutY').value), width:Number($('#tableLayoutW').value), height:Number($('#tableLayoutH').value) };
 	      table.updatedAt = new Date().toISOString();
 	      addAudit('table_layout_changed', { tableId:table.id, shape:table.layout.shape, color:table.layout.color });
-	      if (!save()) return;
+	      if (!saveTableLayoutChange()) return;
 	      closeModal(); renderApp('tables'); toast('Diseño de mesa guardado');
 	    };
 	  }
@@ -2815,10 +2886,14 @@ function parseMoney(value) {
 	        available: Math.max(0, Number(product.qty || 0) - tableReservedQuantity(product.id, order.id))
 	      })).filter(({ available }) => available > 0).map(({ product, available }) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${fmt(product.price)} · ${available} disp.</option>`).join('');
 	      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(table.name)}</h2><p class="fieldHint">${escapeHtml(tableElapsedLabel(order))}</p></div><button class="closeBtn" data-close>×</button></div>
-	        <section class="tableOrderSummary">${(order.items || []).length ? order.items.map((item) => `<div class="movement"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><span><b>${fmt(item.qty * item.price)}</b><button class="iconBtn danger" data-table-item-remove="${actionId(item.id)}" aria-label="Quitar producto">${icon('trash-2')}</button></span></div>`).join('') : '<p class="empty">La mesa todavía no tiene productos.</p>'}</section>
-	        <form id="tableAddItemForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="tableProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin productos con stock</option>'}</select></div><div class="field"><label>Cantidad</label><input id="tableQty" type="number" min="1" max="99" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>${icon('plus')} Agregar</button></form>
+	        <section class="tableOrderSummary">${(order.items || []).length ? order.items.map((item) => `<div class="movement tableLineRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}${item.nonInventory ? ' · directo' : ''}${item.area ? ` · ${escapeHtml(item.area === 'bar' ? 'barra' : 'cocina')}` : ''}</small></span><span><b>${fmt(item.qty * item.price)}</b><button class="iconBtn danger" data-table-item-remove="${actionId(item.id)}" aria-label="Quitar producto">${icon('trash-2')}</button></span></div>`).join('') : '<p class="empty">La mesa todavía no tiene productos.</p>'}</section>
+	        <div class="tableQuickPanels">
+	          <form id="tableAddItemForm" class="tableAddItem"><div class="field"><label>Producto de inventario</label><select id="tableProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin productos con stock</option>'}</select></div><div class="field"><label>Cantidad</label><input id="tableQty" type="number" min="1" max="99" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>${icon('plus')} Agregar</button></form>
+	          <form id="tableQuickItemForm" class="tableAddItem tableDirectItem"><div class="field"><label>Producto directo</label><input id="tableQuickName" maxlength="60" placeholder="Ej. Menú del día, plato extra"></div><div class="field"><label>Precio</label><input id="tableQuickPrice" type="number" min="0" step="0.01" inputmode="decimal" value="0"></div><div class="field"><label>Cant.</label><input id="tableQuickQty" type="number" min="1" max="99" value="1"></div><div class="field"><label>Área</label><select id="tableQuickArea"><option value="kitchen">Cocina</option><option value="bar">Barra</option></select></div><button class="btn silver" type="submit">${icon('plus')} Agregar directo</button></form>
+	        </div>
+	        ${order.splitPlan ? `<div class="tableSplitPreview"><b>Cuenta dividida</b><span>${escapeHtml(splitPlanSummary(order))}</span></div>` : ''}
 	        <div class="tableOrderTotal"><span>Total</span><strong>${fmt(tableOrderTotal(order))}</strong></div>
-	        <div class="tableCheckoutActions"><button class="btn" type="button" id="tableReadyBtn">${order.readyToCharge ? 'Seguir agregando' : 'Marcar por cobrar'}</button><button class="btn primary" type="button" id="tableChargeBtn" ${(order.items || []).length ? '' : 'disabled'}>Cobrar mesa</button></div>`);
+	        <div class="tableCheckoutActions"><button class="btn" type="button" id="tableSplitBtn">Dividir cuenta</button><button class="btn" type="button" id="tableRecipesBtn">Recetas</button><button class="btn" type="button" id="tableReadyBtn">${order.readyToCharge ? 'Seguir agregando' : 'Marcar por cobrar'}</button><button class="btn primary" type="button" id="tableChargeBtn" ${(order.items || []).length ? '' : 'disabled'}>Cobrar mesa</button></div>`);
 	      $$('[data-table-item-remove]').forEach((button) => button.onclick = () => {
 	        order.items = order.items.filter((item) => item.id !== decodeActionId(button.dataset.tableItemRemove));
 	        order.updatedAtMs = Date.now();
@@ -2841,16 +2916,123 @@ function parseMoney(value) {
 	        if (!save()) return;
 	        render();
 	      };
+	      $('#tableQuickItemForm').onsubmit = (event) => {
+	        event.preventDefault();
+	        const name = $('#tableQuickName').value.trim();
+	        const price = Math.max(0, Number($('#tableQuickPrice').value || 0));
+	        const qty = Math.max(1, Math.min(99, Math.trunc(Number($('#tableQuickQty').value || 1))));
+	        const area = $('#tableQuickArea').value === 'bar' ? 'bar' : 'kitchen';
+	        if (!name) return toast('Escribe el nombre del consumo directo.', 'err');
+	        if (!Number.isFinite(price) || price < 0) return toast('Precio directo inválido.', 'err');
+	        order.items.push({ id:uid('direct'), productId:'', name, code:'DIRECTO', price, cardPrice:price, taxMode:'inherit', qty, area, nonInventory:true, createdAt:new Date().toISOString() });
+	        order.readyToCharge = false;
+	        order.updatedAtMs = Date.now();
+	        addAudit('table_direct_item_added', { tableId:table.id, orderId:order.id, name, qty });
+	        if (!save()) return;
+	        render();
+	      };
 	      $('#tableReadyBtn').onclick = () => {
 	        order.readyToCharge = !order.readyToCharge;
 	        order.updatedAtMs = Date.now();
 	        if (!save()) return;
 	        render();
 	      };
+	      $('#tableSplitBtn').onclick = () => openTableSplitModal(table.id, order.id);
+	      $('#tableRecipesBtn').onclick = () => openTableRecipesModal(table.id, order.id);
 	      $('#tableChargeBtn').onclick = () => chargeTableOrder(table, order);
 	      refreshIcons();
 	    };
 	    render();
+	  }
+	  function openTableSplitModal(tableId, orderId) {
+	    const table = tablesForBiz().find((item) => item.id === tableId);
+	    const order = tableOrdersForBiz().find((item) => item.id === orderId);
+	    if (!table || !order) return toast('Cuenta no encontrada.', 'err');
+	    const currentParts = Math.max(1, Math.trunc(Number(order.splitPlan?.parts || table.partySize || 2)));
+	    const total = tableOrderTotal(order);
+	    showModal(`<div class="modalHeader"><div><h2>Dividir cuenta</h2><p class="fieldHint">${escapeHtml(table.name)} · Total ${fmt(total)}</p></div><button class="closeBtn" data-close>×</button></div>
+	      <form id="tableSplitForm" class="formGrid">
+	        <div class="field"><label>Modo</label><select id="tableSplitMode"><option value="people" ${order.splitPlan?.mode !== 'items' ? 'selected' : ''}>Por personas</option><option value="items" ${order.splitPlan?.mode === 'items' ? 'selected' : ''}>Por productos</option></select></div>
+	        <div class="field"><label>Personas / partes</label><input id="tableSplitParts" type="number" min="1" max="30" value="${currentParts}"></div>
+	        <div class="field full"><label>Nota</label><textarea id="tableSplitNote" placeholder="Ej. mesa dividida en 3 pagos">${escapeHtml(order.splitPlan?.note || '')}</textarea></div>
+	        <section class="card full tableSplitPreview"><b>Resumen</b><span id="splitLiveSummary">${fmt(total / currentParts)} por persona</span></section>
+	        <button class="btn" type="button" data-close>Cancelar</button><button class="btn danger" type="button" id="clearSplitBtn">Quitar división</button><button class="btn primary" type="submit">Guardar división</button>
+	      </form>`);
+	    const update = () => {
+	      const parts = Math.max(1, Math.min(30, Math.trunc(Number($('#tableSplitParts').value || 1))));
+	      $('#splitLiveSummary').textContent = $('#tableSplitMode').value === 'items'
+	        ? `${(order.items || []).length} productos para repartir manualmente`
+	        : `${fmt(total / parts)} por persona`;
+	    };
+	    $('#tableSplitParts').oninput = update;
+	    $('#tableSplitMode').onchange = update;
+	    $('#clearSplitBtn').onclick = () => {
+	      order.splitPlan = null;
+	      order.updatedAtMs = Date.now();
+	      addAudit('table_split_cleared', { tableId, orderId });
+	      if (!save()) return;
+	      closeModal(); openTableOrderModal(tableId);
+	    };
+	    $('#tableSplitForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const mode = $('#tableSplitMode').value === 'items' ? 'items' : 'people';
+	      const parts = Math.max(1, Math.min(30, Math.trunc(Number($('#tableSplitParts').value || 1))));
+	      order.splitPlan = {
+	        mode,
+	        parts,
+	        amountPerPart: mode === 'people' ? Math.round((total / parts) * 100) / 100 : 0,
+	        groups: mode === 'items' ? (order.items || []).map((item, index) => ({ group:index + 1, itemId:item.id, name:item.name, total:Number(item.price || 0) * Number(item.qty || 0) })) : [],
+	        note:$('#tableSplitNote').value.trim(),
+	        updatedAt:new Date().toISOString()
+	      };
+	      order.updatedAtMs = Date.now();
+	      addAudit('table_split_saved', { tableId, orderId, mode, parts });
+	      if (!save()) return;
+	      closeModal(); openTableOrderModal(tableId);
+	    };
+	    update();
+	  }
+	  function openTableRecipesModal(tableId = '', orderId = '') {
+	    const recipes = restaurantRecipesForBiz();
+	    const productOptions = productsForBiz().map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)}</option>`).join('');
+	    showModal(`<div class="modalHeader"><div><h2>Recetas</h2><p class="fieldHint">Guarda ingredientes y preparación para cocina. No descuenta insumos automáticamente.</p></div><button class="closeBtn" data-close>×</button></div>
+	      <section class="tableRecipeList">${recipes.length ? recipes.map((recipe) => `<article class="card compactRecipe"><b>${escapeHtml(recipe.name)}</b><small>${escapeHtml(recipe.productName || 'Receta libre')}</small><p>${escapeHtml(recipe.ingredients || '')}</p><button class="iconBtn danger" data-recipe-delete="${actionId(recipe.id)}" aria-label="Eliminar receta">${icon('trash-2')}</button></article>`).join('') : '<p class="empty">Aún no tienes recetas para este negocio.</p>'}</section>
+	      <form id="tableRecipeForm" class="formGrid">
+	        <div class="field"><label>Nombre de receta</label><input id="recipeName" maxlength="80" required placeholder="Ej. Hamburguesa clásica"></div>
+	        <div class="field"><label>Producto relacionado</label><select id="recipeProduct"><option value="">Receta libre</option>${productOptions}</select></div>
+	        <div class="field full"><label>Ingredientes</label><textarea id="recipeIngredients" placeholder="Pan, carne, queso, salsa..."></textarea></div>
+	        <div class="field full"><label>Preparación</label><textarea id="recipeSteps" placeholder="Pasos de cocina"></textarea></div>
+	        <button class="btn" type="button" data-close>Salir</button><button class="btn primary" type="submit">Guardar receta</button>
+	      </form>`);
+	    $$('[data-recipe-delete]').forEach((button) => button.onclick = () => {
+	      const id = decodeActionId(button.dataset.recipeDelete);
+	      state.restaurantRecipes = (state.restaurantRecipes || []).filter((recipe) => recipe.id !== id);
+	      addAudit('restaurant_recipe_deleted', { recipeId:id });
+	      if (!save()) return;
+	      openTableRecipesModal(tableId, orderId);
+	    });
+	    $('#tableRecipeForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const productId = decodeActionId($('#recipeProduct').value);
+	      const product = productsForBiz().find((item) => item.id === productId);
+	      const recipe = {
+	        id:uid('recipe'),
+	        businessId:currentBusiness().id,
+	        name:$('#recipeName').value.trim(),
+	        productId:product?.id || '',
+	        productName:product?.name || '',
+	        ingredients:$('#recipeIngredients').value.trim(),
+	        steps:$('#recipeSteps').value.trim(),
+	        createdAt:new Date().toISOString(),
+	        updatedAtMs:Date.now()
+	      };
+	      if (!recipe.name) return toast('Escribe el nombre de la receta.', 'err');
+	      state.restaurantRecipes.push(recipe);
+	      addAudit('restaurant_recipe_saved', { recipeId:recipe.id, productId:recipe.productId });
+	      if (!save()) return;
+	      openTableRecipesModal(tableId, orderId);
+	    };
+	    refreshIcons();
 	  }
 	  async function chargeTableOrder(table, order) {
 	    if (!isDayStarted() || isDayClosed()) return toast('Abre una caja activa antes de cobrar la mesa.', 'err');
@@ -2863,6 +3045,7 @@ function parseMoney(value) {
 	    const calculation = window.CLICK360_V16_DOMAIN?.calculateCart(lines, 0, tax);
 	    const total = Number(calculation?.total ?? tableOrderTotal(order));
 	    for (const item of order.items) {
+	      if (item.nonInventory) continue;
 	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
 	      if (!product || product.qty < item.qty) return toast(`Stock insuficiente: ${item.name}`, 'err');
 	    }
@@ -2870,13 +3053,14 @@ function parseMoney(value) {
 	    const sale = {
 	      id: saleId, operationId: uid('table-sale'), cashSessionId: currentOpenCashSession()?.id || '',
 	      businessId, tableId: table.id, tableOrderId: order.id, date: today(), when: nowLabel(),
-	      items: (calculation?.lines || lines).map((item) => ({ id:item.id, name:item.name, code:item.code, qty:item.qty, price:item.unitPrice || item.price, taxMode:item.taxMode || 'inherit', taxBase:item.base || 0, tax:item.tax || 0, total:item.total || item.qty * item.price })),
+	      items: (calculation?.lines || lines).map((item) => ({ id:item.id, productId:item.productId || (item.nonInventory ? '' : item.id), nonInventory:item.nonInventory === true, name:item.name, code:item.code, qty:item.qty, price:item.unitPrice || item.price, taxMode:item.taxMode || 'inherit', taxBase:item.base || 0, tax:item.tax || 0, total:item.total || item.qty * item.price })),
 	      subtotal: Number(calculation?.subtotal || total), iva: Number(calculation?.tax || 0), discount: 0, total, method,
 	      status:'paid', received:total, tendered:total, change:0, balance:0, user:authUser().name,
 	      createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name
 	    };
 	    state.sales.push(sale);
 	    order.items.forEach((item) => {
+	      if (item.nonInventory) return;
 	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
 	      product.qty -= item.qty;
 	      product.updatedAtMs = Date.now();
@@ -2920,24 +3104,33 @@ function parseMoney(value) {
 	        const table = tablesForBiz().find((candidate) => candidate.id === decodeActionId(item.dataset.tableMapItem));
 	        if (!map || !table) return;
 	        const layout = normalizedTableLayout(table);
-	        drag = { table, businessId:currentBusiness().id, layout, startX:event.clientX, startY:event.clientY, rect:map.getBoundingClientRect() };
+	        const resizing = !!event.target.closest('[data-table-resize]');
+	        drag = { table, businessId:currentBusiness().id, layout, resizing, startX:event.clientX, startY:event.clientY, rect:map.getBoundingClientRect() };
 	        item.setPointerCapture?.(event.pointerId);
 	        event.preventDefault();
 	      });
 	      item.addEventListener('pointermove', (event) => {
 	        if (!drag) return;
-	        const x = Math.max(2, Math.min(98 - drag.layout.width, drag.layout.x + (event.clientX - drag.startX) / drag.rect.width * 100));
-	        const y = Math.max(2, Math.min(98 - drag.layout.height, drag.layout.y + (event.clientY - drag.startY) / drag.rect.height * 100));
-	        item.style.setProperty('--table-x', `${x}%`);
-	        item.style.setProperty('--table-y', `${y}%`);
-	        drag.next = { ...drag.layout, x:Number(x.toFixed(2)), y:Number(y.toFixed(2)) };
+	        if (drag.resizing) {
+	          const width = Math.max(12, Math.min(42, drag.layout.width + (event.clientX - drag.startX) / drag.rect.width * 100));
+	          const height = Math.max(12, Math.min(38, drag.layout.height + (event.clientY - drag.startY) / drag.rect.height * 100));
+	          item.style.setProperty('--table-w', `${width}%`);
+	          item.style.setProperty('--table-h', `${height}%`);
+	          drag.next = { ...drag.layout, width:Number(width.toFixed(2)), height:Number(height.toFixed(2)) };
+	        } else {
+	          const x = Math.max(2, Math.min(98 - drag.layout.width, drag.layout.x + (event.clientX - drag.startX) / drag.rect.width * 100));
+	          const y = Math.max(2, Math.min(98 - drag.layout.height, drag.layout.y + (event.clientY - drag.startY) / drag.rect.height * 100));
+	          item.style.setProperty('--table-x', `${x}%`);
+	          item.style.setProperty('--table-y', `${y}%`);
+	          drag.next = { ...drag.layout, x:Number(x.toFixed(2)), y:Number(y.toFixed(2)) };
+	        }
 	      });
 	      const finishDrag = () => {
 	        if (!drag?.next || drag.businessId !== currentBusiness()?.id) { drag = null; return; }
 	        drag.table.layout = drag.next;
 	        drag.table.updatedAt = new Date().toISOString();
-	        addAudit('table_moved', { tableId:drag.table.id });
-	        save();
+	        addAudit(drag.resizing ? 'table_resized' : 'table_moved', { tableId:drag.table.id });
+	        saveTableLayoutChange();
 	        drag = null;
 	      };
 	      item.addEventListener('pointerup', finishDrag);
@@ -2952,6 +3145,181 @@ function parseMoney(value) {
 	      addAudit('table_deleted', { tableId });
 	      if (!save()) return;
 	      renderApp('tables'); toast('Mesa eliminada');
+	    });
+	  }
+
+	  function logisticsSummary(route) {
+	    const sales = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id);
+	    const collections = logisticsForBiz('collections').filter((collection) => collection.routeId === route.id);
+	    const returns = logisticsForBiz('returns').filter((item) => item.routeId === route.id);
+	    const expenses = logisticsForBiz('routeExpenses').filter((item) => item.routeId === route.id);
+	    const sold = sales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+	    const collected = collections.reduce((sum, collection) => sum + Number(collection.amount || 0), 0);
+	    const returned = returns.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+	    const spent = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+	    return { sales, collections, returns, expenses, sold, collected, returned, spent, expected:Math.max(0, sold + collected - spent) };
+	  }
+	  function logisticsView() {
+	    if (!logisticsModuleEnabled()) {
+	      return `<div class="pageHead"><div><h1>Logística</h1><p>Disponible para minimarkets, tiendas, distribución y rutas.</p></div></div>
+	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">Selecciona Minimarket, Ferretería, Tienda o Distribución en Ajustes para usar rutas locales.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
+	    }
+	    const vehicles = logisticsForBiz('vehicles');
+	    const routes = logisticsForBiz('routes').slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+	    const openRoutes = routes.filter((route) => !['closed','cancelled'].includes(route.status));
+	    const closedRoutes = routes.length - openRoutes.length;
+	    return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>${escapeHtml(currentBusiness().name)} · transporte, carga, ventas y liquidación</p></div><div class="toolbar"><button class="btn" id="newVehicleBtn">${icon('truck')} Vehículo</button><button class="btn primary" id="newRouteBtn">${icon('map')} Ruta</button></div></div>
+	      <section class="kpiGrid">
+	        <article class="card kpi"><span>Vehículos</span><strong>${vehicles.length}</strong></article>
+	        <article class="card kpi"><span>Rutas abiertas</span><strong>${openRoutes.length}</strong></article>
+	        <article class="card kpi"><span>Rutas cerradas</span><strong>${closedRoutes}</strong></article>
+	      </section>
+	      <section class="logisticsLayout">
+	        <article class="card sectionCard"><h3>Vehículos</h3><div class="logisticsList">${vehicles.length ? vehicles.map((vehicle) => `<div class="logisticsRow"><span><b>${escapeHtml(vehicle.plate)}</b><small>${escapeHtml(vehicle.name || vehicle.driverName || 'Sin conductor')} · ${escapeHtml(vehicle.status || 'active')}</small></span><button class="iconBtn danger" data-logistics-delete-vehicle="${actionId(vehicle.id)}" aria-label="Eliminar vehículo">${icon('trash-2')}</button></div>`).join('') : '<p class="empty">Agrega placas y conductores.</p>'}</div></article>
+	        <article class="card sectionCard"><h3>Rutas</h3><div class="logisticsList">${routes.length ? routes.map((route) => {
+	          const summary = logisticsSummary(route);
+	          return `<button class="logisticsRouteCard" data-route-open="${actionId(route.id)}"><span><b>${escapeHtml(route.name)}</b><small>${escapeHtml(route.zone || 'Sin zona')} · ${escapeHtml(route.date || today())} · ${escapeHtml(route.status || 'draft')}</small></span><strong>${fmt(summary.sold)}</strong></button>`;
+	        }).join('') : '<p class="empty">Crea una ruta para iniciar hoja de carga y liquidación.</p>'}</div></article>
+	      </section>`;
+	  }
+	  function openVehicleModal() {
+	    showModal(`<div class="modalHeader"><h2>Nuevo vehículo</h2><button class="closeBtn" data-close>×</button></div>
+	      <form id="vehicleForm" class="formGrid"><div class="field"><label>Placa</label><input id="vehiclePlate" required maxlength="12" placeholder="ABC-1234"></div><div class="field"><label>Nombre / alias</label><input id="vehicleName" maxlength="60" placeholder="Camión 1"></div><div class="field"><label>Conductor</label><input id="vehicleDriver" maxlength="80"></div><div class="field"><label>Capacidad</label><input id="vehicleCapacity" type="number" min="0" step="1" value="0"></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar vehículo</button></form>`);
+	    $('#vehicleForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const input = { businessId:currentBusiness().id, plate:$('#vehiclePlate').value.trim(), name:$('#vehicleName').value.trim(), driverName:$('#vehicleDriver').value.trim(), capacity:Number($('#vehicleCapacity').value || 0), status:'active' };
+	      let vehicle;
+	      try { vehicle = window.CLICK360_P2_LOGISTICS?.createVehicle?.({ input, actor:logisticsActor() }) || { id:uid('vehicle'), ...input, createdAt:new Date().toISOString() }; }
+	      catch (error) { return toast(error.message || 'No se pudo crear vehículo.', 'err'); }
+	      state.logistics.vehicles.push(vehicle);
+	      addAudit('logistics_vehicle_created', { vehicleId:vehicle.id, plate:vehicle.plate });
+	      if (!save()) return;
+	      closeModal(); renderApp('logistics'); toast('Vehículo guardado');
+	    };
+	  }
+	  function openRouteModal() {
+	    const vehicleOptions = logisticsForBiz('vehicles').map((vehicle) => `<option value="${actionId(vehicle.id)}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.name || vehicle.driverName || '')}</option>`).join('');
+	    showModal(`<div class="modalHeader"><h2>Nueva ruta</h2><button class="closeBtn" data-close>×</button></div>
+	      <form id="routeForm" class="formGrid"><div class="field"><label>Nombre</label><input id="routeName" required maxlength="70" placeholder="Ruta norte"></div><div class="field"><label>Zona</label><input id="routeZone" maxlength="70" placeholder="Norte / centro"></div><div class="field"><label>Fecha</label><input id="routeDate" type="date" value="${today()}"></div><div class="field"><label>Vehículo</label><select id="routeVehicle"><option value="">Sin vehículo</option>${vehicleOptions}</select></div><div class="field"><label>Vendedor</label><input id="routeSeller" maxlength="80"></div><div class="field"><label>Ayudante</label><input id="routeHelper" maxlength="80"></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Crear ruta</button></form>`);
+	    $('#routeForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const vehicleId = decodeActionId($('#routeVehicle').value);
+	      const input = { businessId:currentBusiness().id, name:$('#routeName').value.trim(), zone:$('#routeZone').value.trim(), date:$('#routeDate').value || today(), vehicleId, sellerName:$('#routeSeller').value.trim(), helperName:$('#routeHelper').value.trim(), status:'planned' };
+	      let route;
+	      try { route = window.CLICK360_P2_LOGISTICS?.createRoute?.({ input, actor:logisticsActor(), vehicle:logisticsForBiz('vehicles').find((vehicle) => vehicle.id === vehicleId) }) || { id:uid('route'), ...input, createdAt:new Date().toISOString() }; }
+	      catch (error) { return toast(error.message || 'No se pudo crear ruta.', 'err'); }
+	      state.logistics.routes.push(route);
+	      addAudit('logistics_route_created', { routeId:route.id });
+	      if (!save()) return;
+	      closeModal(); renderApp('logistics'); toast('Ruta creada');
+	    };
+	  }
+	  function openRouteWorkspace(routeId) {
+	    const route = logisticsForBiz('routes').find((item) => item.id === routeId);
+	    if (!route) return toast('Ruta no encontrada.', 'err');
+	    const summary = logisticsSummary(route);
+	    const sheet = logisticsForBiz('loadSheets').find((item) => item.routeId === route.id && !['closed','cancelled'].includes(item.status));
+	    const productOptions = productsForBiz().map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${Number(product.qty || 0)} disp.</option>`).join('');
+	    showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p class="fieldHint">${escapeHtml(route.zone || 'Ruta')} · ${escapeHtml(route.date || today())}</p></div><button class="closeBtn" data-close>×</button></div>
+	      <section class="kpiGrid routeKpis"><article class="card kpi"><span>Venta ruta</span><strong>${fmt(summary.sold)}</strong></article><article class="card kpi"><span>Cobrado</span><strong>${fmt(summary.collected)}</strong></article><article class="card kpi"><span>Retornos</span><strong>${fmt(summary.returned)}</strong></article></section>
+	      <section class="card sectionCard"><h3>Hoja de carga</h3><div class="logisticsList">${sheet?.items?.length ? sheet.items.map((item) => `<div class="logisticsRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><strong>${fmt(item.total)}</strong></div>`).join('') : '<p class="empty">Sin productos cargados.</p>'}</div>
+	        <form id="routeLoadForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="routeLoadProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeLoadQty" type="number" min="1" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Agregar carga</button></form></section>
+	      <section class="card sectionCard"><h3>Venta, cobranza y retorno</h3>
+	        <form id="routeSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="routeCustomer" maxlength="80" placeholder="Cliente de ruta"></div><div class="field"><label>Producto vendido</label><select id="routeSaleProduct" ${productOptions ? '' : 'disabled'}><option value="">Venta manual</option>${productOptions}</select></div><div class="field"><label>Cant.</label><input id="routeSaleQty" type="number" min="1" value="1"></div><div class="field"><label>Total venta</label><input id="routeSaleTotal" type="number" min="0" step="0.01" value="0" placeholder="Se calcula si eliges producto"></div><div class="field"><label>Tipo</label><select id="routePaymentType"><option value="cash">Contado</option><option value="credit">Crédito</option><option value="transfer">Transferencia</option></select></div><button class="btn primary" type="submit">Registrar venta</button></form>
+	        <form id="routeCollectionForm" class="formGrid"><div class="field"><label>Cobranza</label><input id="routeCollectionAmount" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Método</label><select id="routeCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><button class="btn silver" type="submit">Registrar cobro</button></form>
+	        <form id="routeReturnForm" class="formGrid"><div class="field"><label>Producto devuelto</label><select id="routeReturnProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeReturnQty" type="number" min="1" value="1"></div><div class="field"><label>Estado</label><select id="routeReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Registrar retorno</button></form></section>
+	      <div class="tableCheckoutActions"><button class="btn" id="routePrintBtn" type="button">${icon('printer')} Imprimir hoja</button><button class="btn primary" id="routeCloseBtn" type="button">Liquidar ruta</button></div>`);
+	    $('#routeLoadForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const productId = decodeActionId($('#routeLoadProduct').value);
+	      const product = productsForBiz().find((item) => item.id === productId);
+	      const qty = Math.max(1, Math.trunc(Number($('#routeLoadQty').value || 1)));
+	      if (!product || qty > Number(product.qty || 0)) return toast('Inventario insuficiente para cargar ruta.', 'err');
+	      let currentSheet = sheet || { id:uid('loadsheet'), businessId:currentBusiness().id, routeId:route.id, status:'draft', items:[], createdAt:new Date().toISOString() };
+	      if (!sheet) state.logistics.loadSheets.push(currentSheet);
+	      const existing = currentSheet.items.find((item) => item.productId === product.id);
+	      if (existing) { existing.qty += qty; existing.total = Number(existing.qty || 0) * Number(existing.price || 0); }
+	      else currentSheet.items.push({ id:uid('loaditem'), productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), total:qty * Number(product.price || 0), createdAt:new Date().toISOString() });
+	      currentSheet.updatedAtMs = Date.now();
+	      addAudit('logistics_load_item_added', { routeId:route.id, productId:product.id, qty });
+	      if (!save()) return;
+	      closeModal(); openRouteWorkspace(route.id);
+	    };
+	    $('#routeSaleForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const productId = decodeActionId($('#routeSaleProduct')?.value || '');
+	      const product = productsForBiz().find((item) => item.id === productId);
+	      const qty = Math.max(1, Math.trunc(Number($('#routeSaleQty')?.value || 1)));
+	      let total = Math.max(0, Number($('#routeSaleTotal').value || 0));
+	      const items = [];
+	      if (product) {
+	        const loadedQty = (sheet?.items || []).filter((item) => item.productId === product.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+	        const soldQty = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id).flatMap((sale) => sale.items || []).filter((item) => item.productId === product.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+	        const availableQty = Math.max(0, loadedQty - soldQty);
+	        if (qty > availableQty) return toast(`Carga insuficiente para vender. Disponible en ruta: ${availableQty}.`, 'err');
+	        const unitPrice = Number(product.price || 0);
+	        total = total > 0 ? total : qty * unitPrice;
+	        items.push({ id:uid('routesaleitem'), productId:product.id, code:product.code, name:product.name, qty, price:qty ? total / qty : unitPrice, total, createdAt:new Date().toISOString() });
+	      }
+	      if (!total) return toast(product ? 'El producto necesita precio o total manual.' : 'Ingresa el total de la venta de ruta.', 'err');
+	      const paymentType = $('#routePaymentType').value;
+	      const sale = { id:uid('routesale'), businessId:currentBusiness().id, routeId:route.id, customerName:$('#routeCustomer').value.trim() || 'Cliente de ruta', items, subtotal:total, discount:0, total, paymentType, paidAmount:paymentType === 'credit' ? 0 : total, balance:paymentType === 'credit' ? total : 0, status:paymentType === 'credit' ? 'credit' : 'paid', createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name };
+	      state.logistics.routeSales.push(sale);
+	      addAudit('logistics_route_sale_created', { routeId:route.id, saleId:sale.id, total, productId:product?.id || '' });
+	      if (!save()) return;
+	      closeModal(); openRouteWorkspace(route.id);
+	    };
+	    $('#routeCollectionForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const amount = Math.max(0, Number($('#routeCollectionAmount').value || 0));
+	      if (!amount) return toast('Ingresa el valor cobrado.', 'err');
+	      state.logistics.collections.push({ id:uid('collection'), businessId:currentBusiness().id, routeId:route.id, amount, method:$('#routeCollectionMethod').value, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
+	      addAudit('logistics_collection_created', { routeId:route.id, amount });
+	      if (!save()) return;
+	      closeModal(); openRouteWorkspace(route.id);
+	    };
+	    $('#routeReturnForm').onsubmit = (event) => {
+	      event.preventDefault();
+	      const productId = decodeActionId($('#routeReturnProduct').value);
+	      const product = productsForBiz().find((item) => item.id === productId);
+	      const qty = Math.max(1, Math.trunc(Number($('#routeReturnQty').value || 1)));
+	      if (!product) return toast('Producto no encontrado.', 'err');
+	      state.logistics.returns.push({ id:uid('return'), businessId:currentBusiness().id, routeId:route.id, productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), condition:$('#routeReturnCondition').value, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
+	      addAudit('logistics_return_created', { routeId:route.id, productId:product.id, qty });
+	      if (!save()) return;
+	      closeModal(); openRouteWorkspace(route.id);
+	    };
+	    $('#routeCloseBtn').onclick = () => {
+	      const next = logisticsSummary(route);
+	      const settlement = { id:uid('settlement'), businessId:currentBusiness().id, routeId:route.id, status:'closed', totalSales:next.sold, totalCollections:next.collected, totalReturns:next.returned, totalExpenses:next.spent, expectedCash:next.expected, closedAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name };
+	      state.logistics.routeSettlements.push(settlement);
+	      route.status = 'closed';
+	      route.closedAt = new Date().toISOString();
+	      addAudit('logistics_route_closed', { routeId:route.id, settlementId:settlement.id, expectedCash:settlement.expectedCash });
+	      if (!save()) return;
+	      closeModal(); renderApp('logistics'); toast('Ruta liquidada');
+	    };
+	    $('#routePrintBtn').onclick = () => {
+	      const html = `<h1>${escapeHtml(route.name)}</h1><p>${escapeHtml(route.zone || '')} · ${escapeHtml(route.date || '')}</p><h2>Hoja de carga</h2>${(sheet?.items || []).map((item) => `<p>${escapeHtml(item.name)} · ${item.qty} · ${fmt(item.total)}</p>`).join('') || '<p>Sin carga</p>'}<h2>Liquidación</h2><p>Venta: ${fmt(summary.sold)}</p><p>Cobrado: ${fmt(summary.collected)}</p><p>Retornos: ${fmt(summary.returned)}</p>`;
+	      const popup = window.open('', '_blank');
+	      if (!popup) return toast('Permite ventanas emergentes para imprimir.', 'err');
+	      popup.document.write(`<!doctype html><title>Ruta</title><body>${html}</body>`);
+	      popup.document.close();
+	      popup.print();
+	    };
+	    refreshIcons();
+	  }
+	  function bindLogistics() {
+	    $('#newVehicleBtn')?.addEventListener('click', openVehicleModal);
+	    $('#newRouteBtn')?.addEventListener('click', openRouteModal);
+	    $$('[data-route-open]').forEach((button) => button.onclick = () => openRouteWorkspace(decodeActionId(button.dataset.routeOpen)));
+	    $$('[data-logistics-delete-vehicle]').forEach((button) => button.onclick = () => {
+	      const vehicleId = decodeActionId(button.dataset.logisticsDeleteVehicle);
+	      if (logisticsForBiz('routes').some((route) => route.vehicleId === vehicleId && !['closed','cancelled'].includes(route.status))) return toast('No elimines un vehículo con rutas abiertas.', 'err');
+	      state.logistics.vehicles = state.logistics.vehicles.filter((vehicle) => vehicle.id !== vehicleId || vehicle.businessId !== currentBusiness().id);
+	      addAudit('logistics_vehicle_deleted', { vehicleId });
+	      if (!save()) return;
+	      renderApp('logistics');
 	    });
 	  }
 
@@ -3085,7 +3453,8 @@ function parseMoney(value) {
 		      <button class="card bigRow" data-more="reports"><span>${icon('chart-no-axes-combined')} Reportes</span>${icon('chevron-right')}</button>
 	      <button class="card bigRow" data-more="crm"><span>${icon('contact-round')} Clientes y WhatsApp</span>${icon('chevron-right')}</button>
 	      <button class="card bigRow" data-more="reminders"><span>${icon('alarm-clock')} Recordatorios</span>${icon('chevron-right')}</button>
-	      ${isRestaurantBusiness() ? `<button class="card bigRow" data-more="tables"><span>${icon('utensils')} Mesas / Restaurante</span>${icon('chevron-right')}</button>` : ''}
+	      ${restaurantModuleEnabled() ? `<button class="card bigRow" data-more="tables"><span>${icon('utensils')} Mesas / Restaurante</span>${icon('chevron-right')}</button>` : ''}
+	      ${logisticsModuleEnabled() ? `<button class="card bigRow" data-more="logistics"><span>${icon('truck')} Logística y rutas</span>${icon('chevron-right')}</button>` : ''}
 	      <button class="card bigRow" data-more="finance"><span>${icon('wallet-cards')} Finanzas</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="workers"><span>${icon('users-round')} Trabajadores</span><span><span id="pendingWorkersBadge" class="badge danger" hidden>0</span>${icon('chevron-right')}</span></button>
@@ -3318,6 +3687,7 @@ function parseMoney(value) {
     if(r==='crm') bindCrm();
     if(r==='reminders') bindReminders();
     if(r==='tables') bindTables();
+    if(r==='logistics') bindLogistics();
     if(r==='finance') bindFinance();
     if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();

@@ -10,6 +10,11 @@
 - Responsive release QA across Chromium, WebKit, and Firefox.
 - Built-artifact smoke with version, manifest, console, and request checks.
 - Explicit web release gate in CI.
+- Restaurant tables now support movable/resizable 2D layouts, seats, current
+  guests, direct products outside inventory, split bills and local recipe notes.
+- Logistics adds local vehicles, routes, load sheets, route product sales,
+  collections, returns, route settlement and route print summaries for
+  minimarket/distribution workflows.
 
 ### Improved
 
@@ -24,7 +29,9 @@
   covering cards on mobile or desktop.
 - Logo, profile, navigation, and modal controls have improved semantics and
   touch targets.
-- Cache identity is now `commercial-1-0-5-r7`.
+- Cache identity is now `commercial-1-0-5-r8`.
+- Table layout changes use a named non-commercial sync source so moving or
+  resizing a table does not create a false blocking cloud conflict.
 
 ### Security
 
@@ -34,8 +41,10 @@
 
 ### Gated
 
-- P2 Workers, Restaurant Advanced, Logistics, and Owner Preview remain disabled
-  until their multiuser backend and Rules contracts are approved.
+- P2 Workers and Owner Preview remain disabled until their multiuser backend
+  and Rules contracts are approved.
+- Restaurant and Logistics ship as guarded frontend/local modules only; no
+  production Rules, Functions, Auth, claims or data migrations are changed.
 
 ## 1.0.4-p0 - 2026-07-22
 

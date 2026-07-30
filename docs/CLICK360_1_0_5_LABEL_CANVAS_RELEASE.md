@@ -2,9 +2,9 @@
 
 ## Identity
 
-- Branch: `hotfix/1.0.5-label-mobile-layout-print-clean`
+- Branch: `hotfix/1-0-5-restaurant-logistics-ux`
 - Version: `1.0.5`
-- Asset and Service Worker cache: `commercial-1-0-5-r7`
+- Asset and Service Worker cache: `commercial-1-0-5-r8`
 - Base: `main`
 - Status: Hosting-only frontend hotfix candidate
 
@@ -30,18 +30,31 @@
 - The wizard footer is no longer sticky, so it cannot cover cards on desktop
   or mobile.
 - Release identity, PWA manifest and Service Worker cache update.
+- Restaurant tables can be arranged on a 2D floor map with drag/resize,
+  seats, current guests, direct products not registered in inventory, split
+  bills and recipe notes.
+- Logistics adds local vehicles, route creation, load sheets, product route
+  sales, collections, returns, settlement and printable route summaries for
+  minimarket/distribution use.
+- Table layout saves are tagged as non-commercial layout changes so stale sync
+  guards do not block founders after moving tables.
 
 ## Excluded
 
 - `tools/admin/**` and Firebase Admin SDK.
 - `functions/**`, Cloud Run and administrative endpoints.
 - Firestore Rules, Auth, OAuth, claims and `accountAccess`.
-- Workers P2, Restaurant Advanced, Logistics and Owner Preview.
+- Workers P2 and Owner Preview.
+- Cloud backend activation for restaurant/logistics multiuser workflows.
 - Migrations, administrative scripts and production data operations.
 - Any deployment other than a future, separately approved Hosting-only deploy.
 
 The existing inventory, sales, cash, reports, multi-business isolation and
 legacy `state/main` contract are not redesigned by this release.
+
+Restaurant and Logistics in this release remain frontend/local modules over the
+current guarded save contract. They do not deploy new Rules, Functions,
+claims, account-access changes or migrations.
 
 ## Data Safety
 

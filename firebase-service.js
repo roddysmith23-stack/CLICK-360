@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'commercial-1-0-5-r7';
+		  const APP_ASSET_VERSION = 'commercial-1-0-5-r8';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -61,6 +61,9 @@
 			  const NON_MATERIAL_SYNC_SOURCES = new Set([
 			    'business_switch',
 			    'non_blocking_local_change',
+			    'table_layout_change',
+			    'restaurant_layout_change',
+			    'restaurant_table_layout',
 			    'cloud_confirmed',
 			    'remote_applied',
 			    'indexeddb_recovery_already_synced',
@@ -965,7 +968,7 @@
 			    } else if (!navigator.onLine && (pendingMeta || conflictMarker)) {
 			      next = { ...base, status: 'offline', blocking: false, reason: 'offline_local_state' };
 			    } else if (conflictMarker) {
-			      if (staleLock && !revisionConflict) {
+			      if (staleLock && (nonMaterialSource || materialEquivalent || !revisionConflict)) {
 			        next = { ...base, status: 'stale_lock', blocking: false, reason: conflictMarker.legacy ? 'legacy_conflict_marker' : 'stale_conflict_lock' };
 			      } else if (revisionConflict || hasDirtyFields) {
 			        next = { ...base, status: 'real_conflict', blocking: true, reason: 'remote_revision_conflict' };
@@ -2580,9 +2583,9 @@
     };
   }
 
-	  const debouncedSync = debounce((tenantKey, authUid, expectedEpoch) => {
+	  const debouncedSync = debounce((tenantKey, authUid, expectedEpoch, reason = 'local_change') => {
 	    if (expectedEpoch !== AUTH_EPOCH || ACTIVE_CONTEXT?.tenantKey !== tenantKey || ACTIVE_CONTEXT?.authUid !== authUid) return;
-	    pushLocalToFirestore("local_change").catch(() => {});
+	    pushLocalToFirestore(String(reason || 'local_change')).catch(() => {});
 	  }, 1200);
 
 			  window.addEventListener('click360-local-state-saved', (event) => {
@@ -2613,7 +2616,7 @@
 		          window.dispatchEvent(new CustomEvent('click360-online-only-commit', { detail: { ...detail, success: false } }));
 		        });
 		      } else {
-		        debouncedSync(ACTIVE_CONTEXT.tenantKey, ACTIVE_CONTEXT.authUid, AUTH_EPOCH);
+		        debouncedSync(ACTIVE_CONTEXT.tenantKey, ACTIVE_CONTEXT.authUid, AUTH_EPOCH, event.detail?.syncSource || 'local_change');
 		      }
 		    }
 		  });

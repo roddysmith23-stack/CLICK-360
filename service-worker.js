@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r7';
+const CACHE = 'click360-commercial-1-0-5-r8';
 const ASSETS = [
   './',
   './index.html',
@@ -14,6 +14,8 @@ const ASSETS = [
   './printing-service.js',
   './smart-print-core.js',
   './p2-web-safe-flags.js',
+  './p2-restaurant-domain.js',
+  './p2-logistics-domain.js',
   './universal-label-canvas.js',
   './universal-label-editor.js',
   './manifest.webmanifest',
