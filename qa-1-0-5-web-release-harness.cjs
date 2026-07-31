@@ -16,8 +16,14 @@ const gitRefExists = (ref) => {
 const base = ['origin/main', 'main'].find(gitRefExists);
 assert(base, 'main is required for the web release scope audit');
 
-const committed = execFileSync('git', ['diff', '--name-only', `${base}...HEAD`], { cwd:root, encoding:'utf8' });
-const working = execFileSync('git', ['diff', '--name-only', base], { cwd:root, encoding:'utf8' });
+let diffBase = base;
+let committed = execFileSync('git', ['diff', '--name-only', `${diffBase}...HEAD`], { cwd:root, encoding:'utf8' });
+let working = execFileSync('git', ['diff', '--name-only', diffBase], { cwd:root, encoding:'utf8' });
+if (!`${committed}\n${working}`.trim() && gitRefExists('HEAD^1')) {
+  diffBase = 'HEAD^1';
+  committed = execFileSync('git', ['diff', '--name-only', diffBase, 'HEAD'], { cwd:root, encoding:'utf8' });
+  working = execFileSync('git', ['diff', '--name-only', diffBase], { cwd:root, encoding:'utf8' });
+}
 const changed = [...new Set(`${committed}\n${working}`.split('\n').filter(Boolean))];
 assert(changed.length > 0, 'the release must contain a reviewable web diff');
 
@@ -125,7 +131,7 @@ const runtimeFiles = changed.filter((file) => [
   'universal-label-editor.js'
 ].includes(file));
 const runtimeDiff = runtimeFiles.length
-  ? execFileSync('git', ['diff', '--unified=0', base, '--', ...runtimeFiles], { cwd:root, encoding:'utf8' })
+  ? execFileSync('git', ['diff', '--unified=0', diffBase, 'HEAD', '--', ...runtimeFiles], { cwd:root, encoding:'utf8' })
   : '';
 const additions = runtimeDiff.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).join('\n');
 for (const token of ['deleteDoc', 'writeBatch', 'setDoc(', 'localStorage.clear', 'migration apply']) {
