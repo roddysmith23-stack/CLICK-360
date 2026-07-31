@@ -44,8 +44,8 @@ assert.match(firebase, /routeSettlements: Array\.isArray\(state\.logistics\.rout
 assert.match(firebase, /debouncedSync\(ACTIVE_CONTEXT\.tenantKey, ACTIVE_CONTEXT\.authUid, AUTH_EPOCH, event\.detail\?\.syncSource/, 'local sync source survives debounced cloud sync');
 assert.match(flags, /p2RestaurantAdvancedEnabled: true/, 'restaurant frontend module flag is enabled');
 assert.match(flags, /p2LogisticsEnabled: true/, 'logistics frontend module flag is enabled');
-assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r11/, 'restaurant domain is included in the release HTML');
-assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r11/, 'logistics domain is included in the release HTML');
+assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r12/, 'restaurant domain is included in the release HTML');
+assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r12/, 'logistics domain is included in the release HTML');
 assert.match(worker, /\.\/p2-restaurant-domain\.js/, 'restaurant domain is cached for PWA use');
 assert.match(worker, /\.\/p2-logistics-domain\.js/, 'logistics domain is cached for PWA use');
 assert.match(styles, /\.tableResizeHandle/, 'resize handle has UI styling');
@@ -56,7 +56,10 @@ assert.match(styles, /\.click360Splash/, 'startup favicon animation is present')
 assert.match(styles, /\.floatingCalcBtn/, 'movable calculator button is present');
 assert.match(styles, /\.receiptTemplatePanel/, 'receipt template configuration is styled');
 assert.match(styles, /\.logisticsLayout/, 'logistics layout has dedicated CSS');
-assert.match(styles, /@media\(max-width:430px\)[\s\S]*\.tableMap\{display:block;min-height:520px;min-width:620px/, 'mobile table map remains a 2D canvas, not a collapsed card grid');
+assert.match(styles, /\.tableMap\{width:100%!important;max-width:100%!important;min-width:0!important/, 'mobile table map stays inside the safe viewport');
+assert.match(styles, /\.tableSizeStepper/, 'touch-friendly table grow/shrink controls are styled');
+assert.match(app, /data-table-grow/, 'table map has explicit grow controls for touch devices');
+assert.match(app, /openReceiptTemplateDesigner/, 'receipt template uses a dedicated simple/expert designer');
 assert.match(app, /receiptTemplatePreferences/, 'sale receipts use configurable receipt templates');
 assert.match(app, /Control total de tu negocio con CLICK 360/, 'receipt footer preserves CLICK 360 attribution');
 assert.match(app, /FLOATING_CALC_KEY/, 'floating calculator preferences are persisted');

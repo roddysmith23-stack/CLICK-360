@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r11';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r12';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -975,7 +975,7 @@ function parseMoney(value) {
   window.click360AppLogout = async function() {
     setSession(null);
     if(window.click360Logout) await window.click360Logout();
-    else renderLogin();
+    else renderLogin('', { ready:true });
   };
   window.click360SetTenantContext = function(context, options = {}) {
     if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
@@ -1750,7 +1750,7 @@ function parseMoney(value) {
   }
   function checkAuth(required='business') {
     const u = currentUser();
-    if (!u) { setSession(null); renderLogin(); return false; }
+    if (!u) { setSession(null); renderLogin('', { ready:true }); return false; }
     const b = currentBusiness();
     if (b && ['pausado','vencido'].includes(b.status)) { renderPaused(b); return false; }
     return true;
@@ -1839,7 +1839,7 @@ function parseMoney(value) {
     return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
   }
 
-  function renderLogin(message='') {
+  function renderLogin(message='', options = {}) {
     stopScanner();
     app.innerHTML = `
       <main class="loginPage">
@@ -1853,7 +1853,7 @@ function parseMoney(value) {
           </div>
         </section>
       </main>`;
-    markAppReady('login');
+    if (options.ready === true) markAppReady('login');
   }
 
   function renderPaused(b) {
@@ -1888,9 +1888,9 @@ function parseMoney(value) {
       ? `<img src="${escapeHtml(businessLogo)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;">`
       : `<div class="logoIcon" style="width:44px;height:44px;"></div>`;
     const avatarHtml = profilePhoto
-      ? `<img src="${escapeHtml(profilePhoto)}" style="width:100%;height:100%;object-fit:cover;">`
+      ? `<img src="${escapeHtml(profilePhoto)}" style="width:100%;height:100%;object-fit:contain;background:#111;">`
       : (businessLogo
-        ? `<img src="${escapeHtml(businessLogo)}" style="width:100%;height:100%;object-fit:cover;">`
+        ? `<img src="${escapeHtml(businessLogo)}" style="width:100%;height:100%;object-fit:contain;background:#111;">`
         : (authUser().name || 'U').charAt(0).toUpperCase());
     const unreadCount = notificationItems().filter((item) => !item.read).length;
 
@@ -1948,8 +1948,9 @@ function parseMoney(value) {
       logistics:['truck', 'Rutas'], workers:['users-round', 'Trabajadores'], reminders:['alarm-clock', 'Recordatorios'],
       reports:['chart-no-axes-combined', 'Reportes'], crm:['contact-round', 'Clientes'], more:['menu', 'Más']
     };
+    const compactLabels = { inventory:'Invent.', workers:'Equipo', reminders:'Agenda', reports:'Reportes', logistics:'Rutas', finance:'Finanzas' };
     const items = allowedRoutes().map((key) => [key, icon(iconMap[key]?.[0] || 'circle'), iconMap[key]?.[1] || key]);
-    return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}"${active===key?' aria-current="page"':''}>${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${label}</span></button>`).join('');
+    return items.map(([key,ico,label])=>`<button class="${side?'btn':'navBtn'} ${active===key?'active':''}" data-route="${key}"${active===key?' aria-current="page"':''}>${side?ico+' ':`<span class="navIcon">${ico}</span>`}<span>${escapeHtml(side ? label : (compactLabels[key] || label))}</span></button>`).join('');
   }
 	  function bottomNav(active){ return `<nav class="bottomNav" aria-label="Navegación principal">${navButtons(active)}</nav>`; }
 	  function openBusinessSwitcher() {
@@ -2912,6 +2913,7 @@ function parseMoney(value) {
 	        <b>${escapeHtml(table.name)}</b><span class="tableMetaPill">${escapeHtml(tableKitchenStatus(order))}</span><small>${escapeHtml(tablePeopleLabel(table))}</small><strong>${fmt(tableOrderTotal(order))}</strong>${order ? `<em class="tableWait ${tableWaitClass(order)}">${tableElapsedMinutes(order)} min</em>` : ''}
 	      </button>
 	      <button type="button" class="tableStyleBtn" data-table-style="${actionId(table.id)}" title="Forma y color" aria-label="Editar forma y color">${icon('palette')}</button>
+	      <span class="tableSizeStepper" aria-label="Tamaño de mesa"><button type="button" data-table-shrink="${actionId(table.id)}" title="Reducir mesa">−</button><button type="button" data-table-grow="${actionId(table.id)}" title="Agrandar mesa">+</button></span>
 	      <span class="tableResizeHandle" data-table-resize="${actionId(table.id)}" title="Cambiar tamaño" aria-hidden="true"></span>
 	    </article>`;
 	  }
@@ -2929,7 +2931,7 @@ function parseMoney(value) {
 	    return `<div class="pageHead"><div><h1>Mesas</h1><p>Plano de ${escapeHtml(currentBusiness().name)}</p></div><div class="toolbar"><button class="btn" id="toggleTableLayout">${icon('move')} Editar plano</button><button class="btn primary" id="newTableBtn">${icon('plus')} Nueva mesa</button></div></div>
 	      <section class="card tableMapShell"><header><span><b>Distribución del local</b><small>Arrastra, cambia tamaño y controla espera, personas y cocina desde el plano.</small></span><span class="tableMapLegend"><i class="free"></i> Libre <i class="busy"></i> Ocupada <i class="charge"></i> Por cobrar</span></header>
 	        <div class="tableMap tableLayoutSurface" id="tableMap">${visualTables.length ? visualTables.map(tableMapCard).join('') : '<div class="tableMapEmpty">Crea Mesa 1, Barra, Patio o Delivery.</div>'}</div>
-	        <p class="fieldHint tableMapHint">Activa “Editar plano” para arrastrar las mesas. Los cambios se guardan únicamente en este negocio.</p>
+	        <p class="fieldHint tableMapHint">Activa “Editar plano”: arrastra cada mesa y usa la esquina dorada para hacerla más grande o pequeña. Los cambios se guardan solo en este negocio.</p>
 	      </section>
 	      <details class="settingsDisclosure tableListDisclosure"><summary>Lista y administración</summary><section class="tableGrid">${tables.length ? tables.map((table) => {
 	        const order = activeTableOrder(table.id);
@@ -2975,12 +2977,11 @@ function parseMoney(value) {
 	    showModal(`<div class="modalHeader"><div><h2>Diseño de ${escapeHtml(table.name)}</h2><p class="fieldHint">Solo cambia su apariencia en el plano.</p></div><button class="closeBtn" data-close>×</button></div>
 	      <form id="tableStyleForm" class="formGrid"><div class="field"><label>Forma</label><select id="tableShape"><option value="round" ${layout.shape === 'round' ? 'selected' : ''}>Redonda</option><option value="square" ${layout.shape === 'square' ? 'selected' : ''}>Cuadrada</option><option value="rectangle" ${layout.shape === 'rectangle' ? 'selected' : ''}>Rectangular</option><option value="bar" ${layout.shape === 'bar' ? 'selected' : ''}>Barra</option><option value="delivery" ${layout.shape === 'delivery' ? 'selected' : ''}>Delivery</option><option value="takeaway" ${layout.shape === 'takeaway' ? 'selected' : ''}>Para llevar</option></select></div>
 	      <div class="field"><label>Color</label><select id="tableColor">${Object.keys(TABLE_VISUAL_COLORS).map((key) => `<option value="${key}" ${layout.color === key ? 'selected' : ''}>${{gold:'Dorado',green:'Verde',blue:'Azul',red:'Rojo',graphite:'Grafito'}[key]}</option>`).join('')}</select></div>
-	      <div class="field"><label>Posición horizontal</label><input id="tableLayoutX" type="range" min="2" max="82" step="2" value="${layout.x}"></div><div class="field"><label>Posición vertical</label><input id="tableLayoutY" type="range" min="2" max="78" step="2" value="${layout.y}"></div>
-	      <div class="field"><label>Ancho</label><input id="tableLayoutW" type="range" min="12" max="42" step="1" value="${layout.width}"></div><div class="field"><label>Alto</label><input id="tableLayoutH" type="range" min="12" max="38" step="1" value="${layout.height}"></div>
+	      <div class="field"><label>Ancho visual</label><input id="tableLayoutW" type="range" min="12" max="42" step="1" value="${layout.width}"></div><div class="field"><label>Alto visual</label><input id="tableLayoutH" type="range" min="12" max="38" step="1" value="${layout.height}"></div>
 	      <button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar diseño</button></form>`);
 	    $('#tableStyleForm').onsubmit = (event) => {
 	      event.preventDefault();
-	      table.layout = { ...layout, shape:$('#tableShape').value, color:$('#tableColor').value, x:Number($('#tableLayoutX').value), y:Number($('#tableLayoutY').value), width:Number($('#tableLayoutW').value), height:Number($('#tableLayoutH').value) };
+	      table.layout = { ...layout, shape:$('#tableShape').value, color:$('#tableColor').value, width:Number($('#tableLayoutW').value), height:Number($('#tableLayoutH').value) };
 	      table.updatedAt = new Date().toISOString();
 	      addAudit('table_layout_changed', { tableId:table.id, shape:table.layout.shape, color:table.layout.color });
 	      if (!saveTableLayoutChange()) return;
@@ -3259,6 +3260,24 @@ function parseMoney(value) {
 	      event.stopPropagation();
 	      openTableStyleModal(decodeActionId(button.dataset.tableStyle));
 	    });
+	    const resizeByStep = (tableId, delta) => {
+	      const table = tablesForBiz().find((candidate) => candidate.id === tableId);
+	      if (!table || !editingLayout) return;
+	      const layout = normalizedTableLayout(table);
+	      table.layout = {
+	        ...layout,
+	        width:Math.max(12, Math.min(42, Number(layout.width || 18) + delta)),
+	        height:Math.max(12, Math.min(38, Number(layout.height || 18) + delta))
+	      };
+	      table.updatedAt = new Date().toISOString();
+	      addAudit(delta > 0 ? 'table_grown' : 'table_shrunk', { tableId });
+	      if (!saveTableLayoutChange()) return;
+	      const card = $(`[data-table-map-item="${actionId(tableId)}"]`);
+	      card?.style.setProperty('--table-w', `${table.layout.width}%`);
+	      card?.style.setProperty('--table-h', `${table.layout.height}%`);
+	    };
+	    $$('[data-table-grow]').forEach((button) => button.onclick = (event) => { event.stopPropagation(); resizeByStep(decodeActionId(button.dataset.tableGrow), 3); });
+	    $$('[data-table-shrink]').forEach((button) => button.onclick = (event) => { event.stopPropagation(); resizeByStep(decodeActionId(button.dataset.tableShrink), -3); });
 	    $$('[data-table-map-item]').forEach((item) => {
 	      let drag = null;
 	      item.addEventListener('pointerdown', (event) => {
@@ -3328,8 +3347,9 @@ function parseMoney(value) {
 	        const table = tablesForBiz().find((item) => item.id === order.tableId);
 	        const items = (order.items || []).filter((item) => (item.area === 'bar' ? 'bar' : 'kitchen') === area);
 	        return `<article class="card kitchenTicket ${tableWaitClass(order)}">
-	          <header><span><b>${escapeHtml(table?.name || 'Mesa')}</b><small>${tableElapsedMinutes(order)} min · ${escapeHtml(tablePeopleLabel(table || {}))}</small></span><span class="badge gold">${escapeHtml(tableKitchenStatus(order))}</span></header>
-	          <div class="kitchenItems">${items.map((item) => `<div><b>${item.qty}× ${escapeHtml(item.name)}</b>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ''}</div>`).join('')}</div>
+	          <header class="kitchenTicketHeader"><span><b>${escapeHtml(table?.name || 'Mesa')}</b><small>${escapeHtml(tablePeopleLabel(table || {}))}</small></span><span class="badge gold">${escapeHtml(tableKitchenStatus(order))}</span></header>
+	          <div class="kitchenTimer"><span>${icon('clock')} ${tableElapsedMinutes(order)} min</span><span>${icon(area === 'bar' ? 'wine' : 'chef-hat')} ${escapeHtml(title)}</span></div>
+	          <div class="kitchenItems">${items.map((item) => `<div><span><b>${item.qty}× ${escapeHtml(item.name)}</b>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ''}</span><em>${escapeHtml(item.area === 'bar' ? 'Barra' : 'Cocina')}</em></div>`).join('')}</div>
 	          ${order.note ? `<p class="kitchenNote">${escapeHtml(order.note)}</p>` : ''}
 	          <footer><button class="btn" data-kitchen-status="${actionId(order.id)}" data-kitchen-next="preparing">${icon('flame')} Preparando</button><button class="btn primary" data-kitchen-status="${actionId(order.id)}" data-kitchen-next="ready">${icon('bell-ring')} Listo</button><button class="btn silver" data-kitchen-status="${actionId(order.id)}" data-kitchen-next="delivered">${icon('check')} Entregado</button></footer>
 	        </article>`;
@@ -3706,12 +3726,26 @@ function parseMoney(value) {
 			  function receiptTemplatePreferences() {
 			    const template = currentBusiness()?.settings?.receiptTemplate || {};
           const width = RECEIPT_WIDTH_PRESETS[template.width] ? template.width : 'receipt-80';
+          const effectiveWidthMm = width === 'receipt-custom'
+            ? clampNumber(template.customWidthMm, 45, 110, 80)
+            : (RECEIPT_WIDTH_PRESETS[width]?.widthMm || 80);
 			    return {
+			      mode: ['simple','expert'].includes(template.mode) ? template.mode : 'simple',
 			      footer: RECEIPT_FOOTER_TEXT,
 			      note: String(template.note || RECEIPT_DEFAULT_NOTE).slice(0, 160),
 			      width,
-            customWidthMm: clampNumber(template.customWidthMm, 45, 110, RECEIPT_WIDTH_PRESETS[width]?.widthMm || 80),
-			      showLogo: template.showLogo !== false
+            customWidthMm: effectiveWidthMm,
+			      showLogo: template.showLogo !== false,
+			      showCustomer: template.showCustomer !== false,
+			      showSeller: template.showSeller !== false,
+			      showPayment: template.showPayment !== false,
+			      showTax: template.showTax !== false,
+			      showThanks: template.showThanks !== false,
+			      showDividers: template.showDividers !== false,
+			      align: ['left','center'].includes(template.align) ? template.align : 'center',
+			      paddingMm: clampNumber(template.paddingMm, 1, 8, effectiveWidthMm <= 60 ? 2 : 3),
+			      textScale: clampNumber(template.textScale, 0.78, 1.25, 1),
+			      logoHeightMm: clampNumber(template.logoHeightMm, 12, 38, 22)
 			    };
 			  }
 			  function saveReceiptTemplatePreferences(next) {
@@ -3722,6 +3756,169 @@ function parseMoney(value) {
 			    addAudit('receipt_template_updated', { businessId:business.id, width:business.settings.receiptTemplate.width });
 			    return save();
 			  }
+      function receiptTemplateSampleSale() {
+        return {
+          id:'sample-ticket',
+          businessId:currentBusiness()?.id || 'sample',
+          when:nowLabel(),
+          method:'Efectivo',
+          customer:'Cliente ejemplo',
+          customerCedula:'1234567890',
+          customerPhone:'0999999999',
+          createdBy:authUser().name || 'CLICK 360',
+          items:[
+            { id:'sample-1', name:'Producto ejemplo', qty:1, price:12, total:12 },
+            { id:'sample-2', name:'Servicio adicional', qty:2, price:3.5, total:7 }
+          ],
+          subtotal:19,
+          receiptSubtotal:19,
+          iva:0,
+          discount:0,
+          total:19,
+          received:20,
+          tendered:20,
+          change:1,
+          balance:0
+        };
+      }
+      function receiptLineTotal(i) {
+        return Number(i.total ?? (i.price*i.qty) ?? 0);
+      }
+      function buildReceiptHtml(s, business = currentBusiness(), template = receiptTemplatePreferences()) {
+        const bizSettings = business?.settings || {};
+        const receiptWidthMm = receiptWidthMmFromTemplate(template);
+        const compactReceipt = receiptWidthMm <= 60;
+        const scale = clampNumber(template.textScale, 0.78, 1.25, 1);
+        const baseFont = (compactReceipt ? 9.2 : 11.5) * scale;
+        const receiptPaddingMm = clampNumber(template.paddingMm, 1, 8, compactReceipt ? 2 : 3);
+        const textAlign = template.align === 'left' ? 'left' : 'center';
+        const divider = template.showDividers ? '<div style="border-top:1px dashed #000; margin:7px 0;"></div>' : '<div style="height:6px;"></div>';
+        const infoLine = (label, value, show = true) => show && value ? `<div style="display:flex;justify-content:space-between;gap:5px;margin-bottom:3px;"><span>${escapeHtml(label)}</span><span style="text-align:right;word-break:break-word;">${escapeHtml(value)}</span></div>` : '';
+        const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
+        const logoUrl = receiptLogoSrc && template.showLogo ? `<div style="text-align:${textAlign}; margin-bottom:5px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:${Math.max(24, receiptWidthMm - receiptPaddingMm * 2)}mm; max-height:${clampNumber(template.logoHeightMm, 12, 38, compactReceipt ? 18 : 24)}mm; object-fit:contain;"></div>` : '';
+        const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
+        const items = saleItems(s).length ? saleItems(s) : (s.items || []);
+        return `
+          <div class="receiptPrintBody" style="box-sizing:border-box;font-family:monospace;color:#000;font-size:${baseFont}px;margin:0 auto;padding:${receiptPaddingMm}mm;width:${receiptWidthMm}mm;max-width:${receiptWidthMm}mm;background:#fff;line-height:${compactReceipt ? 1.22 : 1.32};overflow-wrap:anywhere;text-align:left;">
+            ${logoUrl}
+            <h2 style="font-size:${baseFont * 1.25}px;margin:0 0 2px;text-align:${textAlign};font-weight:bold;word-break:break-word;">${escapeHtml(business?.name || 'CLICK 360')}</h2>
+            ${bizSettings.ruc ? `<div style="text-align:${textAlign};font-size:${baseFont * .84}px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : ''}
+            ${bizSettings.phone ? `<div style="text-align:${textAlign};font-size:${baseFont * .84}px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : ''}
+            ${bizSettings.address ? `<div style="text-align:${textAlign};font-size:${baseFont * .84}px;">${escapeHtml(bizSettings.address)}</div>` : ''}
+            <div style="text-align:center;margin:7px 0;font-weight:bold;font-size:${baseFont * 1.08}px;${template.showDividers ? 'border-top:1px dashed #000;border-bottom:1px dashed #000;padding:4px 0;' : ''}">COMPROBANTE DE VENTA</div>
+            ${infoLine('No. Ticket:', String(s.id || '').slice(-6).toUpperCase())}
+            ${infoLine('Fecha/Hora:', s.when || nowLabel())}
+            ${infoLine('Método:', s.method, template.showPayment)}
+            ${infoLine('Cliente:', s.customer, template.showCustomer)}
+            ${infoLine('Cédula/RUC:', s.customerCedula, template.showCustomer)}
+            ${infoLine('Teléfono:', s.customerPhone, template.showCustomer)}
+            ${infoLine('Vendedor:', s.createdBy || s.user || 'Sistema', template.showSeller)}
+            ${divider}
+            <table style="width:100%;font-size:${baseFont * .9}px;border-collapse:collapse;table-layout:fixed;">
+              <thead><tr style="border-bottom:${template.showDividers ? '1px solid #000' : '0'};"><th style="text-align:left;">Detalle</th><th style="text-align:center;width:${compactReceipt ? 8 : 12}mm;">Cant</th><th style="text-align:right;width:${compactReceipt ? 15 : 22}mm;">Total</th></tr></thead>
+              <tbody>${items.map(i=>`<tr><td style="padding:3px 3px 3px 0;word-break:break-word;">${escapeHtml(i.name)}</td><td style="text-align:center;">${i.qty}</td><td style="text-align:right;word-break:normal;">${fmt(receiptLineTotal(i))}</td></tr>`).join('')}</tbody>
+            </table>
+            ${divider}
+            ${infoLine('Subtotal:', fmt(s.receiptSubtotal ?? (Number(s.subtotal || 0) + Number(s.discount || 0))))}
+            ${template.showTax && s.iva ? infoLine(`IVA (${currentIva}%):`, fmt(s.iva)) : ''}
+            ${s.discount ? infoLine('Descuento:', `-${fmt(s.discount)}`) : ''}
+            <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:4px;font-size:${baseFont * 1.12}px;font-weight:bold;${template.showDividers ? 'border-top:1px solid #000;padding-top:4px;' : ''}"><span>TOTAL:</span><span style="text-align:right;">${fmt(s.total)}</span></div>
+            ${infoLine('Pagado:', fmt(collectedAmount(s)))}
+            ${s.method === 'Efectivo' && Number(s.tendered || 0) > 0 ? infoLine('Efectivo entregado:', fmt(s.tendered)) : ''}
+            ${s.balance ? `<div style="display:flex;justify-content:space-between;margin-bottom:4px;color:#d9534f;font-weight:bold;"><span>Saldo Pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
+            ${s.dueDate ? infoLine('Fecha de retiro:', window.CLICK360_V16_DOMAIN?.formatBusinessDate(`${s.dueDate}T12:00:00`, 'es-EC', businessTimeZone(), false) || s.dueDate) : ''}
+            ${s.termsAccepted ? `<div style="border-top:1px dashed #000;margin-top:8px;padding-top:6px;font-size:${baseFont * .76}px;"><b>Términos de apartado v${escapeHtml(s.termsVersion || '1')} aceptados:</b><br>${escapeHtml(s.terms || '')}</div>` : ''}
+            ${divider}
+            <div style="text-align:center;font-size:${baseFont * .78}px;word-break:break-word;">${template.showThanks ? '¡Gracias por su compra!<br>' : ''}<small>${escapeHtml(RECEIPT_FOOTER_TEXT)}</small><br><small style="display:block;margin-top:4px;">${escapeHtml(template.note || RECEIPT_DEFAULT_NOTE)}</small></div>
+          </div>
+        `;
+      }
+      function openReceiptTemplateDesigner() {
+        const business = currentBusiness();
+        if (!business) return toast('Selecciona un negocio antes de editar comprobantes.', 'err');
+        const latestSale = salesForBiz().filter((sale) => sale.status !== 'cancelled').slice(-1)[0];
+        const sampleSale = latestSale || receiptTemplateSampleSale();
+        const template = receiptTemplatePreferences();
+        const controlsHtml = (mode) => `
+          <div class="receiptDesignerFields">
+            <div class="field"><label>Ancho de papel</label><select id="receiptDesignerWidth">${receiptWidthOptionsHtml(template.width)}</select></div>
+            <div class="field"><label>Ancho personalizado (mm)</label><input id="receiptDesignerCustomWidth" type="number" min="45" max="110" step="1" value="${numericInputValue(template.customWidthMm, receiptWidthMmFromTemplate(template))}"></div>
+            <label class="consentCheck"><input type="checkbox" id="receiptDesignerLogo" ${template.showLogo ? 'checked' : ''}><span>Mostrar logo del negocio</span></label>
+            <label class="consentCheck"><input type="checkbox" id="receiptDesignerCustomer" ${template.showCustomer ? 'checked' : ''}><span>Cliente y teléfono</span></label>
+            <label class="consentCheck"><input type="checkbox" id="receiptDesignerSeller" ${template.showSeller ? 'checked' : ''}><span>Vendedor</span></label>
+            <label class="consentCheck"><input type="checkbox" id="receiptDesignerPayment" ${template.showPayment ? 'checked' : ''}><span>Método de pago</span></label>
+            <label class="consentCheck"><input type="checkbox" id="receiptDesignerDividers" ${template.showDividers ? 'checked' : ''}><span>Líneas divisorias</span></label>
+            ${mode === 'expert' ? `
+              <div class="field"><label>Tamaño de texto</label><input id="receiptDesignerTextScale" type="range" min="0.78" max="1.25" step="0.01" value="${numericInputValue(template.textScale, 1)}"></div>
+              <div class="field"><label>Padding interno (mm)</label><input id="receiptDesignerPadding" type="number" min="1" max="8" step="0.5" value="${numericInputValue(template.paddingMm, 3)}"></div>
+              <div class="field"><label>Alto máximo de logo (mm)</label><input id="receiptDesignerLogoHeight" type="number" min="12" max="38" step="1" value="${numericInputValue(template.logoHeightMm, 22)}"></div>
+              <div class="field"><label>Alineación superior</label><select id="receiptDesignerAlign"><option value="center" ${template.align !== 'left' ? 'selected' : ''}>Centrada</option><option value="left" ${template.align === 'left' ? 'selected' : ''}>Izquierda</option></select></div>
+              <label class="consentCheck"><input type="checkbox" id="receiptDesignerTax" ${template.showTax ? 'checked' : ''}><span>Mostrar IVA cuando aplique</span></label>
+              <label class="consentCheck"><input type="checkbox" id="receiptDesignerThanks" ${template.showThanks ? 'checked' : ''}><span>Mensaje de gracias</span></label>
+            ` : ''}
+            <div class="field full"><label>Nota interna</label><textarea id="receiptDesignerNote" maxlength="160">${escapeHtml(template.note)}</textarea></div>
+          </div>`;
+        showModal(`<div class="modalHeader"><div><h2>Editor de comprobante</h2><p class="fieldHint">El PDF, la vista previa y la impresión usan esta misma plantilla.</p></div><button class="closeBtn" data-close>×</button></div>
+          <section class="receiptDesignerModal" data-receipt-mode="${template.mode}">
+            <div class="labelModeSwitch receiptModeSwitch"><button type="button" id="receiptSimpleMode" class="${template.mode !== 'expert' ? 'active' : ''}">Modo simple · Lienzo</button><button type="button" id="receiptExpertMode" class="${template.mode === 'expert' ? 'active' : ''}">Modo experto · Avanzado</button></div>
+            <div class="receiptDesignerLayout">
+              <aside class="receiptDesignerPreviewPanel"><h3>Vista previa</h3><div id="receiptDesignerPreview" class="receiptDesignerPreview">${buildReceiptHtml(sampleSale, business, template)}</div></aside>
+              <form id="receiptDesignerForm" class="receiptDesignerControls">${controlsHtml(template.mode)}</form>
+            </div>
+            <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
+            <div class="receiptDesignerActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn silver" id="receiptDesignerPdf">${icon('file-down')} PDF de prueba</button><button type="button" class="btn primary" id="receiptDesignerSave">${icon('save')} Guardar plantilla</button></div>
+          </section>`);
+        const collect = () => {
+          const previous = receiptTemplatePreferences();
+          const width = $('#receiptDesignerWidth')?.value || 'receipt-80';
+          return {
+            ...previous,
+            mode: $('#receiptExpertMode')?.classList.contains('active') ? 'expert' : 'simple',
+            width: RECEIPT_WIDTH_PRESETS[width] ? width : 'receipt-80',
+            customWidthMm: clampNumber($('#receiptDesignerCustomWidth')?.value, 45, 110, previous.customWidthMm),
+            showLogo: $('#receiptDesignerLogo')?.checked === true,
+            showCustomer: $('#receiptDesignerCustomer')?.checked === true,
+            showSeller: $('#receiptDesignerSeller')?.checked === true,
+            showPayment: $('#receiptDesignerPayment')?.checked === true,
+            showDividers: $('#receiptDesignerDividers')?.checked === true,
+            showTax: $('#receiptDesignerTax') ? $('#receiptDesignerTax').checked === true : previous.showTax,
+            showThanks: $('#receiptDesignerThanks') ? $('#receiptDesignerThanks').checked === true : previous.showThanks,
+            align: $('#receiptDesignerAlign')?.value === 'left' ? 'left' : previous.align,
+            paddingMm: $('#receiptDesignerPadding') ? clampNumber($('#receiptDesignerPadding').value, 1, 8, previous.paddingMm) : previous.paddingMm,
+            textScale: $('#receiptDesignerTextScale') ? clampNumber($('#receiptDesignerTextScale').value, 0.78, 1.25, previous.textScale) : previous.textScale,
+            logoHeightMm: $('#receiptDesignerLogoHeight') ? clampNumber($('#receiptDesignerLogoHeight').value, 12, 38, previous.logoHeightMm) : previous.logoHeightMm,
+            note: ($('#receiptDesignerNote')?.value || '').trim() || RECEIPT_DEFAULT_NOTE
+          };
+        };
+        const repaint = () => {
+          const draft = collect();
+          const preview = $('#receiptDesignerPreview');
+          if (preview) preview.innerHTML = buildReceiptHtml(sampleSale, business, draft);
+        };
+        const setMode = (mode) => {
+          const draft = { ...collect(), mode };
+          saveReceiptTemplatePreferences(draft);
+          closeModal();
+          openReceiptTemplateDesigner();
+        };
+        $('#receiptSimpleMode')?.addEventListener('click', () => setMode('simple'));
+        $('#receiptExpertMode')?.addEventListener('click', () => setMode('expert'));
+        $$('#receiptDesignerForm input, #receiptDesignerForm select, #receiptDesignerForm textarea').forEach((input) => input.addEventListener('input', repaint));
+        $$('#receiptDesignerForm select, #receiptDesignerForm input[type="checkbox"]').forEach((input) => input.addEventListener('change', repaint));
+        $('#receiptDesignerSave')?.addEventListener('click', () => {
+          if (!saveReceiptTemplatePreferences(collect())) return;
+          closeModal();
+          renderApp('printing');
+          toast('Plantilla de comprobante guardada.', 'ok');
+        });
+        $('#receiptDesignerPdf')?.addEventListener('click', () => {
+          const draft = collect();
+          handoffPrint({ html: buildReceiptHtml(sampleSale, business, draft), media: receiptPrintMedia(draft), mediaWidthMm: receiptWidthMmFromTemplate(draft), filename:'CLICK360_Comprobante_Prueba.pdf' }, 'pdf')
+            .then(() => toast('PDF de prueba generado.', 'ok'))
+            .catch((error) => toast(error.message || 'No se pudo generar el PDF.', 'err'));
+        });
+        refreshIcons();
+      }
 			  function printerStateLabel(status = {}) {
 		    const labels = { ready: 'Listo', disconnected: 'Desconectado', handing_off: 'Enviando', unsupported: 'No disponible', validation_required: 'Validación física pendiente', error: 'Revisar' };
 		    return labels[status.state] || 'Sin comprobar';
@@ -3750,16 +3947,12 @@ function parseMoney(value) {
 			        <button class="card bigRow" id="printingReportAction"><span>${icon('file-chart-column')} Reporte actual</span><small>Impresión o PDF</small></button>
 			      </section>
 			      <section class="card sectionCard receiptTemplatePanel">
-			        <h3>Plantilla de comprobante de venta</h3>
-			        <p class="fieldHint">Ajusta el ticket de ventas. El pie de CLICK 360 se conserva para identificar el sistema.</p>
-			        <div class="formGrid">
-			          <div class="field"><label>Ancho</label><select id="receiptTemplateWidth">${receiptWidthOptionsHtml(receiptTemplate.width)}</select></div>
-			          <div class="field"><label>Ancho personalizado (mm)</label><input id="receiptTemplateCustomWidth" type="number" min="45" max="110" step="1" value="${numericInputValue(receiptTemplate.customWidthMm, receiptWidthMmFromTemplate(receiptTemplate))}"></div>
-			          <label class="consentCheck"><input type="checkbox" id="receiptTemplateLogo" ${receiptTemplate.showLogo ? 'checked' : ''}><span>Mostrar logo del negocio</span></label>
-			          <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
-			          <div class="field full"><label>Nota legal / interna</label><textarea id="receiptTemplateNote" maxlength="160">${escapeHtml(receiptTemplate.note)}</textarea></div>
+			        <div class="receiptTemplateHeader"><span><h3>Plantilla de comprobante de venta</h3><p class="fieldHint">Edita con modo simple o experto. El pie de CLICK 360 queda fijo y no se puede borrar.</p></span><button type="button" class="btn primary" id="openReceiptDesignerBtn">${icon('layout-template')} Editar plantilla</button></div>
+			        <div class="receiptDesignerSummary">
+			          <div><b>${escapeHtml(RECEIPT_WIDTH_PRESETS[receiptTemplate.width]?.label || 'Personalizado')}</b><small>${receiptWidthMmFromTemplate(receiptTemplate)} mm · ${receiptTemplate.mode === 'expert' ? 'modo experto' : 'modo simple'}</small></div>
+			          <div class="receiptDesignerMini" aria-label="Vista mini de comprobante">${buildReceiptHtml(receiptTemplateSampleSale(), currentBusiness(), receiptTemplate)}</div>
 			        </div>
-			        <button type="button" class="btn primary block" id="saveReceiptTemplateBtn">Guardar plantilla de comprobante</button>
+			        <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
 			      </section>
 			      <section class="card sectionCard m02xNotice"><h3>M02X</h3><p>El equipo usa Bluetooth y 203 dpi. La conexión directa permanece desactivada hasta validar el protocolo y una impresión física con la unidad real. Mientras tanto, usa la salida del sistema o PDF.</p></section>`;
 			  }
@@ -5350,18 +5543,7 @@ function parseMoney(value) {
 		      if (sale) window.showSaleCompleteModal(actionId(sale.id));
 		    });
 			    $('#printingReportAction')?.addEventListener('click', () => renderApp('reports'));
-			    $('#saveReceiptTemplateBtn')?.addEventListener('click', () => {
-			      const requestedWidth = $('#receiptTemplateWidth')?.value || 'receipt-80';
-			      const ok = saveReceiptTemplatePreferences({
-			        width: RECEIPT_WIDTH_PRESETS[requestedWidth] ? requestedWidth : 'receipt-80',
-			        customWidthMm: clampNumber($('#receiptTemplateCustomWidth')?.value, 45, 110, 80),
-			        showLogo: $('#receiptTemplateLogo')?.checked === true,
-			        note: ($('#receiptTemplateNote')?.value || '').trim() || RECEIPT_DEFAULT_NOTE
-			      });
-			      if (!ok) return;
-			      renderApp('printing');
-			      toast('Plantilla de comprobante guardada');
-			    });
+			    $('#openReceiptDesignerBtn')?.addEventListener('click', openReceiptTemplateDesigner);
 			  }
 
 		  function bindMore(){
@@ -8623,55 +8805,10 @@ function parseMoney(value) {
 	    const s = salesForBiz(business?.id).find(x=>x.id===id);
 	    if(!s) return;
 	    if (!business || s.businessId !== business.id) return toast('El comprobante pertenece a otro negocio y fue bloqueado.', 'err');
-	    const bizSettings = business.settings || {};
-	    const ruc = bizSettings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(bizSettings.ruc)}</div>` : '';
-	    const phone = bizSettings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(bizSettings.phone)}</div>` : '';
-	    const address = bizSettings.address ? `<div style="text-align:center; font-size:10px;">${escapeHtml(bizSettings.address)}</div>` : '';
-	    const receiptLogoSrc = safeImageSrc(bizSettings.logoUrl);
 	    const receiptTemplate = receiptTemplatePreferences();
 	    const receiptWidthMm = receiptWidthMmFromTemplate(receiptTemplate);
-      const compactReceipt = receiptWidthMm <= 60;
-      const receiptPaddingMm = compactReceipt ? 2 : 3;
       const receiptMedia = receiptPrintMedia(receiptTemplate);
-	    const logoUrl = receiptLogoSrc && receiptTemplate.showLogo ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(receiptLogoSrc)}" style="max-width:${compactReceipt ? Math.max(32, receiptWidthMm - 13) : Math.min(60, receiptWidthMm - 16)}mm; max-height:${compactReceipt ? 20 : 26}mm; object-fit:contain;"></div>` : '';
-		    const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
-
-    const receiptHtml = `
-	      <div style="box-sizing:border-box;font-family:monospace; color:#000; font-size:${compactReceipt ? 9.5 : 12}px; margin:0 auto; padding:${receiptPaddingMm}mm; width:${receiptWidthMm}mm; max-width:${receiptWidthMm}mm; background:white; line-height:${compactReceipt ? 1.25 : 1.35}; overflow-wrap:anywhere;text-align:left;">
-        ${logoUrl}
-		        <h2 style="font-size:${compactReceipt ? 11.5 : 16}px; margin:0 0 2px; text-align:center; font-weight:bold;word-break:break-word;">${escapeHtml(business.name)}</h2>
-	        ${ruc}${phone}${address}
-        <div style="text-align:center; margin:8px 0; font-weight:bold; font-size:${compactReceipt ? 11 : 13}px; border-top:1px dashed #000; border-bottom:1px dashed #000; padding:4px 0;">COMPROBANTE DE VENTA</div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>No. Ticket:</span><span>${s.id.slice(-6).toUpperCase()}</span></div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Fecha/Hora:</span><span>${escapeHtml(s.when)}</span></div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Método:</span><span>${escapeHtml(s.method)}</span></div>
-        ${s.customer ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cliente:</span><span>${escapeHtml(s.customer)}</span></div>` : ''}
-        ${s.customerCedula ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cédula/RUC:</span><span>${escapeHtml(s.customerCedula)}</span></div>` : ''}
-        ${s.customerPhone ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Teléfono:</span><span>${escapeHtml(s.customerPhone)}</span></div>` : ''}
-        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendedor:</span><span>${escapeHtml(s.createdBy || s.user || 'Sistema')}</span></div>
-        <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-	        <table style="width:100%; font-size:${compactReceipt ? 8.5 : 11}px; border-collapse:collapse;table-layout:fixed;">
-          <thead>
-            <tr style="border-bottom:1px solid #000;"><th style="text-align:left;">Detalle</th><th style="text-align:center;">Cant</th><th style="text-align:right;">Total</th></tr>
-          </thead>
-          <tbody>
-		            ${saleItems(s).map(i=>`<tr><td style="padding:4px 3px 4px 0;word-break:break-word;">${escapeHtml(i.name)}</td><td style="text-align:center;width:${compactReceipt ? 8 : 12}mm;">${i.qty}</td><td style="text-align:right;width:${compactReceipt ? 15 : 22}mm;word-break:normal;">${fmt(i.total ?? (i.price*i.qty))}</td></tr>`).join('')}
-          </tbody>
-        </table>
-        <div style="border-top:1px dashed #000; margin:8px 0;"></div>
-	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Subtotal:</span><span>${fmt(s.receiptSubtotal ?? (Number(s.subtotal || 0) + Number(s.discount || 0)))}</span></div>
-        ${s.iva ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA (${currentIva}%):</span><span>${fmt(s.iva)}</span></div>` : ''}
-        ${s.discount ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Descuento:</span><span>-${fmt(s.discount)}</span></div>` : ''}
-        <div style="display:flex; justify-content:space-between; gap:6px; margin-bottom:4px; font-size:${compactReceipt ? 12 : 14}px; font-weight:bold; border-top:1px solid #000; padding-top:4px;"><span>TOTAL:</span><span style="text-align:right;">${fmt(s.total)}</span></div>
-	        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pagado:</span><span>${fmt(collectedAmount(s))}</span></div>
-	        ${s.method === 'Efectivo' && Number(s.tendered || 0) > 0 ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo entregado:</span><span>${fmt(s.tendered)}</span></div>` : ''}
-        ${s.balance ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; color:#d9534f; font-weight:bold;"><span>Saldo Pendiente:</span><span>${fmt(s.balance)}</span></div>` : ''}
-	        ${s.dueDate ? `<div style="display:flex; justify-content:space-between; margin-bottom:4px; font-weight:bold;"><span>Fecha de retiro:</span><span>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(`${s.dueDate}T12:00:00`, 'es-EC', businessTimeZone(), false) || s.dueDate)}</span></div>` : ''}
-	        ${s.termsAccepted ? `<div style="border-top:1px dashed #000;margin-top:8px;padding-top:6px;font-size:9px;"><b>Términos de apartado v${escapeHtml(s.termsVersion || '1')} aceptados:</b><br>${escapeHtml(s.terms || '')}</div>` : ''}
-        <div style="border-top:1px dashed #000; margin:10px 0 6px 0;"></div>
-		        <div style="text-align:center; font-size:${compactReceipt ? 7.5 : 10}px;word-break:break-word;">¡Gracias por su compra!<br><small>${escapeHtml(RECEIPT_FOOTER_TEXT)}</small><br><small style="display:block;margin-top:5px;">${escapeHtml(receiptTemplate.note || RECEIPT_DEFAULT_NOTE)}</small></div>
-	      </div>
-    `;
+    const receiptHtml = buildReceiptHtml(s, business, receiptTemplate);
 
     showModal(`
       <div class="modalHeader"><h2>Venta Completada</h2><button class="closeBtn" data-close>×</button></div>
