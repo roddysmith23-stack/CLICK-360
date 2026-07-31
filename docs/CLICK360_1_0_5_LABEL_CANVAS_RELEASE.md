@@ -2,9 +2,9 @@
 
 ## Identity
 
-- Branch: `hotfix/1-0-5-restaurant-logistics-ux`
+- Branch: `hotfix/1-0-5-commercial-ux-r12`
 - Version: `1.0.5`
-- Asset and Service Worker cache: `commercial-1-0-5-r11`
+- Asset and Service Worker cache: `commercial-1-0-5-r12`
 - Base: `main`
 - Status: Hosting-only frontend hotfix candidate
 
@@ -90,14 +90,10 @@ identity. Admin and Functions jobs must be skipped by path scope.
 - Firestore Rules emulator: PASS.
 - Simulator quick: PASS, 240 actions and 20 reports.
 - Simulator full: PASS, 2,600 actions and 100 reports.
-- Universal Canvas browser E2E: blocked in this macOS session before app code
-  executes because Playwright Chromium exits with
-  `MachPortRendezvousServer ... unknown error code (141)`.
-- Responsive Chromium, WebKit and Firefox: static containment checks pass; the
-  browser visual gate must be rerun in an environment where Playwright can
-  launch browsers.
-- PDF: clean-output contract verified by harnesses; browser PDF raster E2E is
-  blocked here by the same Playwright launch failure.
+- Universal Canvas browser E2E: PASS.
+- Responsive Chromium, WebKit and Firefox: PASS from 320 through 1920 px.
+- PDF: PASS, clean provider output is nonblank and uses the same receipt/label
+  renderer as preview and print.
 - Production dependency audit: PASS, 0 vulnerabilities.
 - `dist` scan for `firebase-admin`, `google-gax` and private keys: zero matches.
 
