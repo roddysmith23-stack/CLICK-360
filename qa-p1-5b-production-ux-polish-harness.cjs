@@ -10,7 +10,7 @@ const worker = fs.readFileSync('service-worker.js', 'utf8');
 const publicSource = `${app}\n${styles}\n${html}\n${worker}`;
 
 const RELEASE = '1.0.5';
-const ASSET = 'commercial-1-0-5-r14';
+const ASSET = 'commercial-1-0-5-r15';
 const functionalResults = [];
 const contractResults = [];
 

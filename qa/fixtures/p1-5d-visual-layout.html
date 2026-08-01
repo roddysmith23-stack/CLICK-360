@@ -8,7 +8,7 @@
   <title>CLICK 360 1.0.5 Visual Layout QA</title>
   <style>
     body{padding:16px;background:#050505}
-    .qa-shell{width:min(760px,100%);margin:0 auto;display:grid;gap:14px}
+    .qa-shell{width:min(1180px,100%);margin:0 auto;display:grid;gap:14px}
     .qa-icon{width:20px;height:20px;flex:0 0 20px;stroke:currentColor;fill:none;stroke-width:2}
     .qa-actions{display:flex;gap:8px;flex-wrap:wrap}
   </style>
@@ -54,6 +54,16 @@
         <button type="button">Modo experto · Avanzado</button>
       </div>
       <div class="receiptDesignerLayout">
+        <aside class="receiptDesignerBlockPanel">
+          <section class="receiptBlockRail">
+            <header><span><b>Bloques del comprobante</b><small>La lista no debe salirse ni montarse.</small></span></header>
+            <div>
+              <article class="receiptBlockRow selected"><span class="receiptBlockDrag">::</span><span class="receiptBlockTitle"><b>Encabezado del comprobante</b><small>Título, número y fecha</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
+              <article class="receiptBlockRow"><span class="receiptBlockDrag">::</span><span class="receiptBlockTitle"><b>Cliente y teléfono</b><small>Datos opcionales</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
+              <article class="receiptBlockRow"><span class="receiptBlockDrag">::</span><span class="receiptBlockTitle"><b>Detalle de venta</b><small>Productos, cantidades y totales</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
+            </div>
+          </section>
+        </aside>
         <aside class="receiptDesignerPreviewPanel">
           <div class="receiptDesignerPreviewHeader">
             <span><h3>Lienzo de comprobante</h3><small>Selecciona una sección del ticket para editarla.</small></span>
@@ -95,13 +105,7 @@
               <button class="btn small" type="button">Ocultar</button>
             </div>
           </section>
-          <section class="receiptBlockRail">
-            <header><span><b>Bloques del comprobante</b><small>La lista no debe salirse ni montarse.</small></span></header>
-            <div>
-              <article class="receiptBlockRow selected"><span class="receiptBlockDrag">⋮⋮</span><span class="receiptBlockTitle"><b>Encabezado del comprobante</b><small>Título, número y fecha</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
-              <article class="receiptBlockRow"><span class="receiptBlockDrag">⋮⋮</span><span class="receiptBlockTitle"><b>Cliente y teléfono</b><small>Datos opcionales</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
-            </div>
-          </section>
+          <section class="receiptDesignerHint"><b>Cómo editar</b><small>Usa Bloques, Lienzo y Propiedades sin que los campos se aplasten.</small></section>
         </form>
       </div>
     </section>

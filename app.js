@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r14';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r15';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -3911,7 +3911,7 @@ function parseMoney(value) {
         const blockDefinition = (id) => RECEIPT_BLOCKS.find((entry) => entry.id === id) || { id, label:id, help:'' };
         const selectedBlock = () => designerBlocks.find((block) => block.id === selectedBlockId) || designerBlocks[0];
         const currentMode = () => $('#receiptExpertMode')?.classList.contains('active') ? 'expert' : ($('#receiptDesignerModal')?.dataset.receiptMode || draftTemplate.mode || 'simple');
-        const blockControlsHtml = () => `<section class="receiptBlockRail" aria-label="Orden del comprobante"><header><span><b>Bloques del comprobante</b><small>Toca un bloque en la vista o en esta lista. Arrastra, sube, baja u oculta secciones. El pie de CLICK 360 queda fijo.</small></span></header><div id="receiptBlockList">${designerBlocks.map((block, index) => {
+        const blockControlsHtml = () => `<section class="receiptBlockRail" aria-label="Orden del comprobante"><header><span><b>Bloques del comprobante</b><small>Toca un bloque en la lista o directamente en el ticket. Arrastra, sube, baja u oculta secciones. El pie de CLICK 360 queda fijo.</small></span></header><div id="receiptBlockList">${designerBlocks.map((block, index) => {
           const definition = blockDefinition(block.id);
           return `<article class="receiptBlockRow ${block.id === selectedBlockId ? 'selected' : ''}" draggable="true" data-receipt-block-row="${block.id}"><span class="receiptBlockDrag">${icon('grip-vertical')}</span><span class="receiptBlockTitle"><b>${escapeHtml(definition.label)}</b><small>${escapeHtml(definition.help)}</small></span><label class="receiptBlockVisible"><input type="checkbox" data-receipt-block-visible="${block.id}" ${block.visible ? 'checked' : ''}><span>Visible</span></label><div class="receiptBlockMoves"><button type="button" class="iconBtn" data-receipt-block-up="${block.id}" ${index === 0 ? 'disabled' : ''} aria-label="Subir bloque">${icon('chevron-up')}</button><button type="button" class="iconBtn" data-receipt-block-down="${block.id}" ${index === designerBlocks.length - 1 ? 'disabled' : ''} aria-label="Bajar bloque">${icon('chevron-down')}</button></div></article>`;
         }).join('')}</div></section>`;
@@ -3949,12 +3949,15 @@ function parseMoney(value) {
                 <button type="button" class="btn small" id="receiptSelectedToggle">${selected?.visible === false ? icon('eye') + ' Mostrar' : icon('eye-off') + ' Ocultar'}</button>
               </div>
             </section>
-            ${blockControlsHtml()}`;
+            <section class="receiptDesignerHint"><b>Cómo editar</b><small>Usa Bloques para ordenar el ticket, el Lienzo para revisar en vivo y Propiedades para ajustar ancho, logo, datos visibles y estilo.</small></section>`;
         };
         showModal(`<div class="modalHeader"><div><h2>Editor de comprobante</h2><p class="fieldHint">Organiza el ticket como un lienzo: selecciona bloques, cambia orden, ancho y estilo. El PDF, la vista previa y la impresión usan esta misma plantilla.</p></div><button class="closeBtn" data-close>×</button></div>
           <section id="receiptDesignerModal" class="receiptDesignerModal receiptCanvasDesigner" data-receipt-mode="${draftTemplate.mode}">
             <div class="labelModeSwitch receiptModeSwitch"><button type="button" id="receiptSimpleMode" class="${draftTemplate.mode !== 'expert' ? 'active' : ''}">Modo simple · Lienzo</button><button type="button" id="receiptExpertMode" class="${draftTemplate.mode === 'expert' ? 'active' : ''}">Modo experto · Avanzado</button></div>
             <div class="receiptDesignerLayout">
+              <aside class="receiptDesignerBlockPanel">
+                ${blockControlsHtml()}
+              </aside>
               <aside class="receiptDesignerPreviewPanel">
                 <div class="receiptDesignerPreviewHeader"><span><h3>Lienzo de comprobante</h3><small>Selecciona una sección del ticket para editarla.</small></span><b id="receiptDesignerWidthBadge">${receiptWidthMmFromTemplate(draftTemplate)} mm</b></div>
                 <div id="receiptDesignerPreview" class="receiptDesignerPreview">${buildReceiptHtml(sampleSale, business, draftTemplate)}</div>
