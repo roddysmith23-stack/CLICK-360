@@ -120,6 +120,27 @@
   </main>
   <script>
     const evaluateLayout = () => {
+      const visibleRect = (selector) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const style = getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden') return null;
+        const box = element.getBoundingClientRect();
+        if (box.width <= 0 || box.height <= 0) return null;
+        return {
+          top:box.top,
+          right:box.right,
+          bottom:box.bottom,
+          left:box.left,
+          width:box.width,
+          height:box.height
+        };
+      };
+      const overlaps = (a, b, gap = 1) => a && b
+        && a.left < b.right - gap
+        && a.right > b.left + gap
+        && a.top < b.bottom - gap
+        && a.bottom > b.top + gap;
       const elements = [...document.querySelectorAll('button, h1, h2, p, small, b, span')];
       const overflow = elements.filter((element) => {
         const box = element.getBoundingClientRect();
@@ -128,11 +149,35 @@
         return box.width > 0 && box.height > 0 && element.clientWidth > 0
           && clipsContent && element.scrollWidth > element.clientWidth + 2;
       }).map((element) => element.textContent.trim());
+      const layoutErrors = [];
+      const previewPanel = visibleRect('.receiptDesignerPreviewPanel');
+      const blockPanel = visibleRect('.receiptDesignerBlockPanel');
+      const controls = visibleRect('.receiptDesignerControls');
+      const previewHeader = visibleRect('.receiptDesignerPreviewHeader');
+      const preview = visibleRect('.receiptDesignerPreview');
+      const actions = visibleRect('.receiptCanvasActions');
+      if (overlaps(previewPanel, blockPanel, 2)) layoutErrors.push('receipt-preview-overlaps-block-panel');
+      if (overlaps(previewPanel, controls, 2)) layoutErrors.push('receipt-preview-overlaps-controls');
+      if (overlaps(blockPanel, controls, 2)) layoutErrors.push('receipt-block-panel-overlaps-controls');
+      if (overlaps(previewHeader, preview, 2)) layoutErrors.push('receipt-preview-header-overlaps-preview');
+      if (overlaps(preview, actions, 2)) layoutErrors.push('receipt-preview-overlaps-actions');
+      if (window.innerWidth >= 1181) {
+        if (blockPanel && previewPanel && blockPanel.right > previewPanel.left + 2) layoutErrors.push('desktop-block-column-enters-preview-column');
+        if (previewPanel && controls && previewPanel.right > controls.left + 2) layoutErrors.push('desktop-preview-column-enters-controls-column');
+      } else if (window.innerWidth >= 900) {
+        if (previewPanel && blockPanel && previewPanel.bottom > blockPanel.top + 2) layoutErrors.push('tablet-preview-not-above-block-panel');
+        if (previewPanel && controls && previewPanel.right > controls.left + 2) layoutErrors.push('tablet-preview-enters-controls-column');
+        if (blockPanel && controls && blockPanel.right > controls.left + 2) layoutErrors.push('tablet-block-panel-enters-controls-column');
+      } else {
+        if (previewPanel && blockPanel && previewPanel.bottom > blockPanel.top + 2) layoutErrors.push('mobile-preview-not-above-block-panel');
+        if (blockPanel && controls && blockPanel.bottom > controls.top + 2) layoutErrors.push('mobile-block-panel-not-above-controls');
+      }
       return {
-        pass: overflow.length === 0 && document.documentElement.scrollWidth <= window.innerWidth,
+        pass: overflow.length === 0 && layoutErrors.length === 0 && document.documentElement.scrollWidth <= window.innerWidth,
         viewport: window.innerWidth,
         documentWidth: document.documentElement.scrollWidth,
-        overflow
+        overflow,
+        layoutErrors
       };
     };
     window.__CLICK360_105_VISUAL_QA__ = { evaluate:evaluateLayout };

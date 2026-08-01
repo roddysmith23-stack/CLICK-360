@@ -10,10 +10,54 @@
     VALIDATION_REQUIRED: 'validation_required',
     ERROR: 'error'
   });
+  const SERVICE_SCRIPT = (() => {
+    if (typeof document === 'undefined') return '';
+    const script = document.currentScript || document.querySelector('script[src*="printing-service.js"]');
+    const src = script?.getAttribute?.('src') || '';
+    if (!src) return { href: '', query: '' };
+    try {
+      const url = new URL(src, document.baseURI);
+      return { href: url.href, query: url.search || '' };
+    } catch {
+      const queryIndex = src.indexOf('?');
+      return { href: src, query: queryIndex >= 0 ? src.slice(queryIndex) : '' };
+    }
+  })();
+  let html2canvasLoader = null;
 
   function safeError(error, fallback = 'No se pudo completar la impresión.') {
     const code = String(error?.code || 'print-failed').replace(/[^a-z0-9_./-]/gi, '').slice(0, 64);
     return { code, message: fallback };
+  }
+
+  function ensureHtml2canvas() {
+    if (typeof root.html2canvas === 'function') return Promise.resolve(root.html2canvas);
+    if (html2canvasLoader) return html2canvasLoader;
+    if (typeof document === 'undefined') {
+      return Promise.reject(Object.assign(new Error('html2canvas no disponible.'), { code: 'html2canvas-unavailable' }));
+    }
+    html2canvasLoader = new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[src*="html2canvas.min.js"]');
+      const script = existing || document.createElement('script');
+      const done = () => {
+        if (typeof root.html2canvas === 'function') resolve(root.html2canvas);
+        else reject(Object.assign(new Error('html2canvas no quedó disponible.'), { code: 'html2canvas-unavailable' }));
+      };
+      script.addEventListener('load', done, { once: true });
+      script.addEventListener('error', () => {
+        html2canvasLoader = null;
+        reject(Object.assign(new Error('No se pudo cargar html2canvas.'), { code: 'html2canvas-load-failed' }));
+      }, { once: true });
+      if (existing) {
+        if (typeof root.html2canvas === 'function') resolve(root.html2canvas);
+        return;
+      }
+      script.src = SERVICE_SCRIPT.href
+        ? new URL(`vendor/html2canvas.min.js${SERVICE_SCRIPT.query}`, SERVICE_SCRIPT.href).href
+        : `vendor/html2canvas.min.js`;
+      document.head.appendChild(script);
+    });
+    return html2canvasLoader;
   }
 
   function printRoot() {
@@ -88,6 +132,154 @@
     return element;
   }
 
+  function cloneForExport(source) {
+    const clone = source.cloneNode(true);
+    const sourceCanvases = [...source.querySelectorAll('canvas')];
+    const clonedCanvases = [...clone.querySelectorAll('canvas')];
+    sourceCanvases.forEach((canvas, index) => {
+      const target = clonedCanvases[index];
+      if (!target) return;
+      try {
+        const image = document.createElement('img');
+        image.src = canvas.toDataURL('image/png');
+        image.alt = canvas.getAttribute('aria-label') || canvas.getAttribute('alt') || 'Contenido imprimible';
+        image.width = canvas.width;
+        image.height = canvas.height;
+        image.className = canvas.className || '';
+        const style = canvas.getAttribute('style');
+        if (style) image.setAttribute('style', style);
+        target.replaceWith(image);
+      } catch {}
+    });
+    return clone;
+  }
+
+  function canvasInkBounds(canvas) {
+    const width = canvas?.width || 0;
+    const height = canvas?.height || 0;
+    if (width < 1 || height < 1) return { nonWhite: 0 };
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return { nonWhite: 0 };
+    const data = context.getImageData(0, 0, width, height).data;
+    const step = Math.max(1, Math.floor(Math.sqrt((width * height) / 260000)));
+    let nonWhite = 0;
+    for (let y = 0; y < height; y += step) {
+      for (let x = 0; x < width; x += step) {
+        const index = (y * width + x) * 4;
+        const alpha = data[index + 3];
+        if (alpha > 8 && (data[index] < 245 || data[index + 1] < 245 || data[index + 2] < 245)) {
+          nonWhite += 1;
+          if (nonWhite > 500) return { nonWhite };
+        }
+      }
+    }
+    return { nonWhite };
+  }
+
+  function normalizedCanvas(source) {
+    const canvas = document.createElement('canvas');
+    canvas.width = source.width;
+    canvas.height = source.height;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(source, 0, 0);
+    return canvas;
+  }
+
+  function base64ToBytes(base64) {
+    const binary = root.atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+
+  function singleImagePdfBlob(canvas, widthMm, heightMm) {
+    const imageUrl = canvas.toDataURL('image/jpeg', 0.96);
+    const imageBytes = base64ToBytes(imageUrl.split(',')[1] || '');
+    const encoder = new TextEncoder();
+    const chunks = [];
+    const offsets = [0];
+    let offset = 0;
+    const addBytes = (bytes) => {
+      chunks.push(bytes);
+      offset += bytes.length;
+    };
+    const addString = (text) => addBytes(encoder.encode(text));
+    const addObject = (number, writer) => {
+      offsets[number] = offset;
+      addString(`${number} 0 obj\n`);
+      writer();
+      addString('\nendobj\n');
+    };
+    const pageWidthPt = (Math.max(10, Number(widthMm || 80)) * 72) / 25.4;
+    const pageHeightPt = (Math.max(10, Number(heightMm || 120)) * 72) / 25.4;
+    const imageCommand = `q\n${pageWidthPt.toFixed(4)} 0 0 ${pageHeightPt.toFixed(4)} 0 0 cm\n/Im0 Do\nQ\n`;
+    const imageCommandBytes = encoder.encode(imageCommand);
+    addString('%PDF-1.3\n');
+    addObject(1, () => addString('<< /Type /Catalog /Pages 2 0 R >>'));
+    addObject(2, () => addString('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'));
+    addObject(3, () => addString(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidthPt.toFixed(4)} ${pageHeightPt.toFixed(4)}] /Resources << /ProcSet [/PDF /ImageC] /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`));
+    addObject(4, () => {
+      addString(`<< /Type /XObject /Subtype /Image /Width ${canvas.width} /Height ${canvas.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>\nstream\n`);
+      addBytes(imageBytes);
+      addString('\nendstream');
+    });
+    addObject(5, () => {
+      addString(`<< /Length ${imageCommandBytes.length} >>\nstream\n`);
+      addBytes(imageCommandBytes);
+      addString('endstream');
+    });
+    const xrefOffset = offset;
+    addString('xref\n0 6\n0000000000 65535 f \n');
+    for (let index = 1; index <= 5; index += 1) {
+      addString(`${String(offsets[index]).padStart(10, '0')} 00000 n \n`);
+    }
+    addString(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+    return new Blob(chunks, { type: 'application/pdf' });
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = String(filename || 'CLICK360.pdf').replace(/[^a-z0-9_.-]/gi, '_');
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  }
+
+  function pdfSizeMm(job, element) {
+    const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
+    const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));
+    const media = String(job.media || '');
+    const receiptMatch = /^receipt-(\d+)$/i.exec(media);
+    const receiptWidth = width || (receiptMatch ? Number(receiptMatch[1]) : 0);
+    if (job.media === 'label' && width && height) return { widthMm: width, heightMm: height };
+    if (media.startsWith('receipt') && receiptWidth) {
+      const ratioHeight = Math.ceil((Math.max(1, element.scrollHeight) / Math.max(1, element.scrollWidth)) * receiptWidth) + 2;
+      return { widthMm: receiptWidth, heightMm: Math.max(55, Math.min(1900, ratioHeight)) };
+    }
+    if (width && height) return { widthMm: width, heightMm: height };
+    return { widthMm: 210, heightMm: 297 };
+  }
+
+  function pdfExportRoot() {
+    document.getElementById('click360PdfExportSurface')?.remove();
+    const element = document.createElement('div');
+    element.id = 'click360PdfExportSurface';
+    element.className = 'click360PdfExportSurface';
+    element.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(element);
+    return element;
+  }
+
+  function cleanupPdfExport() {
+    document.getElementById('click360PdfExportSurface')?.remove();
+  }
+
   function cleanupJob() {
     const element = document.getElementById('click360PrintPortal');
     if (element) {
@@ -97,6 +289,7 @@
       delete element.dataset.printMedia;
     }
     document.getElementById('click360-print-page-style')?.remove();
+    cleanupPdfExport();
   }
 
   class SystemPrintProvider {
@@ -115,7 +308,36 @@
       if (!this.isSupported()) throw Object.assign(new Error('Impresión del navegador no disponible.'), { code: 'system-print-unavailable' });
       this.state = STATUS.HANDING_OFF;
       const element = mountJob(job);
-      await waitForResources(element);
+      const hadInlineStyle = element.hasAttribute('style');
+      const previousInlineStyle = element.getAttribute('style') || '';
+      const restoreMeasureStyle = () => {
+        if (hadInlineStyle) element.setAttribute('style', previousInlineStyle);
+        else element.removeAttribute('style');
+      };
+      element.style.cssText = [
+        'display:block',
+        'position:fixed',
+        'left:-10000px',
+        'top:0',
+        'width:max-content',
+        'height:auto',
+        'max-width:none',
+        'max-height:none',
+        'overflow:visible',
+        'background:#ffffff',
+        'color:#000000',
+        'pointer-events:none',
+        'visibility:hidden'
+      ].join(';');
+      try {
+        await waitForResources(element);
+      } catch (error) {
+        restoreMeasureStyle();
+        cleanupJob();
+        this.state = STATUS.READY;
+        throw error;
+      }
+      restoreMeasureStyle();
       let cleaned = false;
       let cleanupTimer = null;
       const clean = () => {
@@ -143,7 +365,7 @@
 
   class PdfExportProvider {
     constructor() { this.id = 'pdf'; this.name = 'Guardar PDF'; this.state = STATUS.READY; }
-    isSupported() { return typeof root.html2pdf === 'function'; }
+    isSupported() { return typeof document !== 'undefined' && typeof Blob !== 'undefined' && typeof URL !== 'undefined'; }
     async discover() { return [{ id: 'pdf-export', name: this.name, provider: this.id }]; }
     async connect() { return this.getStatus(); }
     async disconnect() { cleanupJob(); return this.getStatus(); }
@@ -151,29 +373,60 @@
     getStatus() { return { id: this.id, name: this.name, state: this.isSupported() ? STATUS.READY : STATUS.UNSUPPORTED, supported: this.isSupported() }; }
     async print(job) {
       if (!this.isSupported()) throw Object.assign(new Error('PDF no disponible.'), { code: 'pdf-unavailable' });
-      const element = mountJob(job);
-      element.classList.add('click360PdfExportActive');
-      // html2canvas en iOS/WebKit puede devolver páginas blancas si el nodo vive
-      // demasiado lejos del viewport. Lo montamos visible y medible durante el PDF.
-      element.style.cssText = 'display:block;position:fixed;left:0;top:0;width:max-content;height:auto;max-width:none;max-height:none;overflow:visible;background:#ffffff;color:#000000;pointer-events:none;z-index:2147483647;visibility:visible;transform:translate3d(0,0,0);';
+      const mounted = mountJob(job);
+      const element = pdfExportRoot();
+      element.dataset.printMedia = String(job.media || 'a4');
+      element.replaceChildren(...[...mounted.children].map((child) => {
+        const copy = cloneForExport(child);
+        copy.style.display = 'block';
+        copy.style.margin = '0';
+        copy.style.padding = '0';
+        copy.style.background = '#ffffff';
+        copy.style.color = '#000000';
+        copy.style.breakInside = 'avoid';
+        return copy;
+      }));
+      // html2canvas puede generar PDFs blancos si hereda display:none del portal
+      // de impresión o si el nodo vive lejos del viewport. Esta superficie es
+      // independiente, visible y medible solo durante la exportación.
+      element.style.cssText = [
+        'display:block',
+        'position:fixed',
+        'left:0',
+        'top:0',
+        'width:max-content',
+        'min-width:1px',
+        'height:auto',
+        'max-width:none',
+        'max-height:none',
+        'overflow:visible',
+        'background:#ffffff',
+        'color:#000000',
+        'pointer-events:none',
+        'z-index:2147483646',
+        'visibility:visible',
+        'opacity:1',
+        'transform:none'
+      ].join(';');
       await waitForResources(element);
-      const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
-      const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));
-      const receiptMatch = /^receipt-(\d+)$/i.exec(String(job.media || ''));
-      const receiptWidth = width || (receiptMatch ? Number(receiptMatch[1]) : 0);
-      const physicalHeight = Math.max(55, Math.min(1900, Math.ceil((element.scrollHeight / 96) * 25.4) + 4));
-      const format = job.media === 'label' ? [width, height]
-        : String(job.media || '').startsWith('receipt') && receiptWidth ? [receiptWidth, physicalHeight]
-          : job.media === 'receipt-80' ? [80, 220]
-            : job.media === 'receipt-57' ? [57, 220] : 'a4';
       try {
-        await root.html2pdf().set({
-          margin: job.media === 'label' || job.media?.startsWith('receipt') ? 0 : 8,
-          filename: String(job.filename || 'CLICK360.pdf').replace(/[^a-z0-9_.-]/gi, '_'),
-          image: { type: 'png', quality: 1 },
-          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: Math.ceil(element.scrollWidth) + 2, windowHeight: Math.ceil(element.scrollHeight) + 2 },
-          jsPDF: { unit: 'mm', format, orientation: job.media === 'label' && width > height ? 'landscape' : 'portrait' }
-        }).from(element).save();
+        const html2canvas = await ensureHtml2canvas();
+        const canvas = await html2canvas(element, {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          backgroundColor: '#ffffff',
+          windowWidth: Math.ceil(element.scrollWidth) + 2,
+          windowHeight: Math.ceil(element.scrollHeight) + 2
+        });
+        const normalized = normalizedCanvas(canvas);
+        const ink = canvasInkBounds(normalized);
+        if (ink.nonWhite < 120) {
+          throw Object.assign(new Error('El PDF renderizado quedó vacío.'), { code: 'pdf-render-blank' });
+        }
+        const size = pdfSizeMm(job, element);
+        const blob = singleImagePdfBlob(normalized, size.widthMm, size.heightMm);
+        downloadBlob(blob, job.filename || 'CLICK360.pdf');
         return { status: 'exported', provider: this.id };
       } finally {
         cleanupJob();

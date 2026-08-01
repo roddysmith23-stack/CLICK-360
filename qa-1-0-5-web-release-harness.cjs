@@ -51,18 +51,18 @@ const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r18'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r19'/);
 assert.match(index, /By AIIA INTELLIGENCE TECHNOLOGIES/, 'startup splash shows the required AIIA footer');
-assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r18/, 'startup splash uses the HD logo instead of the low-resolution favicon');
-assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r18"/, 'startup HD logo is preloaded before scripts');
+assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r19/, 'startup splash uses the HD logo instead of the low-resolution favicon');
+assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r19"/, 'startup HD logo is preloaded before scripts');
 assert.match(index, /click360SplashProgress/, 'startup splash keeps a loading progress bar while the app prepares');
 assert.doesNotMatch(index, /click-360\.web\.app<\/span>/, 'startup splash must not show the public URL as footer copy');
 assert.match(app, /function markAppReady/, 'app explicitly marks the splash ready after real UI render');
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r18/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r18/);
-assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r18/);
-assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r18/);
-assert.match(worker, /click360-commercial-1-0-5-r18/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r19/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r19/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r19/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r19/);
+assert.match(worker, /click360-commercial-1-0-5-r19/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
@@ -130,9 +130,13 @@ assert.match(styles, /\.receiptCanvasDesigner \.receiptDesignerPreview \[data-re
 assert.match(app, /warnings\.push\(`Hay elementos superpuestos/);
 assert.doesNotMatch(app, /const blocking = [^;]*!validation\.valid/);
 assert.match(printing, /click360PdfExportActive/);
-assert.match(printing, /position:fixed;left:0;top:0/, 'PDF export mounts a visible measurable node so WebKit does not capture a blank receipt');
-assert.match(printing, /margin: job\.media === 'label' \|\| job\.media\?\.startsWith\('receipt'\) \? 0 : 8/, 'thermal receipt PDFs use zero PDF margin and rely on the template width');
-assert.match(printing, /physicalHeight/, 'thermal PDFs use their rendered receipt height rather than a cropped fixed page');
+assert.match(printing, /click360PdfExportSurface/, 'PDF export uses an independent export surface');
+assert.match(printing, /'position:fixed'[\s\S]*'left:0'[\s\S]*'top:0'/, 'PDF export mounts a visible measurable node so WebKit does not capture a blank receipt');
+assert.match(printing, /function pdfSizeMm/, 'PDF export resolves one physical size for labels and receipts');
+assert.match(printing, /if \(media\.startsWith\('receipt'\) && receiptWidth\)/, 'thermal receipt PDFs use the requested paper width');
+assert.match(printing, /element\.scrollHeight[\s\S]*element\.scrollWidth/, 'thermal PDFs use their rendered receipt height rather than a cropped fixed page');
+assert.match(printing, /singleImagePdfBlob/, 'PDF export writes a physical image-backed PDF');
+assert.match(printing, /pdf-render-blank/, 'PDF export rejects blank rendered output');
 
 const runtimeFiles = changed.filter((file) => [
   'app.js', 'firebase-service.js', 'printing-service.js', 'runtime-guard.js',
