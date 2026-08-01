@@ -100,6 +100,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Install PDF rendering tools
+        run: brew install poppler
       - run: npx --no-install playwright install chromium webkit firefox
       - run: npm run qa:integration
 
