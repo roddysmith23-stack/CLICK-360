@@ -51,16 +51,18 @@ const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r12'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r15'/);
 assert.match(index, /By AIIA INTELLIGENCE TECHNOLOGIES/, 'startup splash shows the required AIIA footer');
+assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r15/, 'startup splash uses the HD logo instead of the low-resolution favicon');
+assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r15"/, 'startup HD logo is preloaded before scripts');
 assert.match(index, /click360SplashProgress/, 'startup splash keeps a loading progress bar while the app prepares');
 assert.doesNotMatch(index, /click-360\.web\.app<\/span>/, 'startup splash must not show the public URL as footer copy');
 assert.match(app, /function markAppReady/, 'app explicitly marks the splash ready after real UI render');
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r12/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r12/);
-assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r12/);
-assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r12/);
-assert.match(worker, /click360-commercial-1-0-5-r12/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r15/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r15/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r15/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r15/);
+assert.match(worker, /click360-commercial-1-0-5-r15/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
@@ -89,6 +91,9 @@ assert.doesNotMatch(app, /Clientes y WhatsApp/, 'customer navigation uses the co
 assert.match(app, /\['logistica','Logística \/ distribución \/ transporte'\]/, 'settings can configure a logistics/distribution business type');
 assert.match(app, /RECEIPT_WIDTH_PRESETS/, 'receipt widths are centralized');
 assert.match(app, /receipt-custom/, 'receipt template supports a custom paper width');
+assert.match(app, /receiptCanvasDesigner/, 'receipt template editor uses the canvas-style designer shell');
+assert.match(app, /receiptDesignerBlockPanel/, 'receipt template editor separates blocks from live preview and properties');
+assert.match(app, /receiptSelectedBlockPanel/, 'receipt template exposes selectable receipt blocks like the label editor');
 assert.match(app, /receiptFixedFooter/, 'receipt footer is shown as locked UI');
 assert.doesNotMatch(app, /id="receiptTemplateFooter"/, 'receipt footer is no longer editable');
 assert.match(app, /footer:RECEIPT_FOOTER_TEXT/, 'saved receipt templates force the CLICK 360 footer');
@@ -120,10 +125,14 @@ assert.match(styles, /\.smartWizardFooter\{position:static;margin-top:10px;z-ind
 assert.match(styles, /\.labelEditorModal:not\(\[data-smart-step-current="7"\]\) \.labelCanvasActions/);
 assert.match(styles, /\.labelPreviewSticky canvas\{[\s\S]*max-height:clamp\(78px,14dvh,118px\)!important/);
 assert.match(styles, /\.labelControls>\[data-smart-step\]\{scroll-margin-top:10px\}/);
+assert.match(styles, /\.receiptDesignerShell/, 'receipt designer modal has its own safe responsive shell');
+assert.match(styles, /\.receiptCanvasDesigner \.receiptDesignerPreview \[data-receipt-block\]\.selected/, 'receipt preview blocks can be selected without layout overlap');
 assert.match(app, /warnings\.push\(`Hay elementos superpuestos/);
 assert.doesNotMatch(app, /const blocking = [^;]*!validation\.valid/);
 assert.match(printing, /click360PdfExportActive/);
-assert.match(printing, /display:block;position:fixed/);
+assert.match(printing, /position:fixed;left:0;top:0/, 'PDF export mounts a visible measurable node so WebKit does not capture a blank receipt');
+assert.match(printing, /margin: job\.media === 'label' \|\| job\.media\?\.startsWith\('receipt'\) \? 0 : 8/, 'thermal receipt PDFs use zero PDF margin and rely on the template width');
+assert.match(printing, /physicalHeight/, 'thermal PDFs use their rendered receipt height rather than a cropped fixed page');
 
 const runtimeFiles = changed.filter((file) => [
   'app.js', 'firebase-service.js', 'printing-service.js', 'runtime-guard.js',

@@ -58,6 +58,10 @@
     const ready = Promise.all(waits).then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const timeout = new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('Los recursos de impresión no quedaron listos.'), { code: 'print-resource-timeout' })), timeoutMs));
     await Promise.race([ready, timeout]);
+    const bounds = element.getBoundingClientRect?.();
+    if (!bounds || bounds.width < 1 || bounds.height < 1 || element.scrollHeight < 1) {
+      throw Object.assign(new Error('El plan de impresión no ocupa un área visible.'), { code: 'print-plan-no-layout' });
+    }
   }
 
   function mountJob(job = {}) {
@@ -149,22 +153,25 @@
       if (!this.isSupported()) throw Object.assign(new Error('PDF no disponible.'), { code: 'pdf-unavailable' });
       const element = mountJob(job);
       element.classList.add('click360PdfExportActive');
-      element.style.cssText = 'display:block;position:fixed;left:0;top:0;width:auto;height:auto;max-width:none;max-height:none;overflow:visible;background:#ffffff;color:#000000;pointer-events:none;z-index:-1;';
+      // html2canvas en iOS/WebKit puede devolver páginas blancas si el nodo vive
+      // demasiado lejos del viewport. Lo montamos visible y medible durante el PDF.
+      element.style.cssText = 'display:block;position:fixed;left:0;top:0;width:max-content;height:auto;max-width:none;max-height:none;overflow:visible;background:#ffffff;color:#000000;pointer-events:none;z-index:2147483647;visibility:visible;transform:translate3d(0,0,0);';
       await waitForResources(element);
       const width = Math.max(10, Math.min(1000, Number(job.mediaWidthMm || job.widthMm || 0)));
       const height = Math.max(10, Math.min(2000, Number(job.mediaHeightMm || job.heightMm || 0)));
       const receiptMatch = /^receipt-(\d+)$/i.exec(String(job.media || ''));
       const receiptWidth = width || (receiptMatch ? Number(receiptMatch[1]) : 0);
+      const physicalHeight = Math.max(55, Math.min(1900, Math.ceil((element.scrollHeight / 96) * 25.4) + 4));
       const format = job.media === 'label' ? [width, height]
-        : String(job.media || '').startsWith('receipt') && receiptWidth ? [receiptWidth, 220]
+        : String(job.media || '').startsWith('receipt') && receiptWidth ? [receiptWidth, physicalHeight]
           : job.media === 'receipt-80' ? [80, 220]
             : job.media === 'receipt-57' ? [57, 220] : 'a4';
       try {
         await root.html2pdf().set({
-          margin: job.media === 'label' ? 0 : job.media?.startsWith('receipt') ? 2 : 8,
+          margin: job.media === 'label' || job.media?.startsWith('receipt') ? 0 : 8,
           filename: String(job.filename || 'CLICK360.pdf').replace(/[^a-z0-9_.-]/gi, '_'),
-          image: { type: 'jpeg', quality: 0.96 },
-          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
+          image: { type: 'png', quality: 1 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: Math.ceil(element.scrollWidth) + 2, windowHeight: Math.ceil(element.scrollHeight) + 2 },
           jsPDF: { unit: 'mm', format, orientation: job.media === 'label' && width > height ? 'landscape' : 'portrait' }
         }).from(element).save();
         return { status: 'exported', provider: this.id };

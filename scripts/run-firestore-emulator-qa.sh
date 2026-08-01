@@ -6,7 +6,7 @@ has_java() {
 }
 
 if ! has_java; then
-  for java_bin in /opt/homebrew/opt/openjdk@21/bin/java /usr/local/opt/openjdk@21/bin/java; do
+  for java_bin in /opt/homebrew/opt/openjdk@21/bin/java /usr/local/opt/openjdk@21/bin/java /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java; do
     if [ -x "$java_bin" ]; then
       export PATH="$(dirname "$java_bin"):$PATH"
       break

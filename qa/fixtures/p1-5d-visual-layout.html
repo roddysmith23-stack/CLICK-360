@@ -8,7 +8,7 @@
   <title>CLICK 360 1.0.5 Visual Layout QA</title>
   <style>
     body{padding:16px;background:#050505}
-    .qa-shell{width:min(760px,100%);margin:0 auto;display:grid;gap:14px}
+    .qa-shell{width:min(1180px,100%);margin:0 auto;display:grid;gap:14px}
     .qa-icon{width:20px;height:20px;flex:0 0 20px;stroke:currentColor;fill:none;stroke-width:2}
     .qa-actions{display:flex;gap:8px;flex-wrap:wrap}
   </style>
@@ -45,6 +45,68 @@
       <div class="movement">
         <span><b>Producto con descripción extensa que debe permanecer dentro de la tarjeta</b><small>SKU largo y observaciones que no pueden salir de la estructura</small></span>
         <span class="qa-actions"><button class="btn">Actualizar desde nube</button><button class="btn danger">Cancelar operación</button></span>
+      </div>
+    </section>
+
+    <section class="card sectionCard receiptCanvasDesigner" aria-label="Editor de comprobante responsive">
+      <div class="receiptModeSwitch">
+        <button class="active" type="button">Modo simple · Lienzo</button>
+        <button type="button">Modo experto · Avanzado</button>
+      </div>
+      <div class="receiptDesignerLayout">
+        <aside class="receiptDesignerBlockPanel">
+          <section class="receiptBlockRail">
+            <header><span><b>Bloques del comprobante</b><small>La lista no debe salirse ni montarse.</small></span></header>
+            <div>
+              <article class="receiptBlockRow selected"><span class="receiptBlockDrag">::</span><span class="receiptBlockTitle"><b>Encabezado del comprobante</b><small>Título, número y fecha</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
+              <article class="receiptBlockRow"><span class="receiptBlockDrag">::</span><span class="receiptBlockTitle"><b>Cliente y teléfono</b><small>Datos opcionales</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
+              <article class="receiptBlockRow"><span class="receiptBlockDrag">::</span><span class="receiptBlockTitle"><b>Detalle de venta</b><small>Productos, cantidades y totales</small></span><label class="receiptBlockVisible"><input type="checkbox" checked><span>Visible</span></label><div class="receiptBlockMoves"><button class="iconBtn" type="button">↑</button><button class="iconBtn" type="button">↓</button></div></article>
+            </div>
+          </section>
+        </aside>
+        <aside class="receiptDesignerPreviewPanel">
+          <div class="receiptDesignerPreviewHeader">
+            <span><h3>Lienzo de comprobante</h3><small>Selecciona una sección del ticket para editarla.</small></span>
+            <b>58 mm</b>
+          </div>
+          <div class="receiptDesignerPreview">
+            <section class="receiptPrintBody" style="width:58mm;max-width:58mm;margin:0 auto;padding:2mm;background:#fff;color:#000;box-sizing:border-box;font:400 10px/1.25 monospace;">
+              <section data-receipt-block="branding"><b>SHARY</b><br><span>RUC/ID: 1722429709001</span></section>
+              <section data-receipt-block="document" class="selected" style="border-top:1px dashed #000;border-bottom:1px dashed #000;margin-top:4px;padding:4px 0;text-align:center;">COMPROBANTE DE VENTA</section>
+              <section data-receipt-block="items" style="margin-top:5px;"><span>Producto de ejemplo</span><span style="float:right;">$19.99</span></section>
+              <footer data-receipt-block="locked-footer" style="border-top:1px dashed #000;margin-top:5px;padding-top:4px;text-align:center;font-size:8px;">Control total de tu negocio con CLICK 360.</footer>
+            </section>
+          </div>
+          <div class="receiptCanvasActions">
+            <button class="btn small" type="button">Subir</button>
+            <button class="btn small" type="button">Bajar</button>
+            <button class="btn small" type="button">Ocultar</button>
+            <button class="btn small" type="button">PDF</button>
+          </div>
+        </aside>
+        <form class="receiptDesignerControls">
+          <div class="receiptDesignerControlHeader">
+            <span><b>Formato físico</b><small>El ancho aquí controla PDF, vista previa e impresión.</small></span>
+            <b>58 mm</b>
+          </div>
+          <div class="receiptDesignerFields receiptCanvasFields">
+            <div class="field"><label>Ancho de papel</label><select><option>Ticket 58 mm</option></select></div>
+            <div class="field"><label>Ancho personalizado (mm)</label><input type="number" value="58"></div>
+            <label class="consentCheck"><input type="checkbox" checked><span>Logo del negocio</span></label>
+            <label class="consentCheck"><input type="checkbox" checked><span>Cliente y teléfono</span></label>
+            <label class="consentCheck"><input type="checkbox" checked><span>Método de pago</span></label>
+            <label class="consentCheck"><input type="checkbox" checked><span>Líneas divisorias</span></label>
+          </div>
+          <section class="receiptSelectedBlockPanel">
+            <span><b>Bloque seleccionado</b><small>Encabezado del comprobante · título, número y fecha.</small></span>
+            <div>
+              <button class="btn small" type="button">Subir</button>
+              <button class="btn small" type="button">Bajar</button>
+              <button class="btn small" type="button">Ocultar</button>
+            </div>
+          </section>
+          <section class="receiptDesignerHint"><b>Cómo editar</b><small>Usa Bloques, Lienzo y Propiedades sin que los campos se aplasten.</small></section>
+        </form>
       </div>
     </section>
 

@@ -37,20 +37,25 @@ try {
     });
     await page.goto(url, { waitUntil:'networkidle' });
     await page.waitForFunction(() => document.documentElement.dataset.ready === 'true');
-    const downloadPromise = page.waitForEvent('download', { timeout:15000 });
-    await page.locator('#runPdf').click();
-    const download = await downloadPromise;
-    const pdfPath = path.join(output, 'printing-service-pdf-provider.pdf');
-    await download.saveAs(pdfPath);
-    const pdf = await stat(pdfPath);
-    if (pdf.size < 2500) throw new Error(`PDF provider output is too small or blank: ${pdf.size} bytes.`);
-    if (process.platform === 'darwin') {
-      const pagePng = path.join(output, 'printing-service-pdf-provider.png');
-      execFileSync('sips', ['-s', 'format', 'png', pdfPath, '--out', pagePng], { stdio:'ignore' });
-      execFileSync(process.execPath, [path.join(root, 'qa/check-png-nonblank.cjs'), pagePng, '500'], { stdio:'inherit' });
+    async function verifyPdf(buttonSelector, basename, minimumBytes) {
+      const downloadPromise = page.waitForEvent('download', { timeout:15000 });
+      await page.locator(buttonSelector).click();
+      const download = await downloadPromise;
+      const pdfPath = path.join(output, `${basename}.pdf`);
+      await download.saveAs(pdfPath);
+      const pdf = await stat(pdfPath);
+      if (pdf.size < minimumBytes) throw new Error(`${basename} output is too small or blank: ${pdf.size} bytes.`);
+      if (process.platform === 'darwin') {
+        const pagePng = path.join(output, `${basename}.png`);
+        execFileSync('sips', ['-s', 'format', 'png', pdfPath, '--out', pagePng], { stdio:'ignore' });
+        execFileSync(process.execPath, [path.join(root, 'qa/check-png-nonblank.cjs'), pagePng, '500'], { stdio:'inherit' });
+      }
+      return pdf.size;
     }
+    const labelSize = await verifyPdf('#runPdf', 'printing-service-pdf-provider', 2500);
+    const receiptSize = await verifyPdf('#runReceiptPdf', 'printing-service-receipt-pdf-provider', 2200);
     if (errors.length) throw new Error(`Printing PDF unexpected browser errors: ${JSON.stringify(errors)}`);
-    console.log(`CLICK 360 printing-service PDF provider E2E PASS: ${pdf.size} bytes`);
+    console.log(`CLICK 360 printing-service PDF provider E2E PASS: label=${labelSize} bytes receipt=${receiptSize} bytes`);
   } finally {
     await browser.close();
   }
