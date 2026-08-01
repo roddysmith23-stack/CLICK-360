@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#050505" />
-  <script src="runtime-guard.js?v=commercial-1-0-5-r15"></script>
+  <script src="runtime-guard.js?v=commercial-1-0-5-r16"></script>
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="CLICK 360" />
@@ -23,11 +23,11 @@
 	  <meta name="twitter:image" content="https://click-360.web.app/assets/banner-click360-home.png" />
 	  <link rel="canonical" href="https://click-360.web.app/" />
 	  <title>CLICK 360 | Inventario, ventas y caja para tu negocio</title>
-	  <link rel="manifest" href="manifest.webmanifest?v=commercial-1-0-5-r15" />
-	  <link rel="icon" type="image/png" href="assets/favicon.png?v=commercial-1-0-5-r15" />
-	  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=commercial-1-0-5-r15" />
-	  <link rel="preload" as="image" href="assets/logo.png?v=commercial-1-0-5-r15" fetchpriority="high" />
-	  <link rel="stylesheet" href="styles.css?v=commercial-1-0-5-r15" />
+	  <link rel="manifest" href="manifest.webmanifest?v=commercial-1-0-5-r16" />
+	  <link rel="icon" type="image/png" href="assets/favicon.png?v=commercial-1-0-5-r16" />
+	  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=commercial-1-0-5-r16" />
+	  <link rel="preload" as="image" href="assets/logo.png?v=commercial-1-0-5-r16" fetchpriority="high" />
+	  <link rel="stylesheet" href="styles.css?v=commercial-1-0-5-r16" />
 	  <script type="application/ld+json">
 	  {
 	    "@context": "https://schema.org",
@@ -66,7 +66,7 @@
 </head>
 <body>
   <div id="click360Splash" class="click360Splash" aria-hidden="true">
-    <img src="assets/logo.png?v=commercial-1-0-5-r15" alt="" width="194" height="194" decoding="sync" fetchpriority="high">
+    <img src="assets/logo.png?v=commercial-1-0-5-r16" alt="" width="194" height="194" decoding="sync" fetchpriority="high">
     <strong>CLICK 360</strong>
     <small>By AIIA INTELLIGENCE TECHNOLOGIES</small>
     <div class="click360SplashProgress" aria-hidden="true"><i></i></div>
@@ -77,10 +77,15 @@
     (() => {
       const startedAt = Date.now();
       const minimumIntroMs = 5000;
+      const maximumIntroMs = 12000;
       let completed = false;
+      let pollTimer = null;
+      let hardFallbackTimer = null;
       const finish = () => {
         if (completed) return;
         completed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        if (hardFallbackTimer) clearTimeout(hardFallbackTimer);
         const splash = document.getElementById('click360Splash');
         if (!splash) return;
         const delay = Math.max(0, minimumIntroMs - (Date.now() - startedAt));
@@ -89,23 +94,27 @@
           setTimeout(() => splash.remove(), 920);
         }, delay);
       };
+      const finishWhenAppRendered = () => {
+        const app = document.getElementById('app');
+        if (app && app.children.length) finish();
+      };
       window.click360MarkSplashReady = finish;
       window.addEventListener('click360:ready', finish, { once: true });
-      window.addEventListener('load', () => {
-        setTimeout(() => {
-          const app = document.getElementById('app');
-          if (!completed && app && app.children.length) finish();
-        }, 8500);
+      pollTimer = setInterval(finishWhenAppRendered, 350);
+      hardFallbackTimer = setTimeout(finish, maximumIntroMs);
+      document.addEventListener('DOMContentLoaded', () => {
+        setTimeout(finishWhenAppRendered, minimumIntroMs);
       }, { once: true });
+      window.addEventListener('load', finishWhenAppRendered, { once: true });
     })();
   </script>
-  <script src="vendor/qrcode-generator.js?v=commercial-1-0-5-r15"></script>
-  <script src="vendor/jsbarcode.min.js?v=commercial-1-0-5-r15"></script>
-  <script src="vendor/jsQR.js?v=commercial-1-0-5-r15"></script>
-  <script src="vendor/zxing-browser.min.js?v=commercial-1-0-5-r15"></script>
-	  <script src="vendor/html2pdf.bundle.min.js?v=commercial-1-0-5-r15"></script>
-	  <script src="vendor/xlsx.full.min.js?v=commercial-1-0-5-r15"></script>
-	  <script src="vendor/lucide.min.js?v=commercial-1-0-5-r15"></script>
+  <script src="vendor/qrcode-generator.js?v=commercial-1-0-5-r16"></script>
+  <script src="vendor/jsbarcode.min.js?v=commercial-1-0-5-r16"></script>
+  <script src="vendor/jsQR.js?v=commercial-1-0-5-r16"></script>
+  <script src="vendor/zxing-browser.min.js?v=commercial-1-0-5-r16"></script>
+	  <script src="vendor/html2pdf.bundle.min.js?v=commercial-1-0-5-r16"></script>
+	  <script src="vendor/xlsx.full.min.js?v=commercial-1-0-5-r16"></script>
+	  <script src="vendor/lucide.min.js?v=commercial-1-0-5-r16"></script>
 
 <script>
   if ('serviceWorker' in navigator) {
@@ -119,23 +128,23 @@
     });
   }
 </script>
-<script src="vendor/firebase-app-compat.js?v=commercial-1-0-5-r15"></script>
-<script src="vendor/firebase-auth-compat.js?v=commercial-1-0-5-r15"></script>
-<script src="vendor/firebase-firestore-compat.js?v=commercial-1-0-5-r15"></script>
-<script src="./firebase-config.js?v=commercial-1-0-5-r15"></script>
-<script src="./p0-tenant-guard.js?v=commercial-1-0-5-r15"></script>
-<script src="./v16-domain.js?v=commercial-1-0-5-r15"></script>
-<script src="./v16-storage.js?v=commercial-1-0-5-r15"></script>
-<script src="./access-flow.js?v=commercial-1-0-5-r15"></script>
-<script src="./firebase-service.js?v=commercial-1-0-5-r15"></script>
-<script src="./smart-print-core.js?v=commercial-1-0-5-r15"></script>
-<script src="./p2-web-safe-flags.js?v=commercial-1-0-5-r15"></script>
-<script src="./p2-restaurant-domain.js?v=commercial-1-0-5-r15"></script>
-<script src="./p2-logistics-domain.js?v=commercial-1-0-5-r15"></script>
-<script src="./universal-label-canvas.js?v=commercial-1-0-5-r15"></script>
-<script src="./universal-label-editor.js?v=commercial-1-0-5-r15"></script>
-<script src="./printing-service.js?v=commercial-1-0-5-r15"></script>
+<script src="vendor/firebase-app-compat.js?v=commercial-1-0-5-r16"></script>
+<script src="vendor/firebase-auth-compat.js?v=commercial-1-0-5-r16"></script>
+<script src="vendor/firebase-firestore-compat.js?v=commercial-1-0-5-r16"></script>
+<script src="./firebase-config.js?v=commercial-1-0-5-r16"></script>
+<script src="./p0-tenant-guard.js?v=commercial-1-0-5-r16"></script>
+<script src="./v16-domain.js?v=commercial-1-0-5-r16"></script>
+<script src="./v16-storage.js?v=commercial-1-0-5-r16"></script>
+<script src="./access-flow.js?v=commercial-1-0-5-r16"></script>
+<script src="./firebase-service.js?v=commercial-1-0-5-r16"></script>
+<script src="./smart-print-core.js?v=commercial-1-0-5-r16"></script>
+<script src="./p2-web-safe-flags.js?v=commercial-1-0-5-r16"></script>
+<script src="./p2-restaurant-domain.js?v=commercial-1-0-5-r16"></script>
+<script src="./p2-logistics-domain.js?v=commercial-1-0-5-r16"></script>
+<script src="./universal-label-canvas.js?v=commercial-1-0-5-r16"></script>
+<script src="./universal-label-editor.js?v=commercial-1-0-5-r16"></script>
+<script src="./printing-service.js?v=commercial-1-0-5-r16"></script>
 <!-- Logic -->
-<script src="app.js?v=commercial-1-0-5-r15"></script>
+<script src="app.js?v=commercial-1-0-5-r16"></script>
 </body>
 </html>
