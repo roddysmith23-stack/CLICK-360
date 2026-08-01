@@ -14,6 +14,17 @@ assert.match(app, /data-receipt-block-up/, 'receipt blocks can be moved upward')
 assert.match(app, /data-receipt-block-down/, 'receipt blocks can be moved downward');
 assert.match(app, /receiptCanvasDesigner/, 'receipt editor opens as a canvas-style simple/expert designer');
 assert.match(app, /receiptSelectedBlockPanel/, 'receipt editor exposes a selected block panel');
+assert.match(app, /const RECEIPT_PAPER_PRESETS/, 'receipt editor exposes physical paper presets');
+assert.match(app, /Rollo 2 columnas .*40x30 mm/, 'receipt editor includes two-column roll presets');
+assert.match(app, /Hoja A4 .*3 columnas/, 'receipt editor includes multi-column sheet presets');
+assert.match(app, /function receiptPaperFromTemplate/, 'receipt templates normalize to physical paper dimensions');
+assert.match(app, /function buildReceiptPaperHtml/, 'receipt preview/PDF/printing share one physical paper renderer');
+assert.match(app, /function receiptPrintJob/, 'receipt printing uses one reusable print job contract');
+assert.match(app, /receiptDesignerStartSlot/, 'receipt editor supports starting from a chosen slot');
+assert.match(app, /receiptDesignerMediaWidth/, 'receipt editor exposes total roll/sheet width');
+assert.match(app, /receiptDesignerGapX/, 'receipt editor exposes horizontal gap calibration');
+assert.match(app, /printReceiptWithFallback\(s, business, receiptTemplate, 'system'\)/, 'sale completion prints through the unified receipt job with fallback');
+assert.match(app, /handoffPrint\(receiptPrintJob\(sampleSale, business, draft/, 'test PDF uses the unified receipt job');
 assert.doesNotMatch(app, /saveReceiptTemplatePreferences\(draft\);\s*closeModal\(\);\s*openReceiptTemplateDesigner\(\)/, 'switching receipt mode must not autosave and reopen the modal');
 assert.match(app, /data-receipt-block="locked-footer"/, 'CLICK 360 receipt footer remains locked');
 assert.match(app, /function chargeTableOrder\(table, order\)/, 'table checkout has a dedicated entry point');
@@ -34,7 +45,7 @@ assert.match(styles, /receiptBlockRail/, 'receipt block controls have responsive
 assert.match(styles, /receiptDesignerBlockPanel/, 'receipt editor has a separate block panel on desktop');
 assert.match(styles, /grid-template-areas:"blocks preview properties"/, 'receipt editor uses separate desktop zones for blocks, preview and properties');
 assert.match(app, /receiptDesignerBlockPanel/, 'receipt editor renders the separate block panel');
-assert.match(html, /assets\/logo\.png\?v=commercial-1-0-5-r17/, 'startup uses the HD CLICK 360 logo');
+assert.match(html, /assets\/logo\.png\?v=commercial-1-0-5-r18/, 'startup uses the HD CLICK 360 logo');
 assert.match(html, /fetchpriority="high"/, 'startup logo is requested as a high-priority asset');
 assert.match(styles, /tableCheckoutSummary/, 'restaurant checkout total has a contained layout');
 assert.match(html, /minimumIntroMs = 5000/, 'splash stays visible for the promised five seconds');

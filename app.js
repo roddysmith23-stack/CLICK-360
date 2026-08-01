@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r17';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r18';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -36,6 +36,20 @@
     'receipt-76': { label:'Ticket 76 mm', widthMm:76 },
     'receipt-80': { label:'Ticket 80 mm', widthMm:80 },
     'receipt-custom': { label:'Personalizado', widthMm:80 }
+  });
+  const RECEIPT_PAPER_PRESETS = Object.freeze({
+    'thermal-57': { label:'Ticket térmico 57 mm', mediaType:'receipt', receiptWidthMm:57, receiptHeightMm:150, mediaWidthMm:57, mediaHeightMm:0, columns:1, rows:1, gapXmm:0, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    'thermal-58': { label:'Ticket térmico 58 mm', mediaType:'receipt', receiptWidthMm:58, receiptHeightMm:150, mediaWidthMm:58, mediaHeightMm:0, columns:1, rows:1, gapXmm:0, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    'thermal-80': { label:'Ticket térmico 80 mm', mediaType:'receipt', receiptWidthMm:80, receiptHeightMm:170, mediaWidthMm:80, mediaHeightMm:0, columns:1, rows:1, gapXmm:0, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    'continuous-80': { label:'Papel continuo 80 mm', mediaType:'continuous', receiptWidthMm:80, receiptHeightMm:170, mediaWidthMm:80, mediaHeightMm:0, columns:1, rows:1, gapXmm:0, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    'roll-2-40x30': { label:'Rollo 2 columnas · 40x30 mm', mediaType:'roll', receiptWidthMm:40, receiptHeightMm:30, mediaWidthMm:84, mediaHeightMm:30, columns:2, rows:1, gapXmm:4, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    'roll-2-60x40': { label:'Rollo 2 columnas · 60x40 mm', mediaType:'roll', receiptWidthMm:60, receiptHeightMm:40, mediaWidthMm:124, mediaHeightMm:40, columns:2, rows:1, gapXmm:4, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    'roll-3-40x30': { label:'Rollo 3 columnas · 40x30 mm', mediaType:'roll', receiptWidthMm:40, receiptHeightMm:30, mediaWidthMm:128, mediaHeightMm:30, columns:3, rows:1, gapXmm:4, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    'sheet-a4-2': { label:'Hoja A4 · 2 columnas', mediaType:'sheet', receiptWidthMm:90, receiptHeightMm:55, mediaWidthMm:210, mediaHeightMm:297, columns:2, rows:4, gapXmm:6, gapYmm:6, marginTopMm:10, marginRightMm:10, marginBottomMm:10, marginLeftMm:10, dpi:300 },
+    'sheet-a4-3': { label:'Hoja A4 · 3 columnas', mediaType:'sheet', receiptWidthMm:60, receiptHeightMm:45, mediaWidthMm:210, mediaHeightMm:297, columns:3, rows:6, gapXmm:4, gapYmm:4, marginTopMm:8, marginRightMm:8, marginBottomMm:8, marginLeftMm:8, dpi:300 },
+    'sheet-a3': { label:'Hoja A3 · comprobantes grandes', mediaType:'sheet', receiptWidthMm:90, receiptHeightMm:70, mediaWidthMm:297, mediaHeightMm:420, columns:3, rows:5, gapXmm:6, gapYmm:6, marginTopMm:12, marginRightMm:12, marginBottomMm:12, marginLeftMm:12, dpi:300 },
+    'square-50': { label:'Etiqueta cuadrada 50x50 mm', mediaType:'sheet', receiptWidthMm:50, receiptHeightMm:50, mediaWidthMm:50, mediaHeightMm:50, columns:1, rows:1, gapXmm:0, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+    custom: { label:'Personalizado', mediaType:'custom', receiptWidthMm:80, receiptHeightMm:150, mediaWidthMm:80, mediaHeightMm:150, columns:1, rows:1, gapXmm:0, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 }
   });
   const RECEIPT_BLOCKS = Object.freeze([
     { id:'branding', label:'Marca y negocio', help:'Logo, nombre y datos del negocio' },
@@ -3746,21 +3760,81 @@ function parseMoney(value) {
 			  function savePrintingPreferences(next) {
 			    try { localStorage.setItem(printingPreferencesKey(), JSON.stringify(next)); } catch {}
 			  }
+      function receiptPaperPresetOptionsHtml(selected = 'thermal-80') {
+        return Object.entries(RECEIPT_PAPER_PRESETS)
+          .map(([value, preset]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${escapeHtml(preset.label)}</option>`)
+          .join('');
+      }
       function receiptWidthOptionsHtml(selected = 'receipt-80') {
         return Object.entries(RECEIPT_WIDTH_PRESETS)
           .map(([value, preset]) => `<option value="${value}" ${selected === value ? 'selected' : ''}>${escapeHtml(preset.label)}</option>`)
           .join('');
       }
+      function receiptLegacyPaperType(template = {}) {
+        const width = String(template.width || 'receipt-80');
+        if (width === 'receipt-57') return 'thermal-57';
+        if (width === 'receipt-58') return 'thermal-58';
+        if (width === 'receipt-60') return 'thermal-58';
+        if (width === 'receipt-76') return 'continuous-80';
+        if (width === 'receipt-80') return 'thermal-80';
+        return 'custom';
+      }
+      function receiptPaperFromTemplate(template = {}) {
+        const paperType = RECEIPT_PAPER_PRESETS[template.paperType] ? template.paperType : receiptLegacyPaperType(template);
+        const preset = RECEIPT_PAPER_PRESETS[paperType] || RECEIPT_PAPER_PRESETS['thermal-80'];
+        const receiptWidthMm = clampNumber(template.receiptWidthMm ?? template.labelWidthMm ?? (template.width === 'receipt-custom' ? template.customWidthMm : preset.receiptWidthMm), 30, 210, preset.receiptWidthMm);
+        const receiptHeightMm = clampNumber(template.receiptHeightMm ?? template.labelHeightMm ?? preset.receiptHeightMm, 20, 420, preset.receiptHeightMm);
+        const columns = Math.round(clampNumber(template.columns ?? preset.columns, 1, 6, preset.columns));
+        const rows = Math.round(clampNumber(template.rows ?? preset.rows, 1, 20, preset.rows));
+        const gapXmm = clampNumber(template.gapXmm ?? preset.gapXmm, 0, 40, preset.gapXmm);
+        const gapYmm = clampNumber(template.gapYmm ?? preset.gapYmm, 0, 40, preset.gapYmm);
+        const marginTopMm = clampNumber(template.marginTopMm ?? preset.marginTopMm, 0, 80, preset.marginTopMm);
+        const marginRightMm = clampNumber(template.marginRightMm ?? preset.marginRightMm, 0, 80, preset.marginRightMm);
+        const marginBottomMm = clampNumber(template.marginBottomMm ?? preset.marginBottomMm, 0, 80, preset.marginBottomMm);
+        const marginLeftMm = clampNumber(template.marginLeftMm ?? preset.marginLeftMm, 0, 80, preset.marginLeftMm);
+        const minimumMediaWidth = marginLeftMm + marginRightMm + columns * receiptWidthMm + Math.max(0, columns - 1) * gapXmm;
+        const minimumMediaHeight = marginTopMm + marginBottomMm + rows * receiptHeightMm + Math.max(0, rows - 1) * gapYmm;
+        const mediaType = template.mediaType || preset.mediaType || 'receipt';
+        const continuous = mediaType === 'receipt' || mediaType === 'continuous';
+        const mediaWidthMm = clampNumber(template.mediaWidthMm ?? preset.mediaWidthMm ?? minimumMediaWidth, Math.max(30, minimumMediaWidth), 420, Math.max(preset.mediaWidthMm || 0, minimumMediaWidth));
+        const mediaHeightMm = continuous
+          ? 0
+          : clampNumber(template.mediaHeightMm ?? preset.mediaHeightMm ?? minimumMediaHeight, Math.max(20, minimumMediaHeight), 900, Math.max(preset.mediaHeightMm || 0, minimumMediaHeight));
+        return {
+          paperType,
+          label:preset.label,
+          mediaType,
+          receiptWidthMm,
+          receiptHeightMm,
+          mediaWidthMm,
+          mediaHeightMm,
+          columns,
+          rows,
+          gapXmm,
+          gapYmm,
+          marginTopMm,
+          marginRightMm,
+          marginBottomMm,
+          marginLeftMm,
+          startSlot:Math.round(clampNumber(template.startSlot, 1, columns * rows, 1)),
+          xOffsetMm:clampNumber(template.xOffsetMm, -40, 40, 0),
+          yOffsetMm:clampNumber(template.yOffsetMm, -40, 40, 0),
+          contentRotation:[0,90,180,270].includes(Number(template.contentRotation)) ? Number(template.contentRotation) : 0,
+          dpi:Math.round(clampNumber(template.dpi ?? preset.dpi, 72, 600, preset.dpi || 203))
+        };
+      }
       function receiptWidthMmFromTemplate(template = {}) {
-        if (template.width === 'receipt-custom') return clampNumber(template.customWidthMm, 45, 110, 80);
-        return RECEIPT_WIDTH_PRESETS[template.width]?.widthMm || 80;
+        return receiptPaperFromTemplate(template).receiptWidthMm;
       }
       function receiptPrintMedia(template = {}) {
-        const widthMm = receiptWidthMmFromTemplate(template);
-        if (template.width && template.width !== 'receipt-custom') return template.width;
-        if (widthMm <= 60) return 'receipt-57';
-        if (widthMm <= 76) return 'receipt-76';
-        return 'receipt-80';
+        const paper = receiptPaperFromTemplate(template);
+        if (paper.mediaType === 'receipt' || paper.mediaType === 'continuous') {
+          if (paper.receiptWidthMm <= 58) return 'receipt-58';
+          if (paper.receiptWidthMm <= 60) return 'receipt-60';
+          if (paper.receiptWidthMm <= 76) return 'receipt-76';
+          return 'receipt-80';
+        }
+        return 'label';
       }
 
       function normalizeReceiptBlocks(blocks) {
@@ -3778,15 +3852,33 @@ function parseMoney(value) {
 		  function receiptTemplatePreferences() {
 			    const template = currentBusiness()?.settings?.receiptTemplate || {};
           const width = RECEIPT_WIDTH_PRESETS[template.width] ? template.width : 'receipt-80';
-          const effectiveWidthMm = width === 'receipt-custom'
-            ? clampNumber(template.customWidthMm, 45, 110, 80)
-            : (RECEIPT_WIDTH_PRESETS[width]?.widthMm || 80);
+          const paper = receiptPaperFromTemplate(template);
+          const effectiveWidthMm = paper.receiptWidthMm;
 			    return {
 			      mode: ['simple','expert'].includes(template.mode) ? template.mode : 'simple',
 			      footer: RECEIPT_FOOTER_TEXT,
 			      note: String(template.note || RECEIPT_DEFAULT_NOTE).slice(0, 160),
 			      width,
             customWidthMm: effectiveWidthMm,
+            paperType: paper.paperType,
+            mediaType: paper.mediaType,
+            receiptWidthMm: paper.receiptWidthMm,
+            receiptHeightMm: paper.receiptHeightMm,
+            mediaWidthMm: paper.mediaWidthMm,
+            mediaHeightMm: paper.mediaHeightMm,
+            columns: paper.columns,
+            rows: paper.rows,
+            gapXmm: paper.gapXmm,
+            gapYmm: paper.gapYmm,
+            marginTopMm: paper.marginTopMm,
+            marginRightMm: paper.marginRightMm,
+            marginBottomMm: paper.marginBottomMm,
+            marginLeftMm: paper.marginLeftMm,
+            startSlot: paper.startSlot,
+            xOffsetMm: paper.xOffsetMm,
+            yOffsetMm: paper.yOffsetMm,
+            contentRotation: paper.contentRotation,
+            dpi: paper.dpi,
 			      showLogo: template.showLogo !== false,
 			      showCustomer: template.showCustomer !== false,
 			      showSeller: template.showSeller !== false,
@@ -3845,7 +3937,9 @@ function parseMoney(value) {
       }
       function buildReceiptHtml(s, business = currentBusiness(), template = receiptTemplatePreferences()) {
         const bizSettings = business?.settings || {};
-        const receiptWidthMm = receiptWidthMmFromTemplate(template);
+        const paper = receiptPaperFromTemplate(template);
+        const receiptWidthMm = paper.receiptWidthMm;
+        const fixedReceiptHeight = paper.mediaType === 'sheet' || paper.mediaType === 'roll' || paper.mediaType === 'custom';
         const compactReceipt = receiptWidthMm <= 60;
         const scale = clampNumber(template.textScale, 0.78, 1.25, 1);
         const baseFont = (compactReceipt ? 9.2 : 11.5) * scale;
@@ -3858,7 +3952,7 @@ function parseMoney(value) {
         const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
         const items = saleItems(s).length ? saleItems(s) : (s.items || []);
         return `
-          <div class="receiptPrintBody" style="box-sizing:border-box;font-family:monospace;color:#000;font-size:${baseFont}px;margin:0 auto;padding:${receiptPaddingMm}mm;width:${receiptWidthMm}mm;max-width:${receiptWidthMm}mm;background:#fff;line-height:${compactReceipt ? 1.22 : 1.32};overflow-wrap:anywhere;text-align:left;"><div style="display:flex;flex-direction:column;">
+          <div class="receiptPrintBody" style="box-sizing:border-box;font-family:monospace;color:#000;font-size:${baseFont}px;margin:0 auto;padding:${receiptPaddingMm}mm;width:${receiptWidthMm}mm;max-width:${receiptWidthMm}mm;${fixedReceiptHeight ? `height:${paper.receiptHeightMm}mm;overflow:hidden;` : ''}background:#fff;line-height:${compactReceipt ? 1.22 : 1.32};overflow-wrap:anywhere;text-align:left;"><div style="display:flex;flex-direction:column;">
             <section data-receipt-block="branding" style="${receiptBlockStyle(template, 'branding')}">
             ${logoUrl}
             <h2 style="font-size:${baseFont * 1.25}px;margin:0 0 2px;text-align:${textAlign};font-weight:bold;word-break:break-word;">${escapeHtml(business?.name || 'CLICK 360')}</h2>
@@ -3899,6 +3993,70 @@ function parseMoney(value) {
           </div>
         `;
       }
+      function receiptCellPosition(paper, slotNumber = 1) {
+        const slot = Math.max(1, Math.min(paper.columns * paper.rows, Math.round(Number(slotNumber || 1))));
+        const index = slot - 1;
+        const column = index % paper.columns;
+        const row = Math.floor(index / paper.columns);
+        return {
+          xMm: paper.marginLeftMm + column * (paper.receiptWidthMm + paper.gapXmm) + paper.xOffsetMm,
+          yMm: paper.marginTopMm + row * (paper.receiptHeightMm + paper.gapYmm) + paper.yOffsetMm,
+          slot
+        };
+      }
+      function receiptPrintMediaSize(template = {}) {
+        const paper = receiptPaperFromTemplate(template);
+        const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
+        if (continuous) {
+          return { widthMm: paper.receiptWidthMm, heightMm: 0 };
+        }
+        const requiredWidth = paper.marginLeftMm + paper.marginRightMm + paper.columns * paper.receiptWidthMm + Math.max(0, paper.columns - 1) * paper.gapXmm;
+        const requiredHeight = paper.marginTopMm + paper.marginBottomMm + paper.rows * paper.receiptHeightMm + Math.max(0, paper.rows - 1) * paper.gapYmm;
+        return { widthMm: Math.max(paper.mediaWidthMm, requiredWidth), heightMm: Math.max(paper.mediaHeightMm, requiredHeight) };
+      }
+      function buildReceiptPaperHtml(s, business = currentBusiness(), template = receiptTemplatePreferences(), options = {}) {
+        const paper = receiptPaperFromTemplate(template);
+        const media = receiptPrintMediaSize(template);
+        const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
+        const receiptHtml = buildReceiptHtml(s, business, template);
+        if (continuous && !options.forceSheet) return receiptHtml;
+        const totalSlots = paper.columns * paper.rows;
+        const copies = Math.max(1, Math.min(totalSlots, Number(options.copies || 1)));
+        let remaining = copies;
+        const cells = [];
+        for (let slot = 1; slot <= totalSlots; slot += 1) {
+          const position = receiptCellPosition(paper, slot);
+          const printable = slot >= paper.startSlot && remaining > 0;
+          if (printable) remaining -= 1;
+          cells.push(`<div class="receiptPaperCell ${printable ? 'filled' : 'empty'}" data-slot="${slot}" style="position:absolute;left:${position.xMm}mm;top:${position.yMm}mm;width:${paper.receiptWidthMm}mm;height:${paper.receiptHeightMm}mm;box-sizing:border-box;overflow:hidden;border:${options.preview ? '1px dashed rgba(0,0,0,.28)' : '0'};background:${printable ? '#fff' : 'transparent'};">${printable ? `<div style="transform:rotate(${paper.contentRotation}deg);transform-origin:center center;width:${paper.receiptWidthMm}mm;min-height:${paper.receiptHeightMm}mm;">${receiptHtml}</div>` : (options.preview ? `<span style="display:grid;place-items:center;width:100%;height:100%;font:700 9px Arial;color:#aaa;">${slot}</span>` : '')}</div>`);
+        }
+        return `<section class="receiptPaperSheet" data-receipt-paper="${escapeHtml(paper.paperType)}" style="position:relative;width:${media.widthMm}mm;height:${media.heightMm || paper.receiptHeightMm}mm;box-sizing:border-box;background:#fff;color:#000;overflow:hidden;">${cells.join('')}</section>`;
+      }
+      function receiptPrintJob(s, business = currentBusiness(), template = receiptTemplatePreferences(), options = {}) {
+        const paper = receiptPaperFromTemplate(template);
+        const media = receiptPrintMediaSize(template);
+        const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
+        return {
+          html: buildReceiptPaperHtml(s, business, template, { copies:options.copies || 1 }),
+          media: receiptPrintMedia(template),
+          mediaWidthMm: media.widthMm || paper.receiptWidthMm,
+          mediaHeightMm: continuous ? undefined : media.heightMm,
+          widthMm: paper.receiptWidthMm,
+          heightMm: continuous ? undefined : paper.receiptHeightMm,
+          copiesHandled:true,
+          filename: options.filename || `Recibo_${String(s.id || uid('rec')).slice(-6).toUpperCase()}.pdf`
+        };
+      }
+      async function printReceiptWithFallback(s, business = currentBusiness(), template = receiptTemplatePreferences(), providerId = 'system') {
+        const job = receiptPrintJob(s, business, template);
+        const result = await handoffPrint(job, providerId);
+        if (result) return result;
+        if (providerId !== 'pdf') {
+          toast('No se pudo abrir la impresión del sistema. Generando PDF limpio.', 'warn');
+          return handoffPrint(job, 'pdf');
+        }
+        return null;
+      }
       function openReceiptTemplateDesigner() {
         const business = currentBusiness();
         if (!business) return toast('Selecciona un negocio antes de editar comprobantes.', 'err');
@@ -3918,28 +4076,71 @@ function parseMoney(value) {
         const controlsHtml = (mode = draftTemplate.mode) => {
           const selected = selectedBlock();
           const selectedDefinition = blockDefinition(selected?.id);
+          const paper = receiptPaperFromTemplate(draftTemplate);
+          const totalSlots = paper.columns * paper.rows;
           return `
             <div class="receiptDesignerControlHeader">
-              <span><b>Formato físico</b><small>El ancho aquí controla PDF, vista previa e impresión. Para papel térmico de 57/58 mm usa el perfil estrecho.</small></span>
-              <b>${receiptWidthMmFromTemplate(draftTemplate)} mm</b>
+              <span><b>Formato físico</b><small>El comprobante usa el mismo papel para vista, PDF e impresión. Configura rollo, hoja, columnas, márgenes y casilla inicial antes de imprimir.</small></span>
+              <b>${paper.receiptWidthMm} × ${paper.receiptHeightMm} mm</b>
             </div>
-            <div class="receiptDesignerFields receiptCanvasFields">
-              <div class="field"><label>Ancho de papel</label><select id="receiptDesignerWidth">${receiptWidthOptionsHtml(draftTemplate.width)}</select></div>
-              <div class="field"><label>Ancho personalizado (mm)</label><input id="receiptDesignerCustomWidth" type="number" min="45" max="110" step="1" value="${numericInputValue(draftTemplate.customWidthMm, receiptWidthMmFromTemplate(draftTemplate))}"></div>
-              <label class="consentCheck"><input type="checkbox" id="receiptDesignerLogo" ${draftTemplate.showLogo ? 'checked' : ''}><span>Logo del negocio</span></label>
-              <label class="consentCheck"><input type="checkbox" id="receiptDesignerCustomer" ${draftTemplate.showCustomer ? 'checked' : ''}><span>Cliente y teléfono</span></label>
-              <label class="consentCheck"><input type="checkbox" id="receiptDesignerSeller" ${draftTemplate.showSeller ? 'checked' : ''}><span>Vendedor</span></label>
-              <label class="consentCheck"><input type="checkbox" id="receiptDesignerPayment" ${draftTemplate.showPayment ? 'checked' : ''}><span>Método de pago</span></label>
-              <label class="consentCheck"><input type="checkbox" id="receiptDesignerDividers" ${draftTemplate.showDividers ? 'checked' : ''}><span>Líneas divisorias</span></label>
+            <div class="receiptDesignerSections">
+              <section class="receiptDesignerFieldset">
+                <h4>Papel y tamaño</h4>
+                <div class="receiptDesignerFields receiptCanvasFields">
+                  <div class="field full"><label>Perfil de papel</label><select id="receiptDesignerPaperType">${receiptPaperPresetOptionsHtml(paper.paperType)}</select></div>
+                  <div class="field"><label>Ancho del comprobante/sticker (mm)</label><input id="receiptDesignerReceiptWidth" type="number" min="30" max="210" step="1" value="${numericInputValue(paper.receiptWidthMm, 80)}"></div>
+                  <div class="field"><label>Alto del comprobante/sticker (mm)</label><input id="receiptDesignerReceiptHeight" type="number" min="20" max="420" step="1" value="${numericInputValue(paper.receiptHeightMm, 150)}"></div>
+                  <div class="field"><label>Ancho total del rollo/hoja (mm)</label><input id="receiptDesignerMediaWidth" type="number" min="30" max="420" step="1" value="${numericInputValue(paper.mediaWidthMm, paper.receiptWidthMm)}"></div>
+                  <div class="field"><label>Alto total de hoja (mm)</label><input id="receiptDesignerMediaHeight" type="number" min="0" max="900" step="1" value="${numericInputValue(paper.mediaHeightMm, 0)}"></div>
+                </div>
+              </section>
+              <section class="receiptDesignerFieldset">
+                <h4>Casillas y posición</h4>
+                <div class="receiptDesignerFields receiptCanvasFields">
+                  <div class="field"><label>Columnas</label><input id="receiptDesignerColumns" type="number" min="1" max="6" step="1" value="${paper.columns}"></div>
+                  <div class="field"><label>Filas</label><input id="receiptDesignerRows" type="number" min="1" max="20" step="1" value="${paper.rows}"></div>
+                  <div class="field"><label>Separación horizontal (mm)</label><input id="receiptDesignerGapX" type="number" min="0" max="40" step="0.5" value="${numericInputValue(paper.gapXmm, 0)}"></div>
+                  <div class="field"><label>Separación vertical (mm)</label><input id="receiptDesignerGapY" type="number" min="0" max="40" step="0.5" value="${numericInputValue(paper.gapYmm, 0)}"></div>
+                  <div class="field"><label>Empezar en casilla</label><input id="receiptDesignerStartSlot" type="number" min="1" max="${totalSlots}" step="1" value="${paper.startSlot}"></div>
+                  <div class="field"><label>Rotación de contenido</label><select id="receiptDesignerRotation"><option value="0" ${paper.contentRotation === 0 ? 'selected' : ''}>0° normal</option><option value="90" ${paper.contentRotation === 90 ? 'selected' : ''}>90°</option><option value="180" ${paper.contentRotation === 180 ? 'selected' : ''}>180°</option><option value="270" ${paper.contentRotation === 270 ? 'selected' : ''}>270°</option></select></div>
+                </div>
+              </section>
               ${mode === 'expert' ? `
-                <div class="field"><label>Tamaño de texto</label><input id="receiptDesignerTextScale" type="range" min="0.78" max="1.25" step="0.01" value="${numericInputValue(draftTemplate.textScale, 1)}"></div>
-                <div class="field"><label>Padding interno (mm)</label><input id="receiptDesignerPadding" type="number" min="1" max="8" step="0.5" value="${numericInputValue(draftTemplate.paddingMm, 3)}"></div>
-                <div class="field"><label>Alto máximo de logo (mm)</label><input id="receiptDesignerLogoHeight" type="number" min="12" max="38" step="1" value="${numericInputValue(draftTemplate.logoHeightMm, 22)}"></div>
-                <div class="field"><label>Alineación superior</label><select id="receiptDesignerAlign"><option value="center" ${draftTemplate.align !== 'left' ? 'selected' : ''}>Centrada</option><option value="left" ${draftTemplate.align === 'left' ? 'selected' : ''}>Izquierda</option></select></div>
-                <label class="consentCheck"><input type="checkbox" id="receiptDesignerTax" ${draftTemplate.showTax ? 'checked' : ''}><span>Mostrar IVA cuando aplique</span></label>
-                <label class="consentCheck"><input type="checkbox" id="receiptDesignerThanks" ${draftTemplate.showThanks ? 'checked' : ''}><span>Mensaje de gracias</span></label>
+                <section class="receiptDesignerFieldset">
+                  <h4>Márgenes y calibración</h4>
+                  <div class="receiptDesignerFields receiptCanvasFields">
+                    <div class="field"><label>Margen superior (mm)</label><input id="receiptDesignerMarginTop" type="number" min="0" max="80" step="0.5" value="${numericInputValue(paper.marginTopMm, 0)}"></div>
+                    <div class="field"><label>Margen derecho (mm)</label><input id="receiptDesignerMarginRight" type="number" min="0" max="80" step="0.5" value="${numericInputValue(paper.marginRightMm, 0)}"></div>
+                    <div class="field"><label>Margen inferior (mm)</label><input id="receiptDesignerMarginBottom" type="number" min="0" max="80" step="0.5" value="${numericInputValue(paper.marginBottomMm, 0)}"></div>
+                    <div class="field"><label>Margen izquierdo (mm)</label><input id="receiptDesignerMarginLeft" type="number" min="0" max="80" step="0.5" value="${numericInputValue(paper.marginLeftMm, 0)}"></div>
+                    <div class="field"><label>Calibración X (mm)</label><input id="receiptDesignerXOffset" type="number" min="-40" max="40" step="0.5" value="${numericInputValue(paper.xOffsetMm, 0)}"></div>
+                    <div class="field"><label>Calibración Y (mm)</label><input id="receiptDesignerYOffset" type="number" min="-40" max="40" step="0.5" value="${numericInputValue(paper.yOffsetMm, 0)}"></div>
+                    <div class="field"><label>DPI referencia</label><input id="receiptDesignerDpi" type="number" min="72" max="600" step="1" value="${paper.dpi}"></div>
+                  </div>
+                </section>
+                <section class="receiptDesignerFieldset">
+                  <h4>Estilo y contenido</h4>
+                  <div class="receiptDesignerFields receiptCanvasFields">
+                    <div class="field"><label>Tamaño de texto</label><input id="receiptDesignerTextScale" type="range" min="0.78" max="1.25" step="0.01" value="${numericInputValue(draftTemplate.textScale, 1)}"></div>
+                    <div class="field"><label>Padding interno (mm)</label><input id="receiptDesignerPadding" type="number" min="1" max="8" step="0.5" value="${numericInputValue(draftTemplate.paddingMm, 3)}"></div>
+                    <div class="field"><label>Alto máximo de logo (mm)</label><input id="receiptDesignerLogoHeight" type="number" min="12" max="38" step="1" value="${numericInputValue(draftTemplate.logoHeightMm, 22)}"></div>
+                    <div class="field"><label>Alineación superior</label><select id="receiptDesignerAlign"><option value="center" ${draftTemplate.align !== 'left' ? 'selected' : ''}>Centrada</option><option value="left" ${draftTemplate.align === 'left' ? 'selected' : ''}>Izquierda</option></select></div>
+                    <label class="consentCheck"><input type="checkbox" id="receiptDesignerTax" ${draftTemplate.showTax ? 'checked' : ''}><span>Mostrar IVA cuando aplique</span></label>
+                    <label class="consentCheck"><input type="checkbox" id="receiptDesignerThanks" ${draftTemplate.showThanks ? 'checked' : ''}><span>Mensaje de gracias</span></label>
+                  </div>
+                </section>
               ` : ''}
-              <div class="field full"><label>Nota interna</label><textarea id="receiptDesignerNote" maxlength="160">${escapeHtml(draftTemplate.note)}</textarea></div>
+              <section class="receiptDesignerFieldset">
+                <h4>Datos visibles</h4>
+                <div class="receiptDesignerFields receiptCanvasFields">
+                  <label class="consentCheck"><input type="checkbox" id="receiptDesignerLogo" ${draftTemplate.showLogo ? 'checked' : ''}><span>Logo del negocio</span></label>
+                  <label class="consentCheck"><input type="checkbox" id="receiptDesignerCustomer" ${draftTemplate.showCustomer ? 'checked' : ''}><span>Cliente y teléfono</span></label>
+                  <label class="consentCheck"><input type="checkbox" id="receiptDesignerSeller" ${draftTemplate.showSeller ? 'checked' : ''}><span>Vendedor</span></label>
+                  <label class="consentCheck"><input type="checkbox" id="receiptDesignerPayment" ${draftTemplate.showPayment ? 'checked' : ''}><span>Método de pago</span></label>
+                  <label class="consentCheck"><input type="checkbox" id="receiptDesignerDividers" ${draftTemplate.showDividers ? 'checked' : ''}><span>Líneas divisorias</span></label>
+                  <div class="field full"><label>Nota interna</label><textarea id="receiptDesignerNote" maxlength="160">${escapeHtml(draftTemplate.note)}</textarea></div>
+                </div>
+              </section>
             </div>
             <section class="receiptSelectedBlockPanel">
               <span><b>Bloque seleccionado</b><small>${escapeHtml(selectedDefinition?.label || '')} · ${escapeHtml(selectedDefinition?.help || '')}</small></span>
@@ -3959,8 +4160,8 @@ function parseMoney(value) {
                 ${blockControlsHtml()}
               </aside>
               <aside class="receiptDesignerPreviewPanel">
-                <div class="receiptDesignerPreviewHeader"><span><h3>Lienzo de comprobante</h3><small>Selecciona una sección del ticket para editarla.</small></span><b id="receiptDesignerWidthBadge">${receiptWidthMmFromTemplate(draftTemplate)} mm</b></div>
-                <div id="receiptDesignerPreview" class="receiptDesignerPreview">${buildReceiptHtml(sampleSale, business, draftTemplate)}</div>
+                <div class="receiptDesignerPreviewHeader"><span><h3>Lienzo de comprobante</h3><small>Selecciona una sección del ticket para editarla.</small></span><b id="receiptDesignerWidthBadge">${receiptPaperFromTemplate(draftTemplate).receiptWidthMm} x ${receiptPaperFromTemplate(draftTemplate).receiptHeightMm} mm</b></div>
+                <div id="receiptDesignerPreview" class="receiptDesignerPreview">${buildReceiptPaperHtml(sampleSale, business, draftTemplate, { preview: true, forceSheet: true })}</div>
                 <div class="receiptCanvasActions"><button type="button" class="btn small" id="receiptPreviewUp">${icon('arrow-up')} Subir</button><button type="button" class="btn small" id="receiptPreviewDown">${icon('arrow-down')} Bajar</button><button type="button" class="btn small" id="receiptPreviewToggle">${icon('eye-off')} Ocultar</button><button type="button" class="btn small" id="receiptDesignerPdfInline">${icon('file-down')} PDF</button></div>
               </aside>
               <form id="receiptDesignerForm" class="receiptDesignerControls">${controlsHtml(draftTemplate.mode)}</form>
@@ -3971,12 +4172,55 @@ function parseMoney(value) {
         $('#modalRoot .modal')?.classList.add('receiptDesignerShell');
         const collect = () => {
           const previous = draftTemplate || receiptTemplatePreferences();
-          const width = $('#receiptDesignerWidth')?.value || previous.width || 'receipt-80';
+          const previousPaper = receiptPaperFromTemplate(previous);
+          const selectedPaperType = $('#receiptDesignerPaperType')?.value || previousPaper.paperType || 'thermal-80';
+          const preset = RECEIPT_PAPER_PRESETS[selectedPaperType] || RECEIPT_PAPER_PRESETS.custom;
+          const profileChanged = selectedPaperType !== previousPaper.paperType;
+          const readPaperNumber = (id, key, min, max) => {
+            if (profileChanged) return preset[key];
+            return $(id) ? clampNumber($(id).value, min, max, previousPaper[key]) : previousPaper[key];
+          };
+          const receiptWidthMm = readPaperNumber('#receiptDesignerReceiptWidth', 'receiptWidthMm', 24, 210);
+          const receiptHeightMm = readPaperNumber('#receiptDesignerReceiptHeight', 'receiptHeightMm', 10, 420);
+          const columns = Math.round(readPaperNumber('#receiptDesignerColumns', 'columns', 1, 6));
+          const rows = Math.round(readPaperNumber('#receiptDesignerRows', 'rows', 1, 20));
+          const gapXmm = readPaperNumber('#receiptDesignerGapX', 'gapXmm', 0, 30);
+          const gapYmm = readPaperNumber('#receiptDesignerGapY', 'gapYmm', 0, 30);
+          const marginLeftMm = readPaperNumber('#receiptDesignerMarginLeft', 'marginLeftMm', 0, 60);
+          const marginRightMm = readPaperNumber('#receiptDesignerMarginRight', 'marginRightMm', 0, 60);
+          const marginTopMm = readPaperNumber('#receiptDesignerMarginTop', 'marginTopMm', 0, 60);
+          const marginBottomMm = readPaperNumber('#receiptDesignerMarginBottom', 'marginBottomMm', 0, 60);
+          const minimumMediaWidth = marginLeftMm + marginRightMm + (receiptWidthMm * columns) + (gapXmm * Math.max(0, columns - 1));
+          const minimumMediaHeight = marginTopMm + marginBottomMm + (receiptHeightMm * rows) + (gapYmm * Math.max(0, rows - 1));
+          const mediaWidthMm = Math.max(minimumMediaWidth, readPaperNumber('#receiptDesignerMediaWidth', 'mediaWidthMm', 24, 420));
+          const mediaHeightMm = selectedPaperType.startsWith('thermal') || selectedPaperType === 'continuous-80'
+            ? readPaperNumber('#receiptDesignerMediaHeight', 'mediaHeightMm', 0, 999)
+            : Math.max(minimumMediaHeight, readPaperNumber('#receiptDesignerMediaHeight', 'mediaHeightMm', 0, 999));
+          const legacyWidth = receiptWidthMm <= 57 ? 'receipt-57' : receiptWidthMm <= 58 ? 'receipt-58' : receiptWidthMm <= 60 ? 'receipt-60' : receiptWidthMm <= 76 ? 'receipt-76' : receiptWidthMm <= 80 ? 'receipt-80' : 'receipt-custom';
           return {
             ...previous,
             mode: currentMode(),
-            width: RECEIPT_WIDTH_PRESETS[width] ? width : 'receipt-80',
-            customWidthMm: $('#receiptDesignerCustomWidth') ? clampNumber($('#receiptDesignerCustomWidth').value, 45, 110, previous.customWidthMm) : previous.customWidthMm,
+            paperType: RECEIPT_PAPER_PRESETS[selectedPaperType] ? selectedPaperType : 'custom',
+            mediaType: preset.mediaType || previousPaper.mediaType,
+            receiptWidthMm,
+            receiptHeightMm,
+            mediaWidthMm,
+            mediaHeightMm,
+            columns,
+            rows,
+            gapXmm,
+            gapYmm,
+            marginTopMm,
+            marginRightMm,
+            marginBottomMm,
+            marginLeftMm,
+            startSlot: Math.round($('#receiptDesignerStartSlot') ? clampNumber($('#receiptDesignerStartSlot').value, 1, Math.max(1, columns * rows), previousPaper.startSlot) : previousPaper.startSlot),
+            contentRotation: $('#receiptDesignerRotation') ? clampNumber($('#receiptDesignerRotation').value, -180, 180, previousPaper.contentRotation) : previousPaper.contentRotation,
+            xOffsetMm: $('#receiptDesignerXOffset') ? clampNumber($('#receiptDesignerXOffset').value, -50, 50, previousPaper.xOffsetMm) : previousPaper.xOffsetMm,
+            yOffsetMm: $('#receiptDesignerYOffset') ? clampNumber($('#receiptDesignerYOffset').value, -50, 50, previousPaper.yOffsetMm) : previousPaper.yOffsetMm,
+            dpi: Math.round($('#receiptDesignerDpi') ? clampNumber($('#receiptDesignerDpi').value, 72, 600, previousPaper.dpi) : previousPaper.dpi),
+            width: legacyWidth,
+            customWidthMm: receiptWidthMm,
             showLogo: $('#receiptDesignerLogo') ? $('#receiptDesignerLogo').checked === true : previous.showLogo,
             showCustomer: $('#receiptDesignerCustomer') ? $('#receiptDesignerCustomer').checked === true : previous.showCustomer,
             showSeller: $('#receiptDesignerSeller') ? $('#receiptDesignerSeller').checked === true : previous.showSeller,
@@ -4027,9 +4271,10 @@ function parseMoney(value) {
         const repaint = () => {
           draftTemplate = collect();
           const preview = $('#receiptDesignerPreview');
-          if (preview) preview.innerHTML = buildReceiptHtml(sampleSale, business, draftTemplate);
+          if (preview) preview.innerHTML = buildReceiptPaperHtml(sampleSale, business, draftTemplate, { preview: true, forceSheet: true });
           const badge = $('#receiptDesignerWidthBadge');
-          if (badge) badge.textContent = `${receiptWidthMmFromTemplate(draftTemplate)} mm`;
+          const paper = receiptPaperFromTemplate(draftTemplate);
+          if (badge) badge.textContent = `${paper.receiptWidthMm} x ${paper.receiptHeightMm} mm`;
           bindPreviewBlocks();
           updateSelectedState();
         };
@@ -4111,7 +4356,7 @@ function parseMoney(value) {
         };
         const runReceiptPdf = () => {
           const draft = collect();
-          handoffPrint({ html: buildReceiptHtml(sampleSale, business, draft), media: receiptPrintMedia(draft), mediaWidthMm: receiptWidthMmFromTemplate(draft), filename:'CLICK360_Comprobante_Prueba.pdf' }, 'pdf')
+          handoffPrint(receiptPrintJob(sampleSale, business, draft, { filename:'CLICK360_Comprobante_Prueba.pdf' }), 'pdf')
             .then(() => toast('PDF de prueba generado.', 'ok'))
             .catch((error) => toast(error.message || 'No se pudo generar el PDF.', 'err'));
         };
@@ -4144,6 +4389,7 @@ function parseMoney(value) {
 		    const latestSale = salesForBiz().filter((sale) => sale.status !== 'cancelled').slice(-1)[0];
 		    const firstProduct = productsForBiz()[0];
 			    const receiptTemplate = receiptTemplatePreferences();
+          const receiptPaper = receiptPaperFromTemplate(receiptTemplate);
 			    return `<div class="pageHead"><div><h1>Centro de impresión</h1><p>${escapeHtml(currentBusiness().name)}</p></div></div>
 		      <section class="card sectionCard printingControlPanel">
 		        <div class="formGrid">
@@ -4163,8 +4409,8 @@ function parseMoney(value) {
 			      <section class="card sectionCard receiptTemplatePanel">
 			        <div class="receiptTemplateHeader"><span><h3>Plantilla de comprobante de venta</h3><p class="fieldHint">Edita con modo simple o experto. El pie de CLICK 360 queda fijo y no se puede borrar.</p></span><button type="button" class="btn primary" id="openReceiptDesignerBtn">${icon('layout-template')} Editar plantilla</button></div>
 			        <div class="receiptDesignerSummary">
-			          <div><b>${escapeHtml(RECEIPT_WIDTH_PRESETS[receiptTemplate.width]?.label || 'Personalizado')}</b><small>${receiptWidthMmFromTemplate(receiptTemplate)} mm · ${receiptTemplate.mode === 'expert' ? 'modo experto' : 'modo simple'}</small></div>
-			          <div class="receiptDesignerMini" aria-label="Vista mini de comprobante">${buildReceiptHtml(receiptTemplateSampleSale(), currentBusiness(), receiptTemplate)}</div>
+			          <div><b>${escapeHtml(receiptPaper.label)}</b><small>${receiptPaper.receiptWidthMm} x ${receiptPaper.receiptHeightMm} mm · ${receiptPaper.columns} col. · ${receiptTemplate.mode === 'expert' ? 'modo experto' : 'modo simple'}</small></div>
+			          <div class="receiptDesignerMini" aria-label="Vista mini de comprobante">${buildReceiptPaperHtml(receiptTemplateSampleSale(), currentBusiness(), receiptTemplate, { preview:true, forceSheet:true })}</div>
 			        </div>
 			        <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
 			      </section>
@@ -9030,9 +9276,8 @@ function parseMoney(value) {
 	    if(!s) return;
 	    if (!business || s.businessId !== business.id) return toast('El comprobante pertenece a otro negocio y fue bloqueado.', 'err');
 	    const receiptTemplate = receiptTemplatePreferences();
-	    const receiptWidthMm = receiptWidthMmFromTemplate(receiptTemplate);
-      const receiptMedia = receiptPrintMedia(receiptTemplate);
-    const receiptHtml = buildReceiptHtml(s, business, receiptTemplate);
+      const receiptHtml = buildReceiptPaperHtml(s, business, receiptTemplate, { preview:true, forceSheet:true });
+      const receiptJob = () => receiptPrintJob(s, business, receiptTemplate, { filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` });
 
     showModal(`
       <div class="modalHeader"><h2>Venta Completada</h2><button class="closeBtn" data-close>×</button></div>
@@ -9064,8 +9309,8 @@ function parseMoney(value) {
        };
     }
 
-		    $('#printReceiptBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptMedia, mediaWidthMm:receiptWidthMm, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'system');
-		    $('#downloadPdfBtn').onclick = () => handoffPrint({ html: receiptHtml, media: receiptMedia, mediaWidthMm:receiptWidthMm, filename: `Recibo_${s.id.slice(-6).toUpperCase()}.pdf` }, 'pdf');
+		    $('#printReceiptBtn').onclick = () => printReceiptWithFallback(s, business, receiptTemplate, 'system');
+		    $('#downloadPdfBtn').onclick = () => handoffPrint(receiptJob(), 'pdf');
 
     $('#downloadImgBtn').onclick = () => {
       downloadHtmlAsPng(receiptHtml, `Recibo_${s.id.slice(-6).toUpperCase()}.png`);
