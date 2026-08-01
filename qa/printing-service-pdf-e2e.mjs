@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { access } from 'node:fs/promises';
 import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -24,6 +25,35 @@ async function waitForServer() {
   throw new Error('Printing PDF fixture did not start.');
 }
 
+function firstExisting(paths) {
+  return paths.find((candidate) => {
+    try {
+      execFileSync('test', ['-f', candidate], { stdio:'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  }) || '';
+}
+
+async function verifyPdfPixels(pdfPath, basename) {
+  const pngPrefix = path.join(output, basename);
+  const pngSingle = `${pngPrefix}.png`;
+  const pngFirst = `${pngPrefix}-1.png`;
+  try {
+    execFileSync('pdftoppm', ['-png', '-singlefile', pdfPath, pngPrefix], { stdio:'ignore' });
+    await access(pngSingle);
+    execFileSync(process.execPath, [path.join(root, 'qa/check-png-nonblank.cjs'), pngSingle, '500'], { stdio:'inherit' });
+    return pngSingle;
+  } catch (error) {
+    execFileSync('pdftoppm', ['-png', pdfPath, pngPrefix], { stdio:'ignore' });
+    const pngPath = firstExisting([pngFirst, pngSingle]);
+    if (!pngPath) throw error;
+    execFileSync(process.execPath, [path.join(root, 'qa/check-png-nonblank.cjs'), pngPath, '500'], { stdio:'inherit' });
+    return pngPath;
+  }
+}
+
 try {
   await mkdir(output, { recursive:true });
   await waitForServer();
@@ -45,17 +75,38 @@ try {
       await download.saveAs(pdfPath);
       const pdf = await stat(pdfPath);
       if (pdf.size < minimumBytes) throw new Error(`${basename} output is too small or blank: ${pdf.size} bytes.`);
-      if (process.platform === 'darwin') {
-        const pagePng = path.join(output, `${basename}.png`);
-        execFileSync('sips', ['-s', 'format', 'png', pdfPath, '--out', pagePng], { stdio:'ignore' });
-        execFileSync(process.execPath, [path.join(root, 'qa/check-png-nonblank.cjs'), pagePng, '500'], { stdio:'inherit' });
-      }
+      await verifyPdfPixels(pdfPath, basename);
       return pdf.size;
     }
     const labelSize = await verifyPdf('#runPdf', 'printing-service-pdf-provider', 2500);
     const receiptSize = await verifyPdf('#runReceiptPdf', 'printing-service-receipt-pdf-provider', 2200);
+    const downloads = [];
+    page.on('download', (download) => downloads.push(download.suggestedFilename()));
+    await page.evaluate(() => {
+      window.__click360PrintCalls = 0;
+      window.print = () => {
+        window.__click360PrintCalls += 1;
+        window.dispatchEvent(new Event('afterprint'));
+      };
+    });
+    await page.locator('#runReceiptSystemPrint').click();
+    await page.waitForFunction(() => window.__click360PrintCalls === 1);
+    await page.waitForTimeout(350);
+    if (downloads.length) throw new Error(`Receipt system print unexpectedly downloaded a file: ${downloads.join(', ')}`);
+    const portalState = await page.evaluate(() => {
+      const portal = document.getElementById('click360PrintPortal');
+      return {
+        printCalls: window.__click360PrintCalls,
+        childCount: portal?.childElementCount || 0,
+        inlineStyle: portal?.getAttribute('style') || '',
+        media: portal?.dataset.printMedia || ''
+      };
+    });
+    if (portalState.childCount !== 0 || portalState.inlineStyle || portalState.media) {
+      throw new Error(`Receipt system print did not clean the print portal: ${JSON.stringify(portalState)}`);
+    }
     if (errors.length) throw new Error(`Printing PDF unexpected browser errors: ${JSON.stringify(errors)}`);
-    console.log(`CLICK 360 printing-service PDF provider E2E PASS: label=${labelSize} bytes receipt=${receiptSize} bytes`);
+    console.log(`CLICK 360 printing-service PDF/system provider E2E PASS: label=${labelSize} bytes receipt=${receiptSize} bytes systemPrintCalls=${portalState.printCalls}`);
   } finally {
     await browser.close();
   }

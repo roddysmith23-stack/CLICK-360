@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r18';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r19';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -363,7 +363,7 @@
     _printDialogState = state;
     // Disable/enable primary print buttons while printing is active
     if (typeof document !== 'undefined') {
-      ['printOne', 'savePdfBtn', 'browserPrintBtn', 'ulcPrint', 'ulcSystemPrint'].forEach(id => {
+      ['printOne', 'savePdfBtn', 'browserPrintBtn', 'ulcPrint', 'ulcSystemPrint', 'printReceiptBtn', 'downloadPdfBtn', 'receiptDesignerPdf', 'receiptDesignerPdfInline', 'printerTest'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = (state !== 'idle' && state !== 'finished');
       });
@@ -4052,8 +4052,7 @@ function parseMoney(value) {
         const result = await handoffPrint(job, providerId);
         if (result) return result;
         if (providerId !== 'pdf') {
-          toast('No se pudo abrir la impresión del sistema. Generando PDF limpio.', 'warn');
-          return handoffPrint(job, 'pdf');
+          toast('No se pudo abrir el diálogo de impresión. Usa Guardar PDF solo si quieres un archivo.', 'err');
         }
         return null;
       }

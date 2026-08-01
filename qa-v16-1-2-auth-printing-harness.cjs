@@ -86,7 +86,11 @@ assert.equal(m02.state, 'validation_required');
 assert.match(m02.reason, /protocolo/i);
 assert.equal(printing.status('system').supported, true);
 assert(printingSource.includes("root.removeEventListener('afterprint', clean)"), 'system print cleanup cannot leak into a later job');
-assert(printingSource.includes("job.media === 'label' ? [width, height]"), 'label PDF preserves the requested physical dimensions');
+assert(printingSource.includes('function pdfSizeMm'), 'PDF export has one physical size resolver');
+assert(printingSource.includes("if (job.media === 'label' && width && height) return { widthMm: width, heightMm: height };"), 'label PDF preserves the requested physical dimensions');
+assert(printingSource.includes("if (media.startsWith('receipt') && receiptWidth)"), 'receipt PDF preserves the requested paper width');
+assert(printingSource.includes('singleImagePdfBlob'), 'PDF export uses the rendered physical plan instead of a blank html2pdf stream');
+assert(printingSource.includes('pdf-render-blank'), 'PDF export rejects blank rendered output');
 
 assert(app.includes('function printingView()') && app.includes('Centro de impresión'));
 assert(app.includes('printerForget') && app.includes('printingCopies'));
@@ -99,4 +103,4 @@ assert(html.indexOf('printing-service.js') < html.indexOf('app.js'));
 assert(worker.includes("'./access-flow.js'") && worker.includes("'./printing-service.js'"));
 
 console.log('PASS V16.2 auth: explicit states, UID-first resolution, stale-invite defense, server clock and secondary lastSeen');
-console.log('PASS V16.2 printing: provider contract, safe M02X status, system/PDF fallback and current-business receipts');
+console.log('PASS V16.2 printing: provider contract, safe M02X status, system/PDF separation and current-business receipts');
