@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r13';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r14';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -3904,111 +3904,230 @@ function parseMoney(value) {
         if (!business) return toast('Selecciona un negocio antes de editar comprobantes.', 'err');
         const latestSale = salesForBiz().filter((sale) => sale.status !== 'cancelled').slice(-1)[0];
         const sampleSale = latestSale || receiptTemplateSampleSale();
-        const template = receiptTemplatePreferences();
-        let designerBlocks = normalizeReceiptBlocks(template.blocks);
-        const blockControlsHtml = () => `<section class="receiptBlockRail" aria-label="Orden del comprobante"><header><span><b>Orden del comprobante</b><small>Sube, baja u oculta bloques. El pie de CLICK 360 queda siempre fijo.</small></span></header><div id="receiptBlockList">${designerBlocks.map((block, index) => {
-          const definition = RECEIPT_BLOCKS.find((entry) => entry.id === block.id);
-          return `<article class="receiptBlockRow" data-receipt-block-row="${block.id}"><span><b>${escapeHtml(definition?.label || block.id)}</b><small>${escapeHtml(definition?.help || '')}</small></span><label class="receiptBlockVisible"><input type="checkbox" data-receipt-block-visible="${block.id}" ${block.visible ? 'checked' : ''}><span>Visible</span></label><div><button type="button" class="iconBtn" data-receipt-block-up="${block.id}" ${index === 0 ? 'disabled' : ''} aria-label="Subir bloque">${icon('chevron-up')}</button><button type="button" class="iconBtn" data-receipt-block-down="${block.id}" ${index === designerBlocks.length - 1 ? 'disabled' : ''} aria-label="Bajar bloque">${icon('chevron-down')}</button></div></article>`;
+        let draftTemplate = receiptTemplatePreferences();
+        let designerBlocks = normalizeReceiptBlocks(draftTemplate.blocks);
+        let selectedBlockId = designerBlocks.find((block) => block.visible !== false)?.id || designerBlocks[0]?.id || 'branding';
+        let draggedBlockId = '';
+        const blockDefinition = (id) => RECEIPT_BLOCKS.find((entry) => entry.id === id) || { id, label:id, help:'' };
+        const selectedBlock = () => designerBlocks.find((block) => block.id === selectedBlockId) || designerBlocks[0];
+        const currentMode = () => $('#receiptExpertMode')?.classList.contains('active') ? 'expert' : ($('#receiptDesignerModal')?.dataset.receiptMode || draftTemplate.mode || 'simple');
+        const blockControlsHtml = () => `<section class="receiptBlockRail" aria-label="Orden del comprobante"><header><span><b>Bloques del comprobante</b><small>Toca un bloque en la vista o en esta lista. Arrastra, sube, baja u oculta secciones. El pie de CLICK 360 queda fijo.</small></span></header><div id="receiptBlockList">${designerBlocks.map((block, index) => {
+          const definition = blockDefinition(block.id);
+          return `<article class="receiptBlockRow ${block.id === selectedBlockId ? 'selected' : ''}" draggable="true" data-receipt-block-row="${block.id}"><span class="receiptBlockDrag">${icon('grip-vertical')}</span><span class="receiptBlockTitle"><b>${escapeHtml(definition.label)}</b><small>${escapeHtml(definition.help)}</small></span><label class="receiptBlockVisible"><input type="checkbox" data-receipt-block-visible="${block.id}" ${block.visible ? 'checked' : ''}><span>Visible</span></label><div class="receiptBlockMoves"><button type="button" class="iconBtn" data-receipt-block-up="${block.id}" ${index === 0 ? 'disabled' : ''} aria-label="Subir bloque">${icon('chevron-up')}</button><button type="button" class="iconBtn" data-receipt-block-down="${block.id}" ${index === designerBlocks.length - 1 ? 'disabled' : ''} aria-label="Bajar bloque">${icon('chevron-down')}</button></div></article>`;
         }).join('')}</div></section>`;
-        const controlsHtml = (mode) => `
-          <div class="receiptDesignerFields">
-            <div class="field"><label>Ancho de papel</label><select id="receiptDesignerWidth">${receiptWidthOptionsHtml(template.width)}</select></div>
-            <div class="field"><label>Ancho personalizado (mm)</label><input id="receiptDesignerCustomWidth" type="number" min="45" max="110" step="1" value="${numericInputValue(template.customWidthMm, receiptWidthMmFromTemplate(template))}"></div>
-            <label class="consentCheck"><input type="checkbox" id="receiptDesignerLogo" ${template.showLogo ? 'checked' : ''}><span>Mostrar logo del negocio</span></label>
-            <label class="consentCheck"><input type="checkbox" id="receiptDesignerCustomer" ${template.showCustomer ? 'checked' : ''}><span>Cliente y teléfono</span></label>
-            <label class="consentCheck"><input type="checkbox" id="receiptDesignerSeller" ${template.showSeller ? 'checked' : ''}><span>Vendedor</span></label>
-            <label class="consentCheck"><input type="checkbox" id="receiptDesignerPayment" ${template.showPayment ? 'checked' : ''}><span>Método de pago</span></label>
-            <label class="consentCheck"><input type="checkbox" id="receiptDesignerDividers" ${template.showDividers ? 'checked' : ''}><span>Líneas divisorias</span></label>
-            ${mode === 'expert' ? `
-              <div class="field"><label>Tamaño de texto</label><input id="receiptDesignerTextScale" type="range" min="0.78" max="1.25" step="0.01" value="${numericInputValue(template.textScale, 1)}"></div>
-              <div class="field"><label>Padding interno (mm)</label><input id="receiptDesignerPadding" type="number" min="1" max="8" step="0.5" value="${numericInputValue(template.paddingMm, 3)}"></div>
-              <div class="field"><label>Alto máximo de logo (mm)</label><input id="receiptDesignerLogoHeight" type="number" min="12" max="38" step="1" value="${numericInputValue(template.logoHeightMm, 22)}"></div>
-              <div class="field"><label>Alineación superior</label><select id="receiptDesignerAlign"><option value="center" ${template.align !== 'left' ? 'selected' : ''}>Centrada</option><option value="left" ${template.align === 'left' ? 'selected' : ''}>Izquierda</option></select></div>
-              <label class="consentCheck"><input type="checkbox" id="receiptDesignerTax" ${template.showTax ? 'checked' : ''}><span>Mostrar IVA cuando aplique</span></label>
-              <label class="consentCheck"><input type="checkbox" id="receiptDesignerThanks" ${template.showThanks ? 'checked' : ''}><span>Mensaje de gracias</span></label>
-            ` : ''}
-            <div class="field full"><label>Nota interna</label><textarea id="receiptDesignerNote" maxlength="160">${escapeHtml(template.note)}</textarea></div>
-          </div>${blockControlsHtml()}`;
-        showModal(`<div class="modalHeader"><div><h2>Editor de comprobante</h2><p class="fieldHint">El PDF, la vista previa y la impresión usan esta misma plantilla.</p></div><button class="closeBtn" data-close>×</button></div>
-          <section class="receiptDesignerModal" data-receipt-mode="${template.mode}">
-            <div class="labelModeSwitch receiptModeSwitch"><button type="button" id="receiptSimpleMode" class="${template.mode !== 'expert' ? 'active' : ''}">Modo simple · Lienzo</button><button type="button" id="receiptExpertMode" class="${template.mode === 'expert' ? 'active' : ''}">Modo experto · Avanzado</button></div>
+        const controlsHtml = (mode = draftTemplate.mode) => {
+          const selected = selectedBlock();
+          const selectedDefinition = blockDefinition(selected?.id);
+          return `
+            <div class="receiptDesignerControlHeader">
+              <span><b>Formato físico</b><small>El ancho aquí controla PDF, vista previa e impresión. Para papel térmico de 57/58 mm usa el perfil estrecho.</small></span>
+              <b>${receiptWidthMmFromTemplate(draftTemplate)} mm</b>
+            </div>
+            <div class="receiptDesignerFields receiptCanvasFields">
+              <div class="field"><label>Ancho de papel</label><select id="receiptDesignerWidth">${receiptWidthOptionsHtml(draftTemplate.width)}</select></div>
+              <div class="field"><label>Ancho personalizado (mm)</label><input id="receiptDesignerCustomWidth" type="number" min="45" max="110" step="1" value="${numericInputValue(draftTemplate.customWidthMm, receiptWidthMmFromTemplate(draftTemplate))}"></div>
+              <label class="consentCheck"><input type="checkbox" id="receiptDesignerLogo" ${draftTemplate.showLogo ? 'checked' : ''}><span>Logo del negocio</span></label>
+              <label class="consentCheck"><input type="checkbox" id="receiptDesignerCustomer" ${draftTemplate.showCustomer ? 'checked' : ''}><span>Cliente y teléfono</span></label>
+              <label class="consentCheck"><input type="checkbox" id="receiptDesignerSeller" ${draftTemplate.showSeller ? 'checked' : ''}><span>Vendedor</span></label>
+              <label class="consentCheck"><input type="checkbox" id="receiptDesignerPayment" ${draftTemplate.showPayment ? 'checked' : ''}><span>Método de pago</span></label>
+              <label class="consentCheck"><input type="checkbox" id="receiptDesignerDividers" ${draftTemplate.showDividers ? 'checked' : ''}><span>Líneas divisorias</span></label>
+              ${mode === 'expert' ? `
+                <div class="field"><label>Tamaño de texto</label><input id="receiptDesignerTextScale" type="range" min="0.78" max="1.25" step="0.01" value="${numericInputValue(draftTemplate.textScale, 1)}"></div>
+                <div class="field"><label>Padding interno (mm)</label><input id="receiptDesignerPadding" type="number" min="1" max="8" step="0.5" value="${numericInputValue(draftTemplate.paddingMm, 3)}"></div>
+                <div class="field"><label>Alto máximo de logo (mm)</label><input id="receiptDesignerLogoHeight" type="number" min="12" max="38" step="1" value="${numericInputValue(draftTemplate.logoHeightMm, 22)}"></div>
+                <div class="field"><label>Alineación superior</label><select id="receiptDesignerAlign"><option value="center" ${draftTemplate.align !== 'left' ? 'selected' : ''}>Centrada</option><option value="left" ${draftTemplate.align === 'left' ? 'selected' : ''}>Izquierda</option></select></div>
+                <label class="consentCheck"><input type="checkbox" id="receiptDesignerTax" ${draftTemplate.showTax ? 'checked' : ''}><span>Mostrar IVA cuando aplique</span></label>
+                <label class="consentCheck"><input type="checkbox" id="receiptDesignerThanks" ${draftTemplate.showThanks ? 'checked' : ''}><span>Mensaje de gracias</span></label>
+              ` : ''}
+              <div class="field full"><label>Nota interna</label><textarea id="receiptDesignerNote" maxlength="160">${escapeHtml(draftTemplate.note)}</textarea></div>
+            </div>
+            <section class="receiptSelectedBlockPanel">
+              <span><b>Bloque seleccionado</b><small>${escapeHtml(selectedDefinition?.label || '')} · ${escapeHtml(selectedDefinition?.help || '')}</small></span>
+              <div>
+                <button type="button" class="btn small" id="receiptSelectedUp">${icon('arrow-up')} Subir</button>
+                <button type="button" class="btn small" id="receiptSelectedDown">${icon('arrow-down')} Bajar</button>
+                <button type="button" class="btn small" id="receiptSelectedToggle">${selected?.visible === false ? icon('eye') + ' Mostrar' : icon('eye-off') + ' Ocultar'}</button>
+              </div>
+            </section>
+            ${blockControlsHtml()}`;
+        };
+        showModal(`<div class="modalHeader"><div><h2>Editor de comprobante</h2><p class="fieldHint">Organiza el ticket como un lienzo: selecciona bloques, cambia orden, ancho y estilo. El PDF, la vista previa y la impresión usan esta misma plantilla.</p></div><button class="closeBtn" data-close>×</button></div>
+          <section id="receiptDesignerModal" class="receiptDesignerModal receiptCanvasDesigner" data-receipt-mode="${draftTemplate.mode}">
+            <div class="labelModeSwitch receiptModeSwitch"><button type="button" id="receiptSimpleMode" class="${draftTemplate.mode !== 'expert' ? 'active' : ''}">Modo simple · Lienzo</button><button type="button" id="receiptExpertMode" class="${draftTemplate.mode === 'expert' ? 'active' : ''}">Modo experto · Avanzado</button></div>
             <div class="receiptDesignerLayout">
-              <aside class="receiptDesignerPreviewPanel"><h3>Vista previa</h3><div id="receiptDesignerPreview" class="receiptDesignerPreview">${buildReceiptHtml(sampleSale, business, template)}</div></aside>
-              <form id="receiptDesignerForm" class="receiptDesignerControls">${controlsHtml(template.mode)}</form>
+              <aside class="receiptDesignerPreviewPanel">
+                <div class="receiptDesignerPreviewHeader"><span><h3>Lienzo de comprobante</h3><small>Selecciona una sección del ticket para editarla.</small></span><b id="receiptDesignerWidthBadge">${receiptWidthMmFromTemplate(draftTemplate)} mm</b></div>
+                <div id="receiptDesignerPreview" class="receiptDesignerPreview">${buildReceiptHtml(sampleSale, business, draftTemplate)}</div>
+                <div class="receiptCanvasActions"><button type="button" class="btn small" id="receiptPreviewUp">${icon('arrow-up')} Subir</button><button type="button" class="btn small" id="receiptPreviewDown">${icon('arrow-down')} Bajar</button><button type="button" class="btn small" id="receiptPreviewToggle">${icon('eye-off')} Ocultar</button><button type="button" class="btn small" id="receiptDesignerPdfInline">${icon('file-down')} PDF</button></div>
+              </aside>
+              <form id="receiptDesignerForm" class="receiptDesignerControls">${controlsHtml(draftTemplate.mode)}</form>
             </div>
             <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
             <div class="receiptDesignerActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn silver" id="receiptDesignerPdf">${icon('file-down')} PDF de prueba</button><button type="button" class="btn primary" id="receiptDesignerSave">${icon('save')} Guardar plantilla</button></div>
           </section>`);
+        $('#modalRoot .modal')?.classList.add('receiptDesignerShell');
         const collect = () => {
-          const previous = receiptTemplatePreferences();
-          const width = $('#receiptDesignerWidth')?.value || 'receipt-80';
+          const previous = draftTemplate || receiptTemplatePreferences();
+          const width = $('#receiptDesignerWidth')?.value || previous.width || 'receipt-80';
           return {
             ...previous,
-            mode: $('#receiptExpertMode')?.classList.contains('active') ? 'expert' : 'simple',
+            mode: currentMode(),
             width: RECEIPT_WIDTH_PRESETS[width] ? width : 'receipt-80',
-            customWidthMm: clampNumber($('#receiptDesignerCustomWidth')?.value, 45, 110, previous.customWidthMm),
-            showLogo: $('#receiptDesignerLogo')?.checked === true,
-            showCustomer: $('#receiptDesignerCustomer')?.checked === true,
-            showSeller: $('#receiptDesignerSeller')?.checked === true,
-            showPayment: $('#receiptDesignerPayment')?.checked === true,
-            showDividers: $('#receiptDesignerDividers')?.checked === true,
+            customWidthMm: $('#receiptDesignerCustomWidth') ? clampNumber($('#receiptDesignerCustomWidth').value, 45, 110, previous.customWidthMm) : previous.customWidthMm,
+            showLogo: $('#receiptDesignerLogo') ? $('#receiptDesignerLogo').checked === true : previous.showLogo,
+            showCustomer: $('#receiptDesignerCustomer') ? $('#receiptDesignerCustomer').checked === true : previous.showCustomer,
+            showSeller: $('#receiptDesignerSeller') ? $('#receiptDesignerSeller').checked === true : previous.showSeller,
+            showPayment: $('#receiptDesignerPayment') ? $('#receiptDesignerPayment').checked === true : previous.showPayment,
+            showDividers: $('#receiptDesignerDividers') ? $('#receiptDesignerDividers').checked === true : previous.showDividers,
             showTax: $('#receiptDesignerTax') ? $('#receiptDesignerTax').checked === true : previous.showTax,
             showThanks: $('#receiptDesignerThanks') ? $('#receiptDesignerThanks').checked === true : previous.showThanks,
             align: $('#receiptDesignerAlign')?.value === 'left' ? 'left' : previous.align,
             paddingMm: $('#receiptDesignerPadding') ? clampNumber($('#receiptDesignerPadding').value, 1, 8, previous.paddingMm) : previous.paddingMm,
             textScale: $('#receiptDesignerTextScale') ? clampNumber($('#receiptDesignerTextScale').value, 0.78, 1.25, previous.textScale) : previous.textScale,
             logoHeightMm: $('#receiptDesignerLogoHeight') ? clampNumber($('#receiptDesignerLogoHeight').value, 12, 38, previous.logoHeightMm) : previous.logoHeightMm,
-            note: ($('#receiptDesignerNote')?.value || '').trim() || RECEIPT_DEFAULT_NOTE,
-            blocks: designerBlocks
+            note: ($('#receiptDesignerNote')?.value || previous.note || '').trim() || RECEIPT_DEFAULT_NOTE,
+            blocks: normalizeReceiptBlocks(designerBlocks)
           };
         };
+        const selectBlock = (id) => {
+          if (!designerBlocks.some((block) => block.id === id)) return;
+          selectedBlockId = id;
+          updateSelectedState();
+        };
+        const moveSelectedBlock = (delta) => {
+          const current = designerBlocks.findIndex((entry) => entry.id === selectedBlockId);
+          const next = current + delta;
+          if (current < 0 || next < 0 || next >= designerBlocks.length) return false;
+          [designerBlocks[current], designerBlocks[next]] = [designerBlocks[next], designerBlocks[current]];
+          renderControls();
+          repaint();
+          return true;
+        };
+        const toggleSelectedBlock = () => {
+          const block = selectedBlock();
+          if (!block) return;
+          block.visible = block.visible === false;
+          renderControls();
+          repaint();
+        };
+        const updateSelectedState = () => {
+          const block = selectedBlock();
+          const isVisible = block?.visible !== false;
+          $$('[data-receipt-block-row]').forEach((row) => row.classList.toggle('selected', row.dataset.receiptBlockRow === selectedBlockId));
+          $$('#receiptDesignerPreview [data-receipt-block]').forEach((node) => node.classList.toggle('selected', node.dataset.receiptBlock === selectedBlockId));
+          ['receiptSelectedToggle', 'receiptPreviewToggle'].forEach((id) => {
+            const button = $(`#${id}`);
+            if (button) button.innerHTML = isVisible ? `${icon('eye-off')} Ocultar` : `${icon('eye')} Mostrar`;
+          });
+          refreshIcons();
+        };
         const repaint = () => {
-          const draft = collect();
+          draftTemplate = collect();
           const preview = $('#receiptDesignerPreview');
-          if (preview) preview.innerHTML = buildReceiptHtml(sampleSale, business, draft);
+          if (preview) preview.innerHTML = buildReceiptHtml(sampleSale, business, draftTemplate);
+          const badge = $('#receiptDesignerWidthBadge');
+          if (badge) badge.textContent = `${receiptWidthMmFromTemplate(draftTemplate)} mm`;
+          bindPreviewBlocks();
+          updateSelectedState();
         };
-        const setMode = (mode) => {
-          const draft = { ...collect(), mode };
-          saveReceiptTemplatePreferences(draft);
-          closeModal();
-          openReceiptTemplateDesigner();
+        const bindPreviewBlocks = () => {
+          $$('#receiptDesignerPreview [data-receipt-block]').forEach((node) => {
+            node.tabIndex = 0;
+            node.setAttribute('role', 'button');
+            node.setAttribute('aria-label', `Seleccionar bloque ${blockDefinition(node.dataset.receiptBlock).label}`);
+            node.addEventListener('click', () => selectBlock(node.dataset.receiptBlock));
+            node.addEventListener('keydown', (event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              selectBlock(node.dataset.receiptBlock);
+            });
+          });
         };
-        $('#receiptSimpleMode')?.addEventListener('click', () => setMode('simple'));
-        $('#receiptExpertMode')?.addEventListener('click', () => setMode('expert'));
         const bindBlockControls = () => {
+          $$('[data-receipt-block-row]').forEach((row) => {
+            row.addEventListener('click', (event) => {
+              if (event.target.closest('button,input,label')) return;
+              selectBlock(row.dataset.receiptBlockRow);
+            });
+            row.addEventListener('dragstart', (event) => {
+              draggedBlockId = row.dataset.receiptBlockRow || '';
+              event.dataTransfer?.setData('text/plain', draggedBlockId);
+            });
+            row.addEventListener('dragover', (event) => event.preventDefault());
+            row.addEventListener('drop', (event) => {
+              event.preventDefault();
+              const sourceId = event.dataTransfer?.getData('text/plain') || draggedBlockId;
+              const targetId = row.dataset.receiptBlockRow;
+              const sourceIndex = designerBlocks.findIndex((block) => block.id === sourceId);
+              const targetIndex = designerBlocks.findIndex((block) => block.id === targetId);
+              if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
+              const [moved] = designerBlocks.splice(sourceIndex, 1);
+              designerBlocks.splice(targetIndex, 0, moved);
+              selectedBlockId = moved.id;
+              renderControls();
+              repaint();
+            });
+          });
           $$('[data-receipt-block-visible]').forEach((input) => input.addEventListener('change', () => {
             const block = designerBlocks.find((entry) => entry.id === input.dataset.receiptBlockVisible);
             if (block) block.visible = input.checked;
+            selectedBlockId = block?.id || selectedBlockId;
+            renderControls();
             repaint();
           }));
           $$('[data-receipt-block-up], [data-receipt-block-down]').forEach((button) => button.addEventListener('click', () => {
             const id = button.dataset.receiptBlockUp || button.dataset.receiptBlockDown;
-            const current = designerBlocks.findIndex((entry) => entry.id === id);
-            const next = current + (button.dataset.receiptBlockUp ? -1 : 1);
-            if (current < 0 || next < 0 || next >= designerBlocks.length) return;
-            [designerBlocks[current], designerBlocks[next]] = [designerBlocks[next], designerBlocks[current]];
-            const list = $('#receiptBlockList');
-            if (list) list.parentElement.outerHTML = blockControlsHtml();
-            bindBlockControls();
-            repaint();
-            refreshIcons();
+            selectedBlockId = id || selectedBlockId;
+            moveSelectedBlock(button.dataset.receiptBlockUp ? -1 : 1);
           }));
+          $('#receiptSelectedUp')?.addEventListener('click', () => moveSelectedBlock(-1));
+          $('#receiptSelectedDown')?.addEventListener('click', () => moveSelectedBlock(1));
+          $('#receiptSelectedToggle')?.addEventListener('click', toggleSelectedBlock);
         };
-        bindBlockControls();
-        $$('#receiptDesignerForm input, #receiptDesignerForm select, #receiptDesignerForm textarea').forEach((input) => input.addEventListener('input', repaint));
-        $$('#receiptDesignerForm select, #receiptDesignerForm input[type="checkbox"]').forEach((input) => input.addEventListener('change', repaint));
+        const bindForm = () => {
+          $$('#receiptDesignerForm input, #receiptDesignerForm select, #receiptDesignerForm textarea').forEach((input) => input.addEventListener('input', repaint));
+          $$('#receiptDesignerForm select, #receiptDesignerForm input[type="checkbox"]').forEach((input) => input.addEventListener('change', repaint));
+          bindBlockControls();
+        };
+        const renderControls = () => {
+          draftTemplate = collect();
+          const form = $('#receiptDesignerForm');
+          if (form) form.innerHTML = controlsHtml(currentMode());
+          bindForm();
+          updateSelectedState();
+          refreshIcons();
+        };
+        const setMode = (mode) => {
+          draftTemplate = { ...collect(), mode };
+          const modal = $('#receiptDesignerModal');
+          if (modal) modal.dataset.receiptMode = mode;
+          $('#receiptSimpleMode')?.classList.toggle('active', mode !== 'expert');
+          $('#receiptExpertMode')?.classList.toggle('active', mode === 'expert');
+          renderControls();
+          repaint();
+        };
+        const runReceiptPdf = () => {
+          const draft = collect();
+          handoffPrint({ html: buildReceiptHtml(sampleSale, business, draft), media: receiptPrintMedia(draft), mediaWidthMm: receiptWidthMmFromTemplate(draft), filename:'CLICK360_Comprobante_Prueba.pdf' }, 'pdf')
+            .then(() => toast('PDF de prueba generado.', 'ok'))
+            .catch((error) => toast(error.message || 'No se pudo generar el PDF.', 'err'));
+        };
+        $('#receiptSimpleMode')?.addEventListener('click', () => setMode('simple'));
+        $('#receiptExpertMode')?.addEventListener('click', () => setMode('expert'));
+        $('#receiptPreviewUp')?.addEventListener('click', () => moveSelectedBlock(-1));
+        $('#receiptPreviewDown')?.addEventListener('click', () => moveSelectedBlock(1));
+        $('#receiptPreviewToggle')?.addEventListener('click', toggleSelectedBlock);
+        $('#receiptDesignerPdfInline')?.addEventListener('click', runReceiptPdf);
         $('#receiptDesignerSave')?.addEventListener('click', () => {
           if (!saveReceiptTemplatePreferences(collect())) return;
           closeModal();
           renderApp('printing');
           toast('Plantilla de comprobante guardada.', 'ok');
         });
-        $('#receiptDesignerPdf')?.addEventListener('click', () => {
-          const draft = collect();
-          handoffPrint({ html: buildReceiptHtml(sampleSale, business, draft), media: receiptPrintMedia(draft), mediaWidthMm: receiptWidthMmFromTemplate(draft), filename:'CLICK360_Comprobante_Prueba.pdf' }, 'pdf')
-            .then(() => toast('PDF de prueba generado.', 'ok'))
-            .catch((error) => toast(error.message || 'No se pudo generar el PDF.', 'err'));
-        });
+        $('#receiptDesignerPdf')?.addEventListener('click', runReceiptPdf);
+        bindForm();
+        bindPreviewBlocks();
+        updateSelectedState();
         refreshIcons();
       }
 			  function printerStateLabel(status = {}) {

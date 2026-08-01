@@ -14,6 +14,7 @@
 </head>
 <body>
   <button id="runPdf">Generar PDF QA</button>
+  <button id="runReceiptPdf">Generar comprobante PDF QA</button>
   <script>
     (() => {
       const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
@@ -62,6 +63,45 @@
         }
         return { node:wrap, plan };
       }
+      function buildReceiptHtml() {
+        return `
+          <section class="receiptPrintBody receiptPrintBody58" style="width:58mm;max-width:58mm;margin:0 auto;padding:2mm 2.4mm;box-sizing:border-box;background:#fff;color:#111;font:400 10px/1.28 ui-monospace,Menlo,Consolas,monospace;">
+            <div style="text-align:center;margin-bottom:2mm;">
+              <strong style="display:block;font-size:15px;line-height:1.1;">CLICK 360 QA</strong>
+              <span>RUC/ID: 0999999999001</span><br>
+              <span>Tel: +593 999 000 000</span>
+            </div>
+            <div style="border-top:1px dashed #111;border-bottom:1px dashed #111;text-align:center;font-weight:800;padding:1.2mm 0;margin-bottom:2mm;">COMPROBANTE DE VENTA</div>
+            <dl style="display:grid;grid-template-columns:21mm 1fr;gap:.7mm 1.5mm;margin:0 0 2mm;">
+              <dt>No.</dt><dd style="margin:0;text-align:right;">QA-0001</dd>
+              <dt>Fecha/Hora</dt><dd style="margin:0;text-align:right;">01/08/26 12:00</dd>
+              <dt>Metodo</dt><dd style="margin:0;text-align:right;">Efectivo</dd>
+              <dt>Vendedor</dt><dd style="margin:0;text-align:right;">QA</dd>
+            </dl>
+            <table style="width:100%;border-collapse:collapse;table-layout:fixed;margin-bottom:2mm;">
+              <thead>
+                <tr style="border-top:1px dashed #111;border-bottom:1px dashed #111;">
+                  <th style="text-align:left;padding:1mm 0;">Detalle</th>
+                  <th style="width:10mm;text-align:center;padding:1mm 0;">Cant</th>
+                  <th style="width:15mm;text-align:right;padding:1mm 0;">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td style="padding:1mm 0;overflow-wrap:anywhere;">Producto QA</td><td style="text-align:center;">1</td><td style="text-align:right;">$19.99</td></tr>
+              </tbody>
+            </table>
+            <div style="border-top:1px dashed #111;padding-top:1.2mm;">
+              <div style="display:flex;justify-content:space-between;"><span>Total</span><strong>$19.99</strong></div>
+              <div style="display:flex;justify-content:space-between;"><span>Recibido</span><span>$20.00</span></div>
+              <div style="display:flex;justify-content:space-between;"><span>Vuelto</span><span>$0.01</span></div>
+            </div>
+            <footer style="border-top:1px dashed #111;margin-top:2mm;padding-top:1.2mm;text-align:center;font-size:9px;overflow-wrap:anywhere;">
+              Control total de tu negocio con CLICK 360.
+              <br>Comprobante interno. No valido como factura electronica.
+            </footer>
+          </section>
+        `;
+      }
       window.__CLICK360_PDF_PROVIDER_QA__ = {
         async run() {
           const built = await buildNode();
@@ -77,9 +117,20 @@
             printPlan:built.plan,
             filename:'click360-pdf-provider-qa.pdf'
           });
+        },
+        async runReceipt() {
+          return window.CLICK360_PRINTING.print('pdf', {
+            html:buildReceiptHtml(),
+            media:'receipt-58',
+            mediaWidthMm:58,
+            widthMm:58,
+            copiesHandled:true,
+            filename:'click360-receipt-pdf-provider-qa.pdf'
+          });
         }
       };
       document.getElementById('runPdf').onclick = () => window.__CLICK360_PDF_PROVIDER_QA__.run();
+      document.getElementById('runReceiptPdf').onclick = () => window.__CLICK360_PDF_PROVIDER_QA__.runReceipt();
       document.documentElement.dataset.ready = 'true';
     })();
   </script>
