@@ -32,8 +32,9 @@ assert.match(printing, /physicalHeight/, 'receipt PDF height is derived from con
 assert.match(styles, /receiptDesignerShell/, 'receipt modal has a dedicated responsive shell');
 assert.match(styles, /receiptBlockRail/, 'receipt block controls have responsive styles');
 assert.match(styles, /receiptDesignerBlockPanel/, 'receipt editor has a separate block panel on desktop');
+assert.match(styles, /grid-template-areas:"blocks preview properties"/, 'receipt editor uses separate desktop zones for blocks, preview and properties');
 assert.match(app, /receiptDesignerBlockPanel/, 'receipt editor renders the separate block panel');
-assert.match(html, /assets\/logo\.png\?v=commercial-1-0-5-r16/, 'startup uses the HD CLICK 360 logo');
+assert.match(html, /assets\/logo\.png\?v=commercial-1-0-5-r17/, 'startup uses the HD CLICK 360 logo');
 assert.match(html, /fetchpriority="high"/, 'startup logo is requested as a high-priority asset');
 assert.match(styles, /tableCheckoutSummary/, 'restaurant checkout total has a contained layout');
 assert.match(html, /minimumIntroMs = 5000/, 'splash stays visible for the promised five seconds');
