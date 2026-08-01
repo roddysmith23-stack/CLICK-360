@@ -9,7 +9,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
 const RELEASE = '1.0.5';
-const ASSET = 'commercial-1-0-5-r12';
+const ASSET = 'commercial-1-0-5-r13';
 
 function resolveCopies({ manualQuantity, stock, printByStock = false }) {
   const manual = Math.trunc(Number(manualQuantity));

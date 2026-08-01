@@ -51,16 +51,16 @@ const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r12'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r13'/);
 assert.match(index, /By AIIA INTELLIGENCE TECHNOLOGIES/, 'startup splash shows the required AIIA footer');
 assert.match(index, /click360SplashProgress/, 'startup splash keeps a loading progress bar while the app prepares');
 assert.doesNotMatch(index, /click-360\.web\.app<\/span>/, 'startup splash must not show the public URL as footer copy');
 assert.match(app, /function markAppReady/, 'app explicitly marks the splash ready after real UI render');
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r12/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r12/);
-assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r12/);
-assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r12/);
-assert.match(worker, /click360-commercial-1-0-5-r12/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r13/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r13/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r13/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r13/);
+assert.match(worker, /click360-commercial-1-0-5-r13/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
@@ -123,7 +123,8 @@ assert.match(styles, /\.labelControls>\[data-smart-step\]\{scroll-margin-top:10p
 assert.match(app, /warnings\.push\(`Hay elementos superpuestos/);
 assert.doesNotMatch(app, /const blocking = [^;]*!validation\.valid/);
 assert.match(printing, /click360PdfExportActive/);
-assert.match(printing, /display:block;position:fixed/);
+assert.match(printing, /display:block;position:absolute;left:-12000px/, 'PDF export mounts a measurable offscreen node instead of a hidden canvas');
+assert.match(printing, /physicalHeight/, 'thermal PDFs use their rendered receipt height rather than a cropped fixed page');
 
 const runtimeFiles = changed.filter((file) => [
   'app.js', 'firebase-service.js', 'printing-service.js', 'runtime-guard.js',

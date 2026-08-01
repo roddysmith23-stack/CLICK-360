@@ -8,7 +8,7 @@
   const PLAN_CATALOG = Object.freeze({
     base: Object.freeze({
       name: 'Base',
-      prices: Object.freeze({ month: 40, quarter: 114, semester: 180, year: 240, lifetime: 1000 }),
+      prices: Object.freeze({ month: 40, quarter: 114, semester: 180, year: 240, lifetime: 600 }),
       limits: Object.freeze({ businesses: 1, workers: 2 }),
       features: Object.freeze(['Inventario', 'Ventas', 'Caja', 'Etiquetas QR', 'Reportes', 'Clientes', 'Sincronizacion'])
     }),
