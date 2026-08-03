@@ -51,18 +51,18 @@ const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r19'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r20'/);
 assert.match(index, /By AIIA INTELLIGENCE TECHNOLOGIES/, 'startup splash shows the required AIIA footer');
-assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r19/, 'startup splash uses the HD logo instead of the low-resolution favicon');
-assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r19"/, 'startup HD logo is preloaded before scripts');
+assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r20/, 'startup splash uses the HD logo instead of the low-resolution favicon');
+assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r20"/, 'startup HD logo is preloaded before scripts');
 assert.match(index, /click360SplashProgress/, 'startup splash keeps a loading progress bar while the app prepares');
 assert.doesNotMatch(index, /click-360\.web\.app<\/span>/, 'startup splash must not show the public URL as footer copy');
 assert.match(app, /function markAppReady/, 'app explicitly marks the splash ready after real UI render');
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r19/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r19/);
-assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r19/);
-assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r19/);
-assert.match(worker, /click360-commercial-1-0-5-r19/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r20/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r20/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r20/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r20/);
+assert.match(worker, /click360-commercial-1-0-5-r20/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
@@ -98,14 +98,17 @@ assert.match(app, /receiptFixedFooter/, 'receipt footer is shown as locked UI');
 assert.doesNotMatch(app, /id="receiptTemplateFooter"/, 'receipt footer is no longer editable');
 assert.match(app, /footer:RECEIPT_FOOTER_TEXT/, 'saved receipt templates force the CLICK 360 footer');
 assert.match(printing, /startsWith\('receipt'\) && receiptWidth/, 'printing engine respects receipt media widths');
-assert.match(app, /PDF limpio recomendado/);
-assert.match(app, /Imprimir o guardar PDF limpio/);
-assert.match(app, /PDF limpio/);
-assert.match(app, /runTemplateOutput\(button\.dataset\.printTpl, 'pdf'\)/);
-assert.match(app, /browserPrintBtn/);
-assert.match(app, /smartPrintStep === 9[\s\S]{0,320}runPrintJob\(outputMode === 'system' \? 'system' : 'pdf'\)/);
-assert.match(app, /\$\('#printOne'\)\.onclick = \(\) => runPrintJob\('pdf'\)/);
-assert.match(app, /\$\('#browserPrintBtn'\)\.onclick = \(\) => runPrintJob\('system'\)/);
+assert.match(app, /Imprimir etiquetas/);
+assert.match(app, /Guardar PDF/);
+assert.match(app, /runTemplateOutput\(button\.dataset\.printTpl, 'system'\)/);
+assert.doesNotMatch(app, /browserPrintBtn/);
+assert.match(app, /smartPrintStep === 9[\s\S]{0,220}runPrintJob\('system'\)/);
+assert.match(app, /\$\('#printOne'\)\.onclick = \(\) => runPrintJob\('system'\)/);
+assert.match(app, /\$\('#savePdfBtn'\)\.onclick = \(\) => runPrintJob\('pdf'\)/);
+assert.match(app, /const updateLabelEditorIdentity = \(\) =>/);
+assert.match(app, /Etiqueta: \$\{productName\} · Diseño: \$\{template\?\.name \|\| 'Configuración nueva'\}/);
+assert.match(app, /aria-modal="false"/, 'calculator remains usable while other app views stay interactive');
+assert.match(app, /data-calculator-minimize/, 'calculator can be minimized without losing its history');
 assert.match(app, /labelWizardRail/);
 assert.match(app, /saveTemplateFromPrintBtn/);
 assert.match(app, /nameOverride/);
@@ -137,6 +140,17 @@ assert.match(printing, /if \(media\.startsWith\('receipt'\) && receiptWidth\)/, 
 assert.match(printing, /element\.scrollHeight[\s\S]*element\.scrollWidth/, 'thermal PDFs use their rendered receipt height rather than a cropped fixed page');
 assert.match(printing, /singleImagePdfBlob/, 'PDF export writes a physical image-backed PDF');
 assert.match(printing, /pdf-render-blank/, 'PDF export rejects blank rendered output');
+assert.match(printing, /dataset\.click360Printing = 'true'/, 'system print exposes a ready state before invoking the native dialog');
+assert.match(printing, /element\.dataset\.printReady = 'true'/, 'system print portal is explicitly marked ready');
+assert.match(printing, /system-print-dialog-failed/, 'native dialog failures return an actionable code');
+assert.match(index, /rel="icon" type="image\/png" sizes="32x32" href="assets\/favicon\.png\?v=commercial-1-0-5-r20"/, 'browser receives the real 32 px favicon');
+assert.match(index, /rel="apple-touch-icon" sizes="180x180"/, 'iOS receives an explicit home-screen icon');
+for (const iconPath of ['assets/favicon.png', 'assets/favicon.ico', 'assets/icon-192.png', 'assets/icon-512.png', 'assets/apple-touch-icon.png']) {
+  assert.equal(fs.existsSync(path.join(root, iconPath)), true, `missing PWA icon: ${iconPath}`);
+}
+const manifest = JSON.parse(read('manifest.webmanifest'));
+assert(manifest.icons.some((entry) => entry.sizes === '192x192' && entry.purpose === 'any'));
+assert(manifest.icons.some((entry) => entry.sizes === '192x192' && entry.purpose === 'maskable'));
 
 const runtimeFiles = changed.filter((file) => [
   'app.js', 'firebase-service.js', 'printing-service.js', 'runtime-guard.js',

@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -57,7 +58,11 @@ async function verifyPdfPixels(pdfPath, basename) {
 try {
   await mkdir(output, { recursive:true });
   await waitForServer();
-  const browser = await chromium.launch();
+  const localChrome = process.platform === 'darwin' && existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    : '';
+  const executablePath = process.env.CLICK360_PLAYWRIGHT_CHROME || localChrome || undefined;
+  const browser = await chromium.launch(executablePath ? { executablePath } : {});
   try {
     const page = await browser.newPage({ acceptDownloads:true, viewport:{ width:1024, height:768 } });
     const errors = [];
@@ -86,6 +91,15 @@ try {
       window.__click360PrintCalls = 0;
       window.print = () => {
         window.__click360PrintCalls += 1;
+        const portal = document.getElementById('click360PrintPortal');
+        window.__click360PrintSnapshot = {
+          childCount:portal?.childElementCount || 0,
+          text:String(portal?.textContent || '').replace(/\s+/g, ' ').trim(),
+          html:portal?.innerHTML || '',
+          media:portal?.dataset.printMedia || '',
+          ready:portal?.dataset.printReady || '',
+          active:document.documentElement.dataset.click360Printing || ''
+        };
         window.dispatchEvent(new Event('afterprint'));
       };
     });
@@ -97,12 +111,22 @@ try {
       const portal = document.getElementById('click360PrintPortal');
       return {
         printCalls: window.__click360PrintCalls,
+        snapshot:window.__click360PrintSnapshot,
         childCount: portal?.childElementCount || 0,
         inlineStyle: portal?.getAttribute('style') || '',
-        media: portal?.dataset.printMedia || ''
+        media: portal?.dataset.printMedia || '',
+        active:document.documentElement.dataset.click360Printing || ''
       };
     });
-    if (portalState.childCount !== 0 || portalState.inlineStyle || portalState.media) {
+    if (portalState.snapshot?.childCount !== 1
+      || portalState.snapshot?.media !== 'receipt-58'
+      || portalState.snapshot?.ready !== 'true'
+      || portalState.snapshot?.active !== 'true'
+      || !portalState.snapshot?.text.includes('COMPROBANTE DE VENTA')
+      || !portalState.snapshot?.text.includes('Producto QA')) {
+      throw new Error(`Receipt system print received an invalid portal: ${JSON.stringify(portalState.snapshot)}`);
+    }
+    if (portalState.childCount !== 0 || portalState.inlineStyle || portalState.media || portalState.active) {
       throw new Error(`Receipt system print did not clean the print portal: ${JSON.stringify(portalState)}`);
     }
     if (errors.length) throw new Error(`Printing PDF unexpected browser errors: ${JSON.stringify(errors)}`);
