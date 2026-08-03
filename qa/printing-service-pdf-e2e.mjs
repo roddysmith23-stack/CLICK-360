@@ -70,6 +70,9 @@ try {
     page.on('console', (message) => {
       if (message.type() === 'error') errors.push(message.text());
     });
+    page.on('response', (response) => {
+      if (response.status() >= 400) errors.push(`HTTP ${response.status()} ${response.url()}`);
+    });
     await page.goto(url, { waitUntil:'networkidle' });
     await page.waitForFunction(() => document.documentElement.dataset.ready === 'true');
     async function verifyPdf(buttonSelector, basename, minimumBytes) {
