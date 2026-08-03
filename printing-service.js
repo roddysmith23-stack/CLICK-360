@@ -284,10 +284,13 @@
     const element = document.getElementById('click360PrintPortal');
     if (element) {
       element.classList.remove('click360PdfExportActive');
+      delete element.dataset.printReady;
       element.removeAttribute('style');
       element.replaceChildren();
       delete element.dataset.printMedia;
     }
+    document.documentElement.classList.remove('click360-printing');
+    delete document.documentElement.dataset.click360Printing;
     document.getElementById('click360-print-page-style')?.remove();
     cleanupPdfExport();
   }
@@ -338,6 +341,10 @@
         throw error;
       }
       restoreMeasureStyle();
+      document.documentElement.classList.add('click360-printing');
+      document.documentElement.dataset.click360Printing = 'true';
+      element.dataset.printReady = 'true';
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       let cleaned = false;
       let cleanupTimer = null;
       const clean = () => {
@@ -350,7 +357,12 @@
       };
       root.addEventListener('afterprint', clean, { once: true });
       cleanupTimer = setTimeout(clean, 30000);
-      root.print();
+      try {
+        root.print();
+      } catch (error) {
+        clean();
+        throw Object.assign(error instanceof Error ? error : new Error('No se pudo abrir el diálogo de impresión.'), { code:'system-print-dialog-failed' });
+      }
       return { status: 'handed_off', provider: this.id };
     }
     testPrint() {

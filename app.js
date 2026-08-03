@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r19';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r20';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -363,7 +363,7 @@
     _printDialogState = state;
     // Disable/enable primary print buttons while printing is active
     if (typeof document !== 'undefined') {
-      ['printOne', 'savePdfBtn', 'browserPrintBtn', 'ulcPrint', 'ulcSystemPrint', 'printReceiptBtn', 'downloadPdfBtn', 'receiptDesignerPdf', 'receiptDesignerPdfInline', 'printerTest'].forEach(id => {
+      ['printOne', 'savePdfBtn', 'ulcPrint', 'ulcSystemPrint', 'printReceiptBtn', 'downloadPdfBtn', 'receiptDesignerPdf', 'receiptDesignerPdfInline', 'printerTest'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = (state !== 'idle' && state !== 'finished');
       });
@@ -2115,7 +2115,7 @@ function parseMoney(value) {
                 </div>
                 ${t.social ? `<div style="font-size:12px; color:#ccc;">📱 ${escapeHtml(t.social)}</div>` : ''}
                 ${t.address ? `<div style="font-size:12px; color:#ccc; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">📍 ${escapeHtml(t.address)}</div>` : ''}
-                <div class="templateActions"><button class="btn primary small" data-print-tpl="${escapeHtml(t.id)}" title="Generar PDF limpio de esta plantilla">📄 PDF limpio</button><button class="btn small" data-pdf-tpl="${escapeHtml(t.id)}" title="Guardar PDF de esta plantilla">📄 PDF</button><button class="btn silver" data-edit-tpl="${escapeHtml(t.id)}">✏ Editar</button><button class="btn silver" data-rename-tpl="${escapeHtml(t.id)}">Renombrar</button><button class="btn silver" data-duplicate-tpl="${escapeHtml(t.id)}">Duplicar</button><button class="btn silver" data-default-tpl="${escapeHtml(t.id)}">Predeterminada</button><button class="iconBtn danger small-del-btn" data-del-tpl="${escapeHtml(t.id)}" title="Eliminar plantilla" aria-label="Eliminar plantilla">&#128465;</button></div>
+                <div class="templateActions"><button class="btn primary small" data-print-tpl="${escapeHtml(t.id)}" title="Abrir el diálogo de impresión con esta plantilla">${icon('printer')} Imprimir</button><button class="btn small" data-pdf-tpl="${escapeHtml(t.id)}" title="Guardar PDF de esta plantilla">${icon('file-down')} Guardar PDF</button><button class="btn silver" data-edit-tpl="${escapeHtml(t.id)}">${icon('pencil')} Editar</button><button class="btn silver" data-rename-tpl="${escapeHtml(t.id)}">Renombrar</button><button class="btn silver" data-duplicate-tpl="${escapeHtml(t.id)}">Duplicar</button><button class="btn silver" data-default-tpl="${escapeHtml(t.id)}">Predeterminada</button><button class="iconBtn danger small-del-btn" data-del-tpl="${escapeHtml(t.id)}" title="Eliminar plantilla" aria-label="Eliminar plantilla">${icon('trash-2')}</button></div>
               </div>
             `).join('')}
           </div>
@@ -4648,7 +4648,7 @@ function parseMoney(value) {
 	      if (typeof _printDialogState !== 'undefined' && _printDialogState !== 'idle') {
 	        return toast('Ya hay una impresión activa. Espera a que termine.', 'warn');
 	      }
-	      runTemplateOutput(button.dataset.printTpl, 'pdf');
+	      runTemplateOutput(button.dataset.printTpl, 'system');
 	    });
 
     $$('[data-pdf-tpl]').forEach((button) => button.onclick = async () => {
@@ -6752,7 +6752,7 @@ function parseMoney(value) {
 	    const initialBase = Math.max(0, Number(options.base || parseMoney(document.getElementById(preferredTarget)?.value || 0)) || 0);
 	    const root = document.createElement('div');
 	    root.id = 'calculatorRoot';
-	    root.innerHTML = `<div class="modalOverlay show calculatorOverlay"><section class="calculatorSheet" role="dialog" aria-modal="true" aria-labelledby="calculatorTitle"><div class="modalHeader"><div><h2 id="calculatorTitle">Calculadora</h2><p class="fieldHint">Historial local de este negocio y dispositivo.</p></div><button type="button" class="closeBtn" data-calculator-close aria-label="Cerrar">×</button></div><div class="calculatorSizeControl" aria-label="Tamaño del icono flotante"><span>Icono</span><button type="button" data-calc-size="50">Pequeño</button><button type="button" data-calc-size="58">Medio</button><button type="button" data-calc-size="72">Grande</button></div>${targets.length ? `<label class="field"><span>Usar resultado en</span><select id="calculatorTarget">${targets.map(([id, label]) => `<option value="${id}" ${id === preferredTarget ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>` : ''}<output id="calculatorDisplay" class="calculatorDisplay">${initialBase || 0}</output><div class="calculatorKeys" aria-label="Teclado de calculadora"><button data-calc-action="clear">C</button><button data-calc-action="back" aria-label="Borrar último">${icon('delete')}</button><button data-calc-action="percent">%</button><button class="operator" data-calc-op="/">÷</button>${['7','8','9'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="*">×</button>${['4','5','6'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="-">−</button>${['1','2','3'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="+">+</button><button data-calc-action="sign">±</button><button data-calc-key="0">0</button><button data-calc-key=".">.</button><button class="equals" data-calc-action="equals">=</button></div><div class="calculatorHelpers"><label>Porcentaje<input id="calculatorRate" type="number" min="0" max="100" step="0.01" value="15" inputmode="decimal"></label><button type="button" data-calc-helper="discount">Descuento</button><button type="button" data-calc-helper="tax">Impuesto</button></div><div class="calculatorHistory" id="calculatorHistory"></div><div class="calculatorActions"><button type="button" class="btn" id="calculatorCopy">${icon('copy')} Copiar</button><button type="button" class="btn primary" id="calculatorUse">${icon('check')} Usar resultado</button></div></section></div>`;
+	    root.innerHTML = `<div class="calculatorWorkspace"><section class="calculatorSheet" role="dialog" aria-modal="false" aria-labelledby="calculatorTitle"><div class="modalHeader calculatorWindowHeader"><div><h2 id="calculatorTitle">Calculadora</h2><p class="fieldHint">Puedes dejarla abierta mientras trabajas.</p></div><div class="calculatorWindowActions"><button type="button" class="iconBtn" data-calculator-minimize aria-label="Minimizar calculadora" title="Minimizar">${icon('minus')}</button><button type="button" class="closeBtn" data-calculator-close aria-label="Cerrar">×</button></div></div><div class="calculatorBody"><div class="calculatorSizeControl" aria-label="Tamaño del icono flotante"><span>Icono</span><button type="button" data-calc-size="50">Pequeño</button><button type="button" data-calc-size="58">Medio</button><button type="button" data-calc-size="72">Grande</button></div>${targets.length ? `<label class="field"><span>Usar resultado en</span><select id="calculatorTarget">${targets.map(([id, label]) => `<option value="${id}" ${id === preferredTarget ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label>` : ''}<output id="calculatorDisplay" class="calculatorDisplay">${initialBase || 0}</output><div class="calculatorKeys" aria-label="Teclado de calculadora"><button data-calc-action="clear">C</button><button data-calc-action="back" aria-label="Borrar último">${icon('delete')}</button><button data-calc-action="percent">%</button><button class="operator" data-calc-op="/">÷</button>${['7','8','9'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="*">×</button>${['4','5','6'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="-">−</button>${['1','2','3'].map((key) => `<button data-calc-key="${key}">${key}</button>`).join('')}<button class="operator" data-calc-op="+">+</button><button data-calc-action="sign">±</button><button data-calc-key="0">0</button><button data-calc-key=".">.</button><button class="equals" data-calc-action="equals">=</button></div><div class="calculatorHelpers"><label>Porcentaje<input id="calculatorRate" type="number" min="0" max="100" step="0.01" value="15" inputmode="decimal"></label><button type="button" data-calc-helper="discount">Descuento</button><button type="button" data-calc-helper="tax">Impuesto</button></div><div class="calculatorHistory" id="calculatorHistory"></div><div class="calculatorActions"><button type="button" class="btn" id="calculatorCopy">${icon('copy')} Copiar</button><button type="button" class="btn primary" id="calculatorUse">${icon('check')} Usar resultado</button></div></div></section></div>`;
 	    document.body.appendChild(root);
 	    refreshIcons(root);
 	    let display = String(initialBase || '0');
@@ -6839,6 +6839,12 @@ function parseMoney(value) {
 	        toast('Resultado listo para pegar');
 	      }
 	      closeCalculator();
+	    };
+	    $('[data-calculator-minimize]', root).onclick = () => {
+	      const sheet = $('.calculatorSheet', root);
+	      const minimized = sheet.classList.toggle('minimized');
+	      $('[data-calculator-minimize]', root).setAttribute('aria-label', minimized ? 'Expandir calculadora' : 'Minimizar calculadora');
+	      $('[data-calculator-minimize]', root).setAttribute('title', minimized ? 'Expandir' : 'Minimizar');
 	    };
 	    $$('[data-calculator-close]', root).forEach((button) => { button.onclick = closeCalculator; });
 	    renderHistory();
@@ -7137,14 +7143,14 @@ function parseMoney(value) {
       editorLayout.price.size *= Number(initialTemplate.priceScale || 1);
     }
 
-	    showModal(`<div class="modalHeader"><div><h2>Lienzo universal de etiquetas</h2><p class="fieldHint">Diseña con medidas físicas. La vista, el PDF y la impresión comparten un único plan.</p></div><button class="closeBtn" data-close>×</button></div>
+	    showModal(`<div class="modalHeader"><div><h2>Lienzo universal de etiquetas</h2><p class="fieldHint">Diseña con medidas físicas. La vista, el PDF y la impresión comparten un único plan.</p><p id="labelEditorIdentity" class="labelEditorIdentity"></p></div><button class="closeBtn" data-close>×</button></div>
 	      <div class="labelWizardRail" aria-label="Progreso del asistente de etiquetas"><div class="labelModeSwitch" role="group" aria-label="Modo del lienzo"><button type="button" class="active" data-label-mode="simple">Modo simple · Lienzo</button><button type="button" data-label-mode="expert">Modo experto · Asistente avanzado</button></div>
 	      <div class="smartPrintProgress"><span id="smartPrintStepText">Paso 1 de 9</span><progress id="smartPrintProgress" max="9" value="1">1 de 9</progress></div>
 	      <ol class="labelGuideSteps smartPrintSteps"><li class="active" data-smart-step-nav="1"><b>1</b><span>Salida</span></li><li data-smart-step-nav="2"><b>2</b><span>Papel</span></li><li data-smart-step-nav="3"><b>3</b><span>Medidas</span></li><li data-smart-step-nav="4"><b>4</b><span>Contenido</span></li><li data-smart-step-nav="5"><b>5</b><span>Cantidad</span></li><li data-smart-step-nav="6"><b>6</b><span>Inicio</span></li><li data-smart-step-nav="7"><b>7</b><span>Vista</span></li><li data-smart-step-nav="8"><b>8</b><span>Revisión</span></li><li data-smart-step-nav="9"><b>9</b><span>Imprimir</span></li></ol></div>
 	      <div class="labelCustomizerLayout">
 		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Lienzo visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><div class="labelCanvasActions" role="toolbar" aria-label="Acciones del lienzo"><button type="button" class="btn" id="labelCanvasUndo" title="Deshacer">${icon('undo-2')}</button><button type="button" class="btn" id="labelCanvasRedo" title="Rehacer">${icon('redo-2')}</button><button type="button" class="btn" id="labelCanvasDuplicate">${icon('copy')} Duplicar</button><button type="button" class="btn" id="labelCanvasRotate">${icon('rotate-cw')} Rotar</button><button type="button" class="btn" id="labelCanvasAlign">${icon('align-center')} Alinear</button></div><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
-		          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="pdf" checked><span>${icon('file-down')}<b>PDF limpio recomendado</b><small>No agrega fecha, hora ni URL. Luego puedes imprimir el PDF.</small></span></label><label><input type="radio" name="smartPrintOutput" value="system"><span>${icon('printer')}<b>Imprimir con navegador</b><small>Abre el diálogo del sistema; desactiva encabezado y pie si aparecen.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
+	          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="system" checked><span>${icon('printer')}<b>Imprimir ahora</b><small>Abre el diálogo de tu dispositivo para elegir impresora y copias.</small></span></label><label><input type="radio" name="smartPrintOutput" value="pdf"><span>${icon('file-down')}<b>Guardar un PDF</b><small>Crea un archivo independiente, sin abrir la impresora.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">Imprimir y Guardar PDF son acciones independientes. CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
 		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
 		          <div class="field" data-smart-step="1"><label for="applyTemplateSelect">Diseño guardado</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
 		          <section class="smartPrintPanel" data-smart-step="2"><h3>¿Qué tipo de papel tienes?</h3><div class="smartMediaGrid"><button type="button" data-smart-paper="thermal-60x40">${icon('rectangle-horizontal')}<b>Rollo · 1 columna</b></button><button type="button" data-smart-paper="roll-2-custom">${icon('columns-2')}<b>Rollo · 2 columnas</b></button><button type="button" data-smart-paper="roll-3-custom">${icon('columns-3')}<b>Rollo · 3 columnas</b></button><button type="button" data-smart-paper="sheet-2">${icon('file-spreadsheet')}<b>Hoja con stickers</b></button><button type="button" data-smart-paper="round-50">${icon('circle')}<b>Redondas</b></button><button type="button" data-smart-paper="square-50">${icon('square')}<b>Cuadradas</b></button><button type="button" data-smart-paper="ticket-80">${icon('receipt')}<b>Ticket térmico</b></button><button type="button" data-smart-paper="continuous">${icon('scroll-text')}<b>Papel continuo</b></button><button type="button" data-smart-paper="unsure">${icon('circle-help')}<b>No estoy seguro</b></button><button type="button" data-smart-paper="custom">${icon('ruler')}<b>Personalizado</b></button></div><p id="smartPaperHint" class="wizardHelp">Elige el dibujo que más se parece a tu material.</p></section>
@@ -7168,7 +7174,7 @@ function parseMoney(value) {
 	          <section class="smartPrintPanel" data-smart-step="6"><h3>¿Desde dónde quieres empezar?</h3><div class="formGrid"><div class="field"><label>Primera casilla</label><input id="labelStartSlot" type="number" min="1" max="120" step="1" value="1"></div><div class="field"><label>Acceso rápido</label><select id="labelStartPreset"><option value="first">Primera disponible</option><option value="left">Columna izquierda</option><option value="right">Columna derecha</option><option value="custom">Casilla específica</option></select></div></div><p class="wizardHelp">Toca casillas para marcarlas como ya usadas. Se mostrarán en gris y CLICK no imprimirá sobre ellas.</p><div id="labelStartGrid" class="labelStartGrid" aria-label="Selector de casilla inicial"></div></section>
 	          <section class="labelSheetPreviewPanel" data-smart-step="7"><div><h3>Así quedará tu papel completo</h3><p id="labelValidationSummary" class="fieldHint"></p><p id="labelPhysicalSummary" class="fieldHint"></p></div><div id="labelSheetPreview" class="labelSheetPreview" aria-label="Distribución física de etiquetas"></div></section>
 	          <section class="smartPrintPanel smartPreflight" data-smart-step="8"><h3>Revisión antes de imprimir</h3><div id="labelPreflightList" class="smartPreflightList" role="status" aria-live="polite"></div><div class="labelPrimaryActions"><button type="button" class="btn" id="labelAutoCorrect">${icon('wand-sparkles')} Corregir automáticamente</button><button type="button" class="btn" id="labelUseCompact">${icon('layout-template')} Usar diseño compacto</button><button type="button" class="btn" id="copyPrintDiagnostic">${icon('clipboard-copy')} Copiar diagnóstico</button></div></section>
-	          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><div class="systemPrintChecklist"><b>Salida recomendada:</b><p>Usa PDF limpio para guardar o imprimir sin fecha, hora, título ni URL del navegador.</p><details><summary>Usar diálogo del navegador</summary><ul><li>Copias: 1</li><li>Escala: 100 % o Tamaño real</li><li>Páginas por hoja: 1</li><li>Márgenes: ninguno</li><li>Encabezados y pies: desactivados</li><li>Ajustar a página: desactivado</li></ul><p>Para rollos: Térmica directa · Etiquetas con espacios/Gap · DPI y tamaño personalizado correctos.</p></details></div><div class="labelPrimaryActions"><button type="button" class="btn primary" id="printOne">${icon('file-down')} Imprimir o guardar PDF limpio</button><button type="button" class="btn" id="savePdfBtn">${icon('file-down')} Guardar PDF</button><button type="button" class="btn" id="browserPrintBtn">${icon('printer')} Imprimir con navegador</button><button type="button" class="btn" id="saveTemplateFromPrintBtn">${icon('save')} Guardar diseño</button><button type="button" class="btn" id="savePrintProfileBtn">${icon('save')} Guardar perfil</button><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Imprimir prueba de alineación</button><button type="button" class="btn" id="openCalibrationBtn">${icon('crosshair')} Calibrar X/Y</button></div><section id="labelCalibrationPanel" class="labelCalibrationPanel" hidden><h4>Calibración guiada X/Y</h4><p>Imprime la cuadrícula y toca el número que quedó mejor centrado. CLICK guardará el ajuste solo en este dispositivo y negocio.</p><div class="formGrid"><div class="field"><label>Ajuste X actual (mm)</label><input id="labelXOffset" value="0" readonly></div><div class="field"><label>Ajuste Y actual (mm)</label><input id="labelYOffsetMm" value="0" readonly></div></div><div id="labelCalibrationGrid" class="labelCalibrationGrid" aria-label="Casilla centrada"></div><p id="labelCalibrationStatus" class="fieldHint">Estado provisional hasta comprobar una prueba física.</p><div class="labelPrimaryActions"><button type="button" class="btn" id="resetCalibrationBtn">${icon('rotate-ccw')} Restablecer calibración</button><button type="button" class="btn" id="repeatCalibrationBtn">${icon('repeat-2')} Repetir prueba</button></div></section><div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="duplicatePrintProfileBtn">${icon('copy')} Duplicar perfil</button><button type="button" class="btn danger" id="deletePrintProfileBtn">${icon('trash-2')} Eliminar perfil</button></div></section>
+	          <section class="smartPrintPanel" data-smart-step="9"><h3>Todo listo para imprimir</h3><div class="systemPrintChecklist"><b>Elige una acción:</b><p><strong>Imprimir etiquetas</strong> abre el diálogo de la impresora. <strong>Guardar PDF</strong> descarga un archivo y no intenta imprimir.</p><details><summary>Ajustes del diálogo de impresión</summary><ul><li>Copias: 1</li><li>Escala: 100 % o Tamaño real</li><li>Páginas por hoja: 1</li><li>Márgenes: ninguno</li><li>Encabezados y pies: desactivados</li><li>Ajustar a página: desactivado</li></ul><p>Para rollos: Térmica directa · Etiquetas con espacios/Gap · DPI y tamaño personalizado correctos.</p></details></div><div class="labelPrimaryActions labelOutputActions"><button type="button" class="btn primary" id="printOne">${icon('printer')} Imprimir etiquetas</button><button type="button" class="btn" id="savePdfBtn">${icon('file-down')} Guardar PDF</button><button type="button" class="btn" id="saveTemplateFromPrintBtn">${icon('save')} Guardar diseño</button><button type="button" class="btn" id="savePrintProfileBtn">${icon('save')} Guardar perfil</button><button type="button" class="btn" id="labelAlignmentTest">${icon('ruler')} Imprimir prueba de alineación</button><button type="button" class="btn" id="openCalibrationBtn">${icon('crosshair')} Calibrar X/Y</button></div><section id="labelCalibrationPanel" class="labelCalibrationPanel" hidden><h4>Calibración guiada X/Y</h4><p>Imprime la cuadrícula y toca el número que quedó mejor centrado. CLICK guardará el ajuste solo en este dispositivo y negocio.</p><div class="formGrid"><div class="field"><label>Ajuste X actual (mm)</label><input id="labelXOffset" value="0" readonly></div><div class="field"><label>Ajuste Y actual (mm)</label><input id="labelYOffsetMm" value="0" readonly></div></div><div id="labelCalibrationGrid" class="labelCalibrationGrid" aria-label="Casilla centrada"></div><p id="labelCalibrationStatus" class="fieldHint">Estado provisional hasta comprobar una prueba física.</p><div class="labelPrimaryActions"><button type="button" class="btn" id="resetCalibrationBtn">${icon('rotate-ccw')} Restablecer calibración</button><button type="button" class="btn" id="repeatCalibrationBtn">${icon('repeat-2')} Repetir prueba</button></div></section><div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="duplicatePrintProfileBtn">${icon('copy')} Duplicar perfil</button><button type="button" class="btn danger" id="deletePrintProfileBtn">${icon('trash-2')} Eliminar perfil</button></div></section>
 	          <div class="labelPrimaryActions expertOnly"><button type="button" class="btn" id="saveTemplateBtn">${icon('save')} Guardar diseño</button><button type="button" class="btn" id="saveTemplateAsNewBtn">${icon('copy-plus')} Guardar como nuevo</button><button type="button" class="btn" id="duplicateTemplateBtn">${icon('copy')} Duplicar</button><button type="button" class="btn danger" id="deleteTemplateBtn" ${activeTemplateId ? '' : 'disabled'}>${icon('trash-2')} Eliminar</button><button type="button" class="btn" id="labelResetAll">${icon('rotate-ccw')} Restablecer</button></div>
 	          <details class="settingsDisclosure expertOnly"><summary>Más opciones de impresión</summary><div class="labelPrimaryActions"><button type="button" class="btn" id="downloadLabelPng">${icon('image-down')} Descargar PNG</button><button type="button" class="btn" id="printAll">${icon('notebook-tabs')} Imprimir catálogo</button><button type="button" class="btn" id="copyLabelCode">${icon('copy')} Copiar ${escapeHtml(product.code)}</button></div></details>
 	        </div>
@@ -7181,8 +7187,14 @@ function parseMoney(value) {
 	    let latestSmartPreflight = null;
 	    let runPrintJob = async () => null;
 	    const editorBusinessIsActive = () => currentBusiness()?.id === editorBusinessId;
+	    const updateLabelEditorIdentity = () => {
+	      const template = labelTemplatesForBiz(editorBusinessId).find((item) => item.id === activeTemplateId);
+	      const productName = String(product?.name || product?.code || 'Producto').trim();
+	      $('#labelEditorIdentity').textContent = `Etiqueta: ${productName} · Diseño: ${template?.name || 'Configuración nueva'}`;
+	    };
+	    updateLabelEditorIdentity();
     const smartStepHelp = {
-      1:'PDF limpio no agrega fecha, hora ni URL. Usa navegador solo si necesitas el diálogo del sistema.',
+      1:'Imprimir abre el diálogo del sistema. Guardar PDF crea un archivo separado; ninguna acción sustituye a la otra.',
       2:'Cuenta cuántos stickers aparecen lado a lado en una fila.',
       3:'Mide por separado un sticker y el ancho total del soporte.',
       4:'La URL queda oculta porque el QR ya contiene el enlace.',
@@ -7190,7 +7202,7 @@ function parseMoney(value) {
       6:'Marca las casillas ya usadas para no desperdiciar material.',
       7:'La vista usa la misma geometría que la salida imprimible.',
       8:'Los errores rojos deben corregirse; las advertencias explican el driver.',
-      9:'El botón principal genera un PDF limpio. El botón de navegador puede requerir desactivar encabezados y pies.'
+      9:'Imprimir etiquetas abre la impresora. Guardar PDF descarga el mismo diseño físico como archivo.'
     };
 	    const scrollSmartPanelIntoView = (targetPanel) => {
 	      if (!targetPanel) return;
@@ -7225,9 +7237,8 @@ function parseMoney(value) {
       $('#smartPrintProgress').value = smartPrintStep;
       $('#smartPrintBack').disabled = smartPrintStep === 1;
 	      $('#smartPrintNext').hidden = !simple;
-	      const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'pdf';
 	      $('#smartPrintNext').innerHTML = smartPrintStep === 9
-		        ? `${outputMode === 'system' ? 'Imprimir con navegador' : 'Guardar PDF limpio'} ${icon(outputMode === 'system' ? 'printer' : 'file-down')}`
+		        ? `Imprimir etiquetas ${icon('printer')}`
 	        : `Continuar ${icon('arrow-right')}`;
 	      const targetPanel = labelEditorModal.querySelector(`.labelControls [data-smart-step="${smartPrintStep}"]`);
 	      if (smartPrintStep !== 7) scrollSmartPanelIntoView(targetPanel);
@@ -7253,10 +7264,7 @@ function parseMoney(value) {
       if (smartPrintStep === 8 && latestSmartPreflight?.blocking) {
         return toast('Corrige los errores rojos antes de imprimir.', 'err');
       }
-	      if (smartPrintStep === 9) {
-	        const outputMode = $$('input[name="smartPrintOutput"]', labelEditorModal).find((input) => input.checked)?.value || 'pdf';
-	        return runPrintJob(outputMode === 'system' ? 'system' : 'pdf');
-	      }
+	      if (smartPrintStep === 9) return runPrintJob('system');
 	      showSmartPrintStep(smartPrintStep + 1);
 	    };
     $('#smartPrintHelp').onclick = () => toast(smartStepHelp[smartPrintStep], 'ok');
@@ -7485,7 +7493,6 @@ function parseMoney(value) {
       $('#labelPreflightList').innerHTML = checks.map((check) => `<div class="${check.status}"><span>${check.status === 'pass' ? '✓' : check.status === 'error' ? '×' : '!'}</span><p>${escapeHtml(check.message || '')}</p></div>`).join('');
       $('#printOne').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
       $('#savePdfBtn').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
-      $('#browserPrintBtn').disabled = copies < 1 || !quantity.valid || !paperValidation.valid || sheetPlan.valid === false;
       return latestSmartPreflight;
     };
 
@@ -7761,7 +7768,7 @@ function parseMoney(value) {
     // Apply template logic
 	    $('#applyTemplateSelect').onchange = (e) => {
 	       const tplId = e.target.value;
-	       if (!tplId) { activeTemplateId = ''; $('#deleteTemplateBtn').disabled = true; return; }
+	       if (!tplId) { activeTemplateId = ''; $('#deleteTemplateBtn').disabled = true; updateLabelEditorIdentity(); return; }
 	       const tpl = labelTemplatesForBiz(editorBusinessId).find(t => t.id === tplId);
 	       if (tpl) {
 	          activeTemplateId = tpl.id;
@@ -7810,8 +7817,9 @@ function parseMoney(value) {
           $('#nameScaleVal').textContent = ($('#labelNameScale').value) + 'x';
           $('#priceScaleVal').textContent = ($('#labelPriceScale').value) + 'x';
           lastBgColor = $('#labelBgColor').value;
-          syncElementControls();
-          updatePreview();
+	          syncElementControls();
+	          updateLabelEditorIdentity();
+	          updatePreview();
        }
     };
 
@@ -7820,6 +7828,7 @@ function parseMoney(value) {
 	      $('#applyTemplateSelect').innerHTML = `<option value="">Nueva plantilla</option>` + updatedTemplates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('');
 	      $('#applyTemplateSelect').value = activeTemplateId;
 	      $('#deleteTemplateBtn').disabled = !activeTemplateId;
+	      updateLabelEditorIdentity();
 	    };
 	    const persistTemplate = ({ forceNew = false, suggestedName = '', nameOverride = '', silent = false, deferSave = false } = {}) => {
 		       if (!editorBusinessIsActive()) {
@@ -8317,7 +8326,7 @@ function parseMoney(value) {
 	        mediaHeightMm,
 	        filename:'CLICK360_prueba_alineacion.pdf',
 	        html:`<section class="alignmentGrid" style="position:relative;width:${mediaWidthMm}mm;height:${mediaHeightMm}mm">${cells}</section>`
-	      }).catch((error) => toast(error.message || 'No se pudo preparar la prueba.', 'err'));
+	      }, 'system').catch((error) => toast(error.message || 'No se pudo preparar la prueba.', 'err'));
 	    };
 
 	    runPrintJob = async (providerId = '') => {
@@ -8339,9 +8348,8 @@ function parseMoney(value) {
 		       const outputProvider = providerId || (options.outputMode === 'system' || options.outputMode === 'certified' ? 'system' : 'pdf');
 		       return printLabels([{ product, copies:preflight.quantity.count }], options, outputProvider);
 		    };
-		    $('#printOne').onclick = () => runPrintJob('pdf');
-		    $('#savePdfBtn').onclick = () => runPrintJob('pdf');
-		    $('#browserPrintBtn').onclick = () => runPrintJob('system');
+	    $('#printOne').onclick = () => runPrintJob('system');
+	    $('#savePdfBtn').onclick = () => runPrintJob('pdf');
 
         if (options.directPrint) setTimeout(() => runPrintJob(), 150);
         if (options.directPdf) setTimeout(() => runPrintJob('pdf'), 150);

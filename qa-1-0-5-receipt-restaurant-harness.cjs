@@ -57,7 +57,7 @@ assert.match(styles, /comprobantes sin montajes y con impresion separada de PDF/
 assert.match(styles, /#modalRoot \.modal\.receiptDesignerShell/, 'receipt modal shell is contained at the modal root');
 assert.match(styles, /\.receiptBlockRail header\{\s*position:static!important;/, 'receipt block instructions no longer stick over the preview on mobile');
 assert.match(app, /receiptDesignerBlockPanel/, 'receipt editor renders the separate block panel');
-assert.match(html, /assets\/logo\.png\?v=commercial-1-0-5-r19/, 'startup uses the HD CLICK 360 logo');
+assert.match(html, /assets\/logo\.png\?v=commercial-1-0-5-r20/, 'startup uses the HD CLICK 360 logo');
 assert.match(html, /fetchpriority="high"/, 'startup logo is requested as a high-priority asset');
 assert.match(styles, /tableCheckoutSummary/, 'restaurant checkout total has a contained layout');
 assert.match(html, /minimumIntroMs = 5000/, 'splash stays visible for the promised five seconds');
