@@ -2027,7 +2027,7 @@ function parseMoney(value) {
 	    try {
 	      if(!checkAuth('business')) return;
 	      if(!can(r)) r='home';
-	      stopScanner(); closeCalculator(); closeModal(); route=r;
+	      stopScanner(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
       const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
@@ -6882,6 +6882,34 @@ function parseMoney(value) {
 	      };
 	      calcHeader.addEventListener('pointerup', endCalcDrag);
 	      calcHeader.addEventListener('pointercancel', endCalcDrag);
+	      // Pinch-to-resize (mobile) and Ctrl+wheel resize (desktop)
+	      let pinchStart = null;
+	      calcSheet.addEventListener('touchstart', function(ev) {
+	        if (ev.touches.length === 2) {
+	          ev.preventDefault();
+	          const dx = ev.touches[0].clientX - ev.touches[1].clientX;
+	          const dy = ev.touches[0].clientY - ev.touches[1].clientY;
+	          pinchStart = { dist: Math.hypot(dx, dy), h: calcSheet.offsetHeight };
+	        }
+	      }, { passive: false });
+	      calcSheet.addEventListener('touchmove', function(ev) {
+	        if (ev.touches.length === 2 && pinchStart) {
+	          ev.preventDefault();
+	          const dx = ev.touches[0].clientX - ev.touches[1].clientX;
+	          const dy = ev.touches[0].clientY - ev.touches[1].clientY;
+	          const newH = Math.max(220, Math.min(window.innerHeight - 40, Math.round(pinchStart.h * Math.hypot(dx, dy) / pinchStart.dist)));
+	          calcSheet.style.height = newH + 'px';
+	          calcSheet.style.maxHeight = newH + 'px';
+	        }
+	      }, { passive: false });
+	      calcSheet.addEventListener('touchend', function() { pinchStart = null; });
+	      calcSheet.addEventListener('wheel', function(ev) {
+	        if (!ev.ctrlKey && !ev.metaKey) return;
+	        ev.preventDefault();
+	        const newH = Math.max(220, Math.min(window.innerHeight - 40, calcSheet.offsetHeight + (ev.deltaY > 0 ? -24 : 24)));
+	        calcSheet.style.height = newH + 'px';
+	        calcSheet.style.maxHeight = newH + 'px';
+	      }, { passive: false });
 	    }
 	    renderHistory();
 	  }
