@@ -2000,6 +2000,7 @@ function parseMoney(value) {
 	    updateClock();
 	    clockTimer = setInterval(updateClock, 60000);
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
+    requestAnimationFrame(() => { document.querySelector('.bottomNav .navBtn.active')?.scrollIntoView({block:'nearest',inline:'center',behavior:'instant'}); });
 	    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onclick=openBusinessSwitcher; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
     $('#logoutSide')?.addEventListener('click',()=>window.click360AppLogout());
@@ -4165,7 +4166,7 @@ function parseMoney(value) {
               </aside>
               <form id="receiptDesignerForm" class="receiptDesignerControls">${controlsHtml(draftTemplate.mode)}</form>
             </div>
-            <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
+            <div class="receiptFixedFooter">${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
             <div class="receiptDesignerActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn silver" id="receiptDesignerPdf">${icon('file-down')} PDF de prueba</button><button type="button" class="btn primary" id="receiptDesignerSave">${icon('save')} Guardar plantilla</button></div>
           </section>`);
         $('#modalRoot .modal')?.classList.add('receiptDesignerShell');
@@ -4411,7 +4412,7 @@ function parseMoney(value) {
 			          <div><b>${escapeHtml(receiptPaper.label)}</b><small>${receiptPaper.receiptWidthMm} x ${receiptPaper.receiptHeightMm} mm · ${receiptPaper.columns} col. · ${receiptTemplate.mode === 'expert' ? 'modo experto' : 'modo simple'}</small></div>
 			          <div class="receiptDesignerMini" aria-label="Vista mini de comprobante">${buildReceiptPaperHtml(receiptTemplateSampleSale(), currentBusiness(), receiptTemplate, { preview:true, forceSheet:true })}</div>
 			        </div>
-			        <div class="receiptFixedFooter"><b>Pie fijo de comprobantes</b>${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
+			        <div class="receiptFixedFooter">${escapeHtml(RECEIPT_FOOTER_TEXT)}</div>
 			      </section>
 			      <section class="card sectionCard m02xNotice"><h3>M02X</h3><p>El equipo usa Bluetooth y 203 dpi. La conexión directa permanece desactivada hasta validar el protocolo y una impresión física con la unidad real. Mientras tanto, usa la salida del sistema o PDF.</p></section>`;
 			  }
@@ -6847,6 +6848,41 @@ function parseMoney(value) {
 	      $('[data-calculator-minimize]', root).setAttribute('title', minimized ? 'Expandir' : 'Minimizar');
 	    };
 	    $$('[data-calculator-close]', root).forEach((button) => { button.onclick = closeCalculator; });
+	    // Drag to move calculator window by its header
+	    const calcSheet = $('.calculatorSheet', root);
+	    const calcHeader = $('.calculatorWindowHeader', root);
+	    if (calcSheet && calcHeader) {
+	      const savedPos = (() => { try { return JSON.parse(localStorage.getItem('calcWindowPos') || 'null'); } catch { return null; } })();
+	      if (savedPos) {
+	        calcSheet.style.right = 'auto'; calcSheet.style.bottom = 'auto';
+	        calcSheet.style.left = Math.max(0, Math.min(window.innerWidth - 220, savedPos.x)) + 'px';
+	        calcSheet.style.top = Math.max(0, Math.min(window.innerHeight - 120, savedPos.y)) + 'px';
+	      }
+	      let calcDrag = null;
+	      calcHeader.style.cursor = 'grab';
+	      calcHeader.addEventListener('pointerdown', function(ev) {
+	        if (ev.target.closest('button')) return;
+	        const rect = calcSheet.getBoundingClientRect();
+	        calcSheet.style.right = 'auto'; calcSheet.style.bottom = 'auto';
+	        calcSheet.style.left = rect.left + 'px'; calcSheet.style.top = rect.top + 'px';
+	        calcDrag = { startX: ev.clientX, startY: ev.clientY, x: rect.left, y: rect.top };
+	        calcHeader.setPointerCapture && calcHeader.setPointerCapture(ev.pointerId);
+	        calcHeader.style.cursor = 'grabbing'; ev.preventDefault();
+	      });
+	      calcHeader.addEventListener('pointermove', function(ev) {
+	        if (!calcDrag) return;
+	        const nx = Math.max(0, Math.min(window.innerWidth - 220, calcDrag.x + ev.clientX - calcDrag.startX));
+	        const ny = Math.max(0, Math.min(window.innerHeight - 80, calcDrag.y + ev.clientY - calcDrag.startY));
+	        calcSheet.style.left = nx + 'px'; calcSheet.style.top = ny + 'px';
+	      });
+	      const endCalcDrag = function() {
+	        if (!calcDrag) return;
+	        try { localStorage.setItem('calcWindowPos', JSON.stringify({x:parseFloat(calcSheet.style.left||0),y:parseFloat(calcSheet.style.top||0)})); } catch(e) {}
+	        calcDrag = null; calcHeader.style.cursor = 'grab';
+	      };
+	      calcHeader.addEventListener('pointerup', endCalcDrag);
+	      calcHeader.addEventListener('pointercancel', endCalcDrag);
+	    }
 	    renderHistory();
 	  }
 
@@ -7078,7 +7114,16 @@ function parseMoney(value) {
           code: product.code,
           name: product.name,
           variant: product.variant || product.category,
-          price: product.cardPrice && product.cardPrice !== product.price ? `Efectivo ${fmt(product.price)} · Tarjeta ${fmt(product.cardPrice)}` : fmt(product.price),
+          price: (() => {
+            if (!product.cardPrice || product.cardPrice === product.price) return fmt(product.price);
+            const cash = fmt(product.price);
+            const card = fmt(product.cardPrice);
+            const pf = options.priceFormat || 'full';
+            if (pf === 'abbr') return `Ef. ${cash} · Tj. ${card}`;
+            if (pf === 'noLabel') return `${cash} · ${card}`;
+            if (pf === 'cash') return cash;
+            return `Efectivo ${cash} · Tarjeta ${card}`;
+          })(),
           tax: resolvedTaxLegend(product, options),
           social: options.social,
           phone: options.phone || '',
@@ -7154,13 +7199,13 @@ function parseMoney(value) {
 		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
 		          <div class="field" data-smart-step="1"><label for="applyTemplateSelect">Diseño guardado</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
 		          <section class="smartPrintPanel" data-smart-step="2"><h3>¿Qué tipo de papel tienes?</h3><div class="smartMediaGrid"><button type="button" data-smart-paper="thermal-60x40">${icon('rectangle-horizontal')}<b>Rollo · 1 columna</b></button><button type="button" data-smart-paper="roll-2-custom">${icon('columns-2')}<b>Rollo · 2 columnas</b></button><button type="button" data-smart-paper="roll-3-custom">${icon('columns-3')}<b>Rollo · 3 columnas</b></button><button type="button" data-smart-paper="sheet-2">${icon('file-spreadsheet')}<b>Hoja con stickers</b></button><button type="button" data-smart-paper="round-50">${icon('circle')}<b>Redondas</b></button><button type="button" data-smart-paper="square-50">${icon('square')}<b>Cuadradas</b></button><button type="button" data-smart-paper="ticket-80">${icon('receipt')}<b>Ticket térmico</b></button><button type="button" data-smart-paper="continuous">${icon('scroll-text')}<b>Papel continuo</b></button><button type="button" data-smart-paper="unsure">${icon('circle-help')}<b>No estoy seguro</b></button><button type="button" data-smart-paper="custom">${icon('ruler')}<b>Personalizado</b></button></div><p id="smartPaperHint" class="wizardHelp">Elige el dibujo que más se parece a tu material.</p></section>
-	          <section class="labelPresetPanel" data-smart-step="4"><h3>¿Qué quieres mostrar?</h3><div class="labelPresetGrid"><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-name">QR + nombre</button><button type="button" data-label-preset="qr-price">QR + nombre + precio</button><button type="button" data-label-preset="barcode-price">Código de barras + precio</button><button type="button" data-label-preset="name-price-sku">Nombre + precio + SKU</button><button type="button" data-label-preset="compact">Completa compacta</button><button type="button" data-label-preset="custom">Personalizada segura</button></div><label class="consentCheck"><input type="checkbox" id="labelShowUrl"><span>Mostrar también el contenido del QR como texto</span></label></section>
+	          <section class="labelPresetPanel" data-smart-step="4"><h3>¿Qué quieres mostrar?</h3><div class="labelPresetGrid"><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-name">QR + nombre</button><button type="button" data-label-preset="qr-price">QR + nombre + precio</button><button type="button" data-label-preset="barcode-price">Código de barras + precio</button><button type="button" data-label-preset="name-price-sku">Nombre + precio + SKU</button><button type="button" data-label-preset="compact">Completa compacta</button><button type="button" data-label-preset="custom">Personalizada segura</button></div>${product.cardPrice && product.cardPrice !== product.price ? `<div class="field" style="margin-top:10px"><label for="labelPriceFormat">Formato del precio con tarjeta</label><select id="labelPriceFormat"><option value="full">Efectivo $X · Tarjeta $Y</option><option value="abbr">Ef. $X · Tj. $Y (abreviado)</option><option value="noLabel">$X · $Y (sin etiqueta)</option><option value="cash">Solo efectivo</option></select></div>` : ''}<label class="consentCheck"><input type="checkbox" id="labelShowUrl"><span>Mostrar también el contenido del QR como texto</span></label></section>
 	          <section class="labelElementPanel expertOnly">
 		            <div class="field"><label for="labelElementSelect">Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="barcode">Código de barras</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
 	            <div class="labelQuickControls"><button type="button" id="labelSizeDown" title="Reducir">${icon('minus')}</button><button type="button" id="labelSizeUp" title="Aumentar">${icon('plus')}</button><button type="button" id="labelCenter" title="Centrar">${icon('align-center')}<span>Centrar</span></button><button type="button" id="labelToggleVisibility" title="Mostrar u ocultar">${icon('eye')}<span>Ocultar</span></button><button type="button" id="labelToggleLock" title="Bloquear posición">${icon('lock-open')}<span>Bloquear</span></button><button type="button" id="labelResetElement" title="Restablecer elemento">${icon('rotate-ccw')}<span>Restablecer</span></button></div>
 	            <p id="labelQrWarning" class="fieldHint"></p>
 	          </section>
-	          <div class="formGrid expertOnly"><div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Usar configuración de IVA del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div><div class="field"><label>Red social / contacto</label><input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}"></div><div class="field full"><label>Dirección del local</label><input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}"></div><div class="field full"><label>Texto libre</label><input id="labelCustomText" maxlength="80" value="${escapeHtml(initialTemplate?.customText || '')}"></div></div>
+	          <div class="formGrid expertOnly"><div class="field"><label>IVA visible</label><select id="labelTaxDisplay"><option value="inherit">Usar configuración de IVA del producto</option><option value="included">Incluye IVA</option><option value="excluded">No incluye IVA</option><option value="exempt">Exento de IVA</option><option value="hidden">No mostrar</option></select></div><div class="field"><label>Red social / contacto</label><input id="labelSocial" placeholder="Ej. @click360" value="${escapeHtml(initialTemplate?.social || '')}"></div><div class="field full"><label>Dirección del local</label><input id="labelAddress" placeholder="Dirección para la etiqueta" value="${escapeHtml(initialTemplate?.address || address)}"></div><div class="field full"><label>Texto libre (hasta 2 líneas)</label><textarea id="labelCustomText" maxlength="160" rows="2" style="min-height:66px;resize:vertical">${escapeHtml(initialTemplate?.customText || '')}</textarea></div></div>
 	          <details class="settingsDisclosure labelAdvanced expertOnly"><summary>Ajustes avanzados</summary><div class="labelAdvancedBody">
 	            <div class="labelColorGrid"><div class="field"><label>Fondo etiqueta</label><input type="color" id="labelBgColor" value="${safeColor(initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Fondo QR</label><input type="color" id="qrBgColor" value="${safeColor(initialTemplate?.qrBgColor || initialTemplate?.bgColor, '#ffffff')}"></div><div class="field"><label>Texto / QR</label><input type="color" id="labelFgColor" value="${safeColor(initialTemplate?.fgColor, '#000000')}"></div></div>
 	            <div class="formGrid labelSizeGrid"><div class="field"><label>Margen QR</label><input type="number" min="2" max="12" id="labelQrMargin" value="${numericInputValue(initialTemplate?.qrMargin || 5)}"></div><label class="consentCheck"><input type="checkbox" id="labelSnap" checked><span>Ajustar a cuadrícula</span></label></div>
@@ -7357,6 +7402,7 @@ function parseMoney(value) {
 	          showBarcode: $('#labelShowBarcode')?.checked !== false,
 	          shape: ['square','circle'].includes($('#labelShape')?.value) ? $('#labelShape').value : 'rounded',
 	          layout: normalizedLabelLayout(editorLayout),
+          priceFormat: $('#labelPriceFormat')?.value || 'full',
           yOffsetAdj: parseFloat($('#labelYOffset').value || '0'),
           nameScale: parseFloat($('#labelNameScale').value || '1.0'),
           priceScale: parseFloat($('#labelPriceScale').value || '1.0'),
@@ -7540,6 +7586,7 @@ function parseMoney(value) {
     $('#labelAddress').oninput = updatePreview;
 	    $('#labelCustomText').oninput = updatePreview;
 	    $('#labelTaxDisplay').onchange = updatePreview;
+	    $('#labelPriceFormat')?.addEventListener('change', updatePreview);
 	    $('#labelQrMargin').oninput = updatePreview;
 	    $('#labelWidthMm').oninput = () => { loadCalibrationIntoForm(); updatePreview(); };
 	    $('#labelHeightMm').oninput = () => { loadCalibrationIntoForm(); updatePreview(); };
@@ -7813,6 +7860,7 @@ function parseMoney(value) {
           $('#labelTaxDisplay').value = tpl.taxDisplay || 'inherit';
           $('#labelQrMargin').value = tpl.qrMargin || 5;
           $('#labelCustomText').value = tpl.customText || '';
+          if ($('#labelPriceFormat')) $('#labelPriceFormat').value = tpl.priceFormat || 'full';
           $('#yOffsetVal').textContent = ($('#labelYOffset').value) + 'px';
           $('#nameScaleVal').textContent = ($('#labelNameScale').value) + 'x';
           $('#priceScaleVal').textContent = ($('#labelPriceScale').value) + 'x';
@@ -7882,6 +7930,7 @@ function parseMoney(value) {
           renderer:'universal-mm-v2',
           yOffsetAdj: currentOpts.yOffsetAdj,
           nameScale: currentOpts.nameScale,
+          priceFormat: currentOpts.priceFormat,
           priceScale: currentOpts.priceScale,
           isDefault: existing?.isDefault === true,
           createdAt: existing?.createdAt || new Date().toISOString(),
