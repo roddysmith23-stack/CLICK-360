@@ -1866,7 +1866,7 @@
 	    return error;
 	  }
 
-	  async function pushLocalToFirestoreOnce(reason = 'auto') {
+	  async function pushLocalToFirestoreOnce(reason = 'auto', forceWrite = false) {
 	    const user = auth.currentUser;
 	    const context = ACTIVE_CONTEXT;
 	    const stateDoc = STATE_DOC;
@@ -1936,7 +1936,10 @@
 		                equivalentRemoteWithoutWrite = remote;
 		                return;
 		              }
-		              throw syncError('click360/revision-conflict', 'Hay cambios remotos sin resolver.', { expectedRevision, remoteRevision });
+		              // forceWrite: user explicitly chose "Conservar mi versión local" — skip revision check
+		              if (!forceWrite) {
+		                throw syncError('click360/revision-conflict', 'Hay cambios remotos sin resolver.', { expectedRevision, remoteRevision });
+		              }
 		            }
 	          }
 	          transaction.set(stateDoc, documentData);
@@ -1988,10 +1991,12 @@
 	    }
 	  }
 
-	  async function pushLocalToFirestore(reason = 'auto') {
+	  async function pushLocalToFirestore(reason = 'auto', forceWrite = false) {
 	    const context = ACTIVE_CONTEXT;
 	    const schedulerKey = context ? `${AUTH_EPOCH}:${context.authUid}:${context.tenantKey}` : '';
 	    if (!schedulerKey) return false;
+	    // forceWrite bypasses the scheduler to avoid revision conflicts on keep_local
+	    if (forceWrite) return pushLocalToFirestoreOnce(reason, true);
 	    const existing = PUSH_SCHEDULERS.get(schedulerKey);
 	    if (existing) {
 	      existing.queuedReason = reason;
@@ -2680,7 +2685,7 @@
 	    if (action === 'keep_local') {
 	      clearSyncConflict();
 	      LOCAL_WRITE_PENDING_UNTIL = Date.now() + PENDING_REMOTE_SYNC_GRACE_MS;
-	      const saved = await pushLocalToFirestore('manual_keep_local');
+	      const saved = await pushLocalToFirestore('manual_keep_local', true); // force=true: user explicitly chose keep_local
 	      return { ok: saved === true, action, syncState: getSyncState({ cleanup: true, reason: 'manual_keep_local_after' }) };
 	    }
 	    return { ok: false, action: 'cancelled', syncState: getSyncState({ cleanup: false, reason: 'manual_conflict_cancel' }) };

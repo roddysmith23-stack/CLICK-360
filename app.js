@@ -6629,31 +6629,50 @@ function parseMoney(value) {
 		  };
 		  function showSyncConflictRecovery(gate = {}) {
 		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
-		    showModal(`<div class="modalHeader"><div><h2>Conflicto de sincronización</h2><p class="fieldHint">Encontramos cambios locales y cambios en nube que podrían diferir.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+		    const biz = currentBusiness();
+		    const bizId = biz?.id || state?.activeBusinessId;
+		    const localProds = (state?.products || []).filter(p => p.businessId === bizId).length;
+		    const localSales = (state?.sales || []).filter(s => s.businessId === bizId).length;
+		    const localMovs  = (state?.movements || []).filter(m => m.businessId === bizId).length;
+		    const hasMeaningfulLocalData = localProds > 0 || localSales > 0;
+		    showModal(`<div class="modalHeader"><div><h2>⚠️ Conflicto de sincronización</h2><p class="fieldHint">Los datos de este dispositivo y los de la nube son diferentes. Elige cómo resolver.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
 		      <div class="syncConflictPanel">
-		        ${syncDiagnosticRows(syncState)}
-		        <div class="split syncRecoveryActions" style="gap:10px;margin-top:14px;">
-		          <button type="button" class="btn silver" id="syncRefreshCloud">Actualizar desde nube</button>
-		          <button type="button" class="btn primary" id="syncKeepLocal">Conservar mi versión local</button>
+		        <div style="background:rgba(244,196,49,.10);border:1px solid rgba(244,196,49,.45);border-radius:8px;padding:12px;margin-bottom:12px;">
+		          <b style="color:var(--gold2);display:block;margin-bottom:6px;">📱 Este dispositivo tiene:</b>
+		          <span style="font-size:14px;line-height:1.6;">${localProds} productos · ${localSales} ventas · ${localMovs} movimientos</span>
+		          ${hasMeaningfulLocalData ? '<p style="color:#ff8d92;font-size:12px;margin:8px 0 0;font-weight:850;">⚠️ Si eliges "Actualizar desde nube" estos datos serán REEMPLAZADOS.</p>' : ''}
 		        </div>
-		        <button type="button" class="btn block" data-close style="margin-top:10px;">Cancelar</button>
+		        ${syncDiagnosticRows(syncState)}
+		        <div style="display:grid;gap:10px;margin-top:14px;">
+		          <button type="button" class="btn primary" id="syncKeepLocal" style="min-height:54px;font-size:15px;">✅ Conservar mi versión local (${localProds} productos)</button>
+		          <button type="button" class="btn silver" id="syncRefreshCloud" style="min-height:50px;">🔄 Actualizar desde nube${hasMeaningfulLocalData ? ' ⚠️' : ''}</button>
+		        </div>
+		        <button type="button" class="btn block" data-close style="margin-top:10px;">Cancelar (mantener conflicto)</button>
 		      </div>`);
-		    $('#syncRefreshCloud')?.addEventListener('click', async () => {
-		      downloadBackup('antes-de-actualizar-conflicto');
-		      toast('Actualizando desde nube...');
-		      const result = await window.click360ResolveSyncConflict?.('refresh_cloud').catch(() => null);
-		      closeModal();
-		      renderApp(route);
-		      toast(result?.ok ? 'Datos actualizados desde nube.' : 'No se pudo actualizar desde nube.', result?.ok ? 'ok' : 'err');
-		    });
 		    $('#syncKeepLocal')?.addEventListener('click', async () => {
-		      if (!confirm('Conservar la versión local intentará guardarla en la nube sin borrar respaldos. ¿Deseas continuar?')) return;
+		      if (!confirm(`✅ CONFIRMAR: Conservar este dispositivo.\n\nSe guardarán en la nube:\n• ${localProds} productos\n• ${localSales} ventas\n• ${localMovs} movimientos\n\nSe descargará un respaldo automático antes de continuar.\n\n¿Continuar?`)) return;
 		      downloadBackup('antes-de-conservar-local');
-		      toast('Confirmando tu versión local...');
+		      toast('Guardando tu versión en la nube... puede tomar unos segundos.');
 		      const result = await window.click360ResolveSyncConflict?.('keep_local').catch(() => null);
 		      closeModal();
 		      renderApp(route);
-		      toast(result?.ok ? 'Tu versión local quedó confirmada.' : 'El conflicto sigue protegido; actualiza desde nube o contacta soporte.', result?.ok ? 'ok' : 'err');
+		      if (result?.ok) {
+		        toast('✅ Tu versión local quedó guardada en la nube.', 'ok');
+		      } else {
+		        toast('No se pudo guardar en nube. Ve a Ajustes → Respaldo y exporta manualmente para no perder datos.', 'err');
+		      }
+		    });
+		    $('#syncRefreshCloud')?.addEventListener('click', async () => {
+		      const confirmMsg = hasMeaningfulLocalData
+		        ? `⚠️ ADVERTENCIA: Esto REEMPLAZARÁ tus ${localProds} productos y ${localSales} ventas locales con la versión de la nube.\n\nUn respaldo automático se descargará ANTES de continuar para que puedas recuperar tus datos si es necesario.\n\n¿Estás seguro de querer reemplazar los datos locales?`
+		        : '¿Actualizar datos desde la nube?';
+		      if (!confirm(confirmMsg)) return;
+		      downloadBackup('antes-de-actualizar-conflicto');
+		      toast('Respaldo guardado. Actualizando desde nube...');
+		      const result = await window.click360ResolveSyncConflict?.('refresh_cloud').catch(() => null);
+		      closeModal();
+		      renderApp(route);
+		      toast(result?.ok ? '✅ Datos actualizados desde nube.' : 'No se pudo actualizar desde nube.', result?.ok ? 'ok' : 'err');
 		    });
 		  }
 		  window.click360ShowSyncConflictRecovery = showSyncConflictRecovery;
