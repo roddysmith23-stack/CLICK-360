@@ -291,7 +291,7 @@ a{color:inherit;text-decoration:none}
 .iconBtn{width:44px;height:44px;border-radius:8px;border:1px solid var(--line);background:#1d1d1d;color:var(--silver);display:grid;place-items:center;font-size:20px;flex:0 0 44px}
 .iconBtn.gold{background:rgba(214,170,44,.18);color:var(--gold2)}
 .iconBtn.danger{color:#ff8b90;background:rgba(255,92,98,.08)}
-.modalOverlay{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.72);backdrop-filter:blur(7px);display:none;align-items:center;justify-content:center;padding:18px max(18px,var(--safe-right)) 18px max(18px,var(--safe-left))}
+.modalOverlay{position:fixed;inset:0;z-index:220;background:rgba(0,0,0,.72);backdrop-filter:blur(7px);display:none;align-items:center;justify-content:center;padding:18px max(18px,var(--safe-right)) 18px max(18px,var(--safe-left))}
 .modalOverlay.show{display:flex}
 .modal{width:min(570px,100%);max-width:100%;max-height:92vh;overflow:auto;background:#101010;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);padding:20px}
 .friendlyError{min-height:100dvh;display:grid;place-items:center;padding:24px}.friendlyError>div{width:min(440px,100%);display:grid;gap:14px;text-align:center}.friendlyError svg{width:38px;height:38px;margin:auto;color:var(--gold2)}.friendlyError h2,.friendlyError p{margin:0}.friendlyError p,.friendlyError small{color:var(--muted)}
@@ -1721,3 +1721,6 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .tableTimer.warn{background:rgba(255,193,7,.15);color:#ffc107}
 .tableTimer.hot{background:rgba(255,77,79,.15);color:#ff4d4f;animation:timerPulse 1.2s ease-in-out infinite}
 @keyframes timerPulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+/* Modal open: hide floating calculator button */
+body.has-modal #floatingCalcBtn{opacity:0!important;pointer-events:none!important}

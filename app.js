@@ -1865,17 +1865,21 @@ function parseMoney(value) {
     stopScanner();
     // Splash screen on first visit this session
     if (options.ready && !sessionStorage.getItem('c360_splash')) {
-      sessionStorage.setItem('c360_splash','1');
-      const sp = document.createElement('div');
-      sp.id = 'click360Splash';
-      sp.innerHTML = '<div class="splashInner"><div class="splashLogoWrap"><div class="logoIcon splashLogoIcon"></div></div><div class="splashBrand"><b>CLICK</b><span>360</span></div><div class="splashTag">Tu negocio, listo para crecer</div></div>';
-      document.body.appendChild(sp);
-      requestAnimationFrame(() => sp.classList.add('splashShow'));
-      setTimeout(() => {
-        sp.classList.add('splashOut');
-        setTimeout(() => { sp.remove(); renderLogin(message, { ...options, _skipSplash:true }); }, 500);
-      }, 2600);
-      return;
+      try {
+        sessionStorage.setItem('c360_splash','1');
+        const sp = document.createElement('div');
+        sp.id = 'click360Splash';
+        sp.innerHTML = '<div class="splashInner"><div class="splashLogoWrap"><div class="logoIcon splashLogoIcon"></div></div><div class="splashBrand"><b>CLICK</b><span>360</span></div><div class="splashTag">Tu negocio, listo para crecer</div></div>';
+        document.body.appendChild(sp);
+        requestAnimationFrame(() => { try { sp.classList.add('splashShow'); } catch {} });
+        setTimeout(() => {
+          try {
+            sp.classList.add('splashOut');
+            setTimeout(() => { try { sp.isConnected && sp.remove(); } catch {} renderLogin(message, { ...options }); }, 500);
+          } catch { renderLogin(message, { ...options }); }
+        }, 2600);
+        return;
+      } catch(e) { console.warn('splash error:', e); /* fall through to normal login */ }
     }
     app.innerHTML = `
       <main class="loginPage">
@@ -4754,13 +4758,16 @@ function parseMoney(value) {
     $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
     $$('[data-quick-print]').forEach(b=>b.onclick=()=>{
-      const biz=currentBusiness();
-      const product=state.products.find(p=>p.id===b.dataset.quickPrint && p.businessId===biz?.id);
-      if(!product) return;
-      const templates=(state.settings?.labelTemplates||[]).filter(t=>t.businessId===biz.id||((!t.businessId)&&state.settings?.legacyDataBusinessId===biz.id));
-      const tpl=templates.find(t=>t.isDefault)||templates[0]||null;
-      if(!tpl) { openLabelModal(product); return toast('Configura y guarda una plantilla para impresión rápida. ¡Ábrete con el botón QR dorado!','ok'); }
-      openLabelModal(product, tpl.id, { directPrint: true });
+      try {
+        const biz=currentBusiness();
+        if(!biz) return toast('Selecciona un negocio activo primero.','err');
+        const product=state.products.find(p=>p.id===b.dataset.quickPrint && p.businessId===biz?.id);
+        if(!product) return toast('Producto no encontrado.','err');
+        const templates=(state.settings?.labelTemplates||[]).filter(t=>t.businessId===biz.id||((!t.businessId)&&state.settings?.legacyDataBusinessId===biz.id));
+        const tpl=templates.find(t=>t.isDefault)||templates[0]||null;
+        if(!tpl) { openLabelModal(product); return toast('Configura y guarda una plantilla primero. Usa el botón QR dorado.','ok'); }
+        openLabelModal(product, tpl.id, { directPrint: true });
+      } catch(e) { console.warn('quick-print error:', e); toast('No se pudo imprimir.','err'); }
     });
   }
 	  function openProductModal(product=null, initialCode=''){
@@ -6559,6 +6566,7 @@ function parseMoney(value) {
 	    if (!root) { root = document.createElement('div'); root.id = 'modalRoot'; document.body.appendChild(root); }
 	    modalReturnFocus = returnFocus;
 	    root.innerHTML = `<div class="modalOverlay show"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
+	    document.body.classList.add('has-modal');
 	    const dialog = $('.modal', root);
 	    $$('.field label:not([for])', dialog).forEach((label) => {
 	      const control = $('input,select,textarea', label.parentElement);
@@ -6609,6 +6617,7 @@ function parseMoney(value) {
 	      if (root.closest('.app')) root.innerHTML = '';
 	      else root.remove();
 	    });
+	    document.body.classList.remove('has-modal');
 	    $$('.desktopLayout,.bottomNav').forEach((element) => {
 	      element.inert = false;
 	      element.removeAttribute('aria-hidden');
@@ -6671,12 +6680,15 @@ function parseMoney(value) {
 		  };
 		  function showSyncConflictRecovery(gate = {}) {
 		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
-		    const biz = currentBusiness();
-		    const bizId = biz?.id || state?.activeBusinessId;
-		    const localProds = (state?.products || []).filter(p => p.businessId === bizId).length;
-		    const localSales = (state?.sales || []).filter(s => s.businessId === bizId).length;
-		    const localMovs  = (state?.movements || []).filter(m => m.businessId === bizId).length;
-		    const hasMeaningfulLocalData = localProds > 0 || localSales > 0;
+		    let localProds = 0, localSales = 0, localMovs = 0, hasMeaningfulLocalData = false;
+		    try {
+		      const biz = currentBusiness();
+		      const bizId = biz?.id || state?.activeBusinessId;
+		      localProds = (state?.products || []).filter(p => p.businessId === bizId).length;
+		      localSales = (state?.sales || []).filter(s => s.businessId === bizId).length;
+		      localMovs  = (state?.movements || []).filter(m => m.businessId === bizId).length;
+		      hasMeaningfulLocalData = localProds > 0 || localSales > 0;
+		    } catch(e) { console.warn('sync conflict counts:', e); }
 		    showModal(`<div class="modalHeader"><div><h2>⚠️ Conflicto de sincronización</h2><p class="fieldHint">Los datos de este dispositivo y los de la nube son diferentes. Elige cómo resolver.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
 		      <div class="syncConflictPanel">
 		        <div style="background:rgba(244,196,49,.10);border:1px solid rgba(244,196,49,.45);border-radius:8px;padding:12px;margin-bottom:12px;">
