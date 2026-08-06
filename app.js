@@ -8623,6 +8623,266 @@ function parseMoney(value) {
       + Math.max(0, paper.rows - 1) * rowAdvanceMm;
     return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
   }
+  function legacyPaperProfileToUniversal(paper = {}) {
+    return {
+      id:paper.id || paper.paperType || 'custom',
+      mediaType:paper.mediaType || 'roll-1',
+      widthMm:Number(paper.labelWidthMm ?? paper.widthMm ?? 60),
+      heightMm:Number(paper.labelHeightMm ?? paper.heightMm ?? 40),
+      mediaWidthMm:Number(paper.mediaWidthMm ?? 0),
+      mediaHeightMm:Number(paper.mediaHeightMm ?? 0),
+      columns:Math.max(1, Number(paper.columns ?? 1)),
+      rows:Math.max(1, Number(paper.rows ?? 1)),
+      gapXmm:Number(paper.gapHorizontalMm ?? paper.gapXmm ?? 0),
+      gapYmm:Number(paper.gapVerticalMm ?? paper.gapYmm ?? 0),
+      marginTopMm:Number(paper.marginTopMm ?? 0),
+      marginRightMm:Number(paper.marginRightMm ?? 0),
+      marginBottomMm:Number(paper.marginBottomMm ?? 0),
+      marginLeftMm:Number(paper.marginLeftMm ?? 0),
+      pitchMm:Number(paper.pitchMm ?? 0),
+      xOffsetMm:Number(paper.xOffsetMm ?? 0),
+      yOffsetMm:Number(paper.yOffsetMm ?? 0),
+      scaleX:Number(paper.scaleX ?? 1),
+      scaleY:Number(paper.scaleY ?? 1),
+      dpi:Number(paper.nominalDpi ?? paper.dpi ?? 203),
+      orientation:paper.orientation || 'portrait'
+    };
+  }
+  function resolveLabelPrintProfile(businessId, template = {}, profileId = '') {
+    const profiles = labelProfilesForBiz(businessId);
+    const deviceState = loadPrintDeviceState(businessId);
+    const smartPrint = window.CLICK360_SMART_PRINT;
+    const candidates = [profileId, template?.universalProfileId, deviceState?.universalProfileId, deviceState?.selectedProfileId].filter(Boolean);
+    for (const id of candidates) {
+      const raw = profiles.find((profile) => profile.id === id);
+      if (!raw) continue;
+      if (raw.universalPaper) return smartPrint?.applyUniversalDeviceCalibration(raw, deviceState) || raw;
+      const normalized = smartPrint?.normalizePrintProfile(raw, businessId) || raw;
+      if (normalized?.paper) {
+        return {
+          ...normalized,
+          universalPaper:legacyPaperProfileToUniversal(normalized.paper),
+          name:normalized.name || raw.name
+        };
+      }
+    }
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const templateDoc = template?.id || template?.layout || template?.universalDocument ? universalDocumentFromTemplate(template) : null;
+    const templatePaper = templateDoc?.paper;
+    if (templatePaper && canvasApi) {
+      const validation = smartPrint?.validatePaperProfile(canvasApi.toPrintPaper(templateDoc));
+      if (validation?.valid) {
+        return {
+          id:'template-paper',
+          name:`${template?.name || 'Plantilla'} · ${templatePaper.columns} col · ${templatePaper.widthMm}×${templatePaper.heightMm} mm`,
+          universalPaper:templatePaper,
+          status:'provisional'
+        };
+      }
+    }
+    return null;
+  }
+  function mergeUniversalPaperIntoDocument(sourceDocument, universalPaper) {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvasApi) return sourceDocument;
+    const normalized = canvasApi.normalizeDocument(sourceDocument);
+    if (!universalPaper) return normalized;
+    return canvasApi.normalizeDocument({ ...normalized, paper:{ ...normalized.paper, ...universalPaper } });
+  }
+  function universalDocumentFromAdvancedState(options = {}) {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvasApi) return null;
+    return canvasApi.normalizeDocument({
+      schemaVersion:2,
+      paper:universalPaperFromTemplate({
+        paperType:options.paperType,
+        widthMm:options.widthMm,
+        heightMm:options.heightMm,
+        mediaWidthMm:options.mediaWidthMm,
+        mediaHeightMm:options.mediaHeightMm,
+        columns:options.columns,
+        rows:options.rows,
+        gapXmm:options.gapXmm,
+        gapYmm:options.gapYmm,
+        marginTopMm:options.marginTopMm,
+        marginRightMm:options.marginRightMm,
+        marginBottomMm:options.marginBottomMm,
+        marginLeftMm:options.marginLeftMm,
+        pitchMm:options.pitchMm,
+        xOffsetMm:options.xOffsetMm,
+        yOffsetMm:options.yOffsetMm,
+        scaleX:options.scaleX,
+        scaleY:options.scaleY,
+        dpi:options.dpi,
+        mediaType:options.mediaType
+      }),
+      layout:normalizedLabelLayout(options.layout),
+      quantity:1,
+      startSlot:Math.max(1, Number(options.startSlot || 1))
+    });
+  }
+  async function prepareLabelPrintJob({
+    product,
+    template = null,
+    templateId = '',
+    paperProfileId = '',
+    quantity = 1,
+    startSlot = 1,
+    useStock = false,
+    businessId = currentBusiness()?.id,
+    usedSlots = [],
+    sourceDocument = null
+  } = {}) {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvasApi) throw Object.assign(new Error('El motor de etiquetas no está disponible. Recarga CLICK 360.'), { code:'label-engine-unavailable' });
+    if (!product?.id) throw Object.assign(new Error('Producto no encontrado.'), { code:'label-product-missing' });
+    if (product.businessId && businessId && product.businessId !== businessId) {
+      throw Object.assign(new Error('El producto no pertenece al negocio activo.'), { code:'label-product-business-mismatch' });
+    }
+    const templates = labelTemplatesForBiz(businessId);
+    const resolvedTemplate = template
+      || templates.find((item) => item.id === templateId)
+      || templates.find((item) => item.isDefault)
+      || null;
+    if (!resolvedTemplate && !sourceDocument) {
+      throw Object.assign(new Error('Plantilla no encontrada. Guarda un diseño primero.'), { code:'label-template-missing' });
+    }
+    const profile = resolveLabelPrintProfile(businessId, resolvedTemplate || {}, paperProfileId);
+    if (!profile?.universalPaper) {
+      throw Object.assign(new Error('Selecciona o configura un perfil de papel antes de imprimir.'), { code:'label-profile-missing' });
+    }
+    const quantityResult = resolveLabelCopyResult(quantity, product.qty, useStock);
+    if (!quantityResult.valid || quantityResult.count < 1) {
+      throw Object.assign(new Error(quantityResult.error || 'La cantidad debe ser un número entero válido.'), { code:'label-quantity-invalid' });
+    }
+    let documentModel = sourceDocument
+      ? canvasApi.normalizeDocument(sourceDocument)
+      : universalDocumentFromTemplate(resolvedTemplate);
+    documentModel = mergeUniversalPaperIntoDocument(documentModel, profile.universalPaper);
+    documentModel = canvasApi.normalizeDocument({
+      ...documentModel,
+      quantity:quantityResult.count,
+      startSlot:Math.max(1, Number(startSlot) || 1)
+    });
+    const groups = [{ product, copies:quantityResult.count }];
+    const plan = canvasApi.buildPrintPlan(groups, documentModel, {
+      startSlot:documentModel.startSlot,
+      usedSlots
+    });
+    if (!plan.valid || !plan.count || !plan.pages?.length) {
+      throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.'), { code:'label-plan-invalid' });
+    }
+    const smartPrint = window.CLICK360_SMART_PRINT;
+    const paperValidation = smartPrint?.validatePaperProfile(canvasApi.toPrintPaper(documentModel)) || { valid:true };
+    if (!paperValidation.valid) {
+      throw Object.assign(new Error(paperValidation.errors?.[0] || 'El perfil de papel no es válido.'), { code:'label-paper-invalid' });
+    }
+    return {
+      product,
+      template:resolvedTemplate,
+      profile,
+      document:documentModel,
+      plan,
+      groups,
+      quantity:quantityResult,
+      media:universalMediaSize(documentModel),
+      fingerprint:canvasApi.planFingerprint(plan)
+    };
+  }
+  async function waitForLabelPrintNodeReady(node, timeoutMs = 8000) {
+    if (!node?.childElementCount) throw Object.assign(new Error('El plan de impresión no contiene contenido renderizable.'), { code:'label-render-empty' });
+    const images = [...node.querySelectorAll('img')];
+    const waits = images.map(async (image) => {
+      if (!image.complete) await new Promise((resolve, reject) => {
+        image.addEventListener('load', resolve, { once:true });
+        image.addEventListener('error', () => reject(Object.assign(new Error('No se pudo cargar la etiqueta.'), { code:'label-image-error' })), { once:true });
+      });
+      if (!image.naturalWidth || !image.naturalHeight) throw Object.assign(new Error('La imagen de la etiqueta está vacía.'), { code:'label-image-empty' });
+      if (typeof image.decode === 'function') await image.decode().catch(() => {});
+    });
+    if (document.fonts?.ready) waits.push(document.fonts.ready);
+    const ready = Promise.all(waits).then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('La vista previa no quedó lista. Intenta de nuevo.'), { code:'label-render-timeout' })), timeoutMs));
+    await Promise.race([ready, timeout]);
+    for (const canvas of node.querySelectorAll('canvas')) {
+      if (!canvas.width || !canvas.height) throw Object.assign(new Error('La etiqueta se renderizó vacía.'), { code:'label-canvas-empty' });
+    }
+  }
+  async function executeCanonicalLabelPrint(preparedJob, providerId = 'system') {
+    const job = await buildUniversalLabelPrintNode(preparedJob.product, preparedJob.document);
+    await waitForLabelPrintNodeReady(job.node);
+    const result = await handoffPrint({
+      node:job.node.cloneNode(true),
+      media:'label',
+      mediaWidthMm:job.media.widthMm,
+      mediaHeightMm:job.media.heightMm,
+      widthMm:job.document.paper.widthMm,
+      heightMm:job.document.paper.heightMm,
+      copiesHandled:true,
+      printPlan:job.plan,
+      filename:`CLICK360_etiquetas_${slug(preparedJob.product.name || preparedJob.product.code)}_${today()}.pdf`
+    }, providerId);
+    return { ...job, result, fingerprint:preparedJob.fingerprint };
+  }
+  function showQuickLabelPrintConfirm({ product, template, profile, quantity = 1, startSlot = 1, action = 'print' } = {}) {
+    return new Promise((resolve) => {
+      const isPdf = action === 'pdf';
+      const profileName = profile?.name || 'Perfil guardado';
+      showModal(`<div class="modalHeader"><div><h2>${isPdf ? 'Guardar PDF' : 'Imprimir etiqueta'}</h2><p class="fieldHint">Confirma producto, plantilla y papel antes de continuar.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+        <div class="formGrid">
+          <div class="field full"><label>Producto</label><input readonly value="${escapeHtml(product?.name || 'Producto')} (${escapeHtml(product?.code || '')})"></div>
+          <div class="field full"><label>Plantilla</label><input readonly value="${escapeHtml(template?.name || 'Predeterminada')}"></div>
+          <div class="field full"><label>Papel</label><input readonly value="${escapeHtml(profileName)}"></div>
+          <div class="field"><label>Cantidad</label><input id="quickLabelQuantity" type="number" min="1" max="500" step="1" inputmode="numeric" value="${Math.max(1, Number(quantity) || 1)}"></div>
+          <div class="field"><label>Empezar en casilla</label><input id="quickLabelStartSlot" type="number" min="1" max="120" step="1" value="${Math.max(1, Number(startSlot) || 1)}"></div>
+        </div>
+        <div class="labelPrimaryActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn primary" id="quickLabelConfirm">${isPdf ? `${icon('file-down')} Guardar PDF` : `${icon('printer')} Imprimir`}</button></div>`);
+      $('#quickLabelConfirm').onclick = () => {
+        closeModal();
+        resolve({
+          confirmed:true,
+          quantity:Math.max(1, Number($('#quickLabelQuantity')?.value || 1)),
+          startSlot:Math.max(1, Number($('#quickLabelStartSlot')?.value || 1))
+        });
+      };
+      $$('[data-close]').forEach((button) => { button.onclick = () => { closeModal(); resolve({ confirmed:false }); }; });
+    });
+  }
+  async function runQuickLabelPrintFlow({ product, templateId = '', action = 'print', quantity = 1, startSlot = 1 } = {}) {
+    const businessId = currentBusiness()?.id;
+    if (!businessId) { toast('Selecciona un negocio activo primero.', 'err'); return null; }
+    if (!product?.id) { toast('Producto no encontrado.', 'err'); return null; }
+    try {
+      const templates = labelTemplatesForBiz(businessId);
+      const template = templates.find((item) => item.id === templateId) || templates.find((item) => item.isDefault) || null;
+      if (!template) {
+        toast('Configura y guarda una plantilla primero. Usa el botón QR dorado.', 'ok');
+        openLabelModal(product);
+        return null;
+      }
+      const profile = resolveLabelPrintProfile(businessId, template, '');
+      if (!profile?.universalPaper) {
+        toast('Selecciona o configura un perfil de papel antes de imprimir.', 'err');
+        openLabelModal(product, template.id);
+        return null;
+      }
+      const confirmation = await showQuickLabelPrintConfirm({ product, template, profile, quantity, startSlot, action });
+      if (!confirmation.confirmed) return null;
+      const prepared = await prepareLabelPrintJob({
+        product,
+        template,
+        templateId:template.id,
+        quantity:confirmation.quantity,
+        startSlot:confirmation.startSlot,
+        businessId
+      });
+      return executeCanonicalLabelPrint(prepared, action === 'pdf' ? 'pdf' : 'system');
+    } catch (error) {
+      console.warn('Quick label print failed:', error);
+      toast(error.message || 'No se pudo imprimir.', 'err');
+      return null;
+    }
+  }
   async function buildUniversalLabelPrintNode(product, sourceDocument) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     const documentModel = canvasApi.normalizeDocument(sourceDocument);
@@ -8664,13 +8924,16 @@ function parseMoney(value) {
     return { node:wrap, plan, document:documentSnapshot, media };
   }
   async function printUniversalLabels(product, sourceDocument, providerId = 'system') {
-    const job = await buildUniversalLabelPrintNode(product, sourceDocument);
-    const result = await handoffPrint({
-      node: job.node.cloneNode(true), media:'label', mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm,
-      widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm, copiesHandled:true,
-      printPlan:job.plan, filename:`CLICK360_lienzo_${today()}.pdf`
-    }, providerId);
-    return { ...job, result };
+    const businessId = currentBusiness()?.id || product?.businessId || '';
+    const prepared = await prepareLabelPrintJob({
+      product,
+      sourceDocument,
+      quantity:sourceDocument?.quantity || 1,
+      startSlot:sourceDocument?.startSlot || 1,
+      businessId
+    });
+    const executed = await executeCanonicalLabelPrint(prepared, providerId);
+    return { ...executed, plan:prepared.plan, document:prepared.document, media:prepared.media };
   }
   async function printUniversalCalibration(sourceDocument, providerId = 'system') {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
@@ -8691,12 +8954,11 @@ function parseMoney(value) {
     if (!businessId || (product?.businessId && product.businessId !== businessId)) return toast('El producto no pertenece al negocio activo.', 'err');
 
     if (options.directPrint || options.directPdf) {
-      const templates = labelTemplatesForBiz(businessId);
-      const template = templates.find((t) => t.id === initialTemplateId) || templates.find((t) => t.isDefault) || null;
-      if (!template) return toast('Plantilla no encontrada.', 'err');
-      const documentModel = universalLabelDocument(template);
-      const providerId = options.directPdf ? 'pdf' : 'system';
-      return printUniversalLabels(product, documentModel, providerId);
+      return runQuickLabelPrintFlow({
+        product,
+        templateId:initialTemplateId,
+        action:options.directPdf ? 'pdf' : 'print'
+      });
     }
     const templates = labelTemplatesForBiz(businessId);
     const initialTemplate = templates.find((template) => template.id === initialTemplateId) || templates.find((template) => template.isDefault) || null;
@@ -8794,8 +9056,12 @@ function parseMoney(value) {
     normalize:(input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.normalizeDocument(input),
     buildPlan:(product, input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.buildPrintPlan([{ product, copies:input?.quantity || 1 }], input, { startSlot:input?.startSlot || 1 }),
     render:(product, input) => buildUniversalLabelPrintNode(product, input),
+    prepare:prepareLabelPrintJob,
+    execute:executeCanonicalLabelPrint,
     open:(product) => openLabelModal(product)
   };
+  window.click360PrepareLabelPrintJob = prepareLabelPrintJob;
+  window.click360ExecuteCanonicalLabelPrint = executeCanonicalLabelPrint;
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
   function printPaperFromOptions(options = {}) {
     return {
