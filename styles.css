@@ -454,7 +454,6 @@ a{color:inherit;text-decoration:none}
 	.printSheet[data-print-media="receipt-60"]{width:60mm!important}
 	.printSheet[data-print-media="receipt-76"]{width:76mm!important}
 	.printSheet[data-print-media="label"]{width:auto!important}
-	@page{size:A4;margin:8mm}
 }
 
 

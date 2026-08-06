@@ -7660,8 +7660,9 @@ function parseMoney(value) {
 	    let previewGeneration = 0;
 	    const updatePreview = async () => {
 	       const generation = ++previewGeneration;
-	       const result = await drawLabelOnCanvas(canvas, product, getOptions(2));
-	       if (generation !== previewGeneration || !result) return;
+	       try {
+	         const result = await drawLabelOnCanvas(canvas, product, getOptions(2));
+	         if (generation !== previewGeneration || !result) return;
 	       const selectedKey = $('#labelElementSelect').value;
 	       const selected = result.layout[selectedKey];
 		       if (selected?.visible !== false && Number(getOptions().contentRotation) === 0) {
@@ -7681,6 +7682,9 @@ function parseMoney(value) {
 	       const qr = editorLayout.qr;
        $('#labelQrWarning').textContent = Number(qr.width || 0) < 90 ? 'Aumenta el QR: por debajo de 90 px puede perder legibilidad.' : '';
        updateSheetPreview();
+	       } catch (err) {
+	         console.warn('updatePreview error:', err);
+	       }
     };
 
     // Auto sync qrBgColor to labelBgColor if they were matching
