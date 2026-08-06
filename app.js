@@ -516,6 +516,18 @@ function parseMoney(value) {
     return neg ? -n : Math.round(n * 100) / 100;
   }
   function fmt(value) { return `$${(Number(value)||0).toFixed(2)}`; }
+  // Format price for label printing according to template priceFormat setting
+  function labelFmt(product, priceFormat) {
+    const cash = Number(product?.price || 0);
+    const card = Number(product?.cardPrice || 0);
+    const hasCard = card > 0 && Math.abs(card - cash) > 0.001;
+    switch (priceFormat) {
+      case 'abbr': return hasCard ? `Ef.${fmt(cash)}·Tj.${fmt(card)}` : fmt(cash);
+      case 'noLabel': return hasCard ? `${fmt(cash)}·${fmt(card)}` : fmt(cash);
+      case 'cash': return fmt(cash);
+      default: return hasCard ? `Efectivo ${fmt(cash)} · Tarjeta ${fmt(card)}` : fmt(cash);
+    }
+  }
   function toast(msg, type='ok') {
     toastEl.textContent = msg;
     toastEl.className = `toast show ${type}`;
@@ -8670,11 +8682,14 @@ function parseMoney(value) {
     const templateDoc = template?.id || template?.layout || template?.universalDocument ? universalDocumentFromTemplate(template) : null;
     const templatePaper = templateDoc?.paper;
     if (templatePaper && canvasApi) {
-      const validation = smartPrint?.validatePaperProfile(canvasApi.toPrintPaper(templateDoc));
-      if (validation?.valid) {
+      // Accept template paper even with warnings (multi-column without mediaWidth gets a warning
+      // but is still valid enough for a quick provisional print from the quick-print button).
+      const validation = smartPrint?.validatePaperProfile(canvasApi.toPrintPaper(templateDoc)) || { valid:true };
+      const hasBlockingErrors = (validation.errors || []).some(e => /no está disponible|inválido/i.test(e));
+      if (!hasBlockingErrors) {
         return {
           id:'template-paper',
-          name:`${template?.name || 'Plantilla'} · ${templatePaper.columns} col · ${templatePaper.widthMm}×${templatePaper.heightMm} mm`,
+          name:`${template?.name || 'Plantilla'} · ${templatePaper.columns} col${templatePaper.columns > 1 ? 's' : ''} · ${templatePaper.widthMm}×${templatePaper.heightMm} mm`,
           universalPaper:templatePaper,
           status:'provisional'
         };
@@ -8731,7 +8746,8 @@ function parseMoney(value) {
     useStock = false,
     businessId = currentBusiness()?.id,
     usedSlots = [],
-    sourceDocument = null
+    sourceDocument = null,
+    priceFormat = ''
   } = {}) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvasApi) throw Object.assign(new Error('El motor de etiquetas no está disponible. Recarga CLICK 360.'), { code:'label-engine-unavailable' });
@@ -8748,8 +8764,27 @@ function parseMoney(value) {
       throw Object.assign(new Error('Plantilla no encontrada. Guarda un diseño primero.'), { code:'label-template-missing' });
     }
     const profile = resolveLabelPrintProfile(businessId, resolvedTemplate || {}, paperProfileId);
+    // If no saved profile found, fall back to the template/sourceDocument paper itself.
+    // This ensures print still works even without an explicit profile saved.
     if (!profile?.universalPaper) {
-      throw Object.assign(new Error('Selecciona o configura un perfil de papel antes de imprimir.'), { code:'label-profile-missing' });
+      const fallbackDoc = sourceDocument
+        ? canvasApi.normalizeDocument(sourceDocument)
+        : (resolvedTemplate ? universalDocumentFromTemplate(resolvedTemplate) : null);
+      const fallbackPaper = fallbackDoc?.paper;
+      if (fallbackPaper?.widthMm > 0 && fallbackPaper?.heightMm > 0) {
+        console.warn('[CLICK360] No saved profile — using document paper as provisional profile');
+        // Use document paper directly, skip profile merge step
+        let documentModel = fallbackDoc;
+        documentModel = canvasApi.normalizeDocument({ ...documentModel, quantity: resolveLabelCopyResult(quantity, product.qty, useStock).count || 1, startSlot: Math.max(1, Number(startSlot) || 1) });
+        const qty = resolveLabelCopyResult(quantity, product.qty, useStock);
+        const groups = [{ product, copies: qty.count || 1 }];
+        const plan = canvasApi.buildPrintPlan(groups, documentModel, { startSlot: documentModel.startSlot, usedSlots });
+        if (!plan.valid || !plan.count || !plan.pages?.length) {
+          throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas. Verifica la plantilla.'), { code:'label-plan-invalid' });
+        }
+        return { product, template:resolvedTemplate, profile:{ id:'inline-paper', universalPaper:fallbackPaper, name:'Papel de plantilla' }, document:documentModel, plan, groups, quantity:qty, media:universalMediaSize(documentModel), fingerprint:canvasApi.planFingerprint(plan) };
+      }
+      throw Object.assign(new Error('Selecciona o configura un perfil de papel antes de imprimir. Abre el botón QR dorado y elige un perfil.'), { code:'label-profile-missing' });
     }
     const quantityResult = resolveLabelCopyResult(quantity, product.qty, useStock);
     if (!quantityResult.valid || quantityResult.count < 1) {
@@ -8759,11 +8794,14 @@ function parseMoney(value) {
       ? canvasApi.normalizeDocument(sourceDocument)
       : universalDocumentFromTemplate(resolvedTemplate);
     documentModel = mergeUniversalPaperIntoDocument(documentModel, profile.universalPaper);
+    const resolvedPriceFormat = priceFormat || resolvedTemplate?.priceFormat || 'full';
     documentModel = canvasApi.normalizeDocument({
       ...documentModel,
       quantity:quantityResult.count,
       startSlot:Math.max(1, Number(startSlot) || 1)
     });
+    // Attach priceFormat as non-schema metadata (preserved through cloneNode/snapshot)
+    documentModel = { ...documentModel, priceFormat:resolvedPriceFormat };
     const groups = [{ product, copies:quantityResult.count }];
     const plan = canvasApi.buildPrintPlan(groups, documentModel, {
       startSlot:documentModel.startSlot,
@@ -8874,7 +8912,8 @@ function parseMoney(value) {
         templateId:template.id,
         quantity:confirmation.quantity,
         startSlot:confirmation.startSlot,
-        businessId
+        businessId,
+        priceFormat:template.priceFormat || 'full'
       });
       return executeCanonicalLabelPrint(prepared, action === 'pdf' ? 'pdf' : 'system');
     } catch (error) {
@@ -8906,7 +8945,7 @@ function parseMoney(value) {
           const labelCanvas = document.createElement('canvas');
           await canvasApi.renderLabelToCanvas(labelCanvas, documentSnapshot, {
             product: cell.item.product,
-            price: fmt(cell.item.product?.price || 0),
+            price: labelFmt(cell.item.product, documentSnapshot.priceFormat),
             sku: cell.item.product?.code || '',
             qrPayload: productPayload(cell.item.product)
           });
@@ -8924,16 +8963,21 @@ function parseMoney(value) {
     return { node:wrap, plan, document:documentSnapshot, media };
   }
   async function printUniversalLabels(product, sourceDocument, providerId = 'system') {
-    const businessId = currentBusiness()?.id || product?.businessId || '';
-    const prepared = await prepareLabelPrintJob({
-      product,
-      sourceDocument,
-      quantity:sourceDocument?.quantity || 1,
-      startSlot:sourceDocument?.startSlot || 1,
-      businessId
-    });
-    const executed = await executeCanonicalLabelPrint(prepared, providerId);
-    return { ...executed, plan:prepared.plan, document:prepared.document, media:prepared.media };
+    // Direct path: caller already has a fully-calibrated document (editor or runQuickLabelPrintFlow).
+    // Do NOT re-resolve the profile — calibrated paper is already baked into sourceDocument.
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvasApi) throw Object.assign(new Error('El motor de etiquetas no está disponible. Recarga CLICK 360.'), { code:'label-engine-unavailable' });
+    const documentModel = canvasApi.normalizeDocument(sourceDocument);
+    const job = await buildUniversalLabelPrintNode(product, documentModel);
+    await waitForLabelPrintNodeReady(job.node);
+    const result = await handoffPrint({
+      node:job.node.cloneNode(true), media:'label',
+      mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm,
+      widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm,
+      copiesHandled:true, printPlan:job.plan,
+      filename:`CLICK360_etiquetas_${slug(product?.name || product?.code || 'etiqueta')}_${today()}.pdf`
+    }, providerId);
+    return { ...job, result };
   }
   async function printUniversalCalibration(sourceDocument, providerId = 'system') {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
@@ -8994,6 +9038,7 @@ function parseMoney(value) {
           heightMm:universalDocument.paper.heightMm, columns:universalDocument.paper.columns, rows:universalDocument.paper.rows,
           paperType:universalDocument.paper.id, dpi:universalDocument.paper.dpi,
           renderer:'universal-mm-v2', universalProfileId:activeProfileId || '', schemaVersion:2,
+          priceFormat:existing?.priceFormat || initialTemplate?.priceFormat || 'full',
           createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString(), isDefault:existing?.isDefault === true
         };
         const index = state.settings.labelTemplates.findIndex((item) => item.id === template.id && item.businessId === businessId);
