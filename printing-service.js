@@ -423,13 +423,25 @@
       await waitForResources(element);
       try {
         const html2canvas = await ensureHtml2canvas();
+        // Force-resolve any dark-mode CSS vars so html2canvas captures correctly
+        element.querySelectorAll('*').forEach((el) => {
+          const cs = window.getComputedStyle(el);
+          const cl = cs.color; const bg = cs.backgroundColor;
+          if (!el.style.color && cl && cl !== 'rgba(0, 0, 0, 0)') el.style.color = cl;
+          if (!el.style.backgroundColor && bg && bg !== 'rgba(0, 0, 0, 0)') el.style.backgroundColor = bg;
+        });
         const canvas = await html2canvas(element, {
           scale: 2,
           useCORS: true,
+          allowTaint: true,
           logging: false,
           backgroundColor: '#ffffff',
-          windowWidth: Math.ceil(element.scrollWidth) + 2,
-          windowHeight: Math.ceil(element.scrollHeight) + 2
+          windowWidth: Math.max(Math.ceil(element.scrollWidth), 200) + 2,
+          windowHeight: Math.max(Math.ceil(element.scrollHeight), 200) + 2,
+          x: 0,
+          y: 0,
+          scrollX: 0,
+          scrollY: 0
         });
         const normalized = normalizedCanvas(canvas);
         const ink = canvasInkBounds(normalized);

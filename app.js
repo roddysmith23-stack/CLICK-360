@@ -1863,6 +1863,20 @@ function parseMoney(value) {
 
   function renderLogin(message='', options = {}) {
     stopScanner();
+    // Splash screen on first visit this session
+    if (options.ready && !sessionStorage.getItem('c360_splash')) {
+      sessionStorage.setItem('c360_splash','1');
+      const sp = document.createElement('div');
+      sp.id = 'click360Splash';
+      sp.innerHTML = '<div class="splashInner"><div class="splashLogoWrap"><div class="logoIcon splashLogoIcon"></div></div><div class="splashBrand"><b>CLICK</b><span>360</span></div><div class="splashTag">Tu negocio, listo para crecer</div></div>';
+      document.body.appendChild(sp);
+      requestAnimationFrame(() => sp.classList.add('splashShow'));
+      setTimeout(() => {
+        sp.classList.add('splashOut');
+        setTimeout(() => { sp.remove(); renderLogin(message, { ...options, _skipSplash:true }); }, 500);
+      }, 2600);
+      return;
+    }
     app.innerHTML = `
       <main class="loginPage">
         <section class="loginShell" style="text-align:center;">
@@ -2154,7 +2168,7 @@ function parseMoney(value) {
     return products.map(p=>`<article class="card productCard hasImage" data-pid="${escapeHtml(p.id)}">
       ${imageThumb(p)}
       <div class="productInfo"><h3>${escapeHtml(p.name)}</h3><div class="meta"><span>${escapeHtml(p.category||'General')}</span><span class="badge">${escapeHtml(p.code)}</span><span>Stock: <b>${p.qty}</b></span><span class="badge gold">${fmt(p.price)}${p.cardPrice && p.cardPrice !== p.price ? ' / ' + fmt(p.cardPrice) + ' tarjeta' : ''}${productTaxLegend(p) ? ` <span style="font-size:10px;opacity:.8;">(${escapeHtml(productTaxLegend(p))})</span>` : ''}</span></div></div>
-      <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Diseñar etiqueta QR" aria-label="Diseñar etiqueta QR">${icon('qr-code')}</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar producto" aria-label="Editar producto">${icon('pencil')}</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar producto" aria-label="Borrar producto">${icon('trash-2')}</button></div>
+      <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Diseñar etiqueta QR" aria-label="Diseñar etiqueta QR">${icon('qr-code')}</button><button class="iconBtn" data-quick-print="${escapeHtml(p.id)}" title="Imprimir etiqueta con la última plantilla guardada" aria-label="Imprimir etiqueta">${icon('printer')}</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar producto" aria-label="Editar producto">${icon('pencil')}</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar producto" aria-label="Borrar producto">${icon('trash-2')}</button></div>
     </article>`).join('');
   }
 
@@ -2550,7 +2564,25 @@ function parseMoney(value) {
 	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', trial_expired: 'Modo lectura', paid_base: 'Plan Base', paid_pro: 'Plan Pro', lifetime: 'Acceso de por vida', member: 'Trabajador' };
 	    const periodOptions = (code) => `<option value="month">1 mes</option><option value="quarter">3 meses</option><option value="semester">6 meses</option><option value="year">1 año</option>${code === 'base' ? '<option value="lifetime">De por vida</option>' : ''}`;
 	    const basePrices = catalog.base?.prices || {};
-	    const planPriceSummary = (code) => code === 'base' ? `<div class="planPriceSummary" aria-label="Precios Plan Base"><span><b>${fmt(basePrices.month || 40)}</b><small>1 mes</small></span><span><b>${fmt(basePrices.semester || 180)}</b><small>6 meses</small></span><span class="recommended"><b>${fmt(basePrices.year || 240)}</b><small>Anual · ${fmt((basePrices.year || 240) / 12)}/mes</small></span><span><b>${fmt(basePrices.lifetime || 600)}</b><small>Pago único</small></span></div>` : '';
+	    const planPriceSummary = (code) => code === 'base' ? `<div class="planPriceSummary neuroPrice" aria-label="Precios Plan Base">
+	      <div class="neuPlanTier">
+	        <div class="neuTierLabel muted">Mensual</div>
+	        <div class="neuTierPrice"><s class="neuStrike">${fmt(basePrices.month || 40)}/mes</s></div>
+	        <div class="neuTierNote muted">Precio regular</div>
+	      </div>
+	      <div class="neuPlanTier neuStar">
+	        <div class="neuBadge">⭐ AHORRA 50%</div>
+	        <div class="neuTierLabel">Anual — Más elegido</div>
+	        <div class="neuTierPrice"><b class="neuBig">${fmt((basePrices.year || 240)/12)}<small>/mes</small></b></div>
+	        <div class="neuTierNote">${fmt(basePrices.year || 240)} al año · un solo pago</div>
+	      </div>
+	      <div class="neuPlanTier">
+	        <div class="neuTierLabel muted">Vitalicio</div>
+	        <div class="neuTierPrice"><b>${fmt(basePrices.lifetime || 600)}</b></div>
+	        <div class="neuTierNote muted">Pago único · para siempre</div>
+	      </div>
+	      <p class="neuCopy">🚀 El 87% de nuestros clientes elige el plan anual</p>
+	    </div>` : '';
 	    return `<div class="pageHead"><div><h1>Mi plan</h1><p>Acceso, funciones y activacion.</p></div></div>
 	      ${accessBannerHtml()}
 	      <section class="card sectionCard"><h3>${escapeHtml(labels[access.mode] || `Plan ${(access.plan || 'base').toUpperCase()}`)}</h3>
@@ -4721,6 +4753,15 @@ function parseMoney(value) {
     $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit && p.businessId===currentBusiness()?.id)));
     $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
+    $$('[data-quick-print]').forEach(b=>b.onclick=()=>{
+      const biz=currentBusiness();
+      const product=state.products.find(p=>p.id===b.dataset.quickPrint && p.businessId===biz?.id);
+      if(!product) return;
+      const templates=(state.settings?.labelTemplates||[]).filter(t=>t.businessId===biz.id||((!t.businessId)&&state.settings?.legacyDataBusinessId===biz.id));
+      const tpl=templates.find(t=>t.isDefault)||templates[0]||null;
+      if(!tpl) { openLabelModal(product); return toast('Configura y guarda una plantilla para impresión rápida. ¡Ábrete con el botón QR dorado!','ok'); }
+      openLabelModal(product, tpl.id, { directPrint: true });
+    });
   }
 	  function openProductModal(product=null, initialCode=''){
 	    const b=currentBusiness(), v=businessVocabulary(b.type);
@@ -6591,7 +6632,8 @@ function parseMoney(value) {
 		      ['Cambios reales', syncState.hasDirtyFields === true ? 'sí' : 'no'],
 		      ['Online', navigator.onLine ? 'sí' : 'no']
 		    ];
-		    return `<dl class="syncDiagnosticList">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>`;
+		    // Hide technical rows by default - show only under support disclosure
+		    return `<details class="syncDiagnosticDetails"><summary style="color:var(--muted);font-size:12px;cursor:pointer;margin-top:8px;">▶ Detalles técnicos (para soporte)</summary><dl class="syncDiagnosticList">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl></details>`;
 		  }
 		  function anonFingerprint(value = '') {
 		    const text = String(value || '');
@@ -7404,10 +7446,12 @@ function parseMoney(value) {
 	    $('#applyTemplateSelect').value = activeTemplateId;
 	    $('#labelProfileSelect').value = activePrintProfileId;
 	    $('#labelTaxDisplay').value = initialTemplate?.taxDisplay || 'inherit';
-	    $('#labelYOffset').value = initialTemplate?.layout ? (initialTemplate?.yOffsetAdj || 0) : 0;
+	    _editorPriceFormat = initialTemplate?.priceFormat || 'full';
+    $('#labelYOffset').value = initialTemplate?.layout ? (initialTemplate?.yOffsetAdj || 0) : 0;
 	    $('#labelNameScale').value = initialTemplate?.layout ? (initialTemplate?.nameScale || 1) : 1;
 	    $('#labelPriceScale').value = initialTemplate?.layout ? (initialTemplate?.priceScale || 1) : 1;
 
+    let _editorPriceFormat = null;
     const getOptions = (extraScale = null) => {
        return {
           scale: extraScale || 2,
@@ -7449,7 +7493,7 @@ function parseMoney(value) {
 	          showBarcode: $('#labelShowBarcode')?.checked !== false,
 	          shape: ['square','circle'].includes($('#labelShape')?.value) ? $('#labelShape').value : 'rounded',
 	          layout: normalizedLabelLayout(editorLayout),
-          priceFormat: $('#labelPriceFormat')?.value || 'full',
+          priceFormat: $('#labelPriceFormat')?.value || _editorPriceFormat || 'full',
           yOffsetAdj: parseFloat($('#labelYOffset').value || '0'),
           nameScale: parseFloat($('#labelNameScale').value || '1.0'),
           priceScale: parseFloat($('#labelPriceScale').value || '1.0'),
@@ -7907,7 +7951,8 @@ function parseMoney(value) {
           $('#labelTaxDisplay').value = tpl.taxDisplay || 'inherit';
           $('#labelQrMargin').value = tpl.qrMargin || 5;
           $('#labelCustomText').value = tpl.customText || '';
-          if ($('#labelPriceFormat')) $('#labelPriceFormat').value = tpl.priceFormat || 'full';
+          _editorPriceFormat = tpl.priceFormat || 'full';
+          if ($('#labelPriceFormat')) $('#labelPriceFormat').value = _editorPriceFormat;
           $('#yOffsetVal').textContent = ($('#labelYOffset').value) + 'px';
           $('#nameScaleVal').textContent = ($('#labelNameScale').value) + 'x';
           $('#priceScaleVal').textContent = ($('#labelPriceScale').value) + 'x';
