@@ -8582,27 +8582,18 @@ function parseMoney(value) {
         if (options.directPrint) setTimeout(() => runPrintJob(), 150);
         if (options.directPdf) setTimeout(() => runPrintJob('pdf'), 150);
 
-	    $('#printAll').onclick = async () => {
+	    $('#printAll').onclick = () => {
 	       const preflight = updateSheetPreview();
 	       if (preflight.blocking) return toast('Corrige los errores rojos antes de imprimir el catálogo.', 'err');
 	       const products = productsForBiz(editorBusinessId);
 	       if (!products.length) return toast('No hay productos para imprimir.', 'err');
-	       const options = getOptions();
-	       const canonicalDoc = universalDocumentFromAdvancedState(product, options, 1);
-	       if (!canonicalDoc) return toast('El motor de etiquetas no está disponible. Recarga CLICK 360.', 'err');
-	       try {
-	         const job = await buildUniversalLabelPrintNode(products.map((candidate) => ({ product:candidate, copies:1 })), canonicalDoc);
-	         await waitForLabelPrintNodeReady(job.node);
-	         return await handoffPrint({
-	           node:job.node.cloneNode(true), media:'label',
-	           mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm,
-	           widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm,
-	           copiesHandled:true, printPlan:job.plan,
-	           filename:`CLICK360_catalogo_etiquetas_${today()}.pdf`
-	         }, 'system');
-	       } catch (error) {
-	         return toast(error.message || 'No se pudo preparar el catálogo.', 'err');
-	       }
+	       // Intentionally NOT on the single-document canonical builder: catalog printing needs
+	       // per-product dynamic content (variant, stock, tax legend, product photo) resolved fresh
+	       // for every item, which the shared-document Universal renderer does not support per-cell
+	       // (only name/price/sku/qr/barcode vary per cell there). printLabels()/drawLabelOnCanvas()
+	       // already do this correctly per cell and now share the single price formatter (labelFmt)
+	       // with the canonical pipeline — see the labelFmt fix above.
+	       printLabels(products.map((candidate) => ({ product:candidate, copies:1 })), getOptions(), 'system');
 	    };
 
 	    $('#downloadLabelPng').onclick = async () => {
@@ -9401,10 +9392,13 @@ function parseMoney(value) {
   function buildLabelPrintPlan(groups, options = {}) { return buildLabelSheetPlan(groups, options); }
   window.click360BuildLabelSheetPlan = buildLabelSheetPlan;
   window.click360BuildLabelPrintPlan = buildLabelPrintPlan;
-  // Deprecated: no UI entry point calls this anymore (see runPrintJob/printAll above, which build
-  // a Universal document via universalDocumentFromAdvancedState() and print through
-  // buildUniversalLabelPrintNode()+handoffPrint — the single canonical engine). Kept only in case
-  // external/legacy code still references it; do not wire new callers to it.
+  // Single-product print/PDF (runPrintJob) uses the canonical buildUniversalLabelPrintNode()
+  // pipeline instead — see universalDocumentFromAdvancedState() above. This function stays live
+  // only for catalog printing (#printAll), which genuinely needs per-product dynamic content
+  // (variant/stock/tax/photo) that the shared-document canonical builder does not resolve
+  // per cell; see the comment on the #printAll handler for the full reasoning. Both paths now
+  // share the same price formatter (labelFmt), so there is one formatting source of truth even
+  // though catalog printing keeps its own per-cell render loop.
   async function printLabels(groups, options = {}, providerId = 'system'){
     const root=$('#printRoot') || document.createElement('div');
     root.id='printRoot';

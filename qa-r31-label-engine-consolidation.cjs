@@ -8,16 +8,24 @@ const firebase = fs.readFileSync('firebase-service.js', 'utf8');
 const canvas = fs.readFileSync('universal-label-canvas.js', 'utf8');
 const rules = fs.readFileSync('firestore.rules', 'utf8');
 
-// --- Single label engine: advanced wizard print/PDF must route through the canonical
-// buildUniversalLabelPrintNode()+handoffPrint pipeline, not the legacy printLabels() DOM builder.
+// --- Single label engine for single-product print/PDF: the advanced wizard's primary actions
+// (printOne/savePdfBtn) must route through the canonical buildUniversalLabelPrintNode()+
+// handoffPrint pipeline, not the legacy printLabels() DOM builder.
 assert(app.includes('const canonicalDoc = universalDocumentFromAdvancedState(product, options, preflight.quantity.count);'),
   'advanced wizard printOne/savePdfBtn must build a canonical Universal document');
 assert(app.includes('const job = await buildUniversalLabelPrintNode([{ product, copies:preflight.quantity.count }], canonicalDoc);'),
   'advanced wizard single-print must call the canonical node builder, not printLabels()');
-assert(app.includes('const job = await buildUniversalLabelPrintNode(products.map((candidate) => ({ product:candidate, copies:1 })), canonicalDoc);'),
-  'advanced wizard catalog print must call the canonical node builder, not printLabels()');
 assert(!/runPrintJob = async[\s\S]{0,1400}return printLabels\(/.test(app),
   'advanced wizard single-print regressed to the legacy printLabels() engine');
+// Catalog printing (#printAll) intentionally stays on printLabels()/drawLabelOnCanvas(): it needs
+// per-product dynamic content (variant/stock/tax/photo) resolved fresh per cell, which the
+// shared-document canonical builder does not support per cell (only name/price/sku/qr/barcode
+// vary per cell there). Baking those fields once from a single product — as an earlier revision
+// of this fix did — would print the WRONG variant/stock/photo on every item except one. Both
+// paths share labelFmt() for price, so this is a scoped, documented, non-duplicating exception,
+// not a second price/QR engine.
+assert(/\$\('#printAll'\)\.onclick = \(\) => \{[\s\S]{0,900}printLabels\(products\.map/.test(app),
+  'catalog print must keep resolving each product\'s own variant/stock/tax/photo via printLabels(), not a single shared document');
 
 // --- Single price formatter: no independent duplicate of the dual cash/card switch.
 assert(app.includes("price: labelFmt(product, options.priceFormat || 'full'),"),
