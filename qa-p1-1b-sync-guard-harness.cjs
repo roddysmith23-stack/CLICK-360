@@ -101,6 +101,11 @@ assert(storage.includes('materialHash: String(metadata.materialHash'), 'IndexedD
 assert(storage.includes('pendingCreatedAtMs: Number(metadata.pendingCreatedAtMs'), 'IndexedDB snapshot stores pending creation time');
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');
 assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is current candidate');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r20'"), 'service worker cache is current');
+assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r29'"), 'app asset version matches recovery release');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r29'"), 'service worker cache matches recovery release');
+assert(app.includes('window.click360GetLocalBusinessSyncStats = localBusinessSyncStats'), 'app exposes local business sync stats');
+assert(app.includes('if (localStats.meaningful === false)'), 'empty local device auto-recovers from cloud');
+assert(firebase.includes('preventedEmptyOverwrite: true'), 'firebase layer blocks empty local overwrite');
+assert(firebase.includes("reason: 'manual_keep_local_after_readback'"), 'manual keep-local requires remote readback');
 
-console.log('PASS P1.1b sync guard harness: stale pending/conflict locks clear, real pending/conflicts remain protected');
+console.log('PASS P1.1b sync guard harness: stale locks clear, true conflicts remain protected, empty devices cannot overwrite cloud');
