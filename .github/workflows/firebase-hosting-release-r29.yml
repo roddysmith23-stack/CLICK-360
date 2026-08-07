@@ -60,4 +60,5 @@ jobs:
         run: npx firebase-tools deploy --only hosting --project click-360 --non-interactive
 
       - name: Confirm no Rules or Functions deployment requested
-        run: echo 'Deployment scope completed: Firebase Hosting only.'
+        run: |
+          echo "Deployment scope completed: Firebase Hosting only."
