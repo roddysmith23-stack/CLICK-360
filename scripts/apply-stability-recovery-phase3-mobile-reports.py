@@ -58,10 +58,10 @@ replace_once(
     'calculator pinch captures width and height',
 )
 
-replace_once(
+regex_once(
     'app.js',
-    """          const newH = Math.max(220, Math.min(window.innerHeight - 40, Math.round(pinchStart.h * Math.hypot(dx, dy) / pinchStart.dist)));\n          calcSheet.style.height = newH + 'px';\n          calcSheet.style.maxHeight = newH + 'px';""",
-    """          const scale = Math.max(0.55, Math.min(1.8, Math.hypot(dx, dy) / Math.max(1, pinchStart.dist)));\n          applyCalculatorWindowSize(Math.round(pinchStart.w * scale), Math.round(pinchStart.h * scale));""",
+    r"\s*const newH = Math\.max\(220, Math\.min\(window\.innerHeight - 40, Math\.round\(pinchStart\.h \* Math\.hypot\(dx, dy\) / pinchStart\.dist\)\)\);\s*\n\s*calcSheet\.style\.height = newH \+ 'px';\s*\n\s*calcSheet\.style\.maxHeight = newH \+ 'px';",
+    "\n          const scale = Math.max(0.55, Math.min(1.8, Math.hypot(dx, dy) / Math.max(1, pinchStart.dist)));\n          applyCalculatorWindowSize(Math.round(pinchStart.w * scale), Math.round(pinchStart.h * scale));",
     'calculator pinch resizes whole window',
 )
 
@@ -72,14 +72,13 @@ replace_once(
     'calculator pinch size persistence',
 )
 
-replace_once(
+regex_once(
     'app.js',
-    """        const newH = Math.max(220, Math.min(window.innerHeight - 40, calcSheet.offsetHeight + (ev.deltaY > 0 ? -24 : 24)));\n        calcSheet.style.height = newH + 'px';\n        calcSheet.style.maxHeight = newH + 'px';""",
-    """        const factor = ev.deltaY > 0 ? 0.92 : 1.08;\n        applyCalculatorWindowSize(Math.round(calcSheet.offsetWidth * factor), Math.round(calcSheet.offsetHeight * factor));\n        persistCalculatorWindowSize();""",
+    r"\s*const newH = Math\.max\(220, Math\.min\(window\.innerHeight - 40, calcSheet\.offsetHeight \+ \(ev\.deltaY > 0 \? -24 : 24\)\)\);\s*\n\s*calcSheet\.style\.height = newH \+ 'px';\s*\n\s*calcSheet\.style\.maxHeight = newH \+ 'px';",
+    "\n        const factor = ev.deltaY > 0 ? 0.92 : 1.08;\n        applyCalculatorWindowSize(Math.round(calcSheet.offsetWidth * factor), Math.round(calcSheet.offsetHeight * factor));\n        persistCalculatorWindowSize();",
     'calculator desktop proportional resize',
 )
 
-# Saved and dragged positions must keep the whole calculator inside the viewport.
 replace_once(
     'app.js',
     "calcSheet.style.left = Math.max(0, Math.min(window.innerWidth - 220, savedPos.x)) + 'px';\n        calcSheet.style.top = Math.max(0, Math.min(window.innerHeight - 120, savedPos.y)) + 'px';",
@@ -89,7 +88,7 @@ replace_once(
 
 regex_once(
     'app.js',
-    r"const nx = Math\.max\(0, Math\.min\(window\.innerWidth - 80, calcDrag\.x \+ ev\.clientX - calcDrag\.startX\)\);\n\s*const ny = Math\.max\(0, Math\.min\(window\.innerHeight - 80, calcDrag\.y \+ ev\.clientY - calcDrag\.startY\)\);",
+    r"const nx = Math\.max\(0, Math\.min\(window\.innerWidth - 220, calcDrag\.x \+ ev\.clientX - calcDrag\.startX\)\);\s*\n\s*const ny = Math\.max\(0, Math\.min\(window\.innerHeight - 80, calcDrag\.y \+ ev\.clientY - calcDrag\.startY\)\);",
     "const nx = Math.max(8, Math.min(Math.max(8, window.innerWidth - calcSheet.offsetWidth - 8), calcDrag.x + ev.clientX - calcDrag.startX));\n        const ny = Math.max(8, Math.min(Math.max(8, window.innerHeight - calcSheet.offsetHeight - 8), calcDrag.y + ev.clientY - calcDrag.startY));",
     'calculator drag stays fully onscreen',
 )
