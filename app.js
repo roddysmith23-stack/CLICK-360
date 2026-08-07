@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r20';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r29';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -6690,17 +6690,52 @@ function parseMoney(value) {
 		      userAgent: String(navigator.userAgent || '').slice(0, 500)
 		    };
 		  };
-		  function showSyncConflictRecovery(gate = {}) {
-		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
-		    let localProds = 0, localSales = 0, localMovs = 0, hasMeaningfulLocalData = false;
+		  function localBusinessSyncStats() {
 		    try {
 		      const biz = currentBusiness();
 		      const bizId = biz?.id || state?.activeBusinessId;
-		      localProds = (state?.products || []).filter(p => p.businessId === bizId).length;
-		      localSales = (state?.sales || []).filter(s => s.businessId === bizId).length;
-		      localMovs  = (state?.movements || []).filter(m => m.businessId === bizId).length;
-		      hasMeaningfulLocalData = localProds > 0 || localSales > 0;
-		    } catch(e) { console.warn('sync conflict counts:', e); }
+		      const products = (state?.products || []).filter(p => p.businessId === bizId).length;
+		      const sales = (state?.sales || []).filter(s => s.businessId === bizId).length;
+		      const movements = (state?.movements || []).filter(m => m.businessId === bizId).length;
+		      return { businessId: bizId || '', products, sales, movements, meaningful: products > 0 || sales > 0 || movements > 0 };
+		    } catch (error) {
+		      console.warn('sync local stats:', error);
+		      return { businessId: '', products: 0, sales: 0, movements: 0, meaningful: null };
+		    }
+		  }
+		  window.click360GetLocalBusinessSyncStats = localBusinessSyncStats;
+		  function showSyncConflictRecovery(gate = {}) {
+		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
+		    const localStats = localBusinessSyncStats();
+		    const localProds = localStats.products;
+		    const localSales = localStats.sales;
+		    const localMovs = localStats.movements;
+		    const hasMeaningfulLocalData = localStats.meaningful === true;
+
+		    // A brand-new/empty device is not a real conflict. Never offer a destructive
+		    // "keep local" path when it would mean pushing an empty tenant over cloud data.
+		    if (localStats.meaningful === false) {
+		      if (window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE) return;
+		      window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE = true;
+		      toast('Sincronizando los datos de tu negocio desde la nube...');
+		      Promise.resolve(window.click360ResolveSyncConflict?.('refresh_cloud'))
+		        .then((result) => {
+		          if (result?.ok) {
+		            closeModal(false);
+		            renderApp(route);
+		            toast('✅ Tus datos se actualizaron desde la nube.', 'ok');
+		            return;
+		          }
+		          showModal(`<div class="modalHeader"><div><h2>Sincronización pendiente</h2><p class="fieldHint">Este dispositivo está vacío y no reemplazará los datos de la nube.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div><div class="syncConflictPanel"><p>Conéctate a internet y vuelve a intentar. Tus datos remotos permanecen protegidos.</p><button type="button" class="btn primary block" id="syncRetryEmptyLocal">🔄 Reintentar desde nube</button></div>`);
+		          $('#syncRetryEmptyLocal')?.addEventListener('click', () => { closeModal(false); showSyncConflictRecovery(gate); });
+		        })
+		        .catch((error) => {
+		          console.warn('empty-local cloud recovery:', error);
+		          toast('No se pudo actualizar desde nube. Tus datos remotos no fueron modificados.', 'err');
+		        })
+		        .finally(() => { window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE = false; });
+		      return;
+		    }
 		    showModal(`<div class="modalHeader"><div><h2>⚠️ Conflicto de sincronización</h2><p class="fieldHint">Los datos de este dispositivo y los de la nube son diferentes. Elige cómo resolver.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
 		      <div class="syncConflictPanel">
 		        <div style="background:rgba(244,196,49,.10);border:1px solid rgba(244,196,49,.45);border-radius:8px;padding:12px;margin-bottom:12px;">

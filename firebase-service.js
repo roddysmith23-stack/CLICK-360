@@ -2683,10 +2683,20 @@
 	  window.click360ResolveSyncConflict = async function(action = 'cancel') {
 	    if (action === 'refresh_cloud') return window.click360ClearLocalRecoveryState();
 	    if (action === 'keep_local') {
+	      const localStats = window.click360GetLocalBusinessSyncStats?.();
+	      if (localStats?.meaningful === false) {
+	        console.warn('CLICK360 sync: blocked empty-local force write; refreshing from cloud instead.');
+	        const result = await window.click360ClearLocalRecoveryState();
+	        return { ...result, action: 'refresh_cloud_empty_local', preventedEmptyOverwrite: true };
+	      }
 	      clearSyncConflict();
 	      LOCAL_WRITE_PENDING_UNTIL = Date.now() + PENDING_REMOTE_SYNC_GRACE_MS;
-	      const saved = await pushLocalToFirestore('manual_keep_local', true); // force=true: user explicitly chose keep_local
-	      return { ok: saved === true, action, syncState: getSyncState({ cleanup: true, reason: 'manual_keep_local_after' }) };
+	      const saved = await pushLocalToFirestore('manual_keep_local', true);
+	      if (saved !== true) {
+	        return { ok: false, action, syncState: getSyncState({ cleanup: false, reason: 'manual_keep_local_failed' }) };
+	      }
+	      const readback = await pullRemoteOnce({ force: true, reload: false }).catch(() => false);
+	      return { ok: readback === true, action, readback: readback === true, syncState: getSyncState({ cleanup: true, reason: 'manual_keep_local_after_readback' }) };
 	    }
 	    return { ok: false, action: 'cancelled', syncState: getSyncState({ cleanup: false, reason: 'manual_conflict_cancel' }) };
 	  };
