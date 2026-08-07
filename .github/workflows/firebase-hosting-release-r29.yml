@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   deploy-hosting:
-    if: github.event.head_commit.message == 'deploy: CLICK 360 1.0.5 r29 to Firebase Hosting'
+    if: ${{ github.event.head_commit.message == 'deploy: CLICK 360 1.0.5 r29 to Firebase Hosting' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -54,7 +54,7 @@ jobs:
         id: auth
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_CLICK_360 }}'
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_CLICK_360 }}
 
       - name: Deploy Firebase Hosting only
         run: npx firebase-tools deploy --only hosting --project click-360 --non-interactive
