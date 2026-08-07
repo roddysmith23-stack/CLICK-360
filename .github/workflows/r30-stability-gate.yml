@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: click360-r30-stability
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   r30-full-gate:
@@ -18,10 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 80
     steps:
-      - name: Checkout r30 branch
+      - name: Checkout exact r30 commit
         uses: actions/checkout@v4
         with:
-          ref: hotfix/1.0.5-r30-stability
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Node 22
@@ -48,9 +48,10 @@ jobs:
       - name: Apply guarded r30 runtime patches
         run: |
           python3 scripts/apply-r30-stability.py
-          # Restore QA/scripts because tests are immutable gate inputs, not release outputs.
+          # The main patcher scans release references, but QA and patch scripts are immutable gate inputs.
           git checkout -- scripts qa
           python3 scripts/apply-r30-version-coherence.py
+          python3 scripts/apply-r30-print-confirm-fix.py
 
       - name: Runtime release diagnostics
         run: |
