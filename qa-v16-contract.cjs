@@ -28,5 +28,5 @@ assert(firebase.includes('onlineOnlyEmptyDevice') && firebase.includes('click360
 assert(app.includes("const fullName = [name, lastName].filter(Boolean).join(' ')"), 'onboarding persists first and last name');
 assert(firebase.includes('click360RecordTelemetry') && rules.includes('match /telemetryEvents/{eventId}'), 'V16 telemetry is non-blocking and protected by an explicit server contract');
 assert(html.includes('v16-domain.js') && html.includes('v16-storage.js'), 'V16 modules load before the application');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r20'"), 'PWA cache version is current');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r29'"), 'PWA cache version is current');
 console.log('PASS V16.1 contract: storage, profiles, permissions, receipts, labels, plans, rules, and PWA');

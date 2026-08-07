@@ -1,0 +1,14 @@
+name: CLICK 360 Stability Recovery Phase 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  completed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Phase 1 status
+        run: echo 'Phase 1 completed and committed as 1c57d2e9a3a647e7cea7c057598563ea4910f2c7. This workflow is retained for audit history only.'

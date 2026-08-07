@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r20';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r29';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -2462,7 +2462,7 @@ function parseMoney(value) {
 	          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
         </div>
       </div>
-      <div class="card sectionCard" style="display:flex; gap:10px; margin-bottom:14px; align-items:center;">
+      <div class="card sectionCard reportRangeCard">
         <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${safeDateInputValue(state.reportsFrom)}"></div>
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
       </div>
@@ -3692,7 +3692,7 @@ function parseMoney(value) {
 	      }
 	      return `<div class="field ${field === 'notes' ? 'full' : ''}"><label>${labels[field]}</label>${control}</div>`;
 	    }).join('');
-	    showModal(`<div class="modalHeader"><h2>${escapeHtml(config.title)}</h2><button class="closeBtn" data-close>×</button></div><form id="financeForm" class="formGrid">${fieldsHtml}<button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button></form>`);
+	    showModal(`<div class="modalHeader"><h2>${escapeHtml(config.title)}</h2><button class="closeBtn" data-close>×</button></div><form id="financeForm" class="formGrid financeEntryForm">${fieldsHtml}<button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar</button></form>`);
 	    $('#financeForm').onsubmit = async (event) => {
 	      event.preventDefault();
 	      const previousState = cloneState(state);
@@ -6336,8 +6336,10 @@ function parseMoney(value) {
   }
 
   function bindReports(){
-      $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; if(!save()) return; renderApp('reports'); };
-      $('#repTo').onchange = (e) => { state.reportsTo = e.target.value; if(!save()) return; renderApp('reports'); };
+      // Report date filters are view state only. Persisting them through save() used to
+      // trigger cloud writes/sync gates from Safari just for changing a filter.
+      $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; renderApp('reports'); };
+      $('#repTo').onchange = (e) => { state.reportsTo = e.target.value; renderApp('reports'); };
   }
 
   function bindSettings(){
@@ -6690,17 +6692,52 @@ function parseMoney(value) {
 		      userAgent: String(navigator.userAgent || '').slice(0, 500)
 		    };
 		  };
-		  function showSyncConflictRecovery(gate = {}) {
-		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
-		    let localProds = 0, localSales = 0, localMovs = 0, hasMeaningfulLocalData = false;
+		  function localBusinessSyncStats() {
 		    try {
 		      const biz = currentBusiness();
 		      const bizId = biz?.id || state?.activeBusinessId;
-		      localProds = (state?.products || []).filter(p => p.businessId === bizId).length;
-		      localSales = (state?.sales || []).filter(s => s.businessId === bizId).length;
-		      localMovs  = (state?.movements || []).filter(m => m.businessId === bizId).length;
-		      hasMeaningfulLocalData = localProds > 0 || localSales > 0;
-		    } catch(e) { console.warn('sync conflict counts:', e); }
+		      const products = (state?.products || []).filter(p => p.businessId === bizId).length;
+		      const sales = (state?.sales || []).filter(s => s.businessId === bizId).length;
+		      const movements = (state?.movements || []).filter(m => m.businessId === bizId).length;
+		      return { businessId: bizId || '', products, sales, movements, meaningful: products > 0 || sales > 0 || movements > 0 };
+		    } catch (error) {
+		      console.warn('sync local stats:', error);
+		      return { businessId: '', products: 0, sales: 0, movements: 0, meaningful: null };
+		    }
+		  }
+		  window.click360GetLocalBusinessSyncStats = localBusinessSyncStats;
+		  function showSyncConflictRecovery(gate = {}) {
+		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
+		    const localStats = localBusinessSyncStats();
+		    const localProds = localStats.products;
+		    const localSales = localStats.sales;
+		    const localMovs = localStats.movements;
+		    const hasMeaningfulLocalData = localStats.meaningful === true;
+
+		    // A brand-new/empty device is not a real conflict. Never offer a destructive
+		    // "keep local" path when it would mean pushing an empty tenant over cloud data.
+		    if (localStats.meaningful === false) {
+		      if (window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE) return;
+		      window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE = true;
+		      toast('Sincronizando los datos de tu negocio desde la nube...');
+		      Promise.resolve(window.click360ResolveSyncConflict?.('refresh_cloud'))
+		        .then((result) => {
+		          if (result?.refreshed === true) {
+		            closeModal(false);
+		            renderApp(route);
+		            toast('✅ Tus datos se actualizaron desde la nube.', 'ok');
+		            return;
+		          }
+		          showModal(`<div class="modalHeader"><div><h2>Sincronización pendiente</h2><p class="fieldHint">Este dispositivo está vacío y no reemplazará los datos de la nube.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div><div class="syncConflictPanel"><p>Conéctate a internet y vuelve a intentar. Tus datos remotos permanecen protegidos.</p><button type="button" class="btn primary block" id="syncRetryEmptyLocal">🔄 Reintentar desde nube</button></div>`);
+		          $('#syncRetryEmptyLocal')?.addEventListener('click', () => { closeModal(false); showSyncConflictRecovery(gate); });
+		        })
+		        .catch((error) => {
+		          console.warn('empty-local cloud recovery:', error);
+		          toast('No se pudo actualizar desde nube. Tus datos remotos no fueron modificados.', 'err');
+		        })
+		        .finally(() => { window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE = false; });
+		      return;
+		    }
 		    showModal(`<div class="modalHeader"><div><h2>⚠️ Conflicto de sincronización</h2><p class="fieldHint">Los datos de este dispositivo y los de la nube son diferentes. Elige cómo resolver.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
 		      <div class="syncConflictPanel">
 		        <div style="background:rgba(244,196,49,.10);border:1px solid rgba(244,196,49,.45);border-radius:8px;padding:12px;margin-bottom:12px;">
@@ -6938,10 +6975,25 @@ function parseMoney(value) {
 	    const calcHeader = $('.calculatorWindowHeader', root);
 	    if (calcSheet && calcHeader) {
 	      const savedPos = (() => { try { return JSON.parse(localStorage.getItem('calcWindowPos') || 'null'); } catch { return null; } })();
-	      if (savedPos) {
+	      const savedSize = (() => { try { return JSON.parse(localStorage.getItem('calcWindowSize') || 'null'); } catch { return null; } })();
+      const calculatorBounds = () => ({ maxW: Math.max(220, window.innerWidth - 16), maxH: Math.max(280, window.innerHeight - 24) });
+      const applyCalculatorWindowSize = (width, height) => {
+        const bounds = calculatorBounds();
+        const nextW = Math.max(220, Math.min(bounds.maxW, Number(width || Math.min(360, bounds.maxW))));
+        const nextH = Math.max(280, Math.min(bounds.maxH, Number(height || Math.min(620, bounds.maxH))));
+        calcSheet.style.width = nextW + 'px';
+        calcSheet.style.height = nextH + 'px';
+        calcSheet.style.maxHeight = bounds.maxH + 'px';
+        return { width: nextW, height: nextH };
+      };
+      const persistCalculatorWindowSize = () => {
+        try { localStorage.setItem('calcWindowSize', JSON.stringify({ width: calcSheet.offsetWidth, height: calcSheet.offsetHeight })); } catch {}
+      };
+      if (savedSize) applyCalculatorWindowSize(savedSize.width, savedSize.height);
+      if (savedPos) {
 	        calcSheet.style.right = 'auto'; calcSheet.style.bottom = 'auto';
-	        calcSheet.style.left = Math.max(0, Math.min(window.innerWidth - 220, savedPos.x)) + 'px';
-	        calcSheet.style.top = Math.max(0, Math.min(window.innerHeight - 120, savedPos.y)) + 'px';
+	        calcSheet.style.left = Math.max(8, Math.min(Math.max(8, window.innerWidth - calcSheet.offsetWidth - 8), Number(savedPos.x || 8))) + 'px';
+        calcSheet.style.top = Math.max(8, Math.min(Math.max(8, window.innerHeight - calcSheet.offsetHeight - 8), Number(savedPos.y || 8))) + 'px';
 	      }
 	      let calcDrag = null;
 	      calcHeader.style.cursor = 'grab';
@@ -6956,8 +7008,8 @@ function parseMoney(value) {
 	      });
 	      calcHeader.addEventListener('pointermove', function(ev) {
 	        if (!calcDrag) return;
-	        const nx = Math.max(0, Math.min(window.innerWidth - 220, calcDrag.x + ev.clientX - calcDrag.startX));
-	        const ny = Math.max(0, Math.min(window.innerHeight - 80, calcDrag.y + ev.clientY - calcDrag.startY));
+	        const nx = Math.max(8, Math.min(Math.max(8, window.innerWidth - calcSheet.offsetWidth - 8), calcDrag.x + ev.clientX - calcDrag.startX));
+        const ny = Math.max(8, Math.min(Math.max(8, window.innerHeight - calcSheet.offsetHeight - 8), calcDrag.y + ev.clientY - calcDrag.startY));
 	        calcSheet.style.left = nx + 'px'; calcSheet.style.top = ny + 'px';
 	      });
 	      const endCalcDrag = function() {
@@ -6974,7 +7026,7 @@ function parseMoney(value) {
 	          ev.preventDefault();
 	          const dx = ev.touches[0].clientX - ev.touches[1].clientX;
 	          const dy = ev.touches[0].clientY - ev.touches[1].clientY;
-	          pinchStart = { dist: Math.hypot(dx, dy), h: calcSheet.offsetHeight };
+	          pinchStart = { dist: Math.hypot(dx, dy), w: calcSheet.offsetWidth, h: calcSheet.offsetHeight };
 	        }
 	      }, { passive: false });
 	      calcSheet.addEventListener('touchmove', function(ev) {
@@ -6982,18 +7034,17 @@ function parseMoney(value) {
 	          ev.preventDefault();
 	          const dx = ev.touches[0].clientX - ev.touches[1].clientX;
 	          const dy = ev.touches[0].clientY - ev.touches[1].clientY;
-	          const newH = Math.max(220, Math.min(window.innerHeight - 40, Math.round(pinchStart.h * Math.hypot(dx, dy) / pinchStart.dist)));
-	          calcSheet.style.height = newH + 'px';
-	          calcSheet.style.maxHeight = newH + 'px';
+          const scale = Math.max(0.55, Math.min(1.8, Math.hypot(dx, dy) / Math.max(1, pinchStart.dist)));
+          applyCalculatorWindowSize(Math.round(pinchStart.w * scale), Math.round(pinchStart.h * scale));
 	        }
 	      }, { passive: false });
-	      calcSheet.addEventListener('touchend', function() { pinchStart = null; });
+	      calcSheet.addEventListener('touchend', function() { if (pinchStart) persistCalculatorWindowSize(); pinchStart = null; });
 	      calcSheet.addEventListener('wheel', function(ev) {
 	        if (!ev.ctrlKey && !ev.metaKey) return;
 	        ev.preventDefault();
-	        const newH = Math.max(220, Math.min(window.innerHeight - 40, calcSheet.offsetHeight + (ev.deltaY > 0 ? -24 : 24)));
-	        calcSheet.style.height = newH + 'px';
-	        calcSheet.style.maxHeight = newH + 'px';
+        const factor = ev.deltaY > 0 ? 0.92 : 1.08;
+        applyCalculatorWindowSize(Math.round(calcSheet.offsetWidth * factor), Math.round(calcSheet.offsetHeight * factor));
+        persistCalculatorWindowSize();
 	      }, { passive: false });
 	    }
 	    renderHistory();

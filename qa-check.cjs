@@ -32,14 +32,13 @@ console.log('\\nCLICK 360 MVP FINAL v2 FULL POWER QA checks finished.');
 
 assert('logo no triangle CSS', fs.readFileSync(path.join(__dirname, 'styles.css'), 'utf8').includes('CLICK 360 v3 logo fix'));
 
-
 const jsqrSize = fs.statSync(path.join(__dirname, 'vendor', 'jsQR.js')).size;
 const qrgSize = fs.statSync(path.join(__dirname, 'vendor', 'qrcode-generator.js')).size;
 assert('jsQR real local incluido', jsqrSize > 200000);
 assert('qrcode-generator real local incluido', qrgSize > 50000);
 assert('HTML carga qrcode-generator antes de app', html.includes('vendor/qrcode-generator.js') && html.indexOf('vendor/qrcode-generator.js') < html.indexOf('app.js'));
 assert('HTML carga jsQR antes de app', html.includes('vendor/jsQR.js') && html.indexOf('vendor/jsQR.js') < html.indexOf('app.js'));
-assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-commercial-1-0-5-r20'));
+assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-commercial-1-0-5-r29'));
 assert('service worker cachea guard P0', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./p0-tenant-guard.js'));
 assert('service worker cachea vendor QR', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/qrcode-generator.js') && fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/jsQR.js'));
 assert('perfil persistente local', app.includes('CLICK360_USER_PROFILE_') && app.includes('cacheUserProfile'));

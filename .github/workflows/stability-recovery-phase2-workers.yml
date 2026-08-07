@@ -1,0 +1,79 @@
+name: CLICK 360 Stability Recovery Phase 2 Workers
+
+on:
+  push:
+    branches:
+      - hotfix/1.0.5-stability-recovery
+
+permissions:
+  contents: write
+
+concurrency:
+  group: click360-stability-phase2-workers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/1.0.5-stability-recovery
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply worker invitation compatibility patch
+        run: python3 scripts/apply-stability-recovery-phase2-workers.py
+
+      - name: Syntax checks
+        run: node --check firebase-service.js
+
+      - name: Static worker invitation contract
+        run: node qa-stability-recovery-phase2-workers.cjs
+
+      - name: Firestore rules contract
+        run: node qa-firestore-rules-contract.cjs
+
+      - name: Firestore emulator worker invitation flow
+        run: npm run qa:rules
+
+      - name: Existing QA quick
+        run: |
+          node qa-p1-1b-sync-guard-harness.cjs
+          node qa-p1-1c-reliability-sync-recovery-harness.cjs
+          npm run qa:simulator:quick
+
+      - name: Static build
+        run: npm run build:static
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Commit verified worker fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add firebase-service.js
+          if git diff --cached --quiet; then
+            echo 'No worker runtime changes to commit.'
+            exit 1
+          fi
+          git commit -m 'fix(workers): restore invitation rules contract and cache r29'
+          git push origin HEAD:hotfix/1.0.5-stability-recovery
