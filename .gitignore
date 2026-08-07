@@ -5,6 +5,7 @@ output/
 dist/
 .firebase/
 qa/reports/
+qa/fixtures/generated/
 .env
 .env.*
 !*.example
