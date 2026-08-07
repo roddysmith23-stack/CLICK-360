@@ -11,7 +11,7 @@ permissions:
 jobs:
   labels-regression:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,6 +19,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Install Playwright browser engines
+        run: npx playwright install --with-deps chromium webkit firefox
       - name: Exact quantity and second-slot regression
         run: |
           node qa-stability-label-r29.cjs
