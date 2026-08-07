@@ -14,7 +14,8 @@
     "qa:integration": "npm run qa:labels:e2e && npm run qa:artifact:e2e",
     "qa:r31": "node qa-r31-label-engine-consolidation.cjs && node qa/r31-universal-canvas-additive-e2e.mjs && node qa/r31-mobile-label-ui-e2e.mjs",
     "qa:r32": "node qa-r32-tdz-regression.cjs && node qa/r32-legacy-template-preview-e2e.mjs",
-    "qa:r33": "node qa/r33-print-geometry-e2e.mjs && node qa/r33-print-profile-merge-e2e.mjs"
+    "qa:r33": "node qa/r33-print-geometry-e2e.mjs && node qa/r33-print-profile-merge-e2e.mjs",
+    "qa:r34": "node qa/golden-shary-2col-e2e.mjs"
   },
   "dependencies": {
     "@zxing/browser": "^0.1.5",

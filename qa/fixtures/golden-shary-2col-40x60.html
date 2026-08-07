@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 golden fixture — Shary 2-column 40x60mm roll (r34)</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../printing-service.js"></script>
+  <script src="generated/print-handoff.bundle.js"></script>
+</head>
+<body>
+  <div id="modalRoot"></div>
+  <script>
+    (() => {
+      const handoff = window.__CLICK360_PRINT_HANDOFF__;
+      const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+
+      // PERMANENT GOLDEN FIXTURE for a real client's physical printer profile ("Shary's setup":
+      // 3nStar LTT214 printer, 4BARCODE 4B-2054L driver, 203 DPI, 2-column roll of 40x60mm
+      // stickers). This is NOT a reimplementation — it drives the REAL
+      // executeCanonicalLabelPrint()/buildUniversalLabelPrintNode()/handoffPrint() chain extracted
+      // verbatim from app.js by qa/extract-print-handoff.cjs (see qa/r33-print-geometry-e2e.mjs for
+      // the same pattern), through the REAL universal-label-canvas.js normalizeDocument()/
+      // buildPrintPlan() -> smart-print-core.js buildSheetPlan() engine.
+      //
+      // PROVENANCE OF EVERY NUMBER BELOW (searched across the ENTIRE git history, not just HEAD —
+      // `git log --all -S"40x60"`, `-S"roll-2"`, `-S"2 columnas"`, `-S"LABEL_PAPER_PRESETS"`):
+      //
+      // - widthMm:40, heightMm:60, columns:2, rows:1, dpi:203 — CONFIRMED. These exact values are
+      //   the label size in app.js's own LABEL_PAPER_PRESETS['roll-2-40x60-provisional'] entry
+      //   (mediaType:'roll-2', width:40, height:60, columns:2, rows:1, dpi:203) AND, independently,
+      //   in the real regression test qa-stability-label-r29.cjs (still present at HEAD:
+      //   labelWidthMm:40, labelHeightMm:60, columns:2, rows:1, nominalDpi:203) which exercises the
+      //   exact same smart-print-core.js buildSheetPlan() engine this fixture drives through
+      //   universal-label-canvas.js's toPrintPaper()/buildPrintPlan().
+      //
+      // - gapXmm:2 — CONFIRMED via qa-stability-label-r29.cjs (gapHorizontalMm:2) and via
+      //   LABEL_PAPER_PRESETS['roll-2-custom'] (gapX:2, the general "2 columns" preset). NOTE: the
+      //   more specific LABEL_PAPER_PRESETS['roll-2-40x60-provisional'] preset itself has gapX:0 —
+      //   a real inconsistency between the two committed presets. We use gapXmm:2 because it is the
+      //   value that appears in the actual committed *regression test* (the closest thing this repo
+      //   has to a verified physical measurement for a 2-column 40mm roll), not the provisional UI
+      //   preset default.
+      //
+      // - mediaWidthMm:82 (physical roll width for 2 columns) — CONFIRMED, taken verbatim from
+      //   qa-stability-label-r29.cjs's `rollTwo` fixture (mediaWidthMm: 82), which is also exactly
+      //   self-consistent with the other confirmed numbers above: 2 * 40mm labels + 1 * 2mm gap +
+      //   0 margins = 82mm. LABEL_PAPER_PRESETS['roll-2-40x60-provisional'] itself deliberately
+      //   ships mediaWidth:0 with requiresMeasurement:true / provisional:true — i.e. the app's own
+      //   preset explicitly refuses to guess this number and forces the installer to measure the
+      //   physical roll. 82mm is therefore the best REAL, repo-backed value available; it is not
+      //   sourced from the preset (which intentionally has none) but from the committed regression
+      //   test that already asserts physical roll-plan geometry against it.
+      //
+      // - mediaHeightMm:0 — CONFIRMED (qa-stability-label-r29.cjs uses mediaHeightMm: 0 for the
+      //   same roll: a roll printer has no fixed page height, so universalMediaSize() falls back to
+      //   the natural per-row height, i.e. 60mm — one label row per physical "page").
+      //
+      // - marginTopMm/marginRightMm/marginBottomMm/marginLeftMm: 0 — CONFIRMED, explicit 0 in
+      //   qa-stability-label-r29.cjs's rollTwo fixture.
+      //
+      // ASSUMED, NOT CONFIRMED: the printer/driver hardware names themselves — "3nStar LTT214" and
+      // "4BARCODE 4B-2054L" — do NOT appear anywhere in this repo's git history (`git log --all -i
+      // --grep`/`-S` for "3nstar", "4barcode", "ltt214" all return zero hits). Those model names are
+      // client-supplied hardware identifiers with no corresponding code artifact; nothing in this
+      // fixture depends on them beyond the physical spec they imply (2-column 40x60mm roll, 203
+      // DPI), which IS independently confirmed above. Object layout coordinates (qr/name/price/sku
+      // x/y/width/height below) are also ASSUMED, NOT CONFIRMED — no historical commit pins an exact
+      // element layout for this specific paper size, so a reasonable in-bounds layout was composed
+      // for this fixture (qr 28x28mm top, name/price/sku stacked below, all inside the 40mm width).
+      const product = { id: 'prod-shary', name: 'Producto Shary', code: 'SHARY-001', price: 12.5, cardPrice: 0, qty: 20 };
+      const persistedDocument = canvasApi.normalizeDocument({
+        schemaVersion: 2,
+        paper: {
+          id: 'roll-2-40x60-shary', mediaType: 'roll-2',
+          widthMm: 40, heightMm: 60,           // CONFIRMED — see provenance note above
+          mediaWidthMm: 82, mediaHeightMm: 0,  // CONFIRMED — see provenance note above
+          columns: 2, rows: 1,                 // CONFIRMED
+          gapXmm: 2, gapYmm: 0,                // CONFIRMED (regression-test value; see note)
+          marginTopMm: 0, marginRightMm: 0, marginBottomMm: 0, marginLeftMm: 0, // CONFIRMED
+          dpi: 203                             // CONFIRMED
+        },
+        objects: [
+          // ASSUMED, NOT CONFIRMED layout coordinates (see provenance note above) — chosen to fit
+          // inside a 40mm-wide x 60mm-tall label with margin, exercising qr/name/price/sku together.
+          { id: 'qr-1', type: 'qr', xMm: 6, yMm: 4, widthMm: 28, heightMm: 28 },
+          { id: 'name-1', type: 'name', xMm: 2, yMm: 34, widthMm: 36, heightMm: 8 },
+          { id: 'price-1', type: 'price', xMm: 2, yMm: 43, widthMm: 36, heightMm: 10 },
+          { id: 'sku-1', type: 'sku', xMm: 2, yMm: 54, widthMm: 36, heightMm: 5 }
+        ],
+        quantity: 1, startSlot: 1
+      });
+
+      const DPI = persistedDocument.paper.dpi;
+      const PX_PER_MM = DPI / 25.4;
+      const REGIONS = {
+        qr: { xMm: 6, yMm: 4, widthMm: 28, heightMm: 28 },
+        name: { xMm: 2, yMm: 34, widthMm: 36, heightMm: 8 },
+        price: { xMm: 2, yMm: 43, widthMm: 36, heightMm: 10 },
+        sku: { xMm: 2, yMm: 54, widthMm: 36, heightMm: 5 }
+      };
+
+      function inkInBox(ctx, canvasWidth, canvasHeight, box) {
+        const left = Math.max(0, Math.floor(box.xMm * PX_PER_MM));
+        const top = Math.max(0, Math.floor(box.yMm * PX_PER_MM));
+        const right = Math.min(canvasWidth, Math.ceil((box.xMm + box.widthMm) * PX_PER_MM));
+        const bottom = Math.min(canvasHeight, Math.ceil((box.yMm + box.heightMm) * PX_PER_MM));
+        const w = Math.max(1, right - left);
+        const h = Math.max(1, bottom - top);
+        const data = ctx.getImageData(left, top, w, h).data;
+        let nonWhite = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] > 8 && (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245)) nonWhite += 1;
+        }
+        return nonWhite;
+      }
+
+      function measureCellInk(imgEl) {
+        if (!imgEl || !imgEl.naturalWidth || !imgEl.naturalHeight) return null;
+        const canvas = document.createElement('canvas');
+        canvas.width = imgEl.naturalWidth;
+        canvas.height = imgEl.naturalHeight;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(imgEl, 0, 0);
+        return {
+          qr: inkInBox(ctx, canvas.width, canvas.height, REGIONS.qr),
+          name: inkInBox(ctx, canvas.width, canvas.height, REGIONS.name),
+          price: inkInBox(ctx, canvas.width, canvas.height, REGIONS.price),
+          sku: inkInBox(ctx, canvas.width, canvas.height, REGIONS.sku)
+        };
+      }
+
+      // See qa/r33-print-geometry-e2e.mjs's fixture for why the capture must be synchronous inside
+      // window.print(): a real print dialog is effectively blocking, and by the time SystemPrintProvider
+      // (printing-service.js) calls it, waitForResources() has already awaited every <img>'s
+      // load+decode — so it is safe to synchronously drawImage() them here.
+      let capture = null;
+      window.print = () => {
+        window.__CLICK360_PRINT_CALLED__ = (window.__CLICK360_PRINT_CALLED__ || 0) + 1;
+        const portal = document.getElementById('click360PrintPortal');
+        const pageEls = portal ? [...portal.querySelectorAll('.labelPrintPage')] : [];
+        const pages = pageEls.map((pageEl) => {
+          const rect = pageEl.getBoundingClientRect();
+          const cs = getComputedStyle(pageEl);
+          return {
+            widthMm: Number(((rect.width / 96) * 25.4).toFixed(2)),
+            heightMm: Number(((rect.height / 96) * 25.4).toFixed(2)),
+            visibility: cs.visibility,
+            cells: [...pageEl.querySelectorAll('.labelPrintCell')].map((cellEl) => {
+              const status = cellEl.classList.contains('filled') ? 'filled' : cellEl.classList.contains('used') ? 'used' : 'empty';
+              const img = cellEl.querySelector('img');
+              return {
+                status,
+                leftMm: Number.parseFloat(cellEl.style.left) || 0,
+                topMm: Number.parseFloat(cellEl.style.top) || 0,
+                hasImg: !!img,
+                imgNaturalWidth: img?.naturalWidth || 0,
+                imgNaturalHeight: img?.naturalHeight || 0,
+                ink: status === 'filled' ? measureCellInk(img) : null
+              };
+            })
+          };
+        });
+        capture = {
+          pageStyleText: document.getElementById('click360-print-page-style')?.textContent || '',
+          portalExists: !!portal,
+          pages
+        };
+      };
+      window.__CLICK360_FINISH_PRINT__ = () => window.dispatchEvent(new Event('afterprint'));
+
+      window.__CLICK360_RUN_PRINT_FLOW__ = async (quantity = 1, startSlot = 1) => {
+        let jobResult = null;
+        let error = null;
+        window.__CLICK360_PRINT_CALLED__ = 0;
+        capture = null;
+        const doc = canvasApi.normalizeDocument({ ...persistedDocument, quantity, startSlot });
+        const preparedJob = { product, document: doc, quantity: { count: quantity }, fingerprint: 'qa-shary' };
+        try {
+          jobResult = await handoff.executeCanonicalLabelPrint(preparedJob, 'system');
+        } catch (err) {
+          error = String(err?.message || err);
+        }
+        return {
+          error,
+          quantity, startSlot,
+          printCallCount: window.__CLICK360_PRINT_CALLED__ || 0,
+          expectedLabelWidthMm: persistedDocument.paper.widthMm,
+          expectedLabelHeightMm: persistedDocument.paper.heightMm,
+          expectedColumns: persistedDocument.paper.columns,
+          expectedRows: persistedDocument.paper.rows,
+          expectedMediaWidthMm: jobResult?.media?.widthMm ?? null,
+          expectedMediaHeightMm: jobResult?.media?.heightMm ?? null,
+          planColumns: jobResult?.plan?.columns ?? null,
+          planRows: jobResult?.plan?.rows ?? null,
+          planCapacity: jobResult?.plan?.capacity ?? null,
+          planPageCount: jobResult?.plan?.pages?.length ?? null,
+          ...(capture || { pageStyleText: '(never captured — window.print was never called)', portalExists: false, pages: [] })
+        };
+      };
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>
