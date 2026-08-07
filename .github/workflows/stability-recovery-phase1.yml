@@ -1,77 +1,14 @@
 name: CLICK 360 Stability Recovery Phase 1
 
 on:
-  push:
-    branches:
-      - hotfix/1.0.5-stability-recovery
+  workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: click360-stability-phase1-${{ github.ref }}
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  apply-and-verify:
-    if: github.actor != 'github-actions[bot]'
+  completed:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
-      - name: Checkout branch
-        uses: actions/checkout@v4
-        with:
-          ref: hotfix/1.0.5-stability-recovery
-          fetch-depth: 0
-
-      - name: Setup Node 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Apply guarded stability patch
-        run: python3 scripts/apply-stability-recovery-phase1.py
-
-      - name: Syntax checks
-        run: |
-          node --check app.js
-          node --check firebase-service.js
-          node --check service-worker.js
-
-      - name: Phase 1 regression guards
-        run: node qa-stability-recovery-phase1.cjs
-
-      - name: Existing sync guards
-        run: |
-          node qa-p1-1b-sync-guard-harness.cjs
-          node qa-p1-1c-reliability-sync-recovery-harness.cjs
-
-      - name: Business simulator quick
-        run: npm run qa:simulator:quick
-
-      - name: Static build
-        run: npm run build:static
-
-      - name: Production dependency audit
-        run: npm audit --omit=dev --audit-level=moderate
-
-      - name: Verify only intended runtime files changed
-        run: |
-          git status --short
-          git diff -- app.js firebase-service.js service-worker.js
-
-      - name: Commit verified runtime fixes
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app.js firebase-service.js service-worker.js
-          if git diff --cached --quiet; then
-            echo 'No runtime changes to commit.'
-            exit 1
-          fi
-          git commit -m 'fix(stability): protect empty devices and unify runtime cache r29'
-          git push origin HEAD:hotfix/1.0.5-stability-recovery
+      - name: Phase 1 status
+        run: echo 'Phase 1 completed and committed as 1c57d2e9a3a647e7cea7c057598563ea4910f2c7. This workflow is retained for audit history only.'
