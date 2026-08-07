@@ -1,0 +1,128 @@
+name: CLICK 360 r30 Stability Gate
+
+on:
+  push:
+    branches:
+      - hotfix/1.0.5-r30-stability
+
+permissions:
+  contents: write
+
+concurrency:
+  group: click360-r30-stability
+  cancel-in-progress: false
+
+jobs:
+  r30-full-gate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - name: Checkout r30 branch
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/1.0.5-r30-stability
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install PDF verification tools
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit firefox
+
+      - name: Apply guarded r30 runtime patch
+        run: |
+          python3 scripts/apply-r30-stability.py
+          git checkout -- scripts
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in Path('.').glob('qa*'):
+              if path.is_file() and path.suffix.lower() in {'.js','.cjs','.mjs'}:
+                  text = path.read_text(encoding='utf-8')
+                  updated = text.replace('commercial-1-0-5-r29', 'commercial-1-0-5-r30')
+                  if updated != text:
+                      path.write_text(updated, encoding='utf-8')
+          PY
+
+      - name: Syntax checks
+        run: |
+          node --check app.js
+          node --check firebase-service.js
+          node --check runtime-guard.js
+          node --check service-worker.js
+          node --check universal-label-canvas.js
+          node --check universal-label-editor.js
+          node --check qa-r30-label-simple-contract.cjs
+          node --check qa/r30-label-simple-e2e.mjs
+
+      - name: r30 acceptance contract
+        run: node qa-r30-label-simple-contract.cjs
+
+      - name: Full existing QA
+        run: npm run qa
+
+      - name: Firestore Rules emulator regression
+        run: npm run qa:rules
+
+      - name: Full business simulator
+        run: npm run qa:simulator:full
+
+      - name: Existing mobile Safari Chromium Firefox regression
+        run: node qa/stability-mobile-r29-e2e.mjs
+
+      - name: r30 simple labels cross-browser visual gate
+        run: node qa/r30-label-simple-e2e.mjs
+
+      - name: Label print PDF and wizard regression
+        run: npm run qa:labels:e2e
+
+      - name: Build static artifact
+        run: npm run build:static
+
+      - name: Built artifact smoke
+        run: npm run qa:artifact:e2e
+
+      - name: Verify r30 release identity
+        run: |
+          grep -q 'commercial-1-0-5-r30' app.js
+          grep -q 'commercial-1-0-5-r30' service-worker.js
+          grep -q 'commercial-1-0-5-r30' runtime-guard.js
+          grep -q 'commercial-1-0-5-r30' dist/app.js
+          grep -q 'commercial-1-0-5-r30' dist/service-worker.js
+          ! grep -q 'commercial-1-0-5-r29' app.js
+          ! grep -q 'commercial-1-0-5-r29' service-worker.js
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Protect backend and real data boundary
+        run: |
+          test -z "$(git diff -- firestore.rules firebase.json functions/ 2>/dev/null || true)"
+          echo 'No Firestore Rules, Functions or Firebase config changes in r30.'
+
+      - name: Commit only fully verified r30 changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.js styles.css service-worker.js runtime-guard.js index.html qa '*.cjs' '*.mjs' 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo 'No verified r30 runtime changes were produced.'
+            exit 1
+          fi
+          git commit -m 'fix(r30): simplify labels and preserve canonical print state'
+          git push origin HEAD:hotfix/1.0.5-r30-stability
