@@ -1,0 +1,113 @@
+name: CLICK 360 Stability Candidate Final
+
+on:
+  push:
+    branches:
+      - hotfix/1.0.5-stability-candidate
+
+permissions:
+  contents: write
+
+concurrency:
+  group: click360-stability-candidate-final-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-release-gate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: hotfix/1.0.5-stability-candidate
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install PDF verification tool
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - name: Install Playwright engines
+        run: npx playwright install --with-deps chromium webkit firefox
+
+      - name: Apply final guarded candidate fixes
+        run: python3 scripts/apply-stability-candidate-final.py
+
+      - name: Syntax checks
+        run: |
+          node --check app.js
+          node --check firebase-service.js
+          node --check runtime-guard.js
+          node --check service-worker.js
+          node --check universal-label-canvas.js
+          node --check universal-label-editor.js
+
+      - name: Final stability contracts
+        run: |
+          node qa-stability-candidate-final.cjs
+          node qa-stability-recovery-phase1.cjs
+          node qa-p1-1b-sync-guard-harness.cjs
+          node qa-p1-1c-reliability-sync-recovery-harness.cjs
+          node qa-stability-recovery-phase2-workers.cjs
+          node qa-stability-recovery-phase3-mobile.cjs
+          node qa-release-version-r29.cjs
+          node qa-stability-label-r29.cjs
+
+      - name: Full existing QA
+        run: npm run qa
+
+      - name: Firestore Rules and worker invitation emulator
+        run: npm run qa:rules
+
+      - name: Full business simulator
+        run: npm run qa:simulator:full
+
+      - name: Mobile Safari Chromium Firefox containment
+        run: node qa/stability-mobile-r29-e2e.mjs
+
+      - name: Label browser PDF visual wizard E2E
+        run: npm run qa:labels:e2e
+
+      - name: Built artifact E2E
+        run: npm run qa:artifact:e2e
+
+      - name: Rebuild final static artifact
+        run: npm run build:static
+
+      - name: Verify r29 in built artifact
+        run: node qa-release-version-r29.cjs
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Ensure no production deployment code ran
+        run: |
+          test -z "$(git status --porcelain | grep -E '^( M|M |MM) (firestore.rules|firebase.json|functions/)' || true)"
+          echo 'No Rules/Functions/Firebase deployment mutations in candidate.'
+
+      - name: Commit only verified final runtime fixes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.js styles.css
+          if git diff --cached --quiet; then
+            echo 'No final runtime changes to commit.'
+            exit 1
+          fi
+          git commit -m 'fix(stability): finalize sync truthfulness and label mobile layout'
+          git push origin HEAD:hotfix/1.0.5-stability-candidate
