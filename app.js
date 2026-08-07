@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r32';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r33';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -8737,13 +8737,33 @@ function parseMoney(value) {
     });
     return normalizedLabelLayout(layout);
   }
+  // r33 fix: mediaWidthMm/mediaHeightMm are the physical @page size handed straight to the
+  // browser's print dialog (see pageCss() in printing-service.js). A saved profile can end up
+  // with a STALE, inconsistent value here — e.g. a user explores an A4/sheet preset (which sets
+  // mediaWidthMm=210/mediaHeightMm=297), then edits "Ancho/Alto de cada sticker" directly to a
+  // real 60x40mm roll label WITHOUT re-selecting a roll preset (only the paper-type <select>'s
+  // onchange resets mediaWidth/mediaHeight — see applyPaperType()) — the stale 210x297 gets saved
+  // into the profile untouched and, at print time, becomes the literal @page size while the label
+  // itself correctly renders at 60x40mm: a small, correctly-sized label in the corner of a large
+  // blank page. Root cause of a real production incident (60x40mm label printing inside an
+  // effective A4 page).
+  //
+  // SANITY_FACTOR gives real physical slack: a label's backing/liner is legitimately often wider
+  // than the sticker itself (a few extra mm), so a plausible mediaWidthMm up to ~60% larger than
+  // what the configured columns/rows need is trusted as-is. Beyond that, it is almost certainly a
+  // leftover sheet/A4 value, not a real liner width, so the natural size computed from the
+  // label's own dimensions is used instead — this is the one place @page size is computed for
+  // every print/PDF path (buildUniversalLabelPrintNode -> handoffPrint -> printing-service.js).
   function universalMediaSize(document) {
     const paper = document.paper;
+    const SANITY_FACTOR = 1.6;
     const rowAdvanceMm = paper.pitchMm > paper.heightMm ? paper.pitchMm : paper.heightMm + paper.gapYmm;
-    const width = paper.mediaWidthMm || paper.marginLeftMm + paper.marginRightMm
+    const naturalWidth = paper.marginLeftMm + paper.marginRightMm
       + paper.columns * paper.widthMm + Math.max(0, paper.columns - 1) * paper.gapXmm;
-    const height = paper.mediaHeightMm || paper.marginTopMm + paper.marginBottomMm + paper.heightMm
+    const naturalHeight = paper.marginTopMm + paper.marginBottomMm + paper.heightMm
       + Math.max(0, paper.rows - 1) * rowAdvanceMm;
+    const width = paper.mediaWidthMm && paper.mediaWidthMm <= naturalWidth * SANITY_FACTOR ? paper.mediaWidthMm : naturalWidth;
+    const height = paper.mediaHeightMm && paper.mediaHeightMm <= naturalHeight * SANITY_FACTOR ? paper.mediaHeightMm : naturalHeight;
     return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
   }
   function legacyPaperProfileToUniversal(paper = {}) {
