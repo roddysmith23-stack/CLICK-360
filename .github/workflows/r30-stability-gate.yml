@@ -52,17 +52,20 @@ jobs:
           git checkout -- scripts qa
           python3 scripts/apply-r30-version-coherence.py
           python3 scripts/apply-r30-print-confirm-fix.py
+          python3 scripts/apply-r30-qa-release-contracts.py
 
       - name: Runtime release diagnostics
         run: |
           echo 'Runtime r29 leftovers (must be empty):'
-          grep -n 'commercial-1-0-5-r29' app.js firebase-service.js service-worker.js runtime-guard.js index.html || true
+          grep -n 'commercial-1-0-5-r29' app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html || true
           ! grep -q 'commercial-1-0-5-r29' app.js
           ! grep -q 'commercial-1-0-5-r29' firebase-service.js
+          ! grep -q 'commercial-1-0-5-r29' styles.css
           ! grep -q 'commercial-1-0-5-r29' service-worker.js
           ! grep -q 'commercial-1-0-5-r29' runtime-guard.js
           grep -q 'commercial-1-0-5-r30' app.js
           grep -q 'commercial-1-0-5-r30' firebase-service.js
+          grep -q 'commercial-1-0-5-r30' styles.css
           grep -q 'commercial-1-0-5-r30' service-worker.js
           grep -q 'commercial-1-0-5-r30' runtime-guard.js
 
@@ -132,13 +135,13 @@ jobs:
           test -z "$(git diff -- firestore.rules firebase.json functions/ 2>/dev/null || true)"
           echo 'No Firestore Rules, Functions or Firebase config changes in r30.'
 
-      - name: Commit only fully verified r30 runtime
+      - name: Commit only fully verified r30 runtime and release contracts
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html
+          git add app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html qa*.cjs qa*.mjs qa 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo 'No verified r30 runtime changes were produced.'
+            echo 'No verified r30 changes were produced.'
             exit 1
           fi
           git commit -m 'fix(r30): simplify labels and stabilize client runtime'
