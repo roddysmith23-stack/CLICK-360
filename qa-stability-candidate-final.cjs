@@ -21,9 +21,9 @@ for (const [name,text] of [['app',app],['firebase',firebase],['runtime',runtime]
   assert(!text.includes('commercial-1-0-5-r20'), `${name} must not contain stale r20 runtime assets`);
   assert(!text.includes('commercial-1-0-5-r28'), `${name} must not contain stale r28 runtime assets`);
 }
-assert(app.includes("commercial-1-0-5-r30"));
-assert(firebase.includes("commercial-1-0-5-r30"));
-assert(runtime.includes("commercial-1-0-5-r30"));
-assert(sw.includes("commercial-1-0-5-r30"));
+assert(app.includes("commercial-1-0-5-r31"));
+assert(firebase.includes("commercial-1-0-5-r31"));
+assert(runtime.includes("commercial-1-0-5-r31"));
+assert(sw.includes("commercial-1-0-5-r31"));
 
 console.log('CLICK360_STABILITY_CANDIDATE_FINAL: PASS');
