@@ -15,14 +15,14 @@ const pkg = JSON.parse(read('package.json'));
 const artifacts = JSON.parse(read('qa/artifacts/p1-5c-synthetic-print-plans.json'));
 
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r32'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r33'/);
 assert.match(runtime, /APP_VERSION = '1\.0\.5'/);
-assert.match(worker, /click360-commercial-1-0-5-r32/);
-assert.match(html, /smart-print-core\.js\?v=commercial-1-0-5-r32/);
+assert.match(worker, /click360-commercial-1-0-5-r33/);
+assert.match(html, /smart-print-core\.js\?v=commercial-1-0-5-r33/);
 assert.ok(html.indexOf('smart-print-core.js') < html.indexOf('app.js'), 'core loads before app');
 assert.match(worker, /\.\/smart-print-core\.js/);
 assert.match(build, /'smart-print-core\.js'/);
-assert.equal(manifest.start_url, './?v=commercial-1-0-5-r32');
+assert.equal(manifest.start_url, './?v=commercial-1-0-5-r33');
 assert.equal(pkg.version, '1.0.5');
 assert.equal(artifacts.hardwareCertified, false);
 assert.ok(artifacts.cases.length >= 13);

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 r33 print geometry QA</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../printing-service.js"></script>
+  <script src="generated/print-handoff.bundle.js"></script>
+</head>
+<body>
+  <div id="modalRoot"></div>
+  <script>
+    (() => {
+      const handoff = window.__CLICK360_PRINT_HANDOFF__;
+      const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+
+      // Real persisted-template shape (Universal schema, as saved by "Editar plantilla" /
+      // the Lienzo Universal editor) for a single 60x40mm roll label — matching the client's
+      // report of using her previously-configured width/height. Single column/row roll, no
+      // sheet/media margins configured (the common real-world case for a thermal label printer).
+      const product = { id: 'prod-qa', name: 'Producto QA', code: 'QA-001', price: 9.99, cardPrice: 0, qty: 5 };
+      const persistedDocument = canvasApi.normalizeDocument({
+        schemaVersion: 2,
+        paper: { id: 'roll-1-60x40', mediaType: 'roll-1', widthMm: 60, heightMm: 40, columns: 1, rows: 1, gapXmm: 0, gapYmm: 0, dpi: 203 },
+        objects: [
+          { id: 'qr-1', type: 'qr', xMm: 3, yMm: 3, widthMm: 28, heightMm: 28 },
+          { id: 'name-1', type: 'name', xMm: 33, yMm: 5, widthMm: 24, heightMm: 8 },
+          { id: 'price-1', type: 'price', xMm: 33, yMm: 15, widthMm: 24, heightMm: 8 },
+          { id: 'sku-1', type: 'sku', xMm: 33, yMm: 26, widthMm: 24, heightMm: 5 }
+        ],
+        quantity: 1, startSlot: 1
+      });
+
+      const mmFromPx = (px) => (px / 96) * 25.4; // CSS reference px->mm at 96dpi, per spec
+      const measureNow = (selector) => {
+        const portal = document.getElementById('click360PrintPortal');
+        const el = selector ? portal?.querySelector(selector) : portal;
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return {
+          selector: selector || '(portal)',
+          widthPx: rect.width, heightPx: rect.height,
+          widthMm: Number(mmFromPx(rect.width).toFixed(2)), heightMm: Number(mmFromPx(rect.height).toFixed(2)),
+          cssWidth: cs.width, cssHeight: cs.height,
+          position: cs.position, transform: cs.transform, zoom: cs.zoom || 'n/a', visibility: cs.visibility
+        };
+      };
+
+      // A real browser's window.print() is effectively blocking — it shows the print dialog and
+      // only returns (firing 'afterprint') once the user closes it. The DOM/CSS state AT THE
+      // MOMENT window.print() is called is exactly what the print preview/dialog renders, and is
+      // what printing-service.js's cleanupJob() tears down once 'afterprint' fires. So the state
+      // must be captured SYNCHRONOUSLY inside this stub, before any afterprint dispatch — dispatch
+      // it only after the driver has read the capture, via a separate exposed function, so nothing
+      // is wiped before it can be inspected.
+      let capture = null;
+      window.print = () => {
+        window.__CLICK360_PRINT_CALLED__ = (window.__CLICK360_PRINT_CALLED__ || 0) + 1;
+        const portal = document.getElementById('click360PrintPortal');
+        capture = {
+          pageStyleText: document.getElementById('click360-print-page-style')?.textContent || '',
+          portalExists: !!portal,
+          portalClassList: portal ? [...portal.classList] : [],
+          portalDatasetPrintMedia: portal?.dataset.printMedia || null,
+          measurements: {
+            portal: measureNow(null),
+            printCopy: measureNow('.printCopy'),
+            printLabels: measureNow('.printLabels'),
+            labelPrintPage: measureNow('.labelPrintPage'),
+            labelPrintCell: measureNow('.labelPrintCell'),
+            img: measureNow('.labelPrintCell img')
+          }
+        };
+        // Deliberately NOT dispatching 'afterprint' here — the driver calls
+        // __CLICK360_FINISH_PRINT__() once it is done inspecting the captured state, mirroring
+        // "the user closes the print dialog".
+      };
+      window.__CLICK360_FINISH_PRINT__ = () => window.dispatchEvent(new Event('afterprint'));
+
+      window.__CLICK360_RUN_PRINT_FLOW__ = async (quantity = 1, startSlot = 1) => {
+        let jobResult = null;
+        let error = null;
+        window.__CLICK360_PRINT_CALLED__ = 0;
+        const doc = canvasApi.normalizeDocument({ ...persistedDocument, quantity, startSlot });
+        const preparedJob = { product, document: doc, quantity: { count: quantity }, fingerprint: 'qa' };
+        try {
+          jobResult = await handoff.executeCanonicalLabelPrint(preparedJob, 'system');
+        } catch (err) {
+          error = String(err?.message || err);
+        }
+        const pageCount = document.querySelectorAll('#click360PrintPortal .labelPrintPage').length;
+        return {
+          error,
+          quantity, startSlot, pageCount,
+          printCalled: window.__CLICK360_PRINT_CALLED__ === 1,
+          printCallCount: window.__CLICK360_PRINT_CALLED__ || 0,
+          expectedWidthMm: persistedDocument.paper.widthMm,
+          expectedHeightMm: persistedDocument.paper.heightMm,
+          expectedMediaWidthMm: jobResult?.media?.widthMm ?? null,
+          expectedMediaHeightMm: jobResult?.media?.heightMm ?? null,
+          ...(capture || { pageStyleText: '(never captured — window.print was never called)', portalExists: false })
+        };
+      };
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>
