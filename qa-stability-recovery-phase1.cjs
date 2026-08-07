@@ -17,8 +17,8 @@ function mustNotContain(text, needle, label) {
   console.log(`✓ ${label}`);
 }
 
-mustContain(app, "APP_ASSET_VERSION = 'commercial-1-0-5-r29'", 'app asset version r29');
-mustContain(sw, "CACHE = 'click360-commercial-1-0-5-r29'", 'service worker cache r29');
+mustContain(app, "APP_ASSET_VERSION = 'commercial-1-0-5-r30'", 'app asset version r29');
+mustContain(sw, "CACHE = 'click360-commercial-1-0-5-r30'", 'service worker cache r29');
 mustNotContain(app, "APP_ASSET_VERSION = 'commercial-1-0-5-r20'", 'stale app r20 removed');
 mustNotContain(sw, "CACHE = 'click360-commercial-1-0-5-r28'", 'stale SW r28 removed');
 

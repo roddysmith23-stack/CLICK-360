@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r29';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r30';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -8830,7 +8830,8 @@ function parseMoney(value) {
         console.warn('[CLICK360] No saved profile — using document paper as provisional profile');
         // Use document paper directly, skip profile merge step
         let documentModel = fallbackDoc;
-        documentModel = canvasApi.normalizeDocument({ ...documentModel, quantity: resolveLabelCopyResult(quantity, product.qty, useStock).count || 1, startSlot: Math.max(1, Number(startSlot) || 1) });
+        const resolvedFallbackPriceFormat = priceFormat || resolvedTemplate?.priceFormat || 'full';
+        documentModel = { ...canvasApi.normalizeDocument({ ...documentModel, quantity: resolveLabelCopyResult(quantity, product.qty, useStock).count || 1, startSlot: Math.max(1, Number(startSlot) || 1) }), priceFormat:resolvedFallbackPriceFormat };
         const qty = resolveLabelCopyResult(quantity, product.qty, useStock);
         const groups = [{ product, copies: qty.count || 1 }];
         const plan = canvasApi.buildPrintPlan(groups, documentModel, { startSlot: documentModel.startSlot, usedSlots });
@@ -8931,11 +8932,13 @@ function parseMoney(value) {
         </div>
         <div class="labelPrimaryActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn primary" id="quickLabelConfirm">${isPdf ? `${icon('file-down')} Guardar PDF` : `${icon('printer')} Imprimir`}</button></div>`);
       $('#quickLabelConfirm').onclick = () => {
+        const confirmedQuantity = Math.max(1, Number($('#quickLabelQuantity')?.value || 1));
+        const confirmedStartSlot = Math.max(1, Number($('#quickLabelStartSlot')?.value || 1));
         closeModal();
         resolve({
           confirmed:true,
-          quantity:Math.max(1, Number($('#quickLabelQuantity')?.value || 1)),
-          startSlot:Math.max(1, Number($('#quickLabelStartSlot')?.value || 1))
+          quantity:confirmedQuantity,
+          startSlot:confirmedStartSlot
         });
       };
       $$('[data-close]').forEach((button) => { button.onclick = () => { closeModal(); resolve({ confirmed:false }); }; });
@@ -8979,8 +8982,9 @@ function parseMoney(value) {
   }
   async function buildUniversalLabelPrintNode(product, sourceDocument) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
-    const documentModel = canvasApi.normalizeDocument(sourceDocument);
-    const documentSnapshot = canvasApi.normalizeDocument(documentModel);
+    const sourcePriceFormat = sourceDocument?.priceFormat || 'full';
+    const documentModel = { ...canvasApi.normalizeDocument(sourceDocument), priceFormat:sourcePriceFormat };
+    const documentSnapshot = { ...canvasApi.normalizeDocument(documentModel), priceFormat:sourcePriceFormat };
     const plan = canvasApi.buildPrintPlan([{ product, copies: documentSnapshot.quantity }], documentSnapshot, { startSlot: documentSnapshot.startSlot });
     if (!plan.valid || !plan.count || !plan.pages?.length) throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.'), { code:'universal-print-plan-invalid' });
     const media = universalMediaSize(documentSnapshot);
@@ -9041,17 +9045,124 @@ function parseMoney(value) {
     const withText = canvasApi.addObject(documentModel, 'text', { text:'Prueba X/Y · mide borde y gap', xMm:2, yMm:Math.max(2, documentModel.paper.heightMm - 8), widthMm:Math.max(10, documentModel.paper.widthMm - 4), heightMm:5 });
     return printUniversalLabels(calibrationProduct, { ...withText, quantity: Math.max(2, documentModel.paper.columns), startSlot:1 }, providerId);
   }
-  async function openLabelModal(product, initialTemplateId = '', options = {}) {
-    const editor = window.CLICK360_UNIVERSAL_LABEL_EDITOR;
-    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
-    if (window.CLICK360_P2_WEB_SAFE_FLAGS?.p2UniversalLabelsEnabled !== true) {
-      return openAdvancedLabelModal(product, initialTemplateId, options);
-    }
-    const editorBusiness = currentBusiness();
-    const businessId = editorBusiness?.id || '';
-    if (!editor || !canvasApi) return openAdvancedLabelModal(product, initialTemplateId, options);
-    if (!businessId || (product?.businessId && product.businessId !== businessId)) return toast('El producto no pertenece al negocio activo.', 'err');
+  function openSimpleLabelModal(product, initialTemplateId = '') {
+    const businessId = currentBusiness()?.id || '';
+    if (!businessId || !product?.id) return toast('Selecciona un negocio y un producto antes de imprimir.', 'err');
+    if (product.businessId && product.businessId !== businessId) return toast('El producto no pertenece al negocio activo.', 'err');
 
+    const templates = labelTemplatesForBiz(businessId);
+    const selected = templates.find((template) => template.id === initialTemplateId)
+      || templates.find((template) => template.isDefault)
+      || templates[0]
+      || null;
+    const templateOptions = templates.length
+      ? templates.map((template) => `<option value="${escapeHtml(template.id)}" ${template.id === selected?.id ? 'selected' : ''}>${escapeHtml(template.name || 'Plantilla')}</option>`).join('')
+      : '<option value="">No hay plantillas guardadas</option>';
+
+    showModal(`<div class="modalHeader"><div><h2>Imprimir etiquetas</h2><p class="fieldHint">Usa tu plantilla guardada sin repetir la configuración. El lienzo y el asistente quedan disponibles para editar.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+      <section class="quickLabelHome" data-r30-simple-label="true">
+        <div class="quickLabelProduct"><span>${icon('package')}</span><div><small>Producto</small><b>${escapeHtml(product.name || 'Producto')}</b><em>${escapeHtml(product.code || '')}</em></div></div>
+        <div class="formGrid quickLabelFields">
+          <div class="field full"><label for="quickLabelTemplateSelect">Plantilla</label><select id="quickLabelTemplateSelect">${templateOptions}</select></div>
+          <div class="field"><label for="quickLabelHomeQuantity">Cantidad</label><input id="quickLabelHomeQuantity" type="number" min="1" max="500" step="1" inputmode="numeric" value="1"></div>
+          <div class="field"><label for="quickLabelHomeStartSlot">Empezar en casilla</label><input id="quickLabelHomeStartSlot" type="number" min="1" max="120" step="1" inputmode="numeric" value="1"></div>
+        </div>
+        <div class="quickLabelStartActions" role="group" aria-label="Inicio rápido"><button type="button" class="btn" id="quickLabelStartLeft">Primera casilla</button><button type="button" class="btn" id="quickLabelStartRight">Segunda columna</button></div>
+        <div class="quickLabelSummary" id="quickLabelHomeSummary" role="status" aria-live="polite"></div>
+        <div class="quickLabelPrimaryActions"><button type="button" class="btn primary" id="quickLabelHomePrint">${icon('printer')} Imprimir</button><button type="button" class="btn" id="quickLabelHomePdf">${icon('file-down')} PDF</button></div>
+        <div class="quickLabelSecondaryActions"><button type="button" class="btn" id="quickLabelHomeEdit">${icon('edit-3')} Editar plantilla</button><button type="button" class="btn" id="quickLabelHomeAdvanced">${icon('settings-2')} Configuración avanzada</button></div>
+      </section>`);
+
+    const templateSelect = $('#quickLabelTemplateSelect');
+    const quantityInput = $('#quickLabelHomeQuantity');
+    const startInput = $('#quickLabelHomeStartSlot');
+    const summary = $('#quickLabelHomeSummary');
+    const printButton = $('#quickLabelHomePrint');
+    const pdfButton = $('#quickLabelHomePdf');
+    const rightButton = $('#quickLabelStartRight');
+    let busy = false;
+
+    const currentTemplate = () => templates.find((template) => template.id === templateSelect?.value) || selected || null;
+    const currentSetup = () => {
+      const template = currentTemplate();
+      if (!template) return { template:null, profile:null, paper:null };
+      const profile = resolveLabelPrintProfile(businessId, template, '');
+      const documentModel = universalDocumentFromTemplate(template);
+      const paper = profile?.universalPaper || documentModel?.paper || null;
+      return { template, profile, paper };
+    };
+    const refreshSummary = () => {
+      const { template, profile, paper } = currentSetup();
+      const columns = Math.max(1, Number(paper?.columns || 1));
+      if (rightButton) {
+        rightButton.hidden = columns < 2;
+        rightButton.textContent = columns === 2 ? 'Segunda columna' : `Columna ${columns}`;
+      }
+      if (!template) {
+        summary.innerHTML = '<b>Primero crea una plantilla.</b><span>No se imprimirá nada hasta guardar diseño y papel.</span>';
+        printButton.disabled = true;
+        pdfButton.disabled = true;
+        return;
+      }
+      const priceMode = template.priceFormat === 'abbr' ? 'Precio abreviado' : template.priceFormat === 'noLabel' ? 'Precio sin etiqueta' : template.priceFormat === 'cash' ? 'Solo efectivo' : 'Precio completo';
+      const paperText = paper ? `${paper.widthMm}×${paper.heightMm} mm · ${columns} columna${columns === 1 ? '' : 's'}` : 'Papel por configurar';
+      summary.innerHTML = `<b>${escapeHtml(template.name || 'Plantilla')}</b><span>${escapeHtml(profile?.name || paperText)} · ${escapeHtml(priceMode)}</span>`;
+      printButton.disabled = false;
+      pdfButton.disabled = false;
+    };
+
+    $('#quickLabelStartLeft').onclick = () => { startInput.value = '1'; };
+    if (rightButton) rightButton.onclick = () => {
+      const columns = Math.max(1, Number(currentSetup().paper?.columns || 1));
+      startInput.value = String(columns >= 2 ? 2 : 1);
+    };
+    if (templateSelect) templateSelect.onchange = () => { startInput.value = '1'; refreshSummary(); };
+
+    const execute = async (providerId) => {
+      if (busy) return;
+      const { template } = currentSetup();
+      if (!template) return toast('Primero guarda una plantilla de etiquetas.', 'err');
+      const quantity = Math.max(1, Number(quantityInput?.value || 1));
+      const startSlot = Math.max(1, Number(startInput?.value || 1));
+      busy = true;
+      printButton.disabled = true;
+      pdfButton.disabled = true;
+      summary.innerHTML = `<b>Preparando ${providerId === 'pdf' ? 'PDF' : 'impresión'}…</b><span>CLICK está reconstruyendo la plantilla y el plan físico.</span>`;
+      try {
+        const prepared = await prepareLabelPrintJob({
+          product, template, templateId:template.id, quantity, startSlot, businessId,
+          priceFormat:template.priceFormat || 'full'
+        });
+        if (prepared.plan?.count !== quantity) throw new Error(`El plan preparó ${prepared.plan?.count || 0} de ${quantity} etiquetas.`);
+        closeModal();
+        return await executeCanonicalLabelPrint(prepared, providerId);
+      } catch (error) {
+        console.warn('R30 simple label flow failed:', error);
+        toast(error.message || 'No se pudo preparar la impresión.', 'err');
+        busy = false;
+        if (document.body.contains(printButton)) printButton.disabled = false;
+        if (document.body.contains(pdfButton)) pdfButton.disabled = false;
+        if (document.body.contains(summary)) refreshSummary();
+        return null;
+      }
+    };
+
+    printButton.onclick = () => execute('system');
+    pdfButton.onclick = () => execute('pdf');
+    $('#quickLabelHomeEdit').onclick = () => {
+      const template = currentTemplate();
+      closeModal();
+      openLabelModal(product, template?.id || '', { editorOnly:true });
+    };
+    $('#quickLabelHomeAdvanced').onclick = () => {
+      const template = currentTemplate();
+      closeModal();
+      openAdvancedLabelModal(product, template?.id || '', { advancedOnly:true });
+    };
+    refreshSummary();
+  }
+
+  async function openLabelModal(product, initialTemplateId = '', options = {}) {
     if (options.directPrint || options.directPdf) {
       return runQuickLabelPrintFlow({
         product,
@@ -9059,6 +9170,16 @@ function parseMoney(value) {
         action:options.directPdf ? 'pdf' : 'print'
       });
     }
+    if (options.advancedOnly) return openAdvancedLabelModal(product, initialTemplateId, options);
+    if (!options.editorOnly) return openSimpleLabelModal(product, initialTemplateId);
+
+    const editor = window.CLICK360_UNIVERSAL_LABEL_EDITOR;
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const editorBusiness = currentBusiness();
+    const businessId = editorBusiness?.id || '';
+    if (!editor || !canvasApi) return openAdvancedLabelModal(product, initialTemplateId, options);
+    if (!businessId || (product?.businessId && product.businessId !== businessId)) return toast('El producto no pertenece al negocio activo.', 'err');
+
     const templates = labelTemplatesForBiz(businessId);
     const initialTemplate = templates.find((template) => template.id === initialTemplateId) || templates.find((template) => template.isDefault) || null;
     const deviceState = loadPrintDeviceState(businessId);
@@ -9145,7 +9266,7 @@ function parseMoney(value) {
         return deviceProfile(profile);
       },
       print: async (universalDocument, providerId) => {
-        const snapshot = canvasApi.normalizeDocument(universalDocument);
+        const snapshot = { ...canvasApi.normalizeDocument(universalDocument), priceFormat:initialTemplate?.priceFormat || 'full' };
         return printUniversalLabels(product, snapshot, providerId);
       },
       printCalibration:(universalDocument) => printUniversalCalibration(universalDocument),
