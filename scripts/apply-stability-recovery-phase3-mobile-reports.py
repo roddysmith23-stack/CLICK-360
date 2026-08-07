@@ -79,9 +79,9 @@ regex_once(
     'calculator desktop proportional resize',
 )
 
-replace_once(
+regex_once(
     'app.js',
-    "calcSheet.style.left = Math.max(0, Math.min(window.innerWidth - 220, savedPos.x)) + 'px';\n        calcSheet.style.top = Math.max(0, Math.min(window.innerHeight - 120, savedPos.y)) + 'px';",
+    r"calcSheet\.style\.left\s*=\s*Math\.max\(0,\s*Math\.min\(window\.innerWidth\s*-\s*220,\s*savedPos\.x\)\)\s*\+\s*'px';\s*\n\s*calcSheet\.style\.top\s*=\s*Math\.max\(0,\s*Math\.min\(window\.innerHeight\s*-\s*120,\s*savedPos\.y\)\)\s*\+\s*'px';",
     "calcSheet.style.left = Math.max(8, Math.min(Math.max(8, window.innerWidth - calcSheet.offsetWidth - 8), Number(savedPos.x || 8))) + 'px';\n        calcSheet.style.top = Math.max(8, Math.min(Math.max(8, window.innerHeight - calcSheet.offsetHeight - 8), Number(savedPos.y || 8))) + 'px';",
     'calculator restored position stays onscreen',
 )
