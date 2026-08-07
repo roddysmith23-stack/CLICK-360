@@ -84,6 +84,9 @@ jobs:
       - name: r30 known client issues regression
         run: node qa-r30-known-issues-regression.cjs
 
+      - name: Exact label quantities and second-slot physical plan
+        run: node qa-stability-label-r29.cjs
+
       - name: Full existing QA
         run: npm run qa
 
