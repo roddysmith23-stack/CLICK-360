@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 r33 print profile merge QA</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../printing-service.js"></script>
+  <script src="generated/print-profile-merge.bundle.js"></script>
+  <script src="generated/print-handoff.bundle.js"></script>
+</head>
+<body>
+  <div id="modalRoot"></div>
+  <script>
+    (() => {
+      const profileMerge = window.__CLICK360_PROFILE_MERGE__;
+      const handoff = window.__CLICK360_PRINT_HANDOFF__;
+
+      // A REAL persisted-template shape as saved by openAdvancedLabelModal (legacy named-key
+      // `.layout` schema) for a 60x40mm single roll label, matching what the client reports
+      // ("las mismas medidas ancho/alto que tenía preconfiguradas anteriormente").
+      const persistedTemplate = {
+        id: 'tpl-qa', name: 'Plantilla QA 60x40', businessId: 'biz-qa',
+        paperType: 'thermal-60x40', widthMm: 60, heightMm: 40, columns: 1, rows: 1,
+        gapXmm: 0, gapYmm: 0, dpi: 203, priceFormat: 'full',
+        layout: {
+          qr: { x: 20, y: 30, width: 150, height: 150, visible: true, z: 1 },
+          name: { x: 130, y: 225, width: 235, size: 15, visible: true, z: 2 },
+          price: { x: 130, y: 250, width: 235, size: 17, visible: true, z: 2 },
+          code: { x: 130, y: 200, width: 230, size: 12, visible: true, z: 2 }
+        }
+      };
+      const product = { id: 'prod-qa', name: 'Producto QA', code: 'QA-001', price: 9.99, cardPrice: 0, qty: 5 };
+
+      // Three real scenarios distinguishing which profile resolveLabelPrintProfile() picks up.
+      const SCENARIOS = {
+        // A) No saved print profile at all -> prepareLabelPrintJob's fallback path, using the
+        // template's own paper directly.
+        no_profile: { profiles: [], deviceState: {} },
+        // B) A modern profile already in the current (post-r30) universalPaper schema.
+        modern_profile: {
+          profiles: [{ id: 'prof-modern', businessId: 'biz-qa', name: 'Perfil moderno', status: 'provisional',
+            universalPaper: { id: 'roll-1-60x40', mediaType: 'roll-1', widthMm: 60, heightMm: 40, mediaWidthMm: 60, mediaHeightMm: 40, columns: 1, rows: 1, gapXmm: 0, gapYmm: 0, marginTopMm: 0, marginRightMm: 0, marginBottomMm: 0, marginLeftMm: 0, pitchMm: 0, xOffsetMm: 0, yOffsetMm: 0, scaleX: 1, scaleY: 1, dpi: 203, orientation: 'portrait' } }],
+          deviceState: { selectedProfileId: 'prof-modern' }
+        },
+        // C) A LEGACY-shaped saved profile (pre-r30 schema: only `.paper` with labelWidthMm/
+        // labelHeightMm, no mediaWidthMm/mediaHeightMm field at all — those fields did not exist
+        // in that older schema). This is the one path qa/r33-print-geometry-e2e.mjs never
+        // exercised: resolveLabelPrintProfile() must convert it via legacyPaperProfileToUniversal().
+        legacy_profile: {
+          profiles: [{ id: 'prof-legacy', businessId: 'biz-qa', name: 'Perfil legacy',
+            paper: { id: 'thermal-60x40', mediaType: 'roll-1', labelWidthMm: 60, labelHeightMm: 40, columns: 1, rows: 1, gapHorizontalMm: 0, gapVerticalMm: 0, nominalDpi: 203 } }],
+          deviceState: { selectedProfileId: 'prof-legacy' }
+        },
+        // D) Two-column roll (a real, common configuration repeatedly referenced throughout this
+        // project's history) with a LEGACY profile shape and no mediaWidthMm saved.
+        legacy_profile_2col: {
+          profiles: [{ id: 'prof-legacy-2col', businessId: 'biz-qa', name: 'Perfil legacy 2 columnas',
+            paper: { id: 'roll-2-40x60', mediaType: 'roll-2', labelWidthMm: 40, labelHeightMm: 60, columns: 2, rows: 1, gapHorizontalMm: 2, gapVerticalMm: 0, nominalDpi: 203 } }],
+          deviceState: { selectedProfileId: 'prof-legacy-2col' }
+        },
+        // E) Stale/large mediaWidthMm left over from an earlier A4-sheet calibration attempt —
+        // tests whether the system silently ever OVERRIDES a bad saved value (it should not; if
+        // the saved profile genuinely says 210mm, using 210mm is correct behavior — this scenario
+        // is here to visibly show that shape if it occurs, not to assert it as a bug).
+        legacy_profile_stale_a4: {
+          profiles: [{ id: 'prof-stale', businessId: 'biz-qa', name: 'Perfil con media stale',
+            paper: { id: 'custom', mediaType: 'sheet', labelWidthMm: 60, labelHeightMm: 40, mediaWidthMm: 210, mediaHeightMm: 297, columns: 1, rows: 1, gapHorizontalMm: 0, gapVerticalMm: 0, nominalDpi: 203 } }],
+          deviceState: { selectedProfileId: 'prof-stale' }
+        }
+      };
+
+      window.__CLICK360_RUN_SCENARIO__ = async (scenarioName) => {
+        const scenario = SCENARIOS[scenarioName];
+        if (!scenario) throw new Error(`unknown scenario ${scenarioName}`);
+        window.__CLICK360_TEST_PROFILES__ = scenario.profiles;
+        window.__CLICK360_TEST_DEVICE_STATE__ = scenario.deviceState;
+
+        let prepared = null;
+        let prepareError = null;
+        try {
+          prepared = await profileMerge.prepareLabelPrintJob({
+            product, template: persistedTemplate, templateId: persistedTemplate.id,
+            quantity: 1, startSlot: 1, businessId: 'biz-qa', priceFormat: persistedTemplate.priceFormat
+          });
+        } catch (err) {
+          prepareError = String(err?.message || err);
+        }
+        if (prepareError) return { scenarioName, prepareError };
+
+        window.print = () => { window.__CLICK360_SCENARIO_PRINT_CALLED__ = (window.__CLICK360_SCENARIO_PRINT_CALLED__ || 0) + 1; };
+        let printError = null;
+        let jobResult = null;
+        try {
+          jobResult = await handoff.executeCanonicalLabelPrint({ product, document: prepared.document, fingerprint: 'qa' }, 'system');
+        } catch (err) {
+          printError = String(err?.message || err);
+        }
+        const pageStyleText = document.getElementById('click360-print-page-style')?.textContent || '';
+        return {
+          scenarioName,
+          prepareError,
+          printError,
+          resolvedProfileId: prepared.profile?.id || null,
+          resolvedProfileUniversalPaper: prepared.profile?.universalPaper || null,
+          documentPaperWidthMm: prepared.document?.paper?.widthMm ?? null,
+          documentPaperHeightMm: prepared.document?.paper?.heightMm ?? null,
+          documentPaperMediaWidthMm: prepared.document?.paper?.mediaWidthMm ?? null,
+          documentPaperMediaHeightMm: prepared.document?.paper?.mediaHeightMm ?? null,
+          documentPaperColumns: prepared.document?.paper?.columns ?? null,
+          documentPaperRows: prepared.document?.paper?.rows ?? null,
+          preparedMediaWidthMm: prepared.media?.widthMm ?? null,
+          preparedMediaHeightMm: prepared.media?.heightMm ?? null,
+          pageStyleText
+        };
+      };
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>
