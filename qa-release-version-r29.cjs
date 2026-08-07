@@ -4,7 +4,7 @@ const fs = require('fs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-const expected = 'commercial-1-0-5-r32';
+const expected = 'commercial-1-0-5-r33';
 const stale = ['commercial-1-0-5-r20', 'commercial-1-0-5-r28'];
 const files = ['app.js','firebase-service.js','runtime-guard.js','service-worker.js','index.html','styles.css'];
 
@@ -14,10 +14,10 @@ for (const file of files) {
   for (const old of stale) assert(!text.includes(old), `${file} must not reference stale ${old}`);
 }
 
-assert(fs.readFileSync('app.js','utf8').includes("APP_ASSET_VERSION = 'commercial-1-0-5-r32'"),'app metadata r29');
-assert(fs.readFileSync('firebase-service.js','utf8').includes("APP_ASSET_VERSION = 'commercial-1-0-5-r32'"),'firebase cache cleanup r29');
-assert(fs.readFileSync('runtime-guard.js','utf8').includes("ASSET_VERSION = 'commercial-1-0-5-r32'"),'runtime guard r29');
-assert(fs.readFileSync('service-worker.js','utf8').includes("click360-commercial-1-0-5-r32"),'service worker cache r29');
+assert(fs.readFileSync('app.js','utf8').includes("APP_ASSET_VERSION = 'commercial-1-0-5-r33'"),'app metadata r29');
+assert(fs.readFileSync('firebase-service.js','utf8').includes("APP_ASSET_VERSION = 'commercial-1-0-5-r33'"),'firebase cache cleanup r29');
+assert(fs.readFileSync('runtime-guard.js','utf8').includes("ASSET_VERSION = 'commercial-1-0-5-r33'"),'runtime guard r29');
+assert(fs.readFileSync('service-worker.js','utf8').includes("click360-commercial-1-0-5-r33"),'service worker cache r29');
 
 function walk(dir){
   const out=[];
