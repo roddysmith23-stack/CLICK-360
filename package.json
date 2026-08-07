@@ -11,7 +11,8 @@
     "qa:simulator:full": "node qa/simulator/business-simulator.cjs --mode=full",
     "qa:labels:e2e": "node qa/universal-label-browser-e2e.mjs && node qa/printing-service-pdf-e2e.mjs && node qa/visual-browser-e2e.mjs && node qa/label-wizard-layout-e2e.mjs",
     "qa:artifact:e2e": "node qa/built-artifact-smoke.mjs",
-    "qa:integration": "npm run qa:labels:e2e && npm run qa:artifact:e2e"
+    "qa:integration": "npm run qa:labels:e2e && npm run qa:artifact:e2e",
+    "qa:r31": "node qa-r31-label-engine-consolidation.cjs && node qa/r31-universal-canvas-additive-e2e.mjs && node qa/r31-mobile-label-ui-e2e.mjs"
   },
   "dependencies": {
     "@zxing/browser": "^0.1.5",
