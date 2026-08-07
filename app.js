@@ -7278,16 +7278,8 @@ function parseMoney(value) {
           code: product.code,
           name: product.name,
           variant: product.variant || product.category,
-          price: (() => {
-            if (!product.cardPrice || product.cardPrice === product.price) return fmt(product.price);
-            const cash = fmt(product.price);
-            const card = fmt(product.cardPrice);
-            const pf = options.priceFormat || 'full';
-            if (pf === 'abbr') return `Ef. ${cash} · Tj. ${card}`;
-            if (pf === 'noLabel') return `${cash} · ${card}`;
-            if (pf === 'cash') return cash;
-            return `Efectivo ${cash} · Tarjeta ${card}`;
-          })(),
+          // Single price-format source shared with the canonical print pipeline (see labelFmt()).
+          price: labelFmt(product, options.priceFormat || 'full'),
           tax: resolvedTaxLegend(product, options),
           social: options.social,
           phone: options.phone || '',
@@ -8566,7 +8558,23 @@ function parseMoney(value) {
 		         if (selected?.status !== 'certified') return toast('Selecciona un perfil certificado por CLICK.', 'err');
 		       }
 		       const outputProvider = providerId || (options.outputMode === 'system' || options.outputMode === 'certified' ? 'system' : 'pdf');
-		       return printLabels([{ product, copies:preflight.quantity.count }], options, outputProvider);
+		       // Canonical pipeline: same document builder + node builder + handoffPrint as the
+		       // simple/quick flow (prepareLabelPrintJob → executeCanonicalLabelPrint). No second engine.
+		       const canonicalDoc = universalDocumentFromAdvancedState(product, options, preflight.quantity.count);
+		       if (!canonicalDoc) return toast('El motor de etiquetas no está disponible. Recarga CLICK 360.', 'err');
+		       try {
+		         const job = await buildUniversalLabelPrintNode([{ product, copies:preflight.quantity.count }], canonicalDoc);
+		         await waitForLabelPrintNodeReady(job.node);
+		         return await handoffPrint({
+		           node:job.node.cloneNode(true), media:'label',
+		           mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm,
+		           widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm,
+		           copiesHandled:true, printPlan:job.plan,
+		           filename:`CLICK360_etiquetas_${slug(product.name || product.code)}_${today()}.pdf`
+		         }, outputProvider);
+		       } catch (error) {
+		         return toast(error.message || 'No se pudo preparar la impresión.', 'err');
+		       }
 		    };
 	    $('#printOne').onclick = () => runPrintJob('system');
 	    $('#savePdfBtn').onclick = () => runPrintJob('pdf');
@@ -8574,12 +8582,27 @@ function parseMoney(value) {
         if (options.directPrint) setTimeout(() => runPrintJob(), 150);
         if (options.directPdf) setTimeout(() => runPrintJob('pdf'), 150);
 
-	    $('#printAll').onclick = () => {
+	    $('#printAll').onclick = async () => {
 	       const preflight = updateSheetPreview();
 	       if (preflight.blocking) return toast('Corrige los errores rojos antes de imprimir el catálogo.', 'err');
 	       const products = productsForBiz(editorBusinessId);
 	       if (!products.length) return toast('No hay productos para imprimir.', 'err');
-	       printLabels(products.map((candidate) => ({ product:candidate, copies:1 })), getOptions(), 'system');
+	       const options = getOptions();
+	       const canonicalDoc = universalDocumentFromAdvancedState(product, options, 1);
+	       if (!canonicalDoc) return toast('El motor de etiquetas no está disponible. Recarga CLICK 360.', 'err');
+	       try {
+	         const job = await buildUniversalLabelPrintNode(products.map((candidate) => ({ product:candidate, copies:1 })), canonicalDoc);
+	         await waitForLabelPrintNodeReady(job.node);
+	         return await handoffPrint({
+	           node:job.node.cloneNode(true), media:'label',
+	           mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm,
+	           widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm,
+	           copiesHandled:true, printPlan:job.plan,
+	           filename:`CLICK360_catalogo_etiquetas_${today()}.pdf`
+	         }, 'system');
+	       } catch (error) {
+	         return toast(error.message || 'No se pudo preparar el catálogo.', 'err');
+	       }
 	    };
 
 	    $('#downloadLabelPng').onclick = async () => {
@@ -8759,37 +8782,74 @@ function parseMoney(value) {
     if (!universalPaper) return normalized;
     return canvasApi.normalizeDocument({ ...normalized, paper:{ ...normalized.paper, ...universalPaper } });
   }
-  function universalDocumentFromAdvancedState(options = {}) {
+  // Resolves the advanced wizard's named-field layout (business/address/tax/social/phone/stock/
+  // variant/customText/logo) into literal text/imageData so the canonical Universal renderer can
+  // draw it without any field-specific knowledge. QR/barcode/name/sku/price stay dynamic (driven
+  // by the `data` object passed to renderLabelToCanvas, matching the simple/canonical flow).
+  function resolvedAdvancedLayout(product, options = {}) {
+    const layout = normalizedLabelLayout(options.layout);
+    const textFor = {
+      business: String(options.businessName || 'CLICK 360').toUpperCase(),
+      address: options.address || '',
+      variant: product.variant || product.category || '',
+      tax: resolvedTaxLegend(product, options),
+      social: options.social || '',
+      phone: options.phone || '',
+      stock: `Stock ${product.qty}`,
+      customText: options.customText || ''
+    };
+    Object.entries(textFor).forEach(([key, text]) => { if (layout[key]) layout[key] = { ...layout[key], text }; });
+    if (layout.logo) layout.logo = { ...layout.logo, imageData: options.businessLogo || '' };
+    if (layout.image) layout.image = { ...layout.image, imageData: product.imageData || '' };
+    return layout;
+  }
+  function universalDocumentFromAdvancedState(product, options = {}, quantity = 1) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvasApi) return null;
-    return canvasApi.normalizeDocument({
+    const documentModel = canvasApi.normalizeDocument({
       schemaVersion:2,
-      paper:universalPaperFromTemplate({
-        paperType:options.paperType,
-        widthMm:options.widthMm,
-        heightMm:options.heightMm,
-        mediaWidthMm:options.mediaWidthMm,
-        mediaHeightMm:options.mediaHeightMm,
-        columns:options.columns,
-        rows:options.rows,
-        gapXmm:options.gapXmm,
-        gapYmm:options.gapYmm,
-        marginTopMm:options.marginTopMm,
-        marginRightMm:options.marginRightMm,
-        marginBottomMm:options.marginBottomMm,
-        marginLeftMm:options.marginLeftMm,
-        pitchMm:options.pitchMm,
-        xOffsetMm:options.xOffsetMm,
-        yOffsetMm:options.yOffsetMm,
-        scaleX:options.scaleX,
-        scaleY:options.scaleY,
-        dpi:options.dpi,
-        mediaType:options.mediaType
-      }),
-      layout:normalizedLabelLayout(options.layout),
-      quantity:1,
+      paper:{
+        ...universalPaperFromTemplate({
+          paperType:options.paperType,
+          widthMm:options.widthMm,
+          heightMm:options.heightMm,
+          mediaWidthMm:options.mediaWidthMm,
+          mediaHeightMm:options.mediaHeightMm,
+          columns:options.columns,
+          rows:options.rows,
+          gapXmm:options.gapXmm,
+          gapYmm:options.gapYmm,
+          marginTopMm:options.marginTopMm,
+          marginRightMm:options.marginRightMm,
+          marginBottomMm:options.marginBottomMm,
+          marginLeftMm:options.marginLeftMm,
+          pitchMm:options.pitchMm,
+          xOffsetMm:options.xOffsetMm,
+          yOffsetMm:options.yOffsetMm,
+          scaleX:options.scaleX,
+          scaleY:options.scaleY,
+          dpi:options.dpi,
+          mediaType:options.mediaType
+        }),
+        shape:options.shape === 'square' || options.shape === 'circle' ? options.shape : 'rounded',
+        contentRotation:options.contentRotation
+      },
+      layout:resolvedAdvancedLayout(product, options),
+      quantity:Math.max(1, Number(quantity) || 1),
       startSlot:Math.max(1, Number(options.startSlot || 1))
     });
+    // Non-schema render metadata (mirrors how priceFormat is attached in prepareLabelPrintJob),
+    // read back by buildUniversalLabelPrintNode so colors/QR margin survive the canonical pipeline.
+    return {
+      ...documentModel,
+      priceFormat: options.priceFormat || 'full',
+      renderOptions:{
+        background: options.bgColor || '#ffffff',
+        foreground: options.fgColor || '#000000',
+        qrBackground: options.qrBgColor || options.bgColor || '#ffffff',
+        qrMarginRatio: Math.max(0, Math.min(0.3, (Number(options.qrMargin) || 5) / 40))
+      }
+    };
   }
   async function prepareLabelPrintJob({
     product,
@@ -8980,12 +9040,18 @@ function parseMoney(value) {
       return null;
     }
   }
-  async function buildUniversalLabelPrintNode(product, sourceDocument) {
+  // Accepts either a single product (legacy call shape, wrapped as one group) or an array of
+  // {product, copies} groups (catalog / multi-product printing) — one canonical node builder
+  // for every label print/PDF entry point in the app.
+  async function buildUniversalLabelPrintNode(productOrGroups, sourceDocument) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     const sourcePriceFormat = sourceDocument?.priceFormat || 'full';
+    const sourceRenderOptions = sourceDocument?.renderOptions || null;
     const documentModel = { ...canvasApi.normalizeDocument(sourceDocument), priceFormat:sourcePriceFormat };
     const documentSnapshot = { ...canvasApi.normalizeDocument(documentModel), priceFormat:sourcePriceFormat };
-    const plan = canvasApi.buildPrintPlan([{ product, copies: documentSnapshot.quantity }], documentSnapshot, { startSlot: documentSnapshot.startSlot });
+    const groups = Array.isArray(productOrGroups) ? productOrGroups : [{ product: productOrGroups, copies: documentSnapshot.quantity }];
+    const singleProduct = groups.length === 1 ? groups[0].product : null;
+    const plan = canvasApi.buildPrintPlan(groups, documentSnapshot, { startSlot: documentSnapshot.startSlot });
     if (!plan.valid || !plan.count || !plan.pages?.length) throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.'), { code:'universal-print-plan-invalid' });
     const media = universalMediaSize(documentSnapshot);
     const wrap = document.createElement('div');
@@ -9007,7 +9073,7 @@ function parseMoney(value) {
             price: labelFmt(cell.item.product, documentSnapshot.priceFormat),
             sku: cell.item.product?.code || '',
             qrPayload: productPayload(cell.item.product)
-          });
+          }, sourceRenderOptions || {});
           if (!labelCanvas.width || !labelCanvas.height) throw Object.assign(new Error('La etiqueta se renderizó vacía.'), { code:'universal-render-empty' });
           const image = document.createElement('img');
           image.src = labelCanvas.toDataURL('image/png');
@@ -9019,14 +9085,16 @@ function parseMoney(value) {
       }
       wrap.appendChild(pageNode);
     }
-    return { node:wrap, plan, document:documentSnapshot, media };
+    return { node:wrap, plan, document:documentSnapshot, media, product:singleProduct };
   }
   async function printUniversalLabels(product, sourceDocument, providerId = 'system') {
     // Direct path: caller already has a fully-calibrated document (editor or runQuickLabelPrintFlow).
     // Do NOT re-resolve the profile — calibrated paper is already baked into sourceDocument.
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvasApi) throw Object.assign(new Error('El motor de etiquetas no está disponible. Recarga CLICK 360.'), { code:'label-engine-unavailable' });
-    const documentModel = canvasApi.normalizeDocument(sourceDocument);
+    // Preserve priceFormat/renderOptions across normalization — normalizeDocument() only knows
+    // the schema fields and silently drops non-schema metadata otherwise (see prepareLabelPrintJob).
+    const documentModel = { ...canvasApi.normalizeDocument(sourceDocument), priceFormat:sourceDocument?.priceFormat || 'full', renderOptions:sourceDocument?.renderOptions || null };
     const job = await buildUniversalLabelPrintNode(product, documentModel);
     await waitForLabelPrintNodeReady(job.node);
     const result = await handoffPrint({
@@ -9177,7 +9245,10 @@ function parseMoney(value) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     const editorBusiness = currentBusiness();
     const businessId = editorBusiness?.id || '';
-    if (!editor || !canvasApi) return openAdvancedLabelModal(product, initialTemplateId, options);
+    if (!editor || !canvasApi) {
+      toast('El lienzo universal no cargó en este dispositivo. Abriendo configuración avanzada como respaldo.', 'warn');
+      return openAdvancedLabelModal(product, initialTemplateId, options);
+    }
     if (!businessId || (product?.businessId && product.businessId !== businessId)) return toast('El producto no pertenece al negocio activo.', 'err');
 
     const templates = labelTemplatesForBiz(businessId);
@@ -9191,7 +9262,9 @@ function parseMoney(value) {
       initialTemplate,
       initialProfile,
       initialDocument: universalLabelDocument(initialTemplate || {}),
-      formatPrice:fmt,
+      // Single price-format source: mirrors the exact formatter buildUniversalLabelPrintNode()
+      // uses at print/PDF time (labelFmt), so the editor preview never diverges from output.
+      formatPrice:() => labelFmt(product, initialTemplate?.priceFormat || 'full'),
       productPayload,
       readImage:(input, onImage) => readImageInput(input, onImage, { max:640, maxBytes:140 * 1024, quality:0.7 }),
       showModal,
@@ -9328,6 +9401,10 @@ function parseMoney(value) {
   function buildLabelPrintPlan(groups, options = {}) { return buildLabelSheetPlan(groups, options); }
   window.click360BuildLabelSheetPlan = buildLabelSheetPlan;
   window.click360BuildLabelPrintPlan = buildLabelPrintPlan;
+  // Deprecated: no UI entry point calls this anymore (see runPrintJob/printAll above, which build
+  // a Universal document via universalDocumentFromAdvancedState() and print through
+  // buildUniversalLabelPrintNode()+handoffPrint — the single canonical engine). Kept only in case
+  // external/legacy code still references it; do not wire new callers to it.
   async function printLabels(groups, options = {}, providerId = 'system'){
     const root=$('#printRoot') || document.createElement('div');
     root.id='printRoot';
