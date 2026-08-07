@@ -1,0 +1,91 @@
+name: CLICK 360 Firebase Hosting Release r30
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/firebase-hosting-release-r30.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: click360-firebase-hosting-production-r30
+  cancel-in-progress: false
+
+jobs:
+  deploy-hosting:
+    if: "${{ github.event.head_commit.message == 'deploy: CLICK 360 1.0.5 r30 to Firebase Hosting' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify r30 runtime before build
+        run: |
+          set -euo pipefail
+          for f in app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html manifest.webmanifest; do
+            grep -q 'commercial-1-0-5-r30' "$f"
+            ! grep -q 'commercial-1-0-5-r29' "$f"
+          done
+          echo 'CLICK360_R30_SOURCE_VERIFIED'
+
+      - name: Build exact static release
+        run: npm run build:static
+
+      - name: Verify built r30 artifact
+        run: |
+          set -euo pipefail
+          for f in dist/app.js dist/firebase-service.js dist/styles.css dist/service-worker.js dist/runtime-guard.js dist/index.html dist/manifest.webmanifest; do
+            test -f "$f"
+            grep -q 'commercial-1-0-5-r30' "$f"
+            ! grep -q 'commercial-1-0-5-r29' "$f"
+          done
+          echo 'CLICK360_R30_ARTIFACT_VERIFIED'
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_CLICK_360 }}"
+
+      - name: Deploy Firebase Hosting only
+        run: npx firebase-tools deploy --only hosting --project click-360 --non-interactive
+
+      - name: Verify live production r30
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 15); do
+            stamp="$(date +%s)-$attempt"
+            app="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/app.js?verify=$stamp" || true)"
+            sw="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/service-worker.js?verify=$stamp" || true)"
+            guard="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/runtime-guard.js?verify=$stamp" || true)"
+            manifest="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/manifest.webmanifest?verify=$stamp" || true)"
+            if printf '%s' "$app" | grep -q 'commercial-1-0-5-r30' \
+              && printf '%s' "$sw" | grep -q 'commercial-1-0-5-r30' \
+              && printf '%s' "$guard" | grep -q 'commercial-1-0-5-r30' \
+              && printf '%s' "$manifest" | grep -q 'commercial-1-0-5-r30' \
+              && ! printf '%s\n%s\n%s\n%s' "$app" "$sw" "$guard" "$manifest" | grep -q 'commercial-1-0-5-r29'; then
+              echo 'CLICK360_PRODUCTION_R30_VERIFIED'
+              exit 0
+            fi
+            sleep 4
+          done
+          echo 'CLICK360_PRODUCTION_R30_NOT_VISIBLE'
+          exit 1
+
+      - name: Confirm deployment scope
+        run: echo 'Firebase Hosting only. No Firestore Rules or Functions deployment requested.'
