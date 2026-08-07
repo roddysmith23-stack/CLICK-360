@@ -6722,7 +6722,7 @@ function parseMoney(value) {
 		      toast('Sincronizando los datos de tu negocio desde la nube...');
 		      Promise.resolve(window.click360ResolveSyncConflict?.('refresh_cloud'))
 		        .then((result) => {
-		          if (result?.ok) {
+		          if (result?.refreshed === true) {
 		            closeModal(false);
 		            renderApp(route);
 		            toast('✅ Tus datos se actualizaron desde la nube.', 'ok');
