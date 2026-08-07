@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <link rel="stylesheet" href="../../styles.css">
+  <title>CLICK 360 r29 Mobile Stability QA</title>
+  <style>
+    body{padding:8px}.qa{display:grid;gap:14px;width:100%;max-width:760px;margin:auto}.qa-modal{position:relative!important;inset:auto!important;display:grid!important}.qa-modal .modal{margin:auto}.calculatorWorkspace{position:relative!important;min-height:620px}.calculatorWorkspace .calculatorSheet{position:absolute!important;left:8px!important;top:8px!important;right:auto!important;bottom:auto!important;width:260px;height:520px}
+  </style>
+</head>
+<body>
+<main class="qa">
+  <section class="card sectionCard">
+    <h3>Reportes</h3>
+    <div class="reportRangeCard">
+      <div class="field"><label>Desde</label><input type="date" value="2026-08-01"></div>
+      <div class="field"><label>Hasta</label><input type="date" value="2026-08-07"></div>
+    </div>
+    <div class="toolbar"><button class="btn">Guardar PDF</button><button class="btn primary">Descargar Imagen</button></div>
+  </section>
+
+  <section class="card sectionCard">
+    <h3>Factura de proveedor</h3>
+    <div class="formGrid">
+      <div class="field"><label>Proveedor / Nº Factura</label><input placeholder="Buscar..."></div>
+      <div class="field"><label>Desde</label><input type="date" value="2026-08-01"></div>
+      <div class="field"><label>Hasta</label><input type="date" value="2026-08-07"></div>
+    </div>
+    <button class="btn block">Aplicar filtros</button>
+  </section>
+
+  <section class="modalOverlay qa-modal">
+    <div class="modal">
+      <div class="modalHeader"><h2>Pagos mensuales</h2><button class="closeBtn">×</button></div>
+      <form class="formGrid financeEntryForm">
+        <div class="field"><label>Nombre</label><input></div>
+        <div class="field"><label>Categoría</label><select><option>Arriendo</option></select></div>
+        <div class="field"><label>Monto / saldo</label><input inputmode="decimal"></div>
+        <div class="field"><label>Fecha de pago u objetivo</label><input type="date" value="2026-08-31"></div>
+        <div class="field full"><label>Notas</label><textarea></textarea></div>
+        <button class="btn" type="button">Cancelar</button><button class="btn primary">Guardar</button>
+      </form>
+    </div>
+  </section>
+
+  <section id="calculatorRoot">
+    <div class="calculatorWorkspace">
+      <section class="calculatorSheet">
+        <div class="modalHeader calculatorWindowHeader"><div><h2>Calculadora</h2><p class="fieldHint">Ventana flotante</p></div><div class="calculatorWindowActions"><button class="iconBtn">−</button><button class="closeBtn">×</button></div></div>
+        <div class="calculatorBody">
+          <output class="calculatorDisplay">123.45</output>
+          <div class="calculatorKeys">${['C','⌫','%','÷','7','8','9','×','4','5','6','−','1','2','3','+','±','0','.','='].map(k=>`<button>${k}</button>`).join('')}</div>
+          <div class="calculatorHelpers"><label>Porcentaje<input type="number" value="15"></label><button>Descuento</button><button>Impuesto</button></div>
+          <div class="calculatorActions"><button class="btn">Copiar</button><button class="btn primary">Usar resultado</button></div>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
+<script>
+window.__CLICK360_STABILITY_MOBILE_QA__ = {
+  evaluate(){
+    const viewport = document.documentElement.clientWidth;
+    const bad = [...document.querySelectorAll('input,select,textarea,button,.card,.modal,.calculatorSheet')].filter(el=>{
+      const r=el.getBoundingClientRect();
+      if(!r.width||!r.height)return false;
+      return r.left < -1 || r.right > viewport + 1;
+    }).map(el=>({tag:el.tagName,cls:el.className,right:el.getBoundingClientRect().right,viewport}));
+    return {pass:bad.length===0 && document.documentElement.scrollWidth<=viewport, bad, scrollWidth:document.documentElement.scrollWidth, viewport};
+  }
+};
+</script>
+</body>
+</html>
