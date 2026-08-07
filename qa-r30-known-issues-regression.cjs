@@ -56,6 +56,9 @@ assert(app.includes("const resolvedFallbackPriceFormat = priceFormat || resolved
 assert(app.includes('if (prepared.plan?.count !== quantity)'), 'exact quantity verification missing');
 assert(app.includes("startInput.value = String(columns >= 2 ? 2 : 1);"), 'second-column shortcut missing');
 assert(app.includes('return await executeCanonicalLabelPrint(prepared, providerId);'), 'simple flow bypasses canonical engine');
+assert(app.includes("const confirmedQuantity = Math.max(1, Number($('#quickLabelQuantity')?.value || 1));"), 'quick-print must capture quantity before closing confirm modal');
+assert(app.includes("const confirmedStartSlot = Math.max(1, Number($('#quickLabelStartSlot')?.value || 1));"), 'quick-print must capture start slot before closing confirm modal');
+assert(app.indexOf('const confirmedQuantity =') < app.indexOf('closeModal();\n        resolve({\n          confirmed:true,\n          quantity:confirmedQuantity'), 'quick-print confirm closes before capturing values');
 assert(app.includes("const criticalErrors = (preflight.validation?.errors || []).filter"), 'nonblocking warning behavior regressed');
 assert(css.includes('CLICK360_R30_SIMPLE_LABEL'), 'r30 simple-label responsive CSS missing');
 
