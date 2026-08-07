@@ -1,0 +1,32 @@
+name: CLICK 360 Label Stability r29
+
+on:
+  push:
+    branches:
+      - hotfix/1.0.5-stability-label-regression
+
+permissions:
+  contents: read
+
+jobs:
+  labels-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Exact quantity and second-slot regression
+        run: |
+          node qa-stability-label-r29.cjs
+          node qa-p1-5c-exact-copy-harness.cjs
+          node qa-p1-5c-paper-geometry-harness.cjs
+      - name: Existing label engine E2E
+        run: npm run qa:labels:e2e
+      - name: Static build
+        run: npm run build:static
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=moderate
