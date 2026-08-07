@@ -10,9 +10,9 @@ const sw = fs.readFileSync('service-worker.js', 'utf8');
 const css = fs.readFileSync('styles.css', 'utf8');
 
 // Release/cache coherence.
-assert(app.includes("APP_ASSET_VERSION = 'commercial-1-0-5-r30'"), 'app must run r30');
-assert(firebase.includes("APP_ASSET_VERSION = 'commercial-1-0-5-r30'"), 'firebase-service must run r30');
-assert(sw.includes("CACHE = 'click360-commercial-1-0-5-r30'"), 'service worker must run r30');
+assert(app.includes("APP_ASSET_VERSION = 'commercial-1-0-5-r31'"), 'app must run r30');
+assert(firebase.includes("APP_ASSET_VERSION = 'commercial-1-0-5-r31'"), 'firebase-service must run r30');
+assert(sw.includes("CACHE = 'click360-commercial-1-0-5-r31'"), 'service worker must run r30');
 
 // Multi-device sync: an empty phone must never erase populated cloud state.
 assert(app.includes('window.click360GetLocalBusinessSyncStats = localBusinessSyncStats'), 'sync stats bridge missing');

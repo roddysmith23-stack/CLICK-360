@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 r31 universal canvas additive QA</title>
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+</head>
+<body>
+  <canvas id="rectCanvas"></canvas>
+  <canvas id="circleCanvas"></canvas>
+  <canvas id="rotatedCanvas"></canvas>
+  <canvas id="marginCanvas"></canvas>
+  <canvas id="wideMarginCanvas"></canvas>
+  <canvas id="legacyLayoutCanvas"></canvas>
+  <script>
+    (async () => {
+      const engine = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+      const nonWhite = (canvas, bounds = {}) => {
+        const ctx = canvas.getContext('2d');
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        const left = Math.max(0, Math.floor(bounds.left ?? 0));
+        const top = Math.max(0, Math.floor(bounds.top ?? 0));
+        const right = Math.min(canvas.width, Math.ceil(bounds.right ?? canvas.width));
+        const bottom = Math.min(canvas.height, Math.ceil(bounds.bottom ?? canvas.height));
+        let count = 0;
+        for (let y = top; y < bottom; y += 1) for (let x = left; x < right; x += 1) {
+          const i = (y * canvas.width + x) * 4;
+          if (data[i + 3] > 8 && (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245)) count += 1;
+        }
+        return count;
+      };
+      const corner = (canvas, size = 4) => nonWhite(canvas, { left: 0, top: 0, right: size, bottom: size });
+
+      const baseDoc = {
+        schemaVersion: 2,
+        paper: { id: 'qa', mediaType: 'roll-1', widthMm: 40, heightMm: 40, dpi: 203 },
+        objects: [{ id: 'qr-1', type: 'qr', xMm: 2, yMm: 2, widthMm: 30, heightMm: 30 }],
+        quantity: 1, startSlot: 1
+      };
+      const data = { qrPayload: 'CLICK360:qa-additive' };
+
+      // 1) Default shape ('rounded'/unset) — a full square canvas fills every corner. Use a
+      // non-white background so "filled" is distinguishable from "clipped/transparent" below
+      // (both would otherwise read as 0 non-white pixels against the default white fill).
+      const bgOptions = { background: '#eeeeee' };
+      const rectCanvas = document.getElementById('rectCanvas');
+      await engine.renderLabelToCanvas(rectCanvas, baseDoc, data, bgOptions);
+      const rectCorners = corner(rectCanvas);
+
+      // 2) shape:'circle' — corners must stay unpainted (background never reaches them; the QR
+      // itself may still touch a corner depending on layout, so we check the FAR corner, which the
+      // 30mm QR inset by 2mm on a 40mm circle canvas cannot reach).
+      const circleCanvas = document.getElementById('circleCanvas');
+      const circleDoc = { ...baseDoc, paper: { ...baseDoc.paper, shape: 'circle' } };
+      await engine.renderLabelToCanvas(circleCanvas, circleDoc, data, bgOptions);
+      const circleCorners = corner(circleCanvas);
+
+      // 3) contentRotation — rotating a document with an off-center object changes which corner
+      // is populated. We use an object placed in the top-left quadrant only and check that a
+      // 180-degree rotation moves the ink to the opposite (bottom-right) quadrant.
+      const asymmetricDoc = {
+        schemaVersion: 2,
+        paper: { id: 'qa', mediaType: 'roll-1', widthMm: 40, heightMm: 40, dpi: 203 },
+        objects: [{ id: 'text-1', type: 'text', text: 'X', xMm: 2, yMm: 2, widthMm: 10, heightMm: 8 }],
+        quantity: 1, startSlot: 1
+      };
+      const straightCanvas = document.getElementById('rotatedCanvas');
+      await engine.renderLabelToCanvas(straightCanvas, asymmetricDoc, {}, { foreground: '#000000' });
+      const straightTopLeft = nonWhite(straightCanvas, { left: 0, top: 0, right: straightCanvas.width / 2, bottom: straightCanvas.height / 2 });
+      const straightBottomRight = nonWhite(straightCanvas, { left: straightCanvas.width / 2, top: straightCanvas.height / 2, right: straightCanvas.width, bottom: straightCanvas.height });
+      const rotatedCanvas = document.getElementById('rotatedCanvas');
+      const rotatedDoc = { ...asymmetricDoc, paper: { ...asymmetricDoc.paper, contentRotation: 180 } };
+      await engine.renderLabelToCanvas(rotatedCanvas, rotatedDoc, {}, { foreground: '#000000' });
+      const rotatedTopLeft = nonWhite(rotatedCanvas, { left: 0, top: 0, right: rotatedCanvas.width / 2, bottom: rotatedCanvas.height / 2 });
+      const rotatedBottomRight = nonWhite(rotatedCanvas, { left: rotatedCanvas.width / 2, top: rotatedCanvas.height / 2, right: rotatedCanvas.width, bottom: rotatedCanvas.height });
+
+      // 4) qrMarginRatio — a wider margin must shrink the QR's drawn ink area (fewer dark pixels
+      // in the object's own box), proving the inset is actually applied to the draw call.
+      const marginCanvas = document.getElementById('marginCanvas');
+      await engine.renderLabelToCanvas(marginCanvas, baseDoc, data, { qrMarginRatio: 0 });
+      const noMarginInk = nonWhite(marginCanvas);
+      const wideMarginCanvas = document.getElementById('wideMarginCanvas');
+      await engine.renderLabelToCanvas(wideMarginCanvas, baseDoc, data, { qrMarginRatio: 0.25 });
+      const wideMarginInk = nonWhite(wideMarginCanvas);
+
+      // 5) Legacy layout adapter: a 'logo' key must become a real image object (not a blank
+      // text field) once imageData is supplied — 1x1 red PNG as a minimal real image payload.
+      const redPixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const legacyDoc = {
+        schemaVersion: 2,
+        paper: { id: 'qa', mediaType: 'roll-1', widthMm: 40, heightMm: 40, dpi: 203 },
+        layout: { logo: { x: 20, y: 20, width: 60, height: 60, visible: true, imageData: redPixel } },
+        quantity: 1, startSlot: 1
+      };
+      const legacyLayoutCanvas = document.getElementById('legacyLayoutCanvas');
+      await engine.renderLabelToCanvas(legacyLayoutCanvas, legacyDoc, {}, {});
+      const legacyLayoutInk = nonWhite(legacyLayoutCanvas);
+      const normalizedLegacy = engine.normalizeDocument(legacyDoc);
+      const logoObject = normalizedLegacy.objects.find((o) => o.id === 'logo');
+
+      window.__CLICK360_R31_ADDITIVE_QA__ = Object.freeze({
+        rectCorners,
+        circleCorners,
+        straightTopLeft, straightBottomRight, rotatedTopLeft, rotatedBottomRight,
+        noMarginInk, wideMarginInk,
+        legacyLayoutInk,
+        logoObjectType: logoObject?.type || null,
+        logoObjectHasImageData: !!logoObject?.imageData
+      });
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>

@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'commercial-1-0-5-r30';
+		  const APP_ASSET_VERSION = 'commercial-1-0-5-r31';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -606,7 +606,10 @@
 		      uidHash: String(uidHash || '').slice(0, 16),
 		      businessId,
 		      tenantKey,
-		      appVersion: '1.0.5',
+		      // firestore.rules gates telemetryEvents on the internal V16.x contract version
+		      // (16.0.0/16.2.0), not the commercial release number — sending '1.0.5' here always
+		      // hit permission-denied and silently dropped every telemetry write.
+		      appVersion: '16.2.0',
 		      requestId: String(details.requestId || window.crypto?.randomUUID?.() || eventRef.id).slice(0, 64),
 		      mode: String(details.mode || window.click360AccessState?.mode || syncStatus.status || '').slice(0, 40),
 		      errorCode: String(details.errorCode || '').replace(/[^a-z0-9_./-]/gi, '').slice(0, 80),
@@ -1696,7 +1699,9 @@
       status: 'pending',
       notes: String(selection.notes || '').slice(0, 500),
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-	      appVersion: '1.0.5'
+	      // Must match firestore.rules' activationRequests contract (16.0.0/16.2.0), not the
+	      // commercial version — see the appVersion fix in click360InviteWorkerEmail.
+	      appVersion: '16.2.0'
 	    });
 	    recordTelemetry('plan_request', { requestId: requestRef.id, mode: plan }).catch(() => {});
 	    return { requestId: requestRef.id, requestCode, plan, period, price, currency: 'USD' };
@@ -1721,7 +1726,9 @@
         locale: String(acceptance.locale || navigator.language || 'es-EC').slice(0, 20),
         source: String(acceptance.source || 'app').slice(0, 40),
         acceptedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        appVersion: '1.0.5'
+        // Must match firestore.rules' legalAcceptances contract (16.0.0/16.2.0), not the
+        // commercial version — see the appVersion fix in click360InviteWorkerEmail.
+        appVersion: '16.2.0'
       });
     });
     return { acceptanceId, termsVersion };

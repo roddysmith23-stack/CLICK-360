@@ -50,7 +50,12 @@
       scaleX: clamp(input.scaleX, 0.8, 1.2, 1),
       scaleY: clamp(input.scaleY, 0.8, 1.2, 1),
       dpi: Math.max(72, Math.trunc(clamp(input.dpi || input.nominalDpi, 72, 1200, 203))),
-      orientation: input.orientation === 'landscape' ? 'landscape' : 'portrait'
+      orientation: input.orientation === 'landscape' ? 'landscape' : 'portrait',
+      // Additive, backward-compatible: legacy advanced-wizard physical knobs, unchanged defaults
+      // for every document that doesn't set them (shape:'rounded' and contentRotation:0 render
+      // identically to the pre-existing behavior — see renderLabelToCanvas).
+      shape: ['square', 'circle'].includes(input.shape) ? input.shape : 'rounded',
+      contentRotation: [90, 180, 270].includes(Number(input.contentRotation)) ? Number(input.contentRotation) : 0
     };
   }
 
@@ -101,8 +106,9 @@
 
   function normalizeLegacyLayout(layout = {}, paper = normalizePaper()) {
     const entries = Object.entries(layout || {}).map(([key, value], index) => {
-      const type = key === 'code' ? 'sku' : key === 'customText' ? 'text' : key;
-      return normalizeObject({ id: key, type, text: value?.text || '', ...value }, index, paper, { width: 260, height: 380 });
+      const type = key === 'code' ? 'sku' : key === 'customText' ? 'text' : key === 'logo' ? 'image' : key;
+      const imageData = key === 'logo' || key === 'image' ? String(value?.imageData || '') : '';
+      return normalizeObject({ id: key, type, text: value?.text || '', imageData, ...value, type }, index, paper, { width: 260, height: 380 });
     });
     return entries.filter((object) => OBJECT_TYPES.includes(object.type));
   }
@@ -260,7 +266,7 @@
     draw(-width / 2, -height / 2, width, height);
     ctx.restore();
   }
-  function drawQr(ctx, value, x, y, width, height) {
+  function drawQr(ctx, value, x, y, width, height, background) {
     if (typeof root.qrcode !== 'function') return false;
     try {
       const qr = root.qrcode(0, 'M');
@@ -268,7 +274,7 @@
       qr.make();
       const count = qr.getModuleCount();
       const cell = Math.min(width, height) / count;
-      ctx.fillStyle = '#ffffff'; ctx.fillRect(x, y, width, height);
+      ctx.fillStyle = String(background || '#ffffff'); ctx.fillRect(x, y, width, height);
       ctx.fillStyle = '#000000';
       for (let row = 0; row < count; row += 1) for (let column = 0; column < count; column += 1) {
         if (qr.isDark(row, column)) ctx.fillRect(x + column * cell, y + row * cell, Math.ceil(cell), Math.ceil(cell));
@@ -288,14 +294,31 @@
     canvas.dataset.renderer = 'universal-mm-v2';
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.fillStyle = String(options.background || '#ffffff');
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (paper.shape === 'circle') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(canvas.width / 2, canvas.height / 2, canvas.width / 2, canvas.height / 2, 0, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    } else {
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.fillStyle = String(options.foreground || '#111111');
     const payload = String(data.qrPayload || data.product?.code || data.product?.id || 'CLICK360');
+    const qrBackground = options.qrBackground || options.background || '#ffffff';
+    // qrMarginRatio insets the QR module grid within its object box, preserving a quiet zone
+    // (0..0.3 of the box). Matches the legacy advanced wizard's "labelQrMargin" control.
+    const qrMarginRatio = Math.max(0, Math.min(0.3, Number(options.qrMarginRatio || 0)));
     ctx.save();
     ctx.scale(paper.scaleX, paper.scaleY);
     for (const object of document.objects.filter((entry) => entry.visible).sort((a, b) => a.z - b.z)) {
       if (object.type === 'qr') {
-        drawRotated(ctx, object, pxPerMm, (x, y, width, height) => drawQr(ctx, payload, x, y, width, height));
+        drawRotated(ctx, object, pxPerMm, (x, y, width, height) => {
+          const insetX = width * qrMarginRatio / 2;
+          const insetY = height * qrMarginRatio / 2;
+          drawQr(ctx, payload, x + insetX, y + insetY, width - insetX * 2, height - insetY * 2, qrBackground);
+        });
       } else if (object.type === 'barcode' && typeof root.JsBarcode === 'function') {
         const barcode = root.document?.createElement?.('canvas');
         if (!barcode) continue;
@@ -319,6 +342,23 @@
       }
     }
     ctx.restore();
+    if (paper.contentRotation) {
+      const rotated = canvas.ownerDocument.createElement('canvas');
+      rotated.width = canvas.width; rotated.height = canvas.height;
+      rotated.getContext('2d').drawImage(canvas, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = String(options.background || '#ffffff');
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(paper.contentRotation * Math.PI / 180);
+      if (paper.contentRotation === 90 || paper.contentRotation === 270) {
+        ctx.drawImage(rotated, -canvas.height / 2, -canvas.width / 2, canvas.height, canvas.width);
+      } else {
+        ctx.drawImage(rotated, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+      }
+      ctx.restore();
+    }
     return { widthPx: canvas.width, heightPx: canvas.height, widthMm: paper.widthMm, heightMm: paper.heightMm };
   }
 

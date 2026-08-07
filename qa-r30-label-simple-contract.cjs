@@ -9,9 +9,9 @@ function ok(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-ok(app.includes("commercial-1-0-5-r30"), 'app.js must report r30');
-ok(sw.includes("commercial-1-0-5-r30"), 'service-worker must report r30');
-ok(guard.includes("commercial-1-0-5-r30"), 'runtime guard must report r30');
+ok(app.includes("commercial-1-0-5-r31"), 'app.js must report r30');
+ok(sw.includes("commercial-1-0-5-r31"), 'service-worker must report r30');
+ok(guard.includes("commercial-1-0-5-r31"), 'runtime guard must report r30');
 ok(!app.includes("commercial-1-0-5-r29"), 'app.js still contains r29');
 ok(!sw.includes("commercial-1-0-5-r29"), 'service-worker still contains r29');
 
