@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 r30 simple labels</title>
+  <link rel="stylesheet" href="../../styles.css">
+</head>
+<body>
+  <main class="modalOverlay show">
+    <section class="modal" role="dialog" aria-modal="true">
+      <div class="modalHeader"><div><h2>Imprimir etiquetas</h2><p class="fieldHint">Usa tu plantilla guardada sin repetir la configuración.</p></div><button class="closeBtn">×</button></div>
+      <section class="quickLabelHome" data-r30-simple-label="true">
+        <div class="quickLabelProduct"><span>▣</span><div><small>Producto</small><b>Blazer negro formal con nombre largo para probar móvil</b><em>B115T</em></div></div>
+        <div class="formGrid quickLabelFields">
+          <div class="field full"><label>Plantilla</label><select id="quickLabelTemplateSelect"><option>QR FUNCIONAL</option></select></div>
+          <div class="field"><label>Cantidad</label><input id="quickLabelHomeQuantity" type="number" value="2"></div>
+          <div class="field"><label>Empezar en casilla</label><input id="quickLabelHomeStartSlot" type="number" value="2"></div>
+        </div>
+        <div class="quickLabelStartActions"><button class="btn">Primera casilla</button><button class="btn">Segunda columna</button></div>
+        <div class="quickLabelSummary"><b>QR FUNCIONAL</b><span>Perfil Shary · 40×60 mm · 2 columnas · Precio abreviado</span></div>
+        <div class="quickLabelPrimaryActions"><button class="btn primary">Imprimir</button><button class="btn">PDF</button></div>
+        <div class="quickLabelSecondaryActions"><button class="btn">Editar plantilla</button><button class="btn">Configuración avanzada</button></div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
