@@ -1,21 +1,61 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
+old = 'commercial-1-0-5-r29'
+new = 'commercial-1-0-5-r30'
 
-firebase = root / 'firebase-service.js'
-text = firebase.read_text(encoding='utf-8')
-old = "const APP_ASSET_VERSION = 'commercial-1-0-5-r29';"
-new = "const APP_ASSET_VERSION = 'commercial-1-0-5-r30';"
-count = text.count(old)
-if count != 1:
-    raise SystemExit(f'firebase-service version anchor expected once, found {count}')
-firebase.write_text(text.replace(old, new, 1), encoding='utf-8')
+# Exact text assets copied by scripts/build-static-release.mjs. Assets/vendor are binary/static
+# and are intentionally excluded; only first-party runtime text may carry the release token.
+runtime_files = [
+    'index.html',
+    'styles.css',
+    'runtime-guard.js',
+    'app.js',
+    'firebase-config.js',
+    'p0-tenant-guard.js',
+    'v16-domain.js',
+    'v16-storage.js',
+    'access-flow.js',
+    'firebase-service.js',
+    'printing-service.js',
+    'smart-print-core.js',
+    'p2-web-safe-flags.js',
+    'p2-restaurant-domain.js',
+    'p2-logistics-domain.js',
+    'universal-label-canvas.js',
+    'universal-label-editor.js',
+    'service-worker.js',
+    'manifest.webmanifest',
+    'robots.txt',
+    'sitemap.xml',
+]
 
-styles = root / 'styles.css'
-styles_text = styles.read_text(encoding='utf-8')
-updated_styles = styles_text.replace('commercial-1-0-5-r29', 'commercial-1-0-5-r30')
-if updated_styles == styles_text:
-    raise SystemExit('styles.css has no r29 asset references to advance to r30')
-styles.write_text(updated_styles, encoding='utf-8')
+changed = []
+for relative in runtime_files:
+    path = root / relative
+    if not path.exists():
+        raise SystemExit(f'missing published runtime file: {relative}')
+    text = path.read_text(encoding='utf-8')
+    updated = text.replace(old, new)
+    if updated != text:
+        path.write_text(updated, encoding='utf-8')
+        changed.append(relative)
 
-print('CLICK360_R30_VERSION_COHERENCE: APPLIED firebase-service + styles')
+# Core release surfaces must all explicitly advertise r30 after the pass.
+for relative in ['app.js', 'firebase-service.js', 'styles.css', 'service-worker.js', 'runtime-guard.js', 'index.html', 'manifest.webmanifest']:
+    text = (root / relative).read_text(encoding='utf-8')
+    if old in text:
+        raise SystemExit(f'stale r29 release token remains in {relative}')
+    if new not in text:
+        raise SystemExit(f'r30 release token missing from {relative}')
+
+# No text file that is actually shipped may retain the old release token.
+remaining = []
+for relative in runtime_files:
+    text = (root / relative).read_text(encoding='utf-8')
+    if old in text:
+        remaining.append(relative)
+if remaining:
+    raise SystemExit('stale r29 release token remains in published runtime: ' + ', '.join(remaining))
+
+print('CLICK360_R30_VERSION_COHERENCE: APPLIED ' + (', '.join(changed) if changed else 'already coherent'))
