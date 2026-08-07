@@ -45,21 +45,23 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium webkit firefox
 
-      - name: Apply guarded r30 runtime patch
+      - name: Apply guarded r30 runtime patches
         run: |
           python3 scripts/apply-r30-stability.py
-          # The patcher may inspect historical QA/scripts for release references, but
-          # acceptance tests are immutable inputs to this gate. Restore them before QA.
+          # Restore QA/scripts because tests are immutable gate inputs, not release outputs.
           git checkout -- scripts qa
+          python3 scripts/apply-r30-version-coherence.py
 
       - name: Runtime release diagnostics
         run: |
           echo 'Runtime r29 leftovers (must be empty):'
-          grep -n 'commercial-1-0-5-r29' app.js service-worker.js runtime-guard.js index.html || true
+          grep -n 'commercial-1-0-5-r29' app.js firebase-service.js service-worker.js runtime-guard.js index.html || true
           ! grep -q 'commercial-1-0-5-r29' app.js
+          ! grep -q 'commercial-1-0-5-r29' firebase-service.js
           ! grep -q 'commercial-1-0-5-r29' service-worker.js
           ! grep -q 'commercial-1-0-5-r29' runtime-guard.js
           grep -q 'commercial-1-0-5-r30' app.js
+          grep -q 'commercial-1-0-5-r30' firebase-service.js
           grep -q 'commercial-1-0-5-r30' service-worker.js
           grep -q 'commercial-1-0-5-r30' runtime-guard.js
 
@@ -72,15 +74,19 @@ jobs:
           node --check universal-label-canvas.js
           node --check universal-label-editor.js
           node --check qa-r30-label-simple-contract.cjs
+          node --check qa-r30-known-issues-regression.cjs
           node --check qa/r30-label-simple-e2e.mjs
 
-      - name: r30 acceptance contract
+      - name: r30 label acceptance contract
         run: node qa-r30-label-simple-contract.cjs
+
+      - name: r30 known client issues regression
+        run: node qa-r30-known-issues-regression.cjs
 
       - name: Full existing QA
         run: npm run qa
 
-      - name: Firestore Rules emulator regression
+      - name: Firestore Rules emulator and worker invitation regression
         run: npm run qa:rules
 
       - name: Full business simulator
@@ -104,11 +110,14 @@ jobs:
       - name: Verify r30 release identity
         run: |
           grep -q 'commercial-1-0-5-r30' app.js
+          grep -q 'commercial-1-0-5-r30' firebase-service.js
           grep -q 'commercial-1-0-5-r30' service-worker.js
           grep -q 'commercial-1-0-5-r30' runtime-guard.js
           grep -q 'commercial-1-0-5-r30' dist/app.js
+          grep -q 'commercial-1-0-5-r30' dist/firebase-service.js
           grep -q 'commercial-1-0-5-r30' dist/service-worker.js
           ! grep -q 'commercial-1-0-5-r29' app.js
+          ! grep -q 'commercial-1-0-5-r29' firebase-service.js
           ! grep -q 'commercial-1-0-5-r29' service-worker.js
 
       - name: Production dependency audit
@@ -119,14 +128,14 @@ jobs:
           test -z "$(git diff -- firestore.rules firebase.json functions/ 2>/dev/null || true)"
           echo 'No Firestore Rules, Functions or Firebase config changes in r30.'
 
-      - name: Commit only fully verified r30 changes
+      - name: Commit only fully verified r30 runtime
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app.js styles.css service-worker.js runtime-guard.js index.html
+          git add app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html
           if git diff --cached --quiet; then
             echo 'No verified r30 runtime changes were produced.'
             exit 1
           fi
-          git commit -m 'fix(r30): simplify labels and preserve canonical print state'
+          git commit -m 'fix(r30): simplify labels and stabilize client runtime'
           git push origin HEAD:hotfix/1.0.5-r30-stability
