@@ -70,15 +70,20 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 15); do
             stamp="$(date +%s)-$attempt"
-            app="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/app.js?verify=$stamp" || true)"
-            sw="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/service-worker.js?verify=$stamp" || true)"
-            guard="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/runtime-guard.js?verify=$stamp" || true)"
-            manifest="$(curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/manifest.webmanifest?verify=$stamp" || true)"
-            if printf '%s' "$app" | grep -q 'commercial-1-0-5-r30' \
-              && printf '%s' "$sw" | grep -q 'commercial-1-0-5-r30' \
-              && printf '%s' "$guard" | grep -q 'commercial-1-0-5-r30' \
-              && printf '%s' "$manifest" | grep -q 'commercial-1-0-5-r30' \
-              && ! printf '%s\n%s\n%s\n%s' "$app" "$sw" "$guard" "$manifest" | grep -q 'commercial-1-0-5-r29'; then
+            app_file="$RUNNER_TEMP/live-app-$attempt.js"
+            sw_file="$RUNNER_TEMP/live-sw-$attempt.js"
+            guard_file="$RUNNER_TEMP/live-guard-$attempt.js"
+            manifest_file="$RUNNER_TEMP/live-manifest-$attempt.webmanifest"
+            curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/app.js?verify=$stamp" -o "$app_file" || true
+            curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/service-worker.js?verify=$stamp" -o "$sw_file" || true
+            curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/runtime-guard.js?verify=$stamp" -o "$guard_file" || true
+            curl -fsSL --retry 2 --connect-timeout 10 "https://click-360.web.app/manifest.webmanifest?verify=$stamp" -o "$manifest_file" || true
+            if test -s "$app_file" && test -s "$sw_file" && test -s "$guard_file" && test -s "$manifest_file" \
+              && grep -q 'commercial-1-0-5-r30' "$app_file" \
+              && grep -q 'commercial-1-0-5-r30' "$sw_file" \
+              && grep -q 'commercial-1-0-5-r30' "$guard_file" \
+              && grep -q 'commercial-1-0-5-r30' "$manifest_file" \
+              && ! grep -q 'commercial-1-0-5-r29' "$app_file" "$sw_file" "$guard_file" "$manifest_file"; then
               echo 'CLICK360_PRODUCTION_R30_VERIFIED'
               exit 0
             fi
