@@ -48,7 +48,6 @@ jobs:
       - name: Apply guarded r30 runtime patches
         run: |
           python3 scripts/apply-r30-stability.py
-          # The main patcher scans release references, but QA and patch scripts are immutable gate inputs.
           git checkout -- scripts qa
           python3 scripts/apply-r30-version-coherence.py
           python3 scripts/apply-r30-print-confirm-fix.py
@@ -56,18 +55,11 @@ jobs:
 
       - name: Runtime release diagnostics
         run: |
-          echo 'Runtime r29 leftovers (must be empty):'
-          grep -n 'commercial-1-0-5-r29' app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html || true
-          ! grep -q 'commercial-1-0-5-r29' app.js
-          ! grep -q 'commercial-1-0-5-r29' firebase-service.js
-          ! grep -q 'commercial-1-0-5-r29' styles.css
-          ! grep -q 'commercial-1-0-5-r29' service-worker.js
-          ! grep -q 'commercial-1-0-5-r29' runtime-guard.js
-          grep -q 'commercial-1-0-5-r30' app.js
-          grep -q 'commercial-1-0-5-r30' firebase-service.js
-          grep -q 'commercial-1-0-5-r30' styles.css
-          grep -q 'commercial-1-0-5-r30' service-worker.js
-          grep -q 'commercial-1-0-5-r30' runtime-guard.js
+          grep -n 'commercial-1-0-5-r29' app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html manifest.webmanifest || true
+          for f in app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html manifest.webmanifest; do
+            ! grep -q 'commercial-1-0-5-r29' "$f"
+            grep -q 'commercial-1-0-5-r30' "$f"
+          done
 
       - name: Syntax checks
         run: |
@@ -116,16 +108,14 @@ jobs:
 
       - name: Verify r30 release identity
         run: |
-          grep -q 'commercial-1-0-5-r30' app.js
-          grep -q 'commercial-1-0-5-r30' firebase-service.js
-          grep -q 'commercial-1-0-5-r30' service-worker.js
-          grep -q 'commercial-1-0-5-r30' runtime-guard.js
-          grep -q 'commercial-1-0-5-r30' dist/app.js
-          grep -q 'commercial-1-0-5-r30' dist/firebase-service.js
-          grep -q 'commercial-1-0-5-r30' dist/service-worker.js
-          ! grep -q 'commercial-1-0-5-r29' app.js
-          ! grep -q 'commercial-1-0-5-r29' firebase-service.js
-          ! grep -q 'commercial-1-0-5-r29' service-worker.js
+          for f in app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html manifest.webmanifest; do
+            grep -q 'commercial-1-0-5-r30' "$f"
+            ! grep -q 'commercial-1-0-5-r29' "$f"
+          done
+          for f in dist/app.js dist/firebase-service.js dist/styles.css dist/service-worker.js dist/runtime-guard.js dist/index.html dist/manifest.webmanifest; do
+            grep -q 'commercial-1-0-5-r30' "$f"
+            ! grep -q 'commercial-1-0-5-r29' "$f"
+          done
 
       - name: Production dependency audit
         run: npm audit --omit=dev --audit-level=moderate
@@ -139,7 +129,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html qa*.cjs qa*.mjs qa 2>/dev/null || true
+          git add app.js firebase-service.js styles.css service-worker.js runtime-guard.js index.html manifest.webmanifest qa*.cjs qa*.mjs qa 2>/dev/null || true
           if git diff --cached --quiet; then
             echo 'No verified r30 changes were produced.'
             exit 1
