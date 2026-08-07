@@ -19,6 +19,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Install PDF verification tool
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - name: Install Playwright browser engines
         run: npx playwright install --with-deps chromium webkit firefox
       - name: Exact quantity and second-slot regression
