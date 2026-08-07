@@ -104,10 +104,10 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app.js styles.css
+          git add app.js styles.css qa-p1-5b-production-ux-polish-harness.cjs
           if git diff --cached --quiet; then
-            echo 'No final runtime changes to commit.'
+            echo 'No final verified changes to commit.'
             exit 1
           fi
-          git commit -m 'fix(stability): finalize sync truthfulness and label mobile layout'
+          git commit -m 'fix(stability): finalize sync, label mobile layout and r29 QA contract'
           git push origin HEAD:hotfix/1.0.5-stability-candidate
