@@ -166,12 +166,17 @@ assert(firebase.includes('function readSyncConflictMarker(') && firebase.include
 assert(firebase.includes('window.click360ClearLocalRecoveryState'), 'safe local recovery action is exposed');
 assert(firebase.includes('window.click360ResolveSyncConflict'), 'real conflict actions are exposed');
 assert(firebase.includes('remote_material_equivalent'), 'remote revision mismatch with equal material payload does not become a conflict');
-assert(app.includes('Conflicto de sincronización'), 'UI shows conflict recovery modal');
-assert(app.includes('Actualizar desde nube') && app.includes('Conservar mi versión local') && app.includes('Limpiar estado local de esta app'), 'UI exposes recovery actions');
+assert(app.includes('Conflicto de sincronización'), 'UI retains true-conflict recovery modal');
+assert(app.includes('Actualizar desde nube') && app.includes('Conservar mi versión local') && app.includes('Limpiar estado local de esta app'), 'UI exposes recovery actions for meaningful local data');
 assert(app.includes('window.click360GetReliabilityDiagnostics'), 'UI exposes safe reliability diagnostics');
 assert(runtime.includes('reliability:') && runtime.includes('lockAgeMs') && runtime.includes('hasDirtyFields'), 'runtime reports sanitized reliability fields');
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');
 assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is current candidate');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r20'"), 'service worker cache is current');
+assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r29'"), 'app asset version is current recovery release');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r29'"), 'service worker cache is current recovery release');
+assert(app.includes('Este dispositivo está vacío y no reemplazará los datos de la nube.'), 'empty device receives safe cloud-recovery UX');
+assert(firebase.includes("action: 'refresh_cloud_empty_local'"), 'empty keep-local is reclassified to cloud refresh');
+assert(firebase.includes('preventedEmptyOverwrite: true'), 'empty overwrite is explicitly prevented');
+assert(firebase.includes("reason: 'manual_keep_local_after_readback'"), 'manual keep-local verifies remote readback before success');
 
-console.log('PASS P1.1c reliability sync recovery harness: stale locks recover, real pending/conflicts stay protected');
+console.log('PASS P1.1c reliability sync recovery harness: stale locks recover, empty devices pull cloud, true conflicts stay protected');
