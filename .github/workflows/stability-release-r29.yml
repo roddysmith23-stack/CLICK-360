@@ -1,0 +1,42 @@
+name: CLICK 360 Stability Release r29
+
+on:
+  push:
+    branches:
+      - hotfix/1.0.5-stability-release-r29
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Apply release unification in disposable CI workspace
+        run: python3 scripts/apply-stability-recovery-phase4-release-r29.py
+      - name: Syntax checks
+        run: |
+          node --check app.js
+          node --check firebase-service.js
+          node --check runtime-guard.js
+          node --check service-worker.js
+      - name: Build static bundle
+        run: npm run build:static
+      - name: Release version contract
+        run: node qa-release-version-r29.cjs
+      - name: Inherited recovery contracts
+        run: |
+          node qa-stability-recovery-phase1.cjs
+          node qa-p1-1b-sync-guard-harness.cjs
+          node qa-p1-1c-reliability-sync-recovery-harness.cjs
+          node qa-stability-recovery-phase2-workers.cjs
+          node qa-stability-recovery-phase3-mobile.cjs
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=moderate
