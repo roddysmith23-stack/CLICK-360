@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>CLICK 360 r32 legacy persisted template preview QA</title>
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="generated/legacy-label-renderer.bundle.js"></script>
+</head>
+<body>
+  <canvas id="labelPreviewCanvas"></canvas>
+  <script>
+    (async () => {
+      const renderer = window.__CLICK360_LEGACY_RENDERER__;
+
+      // A REAL persisted-template shape: this is exactly what state.settings.labelTemplates
+      // entries look like when saved by openAdvancedLabelModal (the legacy named-key `.layout`
+      // format), not the newer `.universalDocument` schema. "Mi Plantilla QR 1 copia copia"
+      // reproduces a duplicated/renamed template — only QR + name + price visible, everything
+      // else present but hidden, matching a real user's minimal QR-only design.
+      const persistedTemplate = {
+        id: 'tpl-qr-1-copia-copia',
+        name: 'Mi Plantilla QR 1 copia copia',
+        businessId: 'biz-qa',
+        paperType: 'thermal-60x40',
+        widthMm: 60,
+        heightMm: 40,
+        priceFormat: 'abbr',
+        layout: {
+          business: { visible: false },
+          address: { visible: false },
+          logo: { visible: false },
+          image: { visible: false },
+          qr: { x: 20, y: 30, width: 150, height: 150, visible: true, locked: false, z: 1 },
+          barcode: { visible: false },
+          code: { x: 130, y: 200, width: 230, size: 12, visible: true, locked: false, z: 2 },
+          name: { x: 130, y: 225, width: 235, size: 15, visible: true, locked: false, z: 2 },
+          variant: { visible: false },
+          price: { x: 130, y: 250, width: 235, size: 17, visible: true, locked: false, z: 2 },
+          tax: { visible: false },
+          social: { visible: false },
+          phone: { visible: false },
+          stock: { visible: false },
+          customText: { visible: false }
+        }
+      };
+
+      // Same product shape openAdvancedLabelModal receives: no distinct cardPrice, matching the
+      // production report (a product without card pricing configured).
+      const product = { id: 'prod-iphone17', name: 'Iphone 17 Pro Max', code: 'IPH17PM', price: 1299, cardPrice: 0, qty: 3 };
+
+      // getOptions()-equivalent: same shape openAdvancedLabelModal's real getOptions() builds
+      // from the DOM once its wiring actually runs, using the persisted template's own layout —
+      // NOT a freshly-constructed fixture document.
+      const options = {
+        scale: 2,
+        bgColor: '#ffffff',
+        qrBgColor: '#ffffff',
+        fgColor: '#000000',
+        social: '', address: '', phone: '', businessName: 'CLICK 360', businessLogo: '',
+        customText: '', taxDisplay: 'hidden', qrMargin: 5,
+        widthMm: persistedTemplate.widthMm, heightMm: persistedTemplate.heightMm,
+        paperType: persistedTemplate.paperType, showBarcode: false,
+        shape: 'rounded', contentRotation: 0,
+        layout: persistedTemplate.layout,
+        priceFormat: persistedTemplate.priceFormat
+      };
+
+      const canvas = document.getElementById('labelPreviewCanvas');
+      let error = null;
+      let result = null;
+      try {
+        result = await renderer.drawLabelOnCanvas(canvas, product, options);
+      } catch (err) {
+        error = String(err?.message || err);
+      }
+
+      const nonWhitePixels = (() => {
+        if (!canvas.width || !canvas.height) return 0;
+        const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+        let count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i + 3] > 8 && (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245)) count += 1;
+        }
+        return count;
+      })();
+
+      window.__CLICK360_R32_LEGACY_PREVIEW_QA__ = Object.freeze({
+        error,
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
+        nonWhitePixels,
+        expectedPrice: renderer.labelFmt(product, persistedTemplate.priceFormat)
+      });
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>

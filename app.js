@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r31';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r32';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -6642,8 +6642,20 @@ function parseMoney(value) {
 		  }
 		  function syncDiagnosticRows(syncState = {}) {
 		    const access = accessInfo();
+		    // Unambiguous release check: compares what THIS tab's running app.js reports
+		    // (APP_ASSET_VERSION) against what the browser's active Service Worker script URL
+		    // actually is. If a device is stuck on a stale cached app.js, these two rows disagree —
+		    // that is the definitive signal, not "does the app look new."
+		    const swScriptUrl = navigator.serviceWorker?.controller?.scriptURL || '';
+		    const swAssetVersion = (swScriptUrl.split('v=')[1] || '').split('&')[0] || 'sin service worker activo';
+		    const releaseMetadata = window.CLICK360_RUNTIME_GUARD?.getReleaseMetadata?.() || {};
+		    const versionsMatch = !swScriptUrl || swAssetVersion === APP_ASSET_VERSION;
 		    const rows = [
 		      ['Versión', APP_VISIBLE_VERSION],
+		      ['Asset version (app.js)', APP_ASSET_VERSION],
+		      ['Service Worker activo', swAssetVersion],
+		      ['Coherencia app/SW', versionsMatch ? 'OK' : 'DESAJUSTE — recarga la app'],
+		      ['Build/commit', releaseMetadata.buildSha || 'n/a'],
 		      ['Modo', syncState.displayMode || (window.matchMedia?.('(display-mode: standalone)')?.matches ? 'standalone' : 'browser')],
 		      ['Ruta', route || 'home'],
 		      ['Acceso', `${access.mode || 'unknown'} / lectura=${access.readOnly === true}`],
@@ -7513,12 +7525,19 @@ function parseMoney(value) {
 	    $('#applyTemplateSelect').value = activeTemplateId;
 	    $('#labelProfileSelect').value = activePrintProfileId;
 	    $('#labelTaxDisplay').value = initialTemplate?.taxDisplay || 'inherit';
-	    _editorPriceFormat = initialTemplate?.priceFormat || 'full';
+	    // r32 fix: this price-format binding is now declared AND initialized here, before its
+	    // first use. It previously had a bare assignment at this exact spot while the matching
+	    // `let` binding a few lines below was still in its temporal dead zone — a guaranteed
+	    // ReferenceError on every single open of this modal. showModal() had already run by that
+	    // point, so the modal shell (steps, canvas element) appeared, but every wire-up statement
+	    // below the throw — including the first updatePreview() call and every input handler that
+	    // triggers a re-render — never executed. That is the root cause of the blank/black label
+	    // preview reported in production, in both "Modo simple" and "Modo experto".
+	    let _editorPriceFormat = initialTemplate?.priceFormat || 'full';
     $('#labelYOffset').value = initialTemplate?.layout ? (initialTemplate?.yOffsetAdj || 0) : 0;
 	    $('#labelNameScale').value = initialTemplate?.layout ? (initialTemplate?.nameScale || 1) : 1;
 	    $('#labelPriceScale').value = initialTemplate?.layout ? (initialTemplate?.priceScale || 1) : 1;
 
-    let _editorPriceFormat = null;
     const getOptions = (extraScale = null) => {
        return {
           scale: extraScale || 2,
@@ -7701,10 +7720,28 @@ function parseMoney(value) {
     };
 
 	    let previewGeneration = 0;
+	    // Debug-only preview lifecycle log — enable via localStorage.setItem('CLICK360_DEBUG_LABEL_PREVIEW','1').
+	    // Never logs product/customer identity — only structural render facts (template id, element
+	    // counts, canvas size, timings, error). Added after a production incident where this preview
+	    // rendered permanently blank/black with no visible error (see qa-r32-tdz-regression.cjs).
+	    const previewDebugEnabled = () => { try { return localStorage.getItem('CLICK360_DEBUG_LABEL_PREVIEW') === '1'; } catch { return false; } };
+	    const logPreviewDiagnostic = (event, detail = {}) => {
+	      if (!previewDebugEnabled()) return;
+	      console.info('[CLICK360_LABEL_PREVIEW]', event, { templateId: activeTemplateId || '(sin guardar)', ...detail });
+	    };
 	    const updatePreview = async () => {
 	       const generation = ++previewGeneration;
+	       const startedAt = performance.now();
+	       const visibleElementCount = Object.values(editorLayout).filter((element) => element.visible !== false).length;
+	       logPreviewDiagnostic('render_requested', { visibleElementCount, canvasWidthBefore: canvas.width, canvasHeightBefore: canvas.height });
 	       try {
+	         logPreviewDiagnostic('render_started');
 	         const result = await drawLabelOnCanvas(canvas, product, getOptions(2));
+	         logPreviewDiagnostic('render_completed', {
+	           durationMs: Math.round(performance.now() - startedAt),
+	           canvasWidthAfter: canvas.width,
+	           canvasHeightAfter: canvas.height
+	         });
 	         if (generation !== previewGeneration || !result) return;
 	       const selectedKey = $('#labelElementSelect').value;
 	       const selected = result.layout[selectedKey];
@@ -7727,6 +7764,11 @@ function parseMoney(value) {
        updateSheetPreview();
 	       } catch (err) {
 	         console.warn('updatePreview error:', err);
+        logPreviewDiagnostic('render_error', { message: String(err?.message || err), durationMs: Math.round(performance.now() - startedAt) });
+        if (!updatePreview._lastErrorToastAt || performance.now() - updatePreview._lastErrorToastAt > 4000) {
+          updatePreview._lastErrorToastAt = performance.now();
+          toast('No se pudo generar la vista previa de la etiqueta. Revisa el diseño o recarga CLICK 360.', 'err');
+        }
 	       }
     };
 
