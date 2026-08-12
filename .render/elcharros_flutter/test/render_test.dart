@@ -8,7 +8,7 @@ import 'package:el_charros_motion_render/motion_frame.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('render 390 deterministic motion frames', (WidgetTester tester) async {
+  testWidgets('render 390 native 4K deterministic motion frames', (WidgetTester tester) async {
     await tester.binding.setSurfaceSize(const Size(designW, designH));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -26,14 +26,6 @@ void main() {
       ),
     );
 
-    await tester.pumpWidget(wrap(0));
-    await tester.pumpAndSettle();
-    final context = tester.element(find.byType(MotionFrame));
-    for (final name in motionAssets) {
-      await precacheImage(AssetImage('assets/$name.webp'), context);
-    }
-    await tester.pumpAndSettle();
-
     final dir = Directory('build/render_frames');
     if (dir.existsSync()) dir.deleteSync(recursive: true);
     dir.createSync(recursive: true);
@@ -42,7 +34,7 @@ void main() {
       await tester.pumpWidget(wrap(frame));
       await tester.pump();
       final boundary = tester.renderObject<RenderRepaintBoundary>(find.byKey(boundaryKey));
-      final ui.Image image = await boundary.toImage(pixelRatio: 1.0);
+      final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       if (data == null) throw StateError('PNG encode returned null at frame $frame');
       final bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
@@ -51,9 +43,9 @@ void main() {
       image.dispose();
       if (frame % 30 == 0) {
         // ignore: avoid_print
-        print('Rendered frame $frame / ${totalFrames - 1}');
+        print('Rendered 4K frame $frame / ${totalFrames - 1}');
       }
     }
     expect(File('build/render_frames/frame_0389.png').existsSync(), isTrue);
-  }, timeout: const Timeout(Duration(minutes: 35)));
+  }, timeout: const Timeout(Duration(minutes: 40)));
 }
