@@ -1,0 +1,70 @@
+name: El Charros Flutter 4K Motion Render
+
+on:
+  push:
+    branches:
+      - render/el-charros-flutter-motion-20260812
+    paths:
+      - '.render/elcharros_flutter/**'
+      - '.github/workflows/elcharros-flutter-render.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout isolated render branch
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter stable
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+
+      - name: Resolve Flutter package
+        working-directory: .render/elcharros_flutter
+        run: flutter pub get
+
+      - name: Render 390 native 4K frames with Flutter Skia
+        working-directory: .render/elcharros_flutter
+        run: flutter test test/render_test.dart --concurrency=1 -r expanded
+
+      - name: Encode 13-second 4K visual master
+        working-directory: .render/elcharros_flutter
+        run: |
+          ffmpeg -y \
+            -framerate 30 \
+            -i build/render_frames/frame_%04d.png \
+            -c:v libx264 -preset slow -crf 15 \
+            -profile:v high -level:v 5.1 -pix_fmt yuv420p \
+            -color_primaries bt709 -color_trc bt709 -colorspace bt709 \
+            -movflags +faststart \
+            EL_CHARROS_FLUTTER_SLOW_MOTION_4K.mp4
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=width,height,r_frame_rate,duration \
+            -of default=noprint_wrappers=1 \
+            EL_CHARROS_FLUTTER_SLOW_MOTION_4K.mp4
+          ffmpeg -y -i EL_CHARROS_FLUTTER_SLOW_MOTION_4K.mp4 \
+            -vf "fps=1/2,scale=960:-1,tile=4x2" -frames:v 1 \
+            EL_CHARROS_FLUTTER_CONTACT_SHEET.jpg
+          rm -rf build/render_frames
+
+      - name: Upload final 4K visual master
+        uses: actions/upload-artifact@v4
+        with:
+          name: EL_CHARROS_FLUTTER_SLOW_MOTION_4K
+          path: |
+            .render/elcharros_flutter/EL_CHARROS_FLUTTER_SLOW_MOTION_4K.mp4
+            .render/elcharros_flutter/EL_CHARROS_FLUTTER_CONTACT_SHEET.jpg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
