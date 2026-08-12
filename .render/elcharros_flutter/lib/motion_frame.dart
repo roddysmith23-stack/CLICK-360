@@ -5,414 +5,166 @@ import 'package:flutter/material.dart';
 const double designW = 1920;
 const double designH = 1080;
 const int totalFrames = 390;
-
 const Color brandRed = Color(0xFFE10600);
 const Color brandGreen = Color(0xFF00843D);
 const Color brandGold = Color(0xFFFFB400);
 const Color brandDeepRed = Color(0xFFC90000);
 
-const List<String> motionAssets = <String>[
-  'taco_hero','taco_lime','taco_tortilla',
-  'taco_beef_band_1','taco_beef_band_2','taco_beef_band_3',
-  'marg_hero','marg_splash_core','marg_pair_1','marg_pair_2',
-  'fajita_skillethero','fajita_piece_1','fajita_piece_2','fajita_piece_3','fajita_piece_5','fajita_piece_6','fajita_piece_7',
-  'churros_hero','churro_1','churro_2','churro_3',
-];
-
-double _clamp(double v) => v.clamp(0.0, 1.0).toDouble();
-double seg(int f, double a, double b) => _clamp((f - a) / (b - a));
-double easeInOutCubic(double t) => t < .5 ? 4 * t * t * t : 1 - math.pow(-2 * t + 2, 3).toDouble() / 2;
-double easeOutCubic(double t) => 1 - math.pow(1 - t, 3).toDouble();
-double easeOutBack(double t) {
-  const c1 = 1.70158;
-  const c3 = c1 + 1;
-  return 1 + c3 * math.pow(t - 1, 3).toDouble() + c1 * math.pow(t - 1, 2).toDouble();
-}
-double lerp(double a, double b, double t) => a + (b - a) * t;
-
-Color _bg(int f) {
-  if (f < 36) return brandRed;
-  if (f < 78) return Color.lerp(brandRed, brandGreen, easeInOutCubic(seg(f, 36, 78)))!;
-  if (f < 124) return brandGreen;
-  if (f < 174) return Color.lerp(brandGreen, brandGold, easeInOutCubic(seg(f, 124, 174)))!;
-  if (f < 198) return brandGold;
-  if (f < 238) return Color.lerp(brandGold, brandRed, easeInOutCubic(seg(f, 198, 238)))!;
-  if (f < 296) return brandRed;
-  if (f < 324) return Color.lerp(brandRed, brandGold, easeInOutCubic(seg(f, 296, 324)))!;
-  if (f < 360) return brandGold;
-  return Color.lerp(brandGold, brandDeepRed, easeInOutCubic(seg(f, 360, 389)))!;
+double clamp01(double v) => v.clamp(0.0, 1.0).toDouble();
+double seg(int f, double a, double b) => clamp01((f-a)/(b-a));
+double lerpD(double a,double b,double t)=>a+(b-a)*t;
+double ease(double t)=>t<.5?4*t*t*t:1-math.pow(-2*t+2,3).toDouble()/2;
+double outCubic(double t)=>1-math.pow(1-t,3).toDouble();
+double outBack(double t){const c1=1.70158,c3=c1+1;return 1+c3*math.pow(t-1,3).toDouble()+c1*math.pow(t-1,2).toDouble();}
+Color bgColor(int f){
+ if(f<36)return brandRed;
+ if(f<78)return Color.lerp(brandRed,brandGreen,ease(seg(f,36,78)))!;
+ if(f<124)return brandGreen;
+ if(f<174)return Color.lerp(brandGreen,brandGold,ease(seg(f,124,174)))!;
+ if(f<198)return brandGold;
+ if(f<238)return Color.lerp(brandGold,brandRed,ease(seg(f,198,238)))!;
+ if(f<296)return brandRed;
+ if(f<324)return Color.lerp(brandRed,brandGold,ease(seg(f,296,324)))!;
+ if(f<360)return brandGold;
+ return Color.lerp(brandGold,brandDeepRed,ease(seg(f,360,389)))!;
 }
 
 class MotionFrame extends StatelessWidget {
-  final int frameIndex;
-  const MotionFrame({super.key, required this.frameIndex});
-
-  Widget _asset(
-    String name, {
-    required double x,
-    required double y,
-    required double w,
-    double rotation = 0,
-    double opacity = 1,
-    double blur = 0,
-    double scale = 1,
-  }) {
-    if (opacity <= 0.001 || w <= 1) return const SizedBox.shrink();
-    Widget child = Image.asset(
-      'assets/$name.webp',
-      width: w,
-      fit: BoxFit.contain,
-      filterQuality: FilterQuality.high,
-      gaplessPlayback: true,
-    );
-    if (blur > 0.01) {
-      child = ImageFiltered(
-        imageFilter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur),
-        child: child,
-      );
-    }
-    child = Opacity(opacity: opacity.clamp(0.0, 1.0).toDouble(), child: child);
-    child = Transform.rotate(angle: rotation, alignment: Alignment.center, child: child);
-    child = Transform.scale(scale: scale, alignment: Alignment.center, child: child);
-    return Positioned(left: x, top: y, child: child);
-  }
-
-  double _explode(int f, int delay) {
-    final out = easeInOutCubic(seg(f, 44 + delay, 69 + delay));
-    final back = easeInOutCubic(seg(f, 79 + delay * .35, 101));
-    return _clamp(out * (1 - back));
-  }
-
-  List<Widget> _taco(int f) {
-    final children = <Widget>[];
-    final enter = easeOutBack(seg(f, 0, 24));
-    final heroFadeOut = 1 - easeInOutCubic(seg(f, 37, 49));
-    final heroReturn = easeInOutCubic(seg(f, 91, 104));
-    final heroOpacity = math.max(heroFadeOut, heroReturn).clamp(0.0, 1.0).toDouble();
-    final heroX = lerp(-520, 470, enter);
-    final heroY = 150 + 12 * math.sin(f * .09);
-    final heroRot = lerp(-.11, .035, enter) + .015 * math.sin(f * .055);
-    children.add(_asset('taco_hero', x: heroX, y: heroY, w: 980, rotation: heroRot, opacity: heroOpacity, scale: lerp(.83, 1, enter)));
-
-    final wipe = easeInOutCubic(seg(f, 34, 50));
-    if (wipe > 0 && wipe < 1) {
-      children.add(_asset('taco_lime', x: lerp(1730, -690, wipe), y: lerp(65, 260, wipe), w: lerp(380, 920, wipe), rotation: lerp(-.7, 1.1, wipe), blur: 1 + 5 * wipe));
-    }
-
-    final compOpacity = easeInOutCubic(seg(f, 42, 51)) * (1 - easeInOutCubic(seg(f, 96, 105)));
-    final tortillaP = _explode(f, 0);
-    children.add(_asset('taco_tortilla', x: lerp(645, 500, tortillaP), y: lerp(568, 716, tortillaP), w: lerp(690, 930, tortillaP), rotation: lerp(.01, -.025, tortillaP), opacity: compOpacity));
-
-    const beefNames = ['taco_beef_band_1','taco_beef_band_2','taco_beef_band_3'];
-    const beefX = [555.0, 780.0, 1035.0];
-    for (var i = 0; i < beefNames.length; i++) {
-      final p = _explode(f, 2 + i * 2);
-      children.add(_asset(beefNames[i], x: lerp(760 + i * 50, beefX[i], p), y: lerp(545, 545 + (i == 1 ? -8 : 6), p), w: lerp(260, 390, p), rotation: lerp(.03 * (i - 1), .025 * (i - 1), p), opacity: compOpacity));
-    }
-
-    final garnishOpacity = compOpacity;
-    if (garnishOpacity > .001) {
-      children.add(Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: TacoGarnishPainter(f, garnishOpacity)))));
-    }
-
-    final lp = _explode(f, 13);
-    children.add(_asset('taco_lime', x: lerp(860, 760, lp), y: lerp(455, 150, lp), w: lerp(180, 390, lp), rotation: lerp(.25, -.12, lp), opacity: compOpacity));
-    return children;
-  }
-
-  List<Widget> _margarita(int f) {
-    final children = <Widget>[];
-    final enter = easeOutBack(seg(f, 92, 116));
-    final heroFade = 1 - easeInOutCubic(seg(f, 119, 133));
-    final heroOpacity = enter * heroFade;
-    children.add(_asset('marg_hero', x: lerp(730, 650, enter), y: lerp(880, 105, enter), w: 625, rotation: lerp(.08, -.02, enter), opacity: heroOpacity));
-
-    final splashIn = easeInOutCubic(seg(f, 118, 136));
-    final splashOut = 1 - easeInOutCubic(seg(f, 155, 172));
-    final splashOpacity = splashIn * splashOut;
-    children.add(_asset('marg_splash_core', x: 560, y: 130, w: 790, rotation: -.03 + .025 * math.sin(f * .08), opacity: splashOpacity, scale: lerp(.88, 1.03, splashIn)));
-
-    if (splashOpacity > .001) {
-      children.add(Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: MargaritaParticlePainter(f, splashOpacity)))));
-      final lp1 = easeOutCubic(seg(f, 123, 150)) * (1 - easeInOutCubic(seg(f, 158, 174)));
-      final lp2 = easeOutCubic(seg(f, 128, 153)) * (1 - easeInOutCubic(seg(f, 158, 174)));
-      children.add(_asset('taco_lime', x: lerp(850, 390, lp1), y: lerp(420, 170, lp1), w: lerp(150, 280, lp1), rotation: lerp(.1, -.6, lp1), opacity: splashOpacity));
-      children.add(_asset('taco_lime', x: lerp(860, 1280, lp2), y: lerp(430, 260, lp2), w: lerp(140, 250, lp2), rotation: lerp(-.1, .75, lp2), opacity: splashOpacity));
-    }
-
-    final pairIn = easeOutBack(seg(f, 160, 181));
-    final pairOut = 1 - easeInOutCubic(seg(f, 190, 202));
-    children.add(_asset('marg_pair_1', x: lerp(570, 335, pairIn), y: lerp(600, 210, pairIn), w: 610, rotation: lerp(-.06, .025, pairIn), opacity: pairIn * pairOut));
-    children.add(_asset('marg_pair_2', x: lerp(830, 995, pairIn), y: lerp(600, 185, pairIn), w: 600, rotation: lerp(.07, -.025, pairIn), opacity: pairIn * pairOut));
-
-    final wipe = easeInOutCubic(seg(f, 186, 202));
-    if (wipe > 0 && wipe < 1) {
-      children.add(_asset('taco_lime', x: lerp(1640, -600, wipe), y: lerp(80, 390, wipe), w: lerp(300, 850, wipe), rotation: lerp(-.4, 1.25, wipe), blur: 1 + 7 * wipe));
-    }
-    return children;
-  }
-
-  List<Widget> _fajita(int f) {
-    final children = <Widget>[];
-    final skilletIn = easeOutBack(seg(f, 190, 214));
-    final skilletOut = 1 - easeInOutCubic(seg(f, 288, 302));
-    final skilletY = lerp(1010, 650, skilletIn);
-    children.add(_asset('fajita_skillethero', x: 235, y: skilletY, w: 1450, rotation: -.01, opacity: skilletIn * skilletOut, scale: 1 + .018 * math.sin((f - 205) * .06) * skilletIn));
-
-    const names = ['fajita_piece_1','fajita_piece_2','fajita_piece_3','fajita_piece_5','fajita_piece_6','fajita_piece_7'];
-    const tx = [430.0, 650.0, 900.0, 520.0, 820.0, 1120.0];
-    const ty = [350.0, 315.0, 350.0, 475.0, 445.0, 475.0];
-    const tw = [300.0, 300.0, 310.0, 355.0, 355.0, 350.0];
-    const rot0 = [-1.0,.8,-.7,.55,-.65,.85];
-    for (var i = 0; i < names.length; i++) {
-      final land = easeOutBack(seg(f, 202 + i * 5, 234 + i * 5));
-      final out = 1 - easeInOutCubic(seg(f, 286, 301));
-      final drift = math.sin((f + i * 17) * .055) * 5 * land;
-      children.add(_asset(
-        names[i],
-        x: lerp(tx[i] + (i.isEven ? -210 : 190), tx[i], land),
-        y: lerp(-360 - i * 45, ty[i] + drift, land),
-        w: tw[i],
-        rotation: lerp(rot0[i], .02 * (i - 3.5), land),
-        opacity: land * out,
-        blur: lerp(4, 0, land),
-      ));
-    }
-
-    final steam = easeInOutCubic(seg(f, 222, 244)) * (1 - easeInOutCubic(seg(f, 284, 300)));
-    if (steam > .001) {
-      children.add(Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: SteamPainter(steam, f)))));
-    }
-    final wipe = easeInOutCubic(seg(f, 286, 301));
-    if (wipe > 0 && wipe < 1) {
-      children.add(_asset('fajita_piece_3', x: lerp(1640, -520, wipe), y: lerp(180, 430, wipe), w: lerp(320, 850, wipe), rotation: lerp(-.8, 1.15, wipe), blur: 1 + 6 * wipe));
-    }
-    return children;
-  }
-
-  List<Widget> _churros(int f) {
-    final children = <Widget>[];
-    const names = ['churro_1','churro_2','churro_3'];
-    const sx = [-720.0, 2020.0, 760.0];
-    const sy = [220.0, 200.0, -520.0];
-    const tx = [350.0, 670.0, 900.0];
-    const ty = [250.0, 330.0, 230.0];
-    const tw = [830.0, 830.0, 760.0];
-    const sr = [-.8,.7,1.2];
-    const tr = [-.38,.10,.46];
-    final individualOut = 1 - easeInOutCubic(seg(f, 338, 353));
-    for (var i = 0; i < names.length; i++) {
-      final e = easeOutBack(seg(f, 290 + i * 5, 320 + i * 4));
-      children.add(_asset(names[i], x: lerp(sx[i], tx[i], e), y: lerp(sy[i], ty[i], e), w: tw[i], rotation: lerp(sr[i], tr[i], e), opacity: e * individualOut, blur: lerp(4, 0, e)));
-    }
-
-    final chocolate = easeInOutCubic(seg(f, 300, 330)) * (1 - easeInOutCubic(seg(f, 345, 358)));
-    if (chocolate > .001) {
-      children.insert(0, Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: ChocolatePainter(chocolate, f)))));
-    }
-    final sugar = easeInOutCubic(seg(f, 302, 326)) * (1 - easeInOutCubic(seg(f, 348, 360)));
-    if (sugar > .001) {
-      children.add(Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: SugarPainter(sugar, f)))));
-    }
-
-    final heroIn = easeInOutCubic(seg(f, 334, 350));
-    final heroOut = 1 - easeInOutCubic(seg(f, 351, 370));
-    children.add(_asset('churros_hero', x: lerp(440, 355, heroIn), y: lerp(230, 130, heroIn) - 120 * easeInOutCubic(seg(f, 352, 370)), w: 1210, rotation: -.02, opacity: heroIn * heroOut, scale: lerp(.93, 1.02, heroIn)));
-    return children;
-  }
-
-  List<Widget> _closing(int f) {
-    final children = <Widget>[];
-    final p = easeInOutCubic(seg(f, 360, 389));
-    final drift = 1 - p;
-    children.add(_asset('taco_lime', x: lerp(210, -280, p), y: lerp(720, 840, p), w: 250, rotation: lerp(.2, -1.1, p), opacity: .55 * drift, blur: 1.5 * p));
-    return children;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final int f = frameIndex.clamp(0, totalFrames - 1).toInt();
-    final children = <Widget>[Positioned.fill(child: ColoredBox(color: _bg(f)))];
-    if (f <= 108) children.addAll(_taco(f));
-    if (f >= 88 && f <= 205) children.addAll(_margarita(f));
-    if (f >= 184 && f <= 304) children.addAll(_fajita(f));
-    if (f >= 282 && f <= 372) children.addAll(_churros(f));
-    if (f >= 356) children.addAll(_closing(f));
-
-    final camScale = 1.0 + .006 * math.sin(f * .027);
-    final camX = 3.5 * math.sin(f * .021);
-    final camY = 2.5 * math.cos(f * .024);
-    return SizedBox(
-      width: designW,
-      height: designH,
-      child: ClipRect(
-        child: Transform.translate(
-          offset: Offset(camX, camY),
-          child: Transform.scale(
-            scale: camScale,
-            child: Stack(clipBehavior: Clip.none, children: children),
-          ),
-        ),
-      ),
-    );
-  }
+ final int frameIndex;
+ const MotionFrame({super.key,required this.frameIndex});
+ @override Widget build(BuildContext context)=>CustomPaint(size:const Size(designW,designH),painter:FoodMotionPainter(frameIndex));
 }
 
-class TacoGarnishPainter extends CustomPainter {
-  final int frame;
-  final double opacity;
-  TacoGarnishPainter(this.frame, this.opacity);
+class FoodMotionPainter extends CustomPainter{
+ final int f;
+ FoodMotionPainter(this.f);
+ final math.Random rng=math.Random(360);
+ @override void paint(Canvas c,Size s){
+   c.drawRect(Offset.zero&s,Paint()..color=bgColor(f));
+   c.save();
+   final pulse=1+.006*math.sin(f*.027); final cx=s.width/2,cy=s.height/2;
+   c.translate(cx+3.5*math.sin(f*.021),cy+2.5*math.cos(f*.024));c.scale(pulse);c.translate(-cx,-cy);
+   if(f<=110) drawTaco(c);
+   if(f>=88&&f<=205) drawMargarita(c);
+   if(f>=184&&f<=305) drawFajita(c);
+   if(f>=282&&f<=372) drawChurros(c);
+   if(f>=356) drawClose(c);
+   c.restore();
+ }
 
-  double _pieceP(int i) {
-    final out = easeInOutCubic(seg(frame, 48 + i * 1.2, 70 + i * 1.2));
-    final back = easeInOutCubic(seg(frame, 80 + i * .4, 100));
-    return _clamp(out * (1 - back));
-  }
+ Paint shadow(double a,[double blur=24])=>Paint()..color=Colors.black.withOpacity(a)..maskFilter=ui.MaskFilter.blur(BlurStyle.normal,blur);
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    const onionTargets = <Offset>[
-      Offset(610,445),Offset(720,430),Offset(830,450),Offset(940,425),Offset(1050,448),Offset(1160,432),Offset(1260,452),
-    ];
-    const cilantroTargets = <Offset>[
-      Offset(620,345),Offset(760,320),Offset(900,352),Offset(1040,318),Offset(1180,350),
-    ];
-    final onionPaint = Paint()..color = Colors.white.withOpacity(.93 * opacity);
-    final onionEdge = Paint()..style=PaintingStyle.stroke..strokeWidth=2..color=const Color(0xFFE8F0EF).withOpacity(.85*opacity);
-    for (var i=0;i<onionTargets.length;i++) {
-      final p=_pieceP(i);
-      final c=Offset(875 + (i-3)*18.0, 515);
-      final t=onionTargets[i];
-      final pos=Offset(lerp(c.dx,t.dx,p),lerp(c.dy,t.dy,p));
-      canvas.save();
-      canvas.translate(pos.dx,pos.dy);
-      canvas.rotate(lerp(.12*(i-3),.02*(i-3),p));
-      final r=Rect.fromCenter(center:Offset.zero,width:34+4*(i%2),height:30+3*((i+1)%2));
-      canvas.drawRRect(RRect.fromRectAndRadius(r,const Radius.circular(5)),onionPaint);
-      canvas.drawRRect(RRect.fromRectAndRadius(r,const Radius.circular(5)),onionEdge);
-      canvas.restore();
-    }
-    final leafPaint=Paint()..color=const Color(0xFF39A845).withOpacity(.98*opacity);
-    final stemPaint=Paint()..color=const Color(0xFF287F32).withOpacity(.95*opacity)..strokeWidth=4..style=PaintingStyle.stroke..strokeCap=StrokeCap.round;
-    for (var i=0;i<cilantroTargets.length;i++) {
-      final p=_pieceP(7+i);
-      final c=Offset(890 + (i-2)*22.0, 500);
-      final t=cilantroTargets[i];
-      final pos=Offset(lerp(c.dx,t.dx,p),lerp(c.dy,t.dy,p));
-      canvas.save(); canvas.translate(pos.dx,pos.dy); canvas.rotate(lerp(-.5+i*.18,-.12+i*.06,p));
-      canvas.drawLine(const Offset(0,16),const Offset(0,-8),stemPaint);
-      for (var k=0;k<5;k++) {
-        final a=(-1.9 + k*.95);
-        final o=Offset(math.cos(a)*18, -8+math.sin(a)*12);
-        canvas.drawOval(Rect.fromCenter(center:o,width:23,height:16),leafPaint);
-      }
-      canvas.restore();
-    }
-  }
-  @override bool shouldRepaint(covariant TacoGarnishPainter oldDelegate)=>true;
-}
+ void lime(Canvas c,Offset p,double r,double rot,double alpha){
+   c.save();c.translate(p.dx,p.dy);c.rotate(rot);
+   final path=Path()..moveTo(-r,0)..quadraticBezierTo(0,r*.82,r,0)..quadraticBezierTo(0,r*.22,-r,0)..close();
+   c.drawPath(path,Paint()..shader=ui.Gradient.linear(Offset(-r,0),Offset(r,0),[const Color(0xFF126B2B).withOpacity(alpha),const Color(0xFF69B73A).withOpacity(alpha)]));
+   final inner=Path()..moveTo(-r*.82,-2)..quadraticBezierTo(0,r*.63,r*.82,-2)..quadraticBezierTo(0,r*.15,-r*.82,-2)..close();
+   c.drawPath(inner,Paint()..color=const Color(0xFFE3F35F).withOpacity(alpha));
+   for(int i=1;i<6;i++){final x=-r*.7+i*(r*1.4/6);c.drawLine(Offset(0,1),Offset(x,r*.5),Paint()..color=Colors.white.withOpacity(.34*alpha)..strokeWidth=2);}
+   c.restore();
+ }
 
-class MargaritaParticlePainter extends CustomPainter {
-  final int frame;
-  final double opacity;
-  MargaritaParticlePainter(this.frame,this.opacity);
-  @override
-  void paint(Canvas canvas, Size size) {
-    const targets=<Offset>[
-      Offset(510,180),Offset(720,100),Offset(940,155),Offset(1180,140),Offset(1320,380),Offset(520,570),Offset(1190,620),
-    ];
-    for (var i=0;i<targets.length;i++) {
-      final p=easeOutCubic(seg(frame,122+i*2,148+i*2))*(1-easeInOutCubic(seg(frame,158,175)));
-      final c=const Offset(900,440); final t=targets[i];
-      final pos=Offset(lerp(c.dx,t.dx,p),lerp(c.dy,t.dy,p));
-      canvas.save(); canvas.translate(pos.dx,pos.dy); canvas.rotate(lerp(0,.65*(i.isEven?1:-1),p));
-      final s=lerp(22,58+(i%3)*8,p);
-      final fill=Paint()..color=Colors.white.withOpacity(.18*opacity)..style=PaintingStyle.fill;
-      final edge=Paint()..color=Colors.white.withOpacity(.74*opacity)..style=PaintingStyle.stroke..strokeWidth=4;
-      final r=RRect.fromRectAndRadius(Rect.fromCenter(center:Offset.zero,width:s,height:s),Radius.circular(s*.12));
-      canvas.drawRRect(r,fill); canvas.drawRRect(r,edge);
-      canvas.drawLine(Offset(-s*.25,-s*.25),Offset(s*.28,s*.28),edge..strokeWidth=2);
-      canvas.restore();
-    }
-    final drop=Paint()..color=const Color(0xFFFFFFE8).withOpacity(.42*opacity);
-    for (var i=0;i<32;i++) {
-      final a=i*.73+frame*.025; final rr=120+(i%7)*36.0; final cx=900+math.cos(a)*rr; final cy=420+math.sin(a)*rr*.55;
-      canvas.drawCircle(Offset(cx,cy),2.5+(i%3),drop);
-    }
-  }
-  @override bool shouldRepaint(covariant MargaritaParticlePainter oldDelegate)=>true;
-}
+ void cilantro(Canvas c,Offset p,double sc,double rot,double alpha){
+   c.save();c.translate(p.dx,p.dy);c.rotate(rot);c.scale(sc);
+   final stem=Paint()..color=const Color(0xFF187A2C).withOpacity(alpha)..strokeWidth=4..strokeCap=StrokeCap.round;
+   c.drawLine(const Offset(0,14),const Offset(0,-8),stem);
+   final leaf=Paint()..shader=ui.Gradient.radial(const Offset(0,-10),30,[const Color(0xFF6ACF4B).withOpacity(alpha),const Color(0xFF168B35).withOpacity(alpha)]);
+   for(int k=0;k<5;k++){final a=-2.5+k*.78;final o=Offset(math.cos(a)*18,-9+math.sin(a)*11);c.drawOval(Rect.fromCenter(center:o,width:25,height:17),leaf);}
+   c.restore();
+ }
 
-class SteamPainter extends CustomPainter {
-  final double strength;
-  final int frame;
-  SteamPainter(this.strength, this.frame);
-  @override
-  void paint(Canvas canvas, Size size) {
-    final p = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = 9
-      ..color = Colors.white.withOpacity(.13 * strength)
-      ..maskFilter = const ui.MaskFilter.blur(BlurStyle.normal, 13);
-    for (var i = 0; i < 7; i++) {
-      final x = 500 + i * 145 + 22 * math.sin(frame * .04 + i);
-      final y = 700 - 18 * math.sin(frame * .05 + i * .7);
-      final path = Path()..moveTo(x, y);
-      path.cubicTo(x - 55, y - 80, x + 70, y - 155, x + 10, y - 255);
-      canvas.drawPath(path, p);
-    }
-  }
-  @override bool shouldRepaint(covariant SteamPainter oldDelegate) => true;
-}
+ void onion(Canvas c,Offset p,double sc,double rot,double alpha){
+   c.save();c.translate(p.dx,p.dy);c.rotate(rot);c.scale(sc);
+   final r=RRect.fromRectAndRadius(Rect.fromCenter(center:Offset.zero,width:34,height:30),const Radius.circular(5));
+   c.drawRRect(r,Paint()..shader=ui.Gradient.linear(const Offset(-17,-15),const Offset(17,15),[Colors.white.withOpacity(.97*alpha),const Color(0xFFE7ECE8).withOpacity(.88*alpha)]));
+   c.drawRRect(r,Paint()..style=PaintingStyle.stroke..strokeWidth=1.5..color=Colors.white.withOpacity(.7*alpha));c.restore();
+ }
 
-class ChocolatePainter extends CustomPainter {
-  final double strength;
-  final int frame;
-  ChocolatePainter(this.strength, this.frame);
-  @override
-  void paint(Canvas canvas, Size size) {
-    final wiggle = math.sin(frame * .08) * 28;
-    final dark = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = 24
-      ..color = const Color(0xFF3B160B).withOpacity(.86 * strength)
-      ..maskFilter = const ui.MaskFilter.blur(BlurStyle.normal, 1.2);
-    final caramel = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = 14
-      ..color = const Color(0xFF9A4E13).withOpacity(.82 * strength);
-    final p1 = Path()..moveTo(260, 720);
-    p1.cubicTo(480, 420 + wiggle, 760, 710 - wiggle, 980, 390);
-    p1.cubicTo(1190, 80 + wiggle, 1450, 470, 1680, 280);
-    canvas.drawPath(p1, dark);
-    final p2 = Path()..moveTo(240, 350);
-    p2.cubicTo(490, 640 - wiggle, 840, 220 + wiggle, 1110, 580);
-    p2.cubicTo(1350, 880 - wiggle, 1500, 520, 1710, 710);
-    canvas.drawPath(p2, caramel);
-  }
-  @override bool shouldRepaint(covariant ChocolatePainter oldDelegate) => true;
-}
+ Path tacoShellPath(double w,double h){
+   return Path()..moveTo(-w*.5,h*.18)..quadraticBezierTo(-w*.37,-h*.58,0,-h*.57)..quadraticBezierTo(w*.38,-h*.56,w*.5,h*.18)..quadraticBezierTo(w*.25,h*.02,0,h*.04)..quadraticBezierTo(-w*.25,h*.02,-w*.5,h*.18)..close();
+ }
+ void tacoShell(Canvas c,Offset p,double w,double h,double rot,double alpha){
+   c.save();c.translate(p.dx,p.dy);c.rotate(rot);
+   c.drawOval(Rect.fromCenter(center:Offset(0,h*.29),width:w*.88,height:h*.18),shadow(.18*alpha,18));
+   final path=tacoShellPath(w,h);
+   c.drawPath(path,Paint()..shader=ui.Gradient.linear(Offset(-w*.5,-h*.4),Offset(w*.5,h*.3),[const Color(0xFFFFD053).withOpacity(alpha),const Color(0xFFE38D0B).withOpacity(alpha),const Color(0xFFFFB928).withOpacity(alpha)]));
+   c.drawPath(path,Paint()..style=PaintingStyle.stroke..strokeWidth=6..color=const Color(0xFFD37B05).withOpacity(.65*alpha));
+   final freckles=Paint()..color=const Color(0xFF8D4300).withOpacity(.24*alpha);
+   final rr=math.Random(81);for(int i=0;i<40;i++){final x=(rr.nextDouble()-.5)*w*.78;final y=-h*.36+rr.nextDouble()*h*.45;c.drawCircle(Offset(x,y),1+rr.nextDouble()*2,freckles);}
+   c.restore();
+ }
 
-class SugarPainter extends CustomPainter {
-  final double strength;
-  final int frame;
-  SugarPainter(this.strength, this.frame);
-  @override
-  void paint(Canvas canvas, Size size) {
-    final random = math.Random(731);
-    final p = Paint()..color = Colors.white.withOpacity(.5 * strength);
-    for (var i = 0; i < 95; i++) {
-      final x0 = 280 + random.nextDouble() * 1360;
-      final y0 = 150 + random.nextDouble() * 750;
-      final vy = (random.nextDouble() - .5) * 90;
-      final x = x0 + math.sin(frame * .04 + i) * 9;
-      final y = y0 + vy * strength + math.cos(frame * .035 + i) * 7;
-      final r = 1.2 + random.nextDouble() * 3.1;
-      canvas.drawCircle(Offset(x, y), r, p);
-    }
-  }
-  @override bool shouldRepaint(covariant SugarPainter oldDelegate) => true;
+ void beefFiber(Canvas c,Offset p,double len,double thick,double rot,double alpha,[Color base=const Color(0xFF7A2B12)]){
+   c.save();c.translate(p.dx,p.dy);c.rotate(rot);
+   final path=Path()..moveTo(-len/2,0)..cubicTo(-len*.2,-thick*.45,len*.18,thick*.38,len/2,0);
+   c.drawPath(path,Paint()..color=Colors.black.withOpacity(.16*alpha)..strokeWidth=thick+9..strokeCap=StrokeCap.round..maskFilter=const ui.MaskFilter.blur(BlurStyle.normal,5));
+   c.drawPath(path,Paint()..shader=ui.Gradient.linear(Offset(-len/2,0),Offset(len/2,0),[const Color(0xFF4F170D).withOpacity(alpha),base.withOpacity(alpha),const Color(0xFFD05B1A).withOpacity(alpha)])..strokeWidth=thick..strokeCap=StrokeCap.round);
+   c.drawPath(path,Paint()..color=const Color(0xFFFFA047).withOpacity(.24*alpha)..strokeWidth=math.max(2.0,thick*.13)..strokeCap=StrokeCap.round);
+   c.restore();
+ }
+
+ double explode(int delay){final out=ease(seg(f,44+delay,70+delay));final back=ease(seg(f,80+delay*.35,102));return clamp01(out*(1-back));}
+ void drawTaco(Canvas c){
+   final enter=outBack(seg(f,0,24)); final heroOut=1-ease(seg(f,38,50)); final heroReturn=ease(seg(f,91,105)); final heroA=math.max(heroOut,heroReturn).clamp(0.0,1.0).toDouble();
+   final hp=Offset(lerpD(-510,870,enter),545+12*math.sin(f*.09));
+   if(heroA>.01){c.save();c.translate(hp.dx,hp.dy);c.rotate(lerpD(-.12,.035,enter));c.scale(lerpD(.82,1,enter));
+     tacoShell(c,const Offset(0,55),850,500,0,heroA);
+     for(int i=0;i<30;i++){final rr=math.Random(900+i);final x=(rr.nextDouble()-.5)*540;final y=-80+rr.nextDouble()*190;beefFiber(c,Offset(x,y),100+rr.nextDouble()*150,22+rr.nextDouble()*15,(rr.nextDouble()-.5)*.55,heroA);}
+     for(int i=0;i<10;i++){final a=i/9;onion(c,Offset(-250+a*500,-125+30*math.sin(i)),.8,(i-5)*.07,heroA);}
+     for(int i=0;i<9;i++){cilantro(c,Offset(-270+i*67,-175+(i%2)*35),.8,(i-4)*.08,heroA);}c.restore();
+   }
+   final wipe=ease(seg(f,35,50));if(wipe>0&&wipe<1)lime(c,Offset(lerpD(1930,-250,wipe),lerpD(120,360,wipe)),lerpD(150,460,wipe),lerpD(-.7,1.1,wipe),1);
+   final compA=ease(seg(f,43,52))*(1-ease(seg(f,97,106)));if(compA>.01){
+     final ep=explode(0);tacoShell(c,Offset(960,lerpD(620,780,ep)),870,420,0,compA);
+     for(int i=0;i<23;i++){final p=explode(2+i%5);final rr=math.Random(1200+i);final bx=960+(rr.nextDouble()-.5)*460;final by=lerpD(565,480+(rr.nextDouble()-.5)*80,p);beefFiber(c,Offset(bx,by),120+rr.nextDouble()*120,22+rr.nextDouble()*13,(rr.nextDouble()-.5)*.45,compA);}
+     for(int i=0;i<8;i++){final p=explode(8+i%3);final x=lerpD(920+(i-4)*12,650+i*85,p);final y=lerpD(510,390+(i%2)*15,p);onion(c,Offset(x,y),.9,(i-4)*.08,compA);}
+     for(int i=0;i<7;i++){final p=explode(11+i%3);final x=lerpD(930+(i-3)*14,680+i*92,p);final y=lerpD(495,295+(i%2)*20,p);cilantro(c,Offset(x,y),.9,(i-3)*.12,compA);}
+     final lp=explode(15);lime(c,Offset(lerpD(930,900,lp),lerpD(455,165,lp)),lerpD(90,180,lp),lerpD(.15,-.12,lp),compA);
+   }
+ }
+
+ void glass(Canvas c,Offset p,double sc,double alpha,{bool frozen=false,double rot=0}){
+   c.save();c.translate(p.dx,p.dy);c.rotate(rot);c.scale(sc);
+   c.drawOval(const Rect.fromLTWH(-210,330,420,42),shadow(.13*alpha,18));
+   final bowl=Path()..moveTo(-220,-90)..quadraticBezierTo(-180,170,-65,205)..lineTo(-24,315)..lineTo(24,315)..lineTo(65,205)..quadraticBezierTo(180,170,220,-90)..close();
+   c.drawPath(bowl,Paint()..shader=ui.Gradient.linear(const Offset(-220,-100),const Offset(220,280),[Colors.white.withOpacity(.24*alpha),const Color(0xFFE8FAE0).withOpacity(.12*alpha),Colors.white.withOpacity(.32*alpha)]));
+   final liquid=Path()..moveTo(-202,-60)..quadraticBezierTo(-165,135,-58,168)..lineTo(58,168)..quadraticBezierTo(165,135,202,-60)..close();
+   c.drawPath(liquid,Paint()..shader=ui.Gradient.linear(const Offset(-160,-60),const Offset(130,170),[const Color(0xFFF6E86A).withOpacity(.74*alpha),const Color(0xFFCFEF55).withOpacity(.67*alpha),const Color(0xFFF8F09B).withOpacity(.72*alpha)]));
+   c.drawLine(const Offset(-215,-86),const Offset(215,-86),Paint()..color=Colors.white.withOpacity(.82*alpha)..strokeWidth=8..strokeCap=StrokeCap.round);
+   for(int i=0;i<24;i++){final x=-205+i*18.0;c.drawCircle(Offset(x,-88+(i%2)*3),3+(i%3),Paint()..color=Colors.white.withOpacity(.95*alpha));}
+   final stem=Paint()..shader=ui.Gradient.linear(const Offset(-30,190),const Offset(35,345),[Colors.white.withOpacity(.42*alpha),const Color(0xFFCAE6D0).withOpacity(.17*alpha),Colors.white.withOpacity(.48*alpha)]);
+   c.drawRRect(RRect.fromRectAndRadius(const Rect.fromLTWH(-18,190,36,140),const Radius.circular(13)),stem);c.drawOval(const Rect.fromLTWH(-120,315,240,35),stem);
+   for(int i=0;i<7;i++){final rr=math.Random(300+i);final x=-150+rr.nextDouble()*300;final y=-35+rr.nextDouble()*130;ice(c,Offset(x,y),42+rr.nextDouble()*18,(rr.nextDouble()-.5)*.4,alpha);}
+   lime(c,const Offset(183,-58),75,.08,alpha);
+   c.restore();
+ }
+ void ice(Canvas c,Offset p,double sz,double rot,double alpha){c.save();c.translate(p.dx,p.dy);c.rotate(rot);final r=RRect.fromRectAndRadius(Rect.fromCenter(center:Offset.zero,width:sz,height:sz),Radius.circular(sz*.15));c.drawRRect(r,Paint()..color=Colors.white.withOpacity(.16*alpha));c.drawRRect(r,Paint()..style=PaintingStyle.stroke..strokeWidth=3..color=Colors.white.withOpacity(.72*alpha));c.drawLine(Offset(-sz*.25,-sz*.22),Offset(sz*.25,sz*.24),Paint()..color=Colors.white.withOpacity(.32*alpha)..strokeWidth=2);c.restore();}
+ void drawMargarita(Canvas c){
+   final enter=outBack(seg(f,92,116));final heroA=enter*(1-ease(seg(f,120,134)));if(heroA>.01)glass(c,Offset(960,lerpD(1220,510,enter)),1.17,heroA,rot:lerpD(.08,-.02,enter));
+   final splashA=ease(seg(f,118,136))*(1-ease(seg(f,156,173)));if(splashA>.01){glass(c,const Offset(960,535),1.05,splashA);final p=Path()..moveTo(700,410)..cubicTo(780,170,920,250,960,100)..cubicTo(1030,285,1170,165,1240,400);c.drawPath(p,Paint()..style=PaintingStyle.stroke..strokeWidth=38..strokeCap=StrokeCap.round..color=const Color(0xFFF3EB72).withOpacity(.56*splashA));
+     for(int i=0;i<8;i++){final a=i*.8;final r=180+(i%3)*65.0;final pp=outCubic(seg(f,122+i,151+i));ice(c,Offset(960+math.cos(a)*r*pp,380+math.sin(a)*r*.65*pp),42+(i%3)*8,a*.3,splashA);}
+     lime(c,Offset(lerpD(940,500,outCubic(seg(f,125,151))),lerpD(430,190,outCubic(seg(f,125,151)))),120,-.5,splashA);lime(c,Offset(lerpD(980,1370,outCubic(seg(f,129,154))),lerpD(430,260,outCubic(seg(f,129,154)))),105,.7,splashA);
+   }
+   final pair=outBack(seg(f,160,181));final out=1-ease(seg(f,190,203));if(pair*out>.01){glass(c,Offset(lerpD(800,650,pair),lerpD(760,520,pair)),.92,pair*out,rot:.02);glass(c,Offset(lerpD(1050,1260,pair),lerpD(760,500,pair)),.9,pair*out,frozen:true,rot:-.025);}
+   final wipe=ease(seg(f,188,203));if(wipe>0&&wipe<1)lime(c,Offset(lerpD(1850,-280,wipe),lerpD(150,430,wipe)),lerpD(130,430,wipe),lerpD(-.4,1.25,wipe),1);
+ }
+
+ void strip(Canvas c,Offset p,double len,double thick,double rot,Color a,Color b,double alpha){c.save();c.translate(p.dx,p.dy);c.rotate(rot);final rr=RRect.fromRectAndRadius(Rect.fromCenter(center:Offset.zero,width:len,height:thick),Radius.circular(thick*.48));c.drawRRect(rr,Paint()..color=Colors.black.withOpacity(.15*alpha)..maskFilter=const ui.MaskFilter.blur(BlurStyle.normal,5));c.drawRRect(rr,Paint()..shader=ui.Gradient.linear(Offset(-len/2,0),Offset(len/2,0),[a.withOpacity(alpha),b.withOpacity(alpha),a.withOpacity(alpha)]));for(int i=-2;i<=2;i++)c.drawLine(Offset(-len*.28,i*3.2),Offset(len*.3,i*3.2),Paint()..color=Colors.white.withOpacity(.08*alpha)..strokeWidth=1);c.restore();}
+ void shrimp(Canvas c,Offset p,double sc,double rot,double alpha){c.save();c.translate(p.dx,p.dy);c.rotate(rot);c.scale(sc);final path=Path()..moveTo(-65,-8)..cubicTo(-40,-78,65,-65,70,-5)..cubicTo(70,48,12,65,-18,32)..cubicTo(17,30,34,9,24,-10)..cubicTo(3,-39,-33,-28,-65,-8)..close();c.drawPath(path,Paint()..shader=ui.Gradient.linear(const Offset(-60,-50),const Offset(60,55),[const Color(0xFFFFB56B).withOpacity(alpha),const Color(0xFFE95A2A).withOpacity(alpha),const Color(0xFFFFC48B).withOpacity(alpha)]));c.drawPath(path,Paint()..style=PaintingStyle.stroke..strokeWidth=4..color=const Color(0xFF9D361F).withOpacity(.55*alpha));c.restore();}
+ void skillet(Canvas c,double alpha){c.drawOval(const Rect.fromLTWH(280,690,1320,240),shadow(.22*alpha,25));final body=RRect.fromRectAndRadius(const Rect.fromLTWH(260,650,1390,260),const Radius.circular(120));c.drawRRect(body,Paint()..shader=ui.Gradient.linear(const Offset(260,650),const Offset(1650,900),[const Color(0xFF18191B).withOpacity(alpha),const Color(0xFF454548).withOpacity(alpha),const Color(0xFF111214).withOpacity(alpha)]));c.drawRRect(body,Paint()..style=PaintingStyle.stroke..strokeWidth=12..color=const Color(0xFF08090A).withOpacity(alpha));c.drawRRect(RRect.fromRectAndRadius(const Rect.fromLTWH(1540,720,330,70),const Radius.circular(35)),Paint()..color=const Color(0xFF151619).withOpacity(alpha));}
+ void drawFajita(Canvas c){
+   final sk=outBack(seg(f,190,214));final out=1-ease(seg(f,288,302));if(sk*out>.01){c.save();c.translate(0,lerpD(420,0,sk));skillet(c,sk*out);c.restore();}
+   final specs=<Map<String,dynamic>>[
+     {'x':500.0,'y':520.0,'type':'pepper','col':const Color(0xFF22A342),'rot':-.7}, {'x':720.0,'y':500.0,'type':'steak','rot':.4}, {'x':930.0,'y':520.0,'type':'chicken','rot':-.35}, {'x':1160.0,'y':490.0,'type':'shrimp','rot':.5}, {'x':1350.0,'y':540.0,'type':'pepper','col':const Color(0xFFE83B2D),'rot':-.3}, {'x':800.0,'y':610.0,'type':'pepper','col':const Color(0xFFF1B429),'rot':.2}, {'x':1080.0,'y':590.0,'type':'steak','rot':-.5}, {'x':1260.0,'y':620.0,'type':'shrimp','rot':-.2},
+   ];
+   for(int i=0;i<specs.length;i++){final land=outBack(seg(f,202+i*5,234+i*5));final a=land*out;if(a<=.01)continue;final x=lerpD(specs[i]['x']+(i.isEven?-230:210),specs[i]['x'],land);final y=lerpD(-330-i*38.0,specs[i]['y'],land);final rot=lerpD((specs[i]['rot'] as double)*2,specs[i]['rot'] as double,land);switch(specs[i]['type']){case 'shrimp':shrimp(c,Offset(x,y),.85,rot,a);break;case 'steak':strip(c,Offset(x,y),250,55,rot,const Color(0xFF4B1E14),const Color(0xFFC95B2A),a);break;case 'chicken':strip(c,Offset(x,y),260,52,rot,const Color(0xFFD98727),const Color(0xFFFFC05C),a);break;default:strip(c,Offset(x,y),280,38,rot,specs[i]['col'] as Color,(specs[i]['col'] as Color).withOpacity(.7),a);}}
+   final steam=ease(seg(f,225,245))*(1-ease(seg(f,282,300)));if(steam>.01){final p=Paint()..style=PaintingStyle.stroke..strokeWidth=9..strokeCap=StrokeCap.round..color=Colors.white.withOpacity(.12*steam)..maskFilter=const ui.MaskFilter.blur(BlurStyle.normal,14);for(int i=0;i<6;i++){final x=520+i*170.0+20*math.sin(f*.04+i);final path=Path()..moveTo(x,690)..cubicTo(x-60,600,x+70,525,x+10,420);c.drawPath(path,p);}}
+   final wipe=ease(seg(f,287,302));if(wipe>0&&wipe<1)strip(c,Offset(lerpD(1860,-320,wipe),lerpD(260,470,wipe)),lerpD(280,840,wipe),80,lerpD(-.8,1.2,wipe),const Color(0xFFE73A2C),const Color(0xFFFFB02D),1);
+ }
+
+ void churro(Canvas c,Offset p,double len,double thick,double rot,double alpha){c.save();c.translate(p.dx,p.dy);c.rotate(rot);final path=Path()..moveTo(-len/2,0)..cubicTo(-len*.25,-25,len*.22,20,len/2,0);c.drawPath(path,Paint()..color=Colors.black.withOpacity(.18*alpha)..strokeWidth=thick+16..strokeCap=StrokeCap.round..maskFilter=const ui.MaskFilter.blur(BlurStyle.normal,8));c.drawPath(path,Paint()..shader=ui.Gradient.linear(Offset(-len/2,0),Offset(len/2,0),[const Color(0xFFC9660A).withOpacity(alpha),const Color(0xFFFFB138).withOpacity(alpha),const Color(0xFFC45C05).withOpacity(alpha)])..strokeWidth=thick..strokeCap=StrokeCap.round);for(int i=-2;i<=2;i++){c.drawPath(path,Paint()..color=(i.isEven?const Color(0xFFFFC66D):const Color(0xFF9A4102)).withOpacity(.36*alpha)..strokeWidth=4..strokeCap=StrokeCap.round);c.translate(0,2);}final rr=math.Random(499);for(int i=0;i<30;i++){final x=(rr.nextDouble()-.5)*len*.9;final y=(rr.nextDouble()-.5)*thick*.7;c.drawCircle(Offset(x,y),1.3+rr.nextDouble()*2.2,Paint()..color=Colors.white.withOpacity(.62*alpha));}c.restore();}
+ void chocolate(Canvas c,double a){final wig=math.sin(f*.08)*26;final p=Paint()..style=PaintingStyle.stroke..strokeCap=StrokeCap.round..strokeWidth=26..shader=ui.Gradient.linear(const Offset(250,300),const Offset(1700,750),[const Color(0xFF2A0D07).withOpacity(.9*a),const Color(0xFF6B250B).withOpacity(.9*a)]);final q=Path()..moveTo(250,720)..cubicTo(500,390+wig,780,730-wig,1020,370)..cubicTo(1240,80+wig,1460,490,1700,270);c.drawPath(q,p);}
+ void drawChurros(Canvas c){final out=1-ease(seg(f,340,355));final positions=[const Offset(560,390),const Offset(950,520),const Offset(1260,370)];final starts=[const Offset(-500,300),const Offset(2200,240),const Offset(850,-420)];for(int i=0;i<3;i++){final e=outBack(seg(f,290+i*6,321+i*4));if(e*out>.01)churro(c,Offset(lerpD(starts[i].dx,positions[i].dx,e),lerpD(starts[i].dy,positions[i].dy,e)),720,80,lerpD([-1.0,.8,1.2][i],[-.35,.12,.5][i],e),e*out);}final ch=ease(seg(f,302,331))*(1-ease(seg(f,346,359)));if(ch>.01)chocolate(c,ch);final hero=ease(seg(f,336,350))*(1-ease(seg(f,352,371)));if(hero>.01){churro(c,const Offset(720,430),800,86,-.34,hero);churro(c,const Offset(1000,520),830,88,.08,hero);churro(c,const Offset(1260,400),750,82,.43,hero);} }
+ void drawClose(Canvas c){final p=ease(seg(f,360,389));lime(c,Offset(lerpD(250,-180,p),lerpD(830,940,p)),110,lerpD(.2,-1.1,p),.45*(1-p));}
+ @override bool shouldRepaint(covariant FoodMotionPainter old)=>old.f!=f;
 }
