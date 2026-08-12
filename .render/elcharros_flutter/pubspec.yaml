@@ -1,5 +1,5 @@
 name: el_charros_motion_render
-description: Deterministic Flutter motion-graphics renderer for El Charro's Grill.
+description: Deterministic procedural Flutter motion-graphics renderer for El Charro's Grill.
 publish_to: none
 version: 1.0.0+1
 environment:
@@ -12,5 +12,3 @@ dev_dependencies:
     sdk: flutter
 flutter:
   uses-material-design: false
-  assets:
-    - assets/
