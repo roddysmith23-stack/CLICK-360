@@ -34,6 +34,20 @@ jobs:
         working-directory: .render/elcharros_flutter
         run: flutter pub get
 
+      - name: Flutter numeric preflight
+        working-directory: .render/elcharros_flutter
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('lib/motion_frame.dart')
+          s = p.read_text()
+          s = s.replace('seg(f,44+delay,70+delay)', 'seg(f,44.0+delay,70.0+delay)')
+          s = s.replace('seg(f,122+i,151+i)', 'seg(f,122.0+i,151.0+i)')
+          s = s.replace('42+(i%3)*8,a*.3,splashA', '42.0+(i%3)*8,a*.3,splashA')
+          p.write_text(s)
+          PY
+          dart format lib/motion_frame.dart test/render_test.dart
+
       - name: Render 390 native 4K frames with Flutter Skia
         working-directory: .render/elcharros_flutter
         run: flutter test test/render_test.dart --concurrency=1 -r expanded
