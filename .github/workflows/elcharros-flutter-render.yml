@@ -12,9 +12,26 @@ permissions:
   contents: read
 
 jobs:
-  render:
+  render-shards:
+    name: render-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 0
+            start: 0
+            end: 97
+          - shard: 1
+            start: 98
+            end: 195
+          - shard: 2
+            start: 196
+            end: 292
+          - shard: 3
+            start: 293
+            end: 389
     steps:
       - name: Checkout isolated render branch
         uses: actions/checkout@v4
@@ -24,11 +41,6 @@ jobs:
         with:
           channel: stable
           cache: true
-
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg
 
       - name: Resolve Flutter package
         working-directory: .render/elcharros_flutter
@@ -48,9 +60,51 @@ jobs:
           PY
           dart format lib/motion_frame.dart test/render_test.dart
 
-      - name: Render 390 high-quality 1440p frames with Flutter Skia
+      - name: Render Flutter/Skia frame shard
         working-directory: .render/elcharros_flutter
+        env:
+          START_FRAME: ${{ matrix.start }}
+          END_FRAME: ${{ matrix.end }}
         run: flutter test test/render_test.dart --concurrency=1 -r expanded
+
+      - name: Upload frame shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: elcharros-frames-${{ matrix.shard }}
+          path: .render/elcharros_flutter/build/render_frames/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  encode:
+    name: encode-final-4k
+    needs: render-shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout isolated render branch
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+
+      - name: Download all rendered frame shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: elcharros-frames-*
+          path: .render/elcharros_flutter/build/render_frames
+          merge-multiple: true
+
+      - name: Validate all 390 source frames
+        working-directory: .render/elcharros_flutter
+        run: |
+          count=$(find build/render_frames -maxdepth 1 -name 'frame_*.png' | wc -l)
+          echo "Frame count: $count"
+          test "$count" -eq 390
+          test -f build/render_frames/frame_0000.png
+          test -f build/render_frames/frame_0389.png
 
       - name: Encode professional 13-second 4K visual master
         working-directory: .render/elcharros_flutter
@@ -71,7 +125,6 @@ jobs:
           ffmpeg -y -i EL_CHARROS_FLUTTER_SLOW_MOTION_4K.mp4 \
             -vf "fps=1/2,scale=960:-1,tile=4x2" -frames:v 1 \
             EL_CHARROS_FLUTTER_CONTACT_SHEET.jpg
-          rm -rf build/render_frames
 
       - name: Upload final 4K visual master
         uses: actions/upload-artifact@v4

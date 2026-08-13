@@ -8,9 +8,15 @@ import 'package:el_charros_motion_render/motion_frame.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('render 390 high-quality 1440p deterministic Flutter motion frames', (WidgetTester tester) async {
+  testWidgets('render deterministic Flutter motion-frame shard', (WidgetTester tester) async {
     await tester.binding.setSurfaceSize(const Size(designW, designH));
     addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final startFrame = int.parse(Platform.environment['START_FRAME'] ?? '0');
+    final endFrame = int.parse(Platform.environment['END_FRAME'] ?? '${totalFrames - 1}');
+    if (startFrame < 0 || endFrame >= totalFrames || startFrame > endFrame) {
+      throw StateError('Invalid frame shard $startFrame..$endFrame');
+    }
 
     const boundaryKey = ValueKey<String>('capture-boundary');
     Widget wrap(int frame) => Directionality(
@@ -30,8 +36,8 @@ void main() {
     if (dir.existsSync()) dir.deleteSync(recursive: true);
     dir.createSync(recursive: true);
 
-    const renderScale = 4.0 / 3.0; // 1920x1080 design -> 2560x1440 render
-    for (var frame = 0; frame < totalFrames; frame++) {
+    const renderScale = 4.0 / 3.0; // 1920x1080 design -> 2560x1440 source frames
+    for (var frame = startFrame; frame <= endFrame; frame++) {
       await tester.pumpWidget(wrap(frame));
       await tester.pump();
       final boundary = tester.renderObject<RenderRepaintBoundary>(find.byKey(boundaryKey));
@@ -42,11 +48,12 @@ void main() {
       final file = File('build/render_frames/frame_${frame.toString().padLeft(4, '0')}.png');
       await file.writeAsBytes(bytes, flush: false);
       image.dispose();
-      if (frame % 30 == 0) {
+      if ((frame - startFrame) % 20 == 0) {
         // ignore: avoid_print
-        print('Rendered 1440p Flutter frame $frame / ${totalFrames - 1}');
+        print('Rendered Flutter frame $frame ($startFrame..$endFrame)');
       }
     }
-    expect(File('build/render_frames/frame_0389.png').existsSync(), isTrue);
-  }, timeout: const Timeout(Duration(minutes: 32)));
+
+    expect(File('build/render_frames/frame_${endFrame.toString().padLeft(4, '0')}.png').existsSync(), isTrue);
+  }, timeout: const Timeout(Duration(minutes: 18)));
 }
