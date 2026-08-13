@@ -36,7 +36,7 @@ void main() {
     if (dir.existsSync()) dir.deleteSync(recursive: true);
     dir.createSync(recursive: true);
 
-    const renderScale = 4.0 / 3.0; // 1920x1080 design -> 2560x1440 source frames
+    const renderScale = 1.0; // native 1920x1080 Flutter/Skia source, upscale only at final encode
     for (var frame = startFrame; frame <= endFrame; frame++) {
       await tester.pumpWidget(wrap(frame));
       await tester.pump();
@@ -48,12 +48,12 @@ void main() {
       final file = File('build/render_frames/frame_${frame.toString().padLeft(4, '0')}.png');
       await file.writeAsBytes(bytes, flush: false);
       image.dispose();
-      if ((frame - startFrame) % 20 == 0) {
+      if ((frame - startFrame) % 10 == 0) {
         // ignore: avoid_print
         print('Rendered Flutter frame $frame ($startFrame..$endFrame)');
       }
     }
 
     expect(File('build/render_frames/frame_${endFrame.toString().padLeft(4, '0')}.png').existsSync(), isTrue);
-  }, timeout: const Timeout(Duration(minutes: 18)));
+  }, timeout: const Timeout(Duration(minutes: 10)));
 }

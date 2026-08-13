@@ -15,23 +15,19 @@ jobs:
   render-shards:
     name: render-shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 16
     strategy:
       fail-fast: false
       matrix:
         include:
-          - shard: 0
-            start: 0
-            end: 97
-          - shard: 1
-            start: 98
-            end: 195
-          - shard: 2
-            start: 196
-            end: 292
-          - shard: 3
-            start: 293
-            end: 389
+          - { shard: 0, start: 0, end: 48 }
+          - { shard: 1, start: 49, end: 97 }
+          - { shard: 2, start: 98, end: 146 }
+          - { shard: 3, start: 147, end: 195 }
+          - { shard: 4, start: 196, end: 244 }
+          - { shard: 5, start: 245, end: 292 }
+          - { shard: 6, start: 293, end: 341 }
+          - { shard: 7, start: 342, end: 389 }
     steps:
       - name: Checkout isolated render branch
         uses: actions/checkout@v4
@@ -40,27 +36,31 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          cache: true
+          cache: false
 
       - name: Resolve Flutter package
         working-directory: .render/elcharros_flutter
         run: flutter pub get
 
-      - name: Flutter numeric preflight
+      - name: Performance preflight for software Skia rendering
         working-directory: .render/elcharros_flutter
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           p = Path('lib/motion_frame.dart')
           s = p.read_text()
           s = s.replace('seg(f,44+delay,70+delay)', 'seg(f,44.0+delay,70.0+delay)')
           s = s.replace('seg(f,122+i,151+i)', 'seg(f,122.0+i,151.0+i)')
           s = s.replace('42+(i%3)*8,a*.3,splashA', '42.0+(i%3)*8,a*.3,splashA')
+          # Expensive software-raster blur was the render bottleneck. Keep shadows/highlights,
+          # but remove only Gaussian mask filters; motion geometry, layering and color remain intact.
+          s = re.sub(r'\.\.maskFilter=(?:const )?ui\.MaskFilter\.blur\(BlurStyle\.normal,[^)]+\)', '', s)
           p.write_text(s)
           PY
           dart format lib/motion_frame.dart test/render_test.dart
 
-      - name: Render Flutter/Skia frame shard
+      - name: Render Flutter Skia frame shard
         working-directory: .render/elcharros_flutter
         env:
           START_FRAME: ${{ matrix.start }}
@@ -106,14 +106,14 @@ jobs:
           test -f build/render_frames/frame_0000.png
           test -f build/render_frames/frame_0389.png
 
-      - name: Encode professional 13-second 4K visual master
+      - name: Encode professional 4K 30fps visual master
         working-directory: .render/elcharros_flutter
         run: |
           ffmpeg -y \
             -framerate 30 \
             -i build/render_frames/frame_%04d.png \
-            -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:0.30:5:5:0.0" \
-            -c:v libx264 -preset medium -crf 15 \
+            -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:0.35:5:5:0.0" \
+            -c:v libx264 -preset medium -crf 14 \
             -profile:v high -level:v 5.1 -pix_fmt yuv420p \
             -color_primaries bt709 -color_trc bt709 -colorspace bt709 \
             -movflags +faststart \
