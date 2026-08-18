@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CLICK 360 continuous receipt QA</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <style>body{margin:0;padding:12px;background:#ddd}.qaReceiptOutput{display:grid;justify-content:start}.receiptContinuousCopy{background:#fff}</style>
+</head>
+<body>
+  <main id="receiptContinuousOutput" class="qaReceiptOutput"></main>
+  <div id="app" hidden></div><div id="toast"></div><div id="modalRoot"></div><div id="printRoot"></div>
+  <script>try{Object.defineProperty(navigator,'serviceWorker',{value:{register:()=>Promise.resolve()},configurable:true})}catch{}</script>
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../vendor/lucide.min.js"></script>
+  <script src="../../p0-tenant-guard.js"></script>
+  <script src="../../v16-domain.js"></script>
+  <script src="../../v16-storage.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../p2-web-safe-flags.js"></script>
+  <script src="../../p2-restaurant-domain.js"></script>
+  <script src="../../p2-logistics-domain.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../universal-label-editor.js"></script>
+  <script src="../../printing-service.js"></script>
+  <script src="../../app.js"></script>
+  <script>
+    const requested = new URLSearchParams(location.search).get('width') || '58';
+    const widthMm = requested === '80' ? 80 : requested === 'fixed' ? 40 : 58;
+    const fixed = requested === 'fixed';
+    const sale = {
+      id:'receipt-normal-sale', when:'18/08/2026 09:30', method:'Efectivo', customer:'Cliente QA', createdBy:'Cajera QA',
+      items:[{ id:'p1', name:'Producto normal', qty:1, price:12.5, total:12.5 }, { id:'p2', name:'Segundo producto', qty:2, price:3.75, total:7.5 }],
+      subtotal:20, receiptSubtotal:20, iva:0, discount:0, total:20, received:20, tendered:20, change:0, balance:0
+    };
+    const business = { id:'qa-business', name:'Negocio QA', settings:{ ruc:'1799999999001', phone:'0990000000' } };
+    const template = {
+      paperType:fixed ? 'roll-2-40x30' : `thermal-${widthMm}`, mediaType:fixed ? 'roll' : 'receipt',
+      receiptWidthMm:widthMm, receiptHeightMm:fixed ? 30 : 170, mediaWidthMm:fixed ? 84 : widthMm,
+      mediaHeightMm:fixed ? 30 : 0, columns:fixed ? 2 : 1, rows:1, gapXmm:fixed ? 4 : 0, gapYmm:0,
+      marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, startSlot:1,
+      showLogo:false, showCustomer:true, showSeller:true, showPayment:true, showTax:true, showThanks:true,
+      showDividers:true, note:'Gracias por elegir CLICK 360',
+      blocks:['branding','document','customer','items','payment','thanks'].map((id) => ({ id, visible:true }))
+    };
+    const job = window.click360ReceiptTest.buildJob(sale, business, template, { copies:1 });
+    document.getElementById('receiptContinuousOutput').innerHTML = job.html;
+    document.documentElement.dataset.requested = requested;
+    document.documentElement.dataset.job = JSON.stringify({ media:job.media, layoutMode:job.layoutMode, mediaWidthMm:job.mediaWidthMm, mediaHeightMm:job.mediaHeightMm || null });
+    document.documentElement.dataset.ready = 'true';
+  </script>
+</body>
+</html>

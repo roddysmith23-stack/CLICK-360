@@ -26,7 +26,9 @@
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
-  const WORKER_TENANT_ACCESS_ENABLED = false;
+  const WORKER_TENANT_ACCESS_ENABLED = window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(
+    window.CLICK360_FIREBASE_CONFIG?.projectId
+  ) === true;
   const RECEIPT_FOOTER_TEXT = 'Control total de tu negocio con CLICK 360';
   const RECEIPT_DEFAULT_NOTE = 'Comprobante interno. No válido como factura electrónica.';
   const RECEIPT_WIDTH_PRESETS = Object.freeze({
@@ -671,7 +673,7 @@ function parseMoney(value) {
     const previousState = cloneState(lastPersistedState);
     lastSavePersistence = null;
     try {
-      if (!isOwnerUser()) {
+      if (!isOwnerUser() && window.click360IsModularBoundarySession?.() !== true) {
         const error = new Error('El acceso operativo para trabajadores está temporalmente pausado.');
         error.code = 'click360/permission-denied';
         throw error;
@@ -1784,11 +1786,16 @@ function parseMoney(value) {
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory'].includes(role);
+	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','seller','cashier','inventory','supervisor','admin'].includes(role);
     const permissions = window.click360User?.permissions || {};
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
-    if (routeModule && Object.keys(permissions).length) return permissions[routeModule]?.view === true;
+	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:'settings', reminders:'settings', workers:'members', printing:'settings' }[section];
+	    if (routeModule && Object.keys(permissions).length) {
+	      return permissions[routeModule]?.view === true || permissions[boundaryModule]?.read === true;
+	    }
     if (role === 'worker') return ['inventory','sell','cash','settings'].includes(section);
+	    if (role === 'seller') return ['sell','cash'].includes(section);
+	    if (role === 'supervisor') return ['inventory','sell','cash','settings','reports'].includes(section);
     if (role === 'cashier') return ['sell','cash'].includes(section);
     if (role === 'inventory') return section === 'inventory';
     return false;
@@ -2610,7 +2617,28 @@ function parseMoney(value) {
   function activityRowsHtml(events = []) {
     return events.slice(0, 100).map((event) => `<article class="activityRow" data-activity-date="${escapeHtml(String(event.createdAt || '').slice(0, 10))}" data-activity-actor="${escapeHtml(event.createdBy || '')}" data-activity-module="${escapeHtml(auditModule(event.action))}" data-activity-action="${escapeHtml(event.action || '')}"><span class="activityIcon">${icon(auditModule(event.action) === 'Caja' ? 'wallet-cards' : auditModule(event.action) === 'Inventario' ? 'package' : auditModule(event.action) === 'Trabajadores' ? 'users-round' : 'history')}</span><span><b>${escapeHtml(auditHumanText(event))}</b><small>${escapeHtml(event.when || event.createdAt || '')} · ${escapeHtml(auditModule(event.action))}</small></span></article>`).join('') || '<p class="empty">Aún no hay actividad registrada para este negocio.</p>';
   }
-  function bindActivity() {
+  async function bindActivity() {
+	  if (isOwnerUser() && typeof window.click360ListBusinessUnitAuditEvents === 'function') {
+	    try {
+	      const remoteEvents = await window.click360ListBusinessUnitAuditEvents(currentBusiness()?.id || '');
+	      const known = new Set((state.auditLogs || []).map((event) => event.id || event.eventId));
+	      const additions = remoteEvents.filter((event) => !known.has(event.id || event.eventId)).map((event) => ({
+	        ...event,
+	        id:event.id || event.eventId,
+	        createdBy:event.createdBy || event.actorName || 'Trabajador',
+	        createdAt:event.createdAt?.toDate?.().toISOString?.() || event.createdAt || '',
+	        when:event.when || event.createdAt?.toDate?.().toLocaleString?.('es-EC') || ''
+	      }));
+	      if (additions.length) {
+	        state.auditLogs.push(...additions);
+	        const events = state.auditLogs.filter((event) => event.businessId === currentBusiness()?.id).slice().reverse();
+	        const list = $('#activityList');
+	        if (list) list.innerHTML = activityRowsHtml(events);
+	      }
+	    } catch (error) {
+	      console.warn('No se pudo cargar auditoría modular:', error.code || error.message);
+	    }
+	  }
     const filter = () => {
       const date = $('#activityDate')?.value || '';
       const actor = $('#activityActor')?.value || '';
@@ -4194,10 +4222,13 @@ function parseMoney(value) {
         const paper = receiptPaperFromTemplate(template);
         const media = receiptPrintMediaSize(template);
         const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
-	        const receiptHtml = buildReceiptHtml(s, business, template);
-	        if (continuous) return receiptHtml;
-	        const totalSlots = paper.columns * paper.rows;
 	        const copies = Math.max(1, Math.min(20, Number(options.copies || 1)));
+	        const segmentedPhysicalLayout = options.segmentedPhysicalLayout === true || options.forceSheet === true;
+	        const receiptHtml = buildReceiptHtml(s, business, template);
+	        if (continuous || !segmentedPhysicalLayout) {
+	          return Array.from({ length:copies }, (_, index) => `<section class="receiptContinuousCopy" data-receipt-copy="${index + 1}" style="break-after:${index + 1 < copies ? 'page' : 'auto'};page-break-after:${index + 1 < copies ? 'always' : 'auto'};">${receiptHtml}</section>`).join('');
+	        }
+	        const totalSlots = paper.columns * paper.rows;
 	        const segments = Array.from({ length:copies }, () => receiptFlowSegments(s, business, template, paper)).flat();
 	        const leading = Math.max(0, Math.min(totalSlots - 1, Number(paper.startSlot || 1) - 1));
 	        const pageCount = Math.max(1, Math.ceil((leading + segments.length) / totalSlots));
@@ -4217,14 +4248,17 @@ function parseMoney(value) {
         const paper = receiptPaperFromTemplate(template);
         const media = receiptPrintMediaSize(template);
         const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
+	        const segmentedPhysicalLayout = options.segmentedPhysicalLayout === true;
+	        const effectiveContinuous = continuous || !segmentedPhysicalLayout;
         return {
-          html: buildReceiptPaperHtml(s, business, template, { copies:options.copies || 1 }),
-          media: receiptPrintMedia(template),
-          mediaWidthMm: media.widthMm || paper.receiptWidthMm,
-          mediaHeightMm: continuous ? undefined : media.heightMm,
-          widthMm: paper.receiptWidthMm,
-          heightMm: continuous ? undefined : paper.receiptHeightMm,
-          copiesHandled:true,
+	          html: buildReceiptPaperHtml(s, business, template, { copies:options.copies || 1, segmentedPhysicalLayout }),
+	          media: effectiveContinuous ? (paper.receiptWidthMm <= 60 ? 'receipt-58' : 'receipt-80') : receiptPrintMedia(template),
+	          mediaWidthMm: effectiveContinuous ? paper.receiptWidthMm : (media.widthMm || paper.receiptWidthMm),
+	          mediaHeightMm: effectiveContinuous ? undefined : media.heightMm,
+	          widthMm: paper.receiptWidthMm,
+	          heightMm: effectiveContinuous ? undefined : paper.receiptHeightMm,
+	          copiesHandled:true,
+	          layoutMode:effectiveContinuous ? 'continuous' : 'segmented_fixture',
           filename: options.filename || `Recibo_${String(s.id || uid('rec')).slice(-6).toUpperCase()}.pdf`
         };
       }
@@ -4647,7 +4681,7 @@ function parseMoney(value) {
 	         <form id="addWorkerForm" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:flex' : 'display:none'}; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
             <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
-            <div class="field"><label>Rol inicial</label><select id="workerRole"><option value="worker">Operador</option><option value="cashier">Caja y ventas</option><option value="inventory">Inventario</option></select></div>
+            <div class="field"><label>Rol inicial</label><select id="workerRole"><option value="admin">Administrador</option><option value="supervisor">Supervisor</option><option value="seller">Vendedor</option><option value="cashier">Cajero</option><option value="inventory">Inventario</option></select></div>
             <button class="btn primary block" type="submit">Crear invitacion segura</button>
          </form>
 
@@ -5718,7 +5752,9 @@ function parseMoney(value) {
 	    const gate = writeGateStatus();
 	    if (!gate.allowed) return { allowed: false, reason: gate.reason || 'write_gate_blocked', gate, business };
 	    if (!can('cash')) return { allowed: false, reason: 'cash_permission_denied', gate, business };
-	    if (!isOwnerUser()) return { allowed: false, reason: WORKER_TENANT_ACCESS_ENABLED ? 'cash_role_denied' : 'worker_module_paused', gate, business };
+	    if (!isOwnerUser() && window.click360CanModularAction?.('cashSessions', 'close') !== true) {
+	      return { allowed: false, reason: WORKER_TENANT_ACCESS_ENABLED ? 'cash_role_denied' : 'worker_module_paused', gate, business };
+	    }
 	    return { allowed: true, reason: 'ok', gate, business };
 	  }
 	  function recordCashCloseIssue(stage, error, details = {}) {
@@ -6372,11 +6408,11 @@ function parseMoney(value) {
           const hash = decodeActionId(button.dataset.workerDetails);
           const worker = displayedWorkers.find((item) => item.inviteHash === hash);
           if (!worker) return toast('No se encontro la ficha del trabajador.', 'err');
-          const modules = [['inventory','Inventario'],['sales','Ventas'],['cash','Caja'],['customers','Clientes'],['reports','Reportes'],['reminders','Recordatorios'],['settings','Ajustes'],['suppliers','Proveedores'],['workers','Trabajadores']];
-          const actions = ['view','create','edit','delete','approve','export','manage'];
+          const modules = [['members','Miembros'],['products','Inventario'],['sales','Ventas'],['layaways','Apartados'],['cashSessions','Caja'],['movements','Movimientos'],['auditEvents','Auditoría'],['settings','Ajustes']];
+          const actions = ['read','create','update','delete','payment','close','manage'];
 	          const workerStatus = worker.status === 'pending' ? 'Pendiente' : worker.status === 'active' ? 'Activo' : worker.status === 'revoked' ? 'Revocado' : 'Bloqueado';
-	          const actionLabels = { view: 'Ver', create: 'Crear', edit: 'Editar', delete: 'Eliminar', approve: 'Aprobar', export: 'Exportar', manage: 'Administrar' };
-	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="worker" ${worker.role === 'worker' ? 'selected' : ''}>Operador</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Caja y ventas</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
+	          const actionLabels = { read:'Ver', create:'Crear', update:'Editar', delete:'Eliminar', payment:'Registrar abono', close:'Cerrar caja', manage:'Administrar' };
+	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="admin" ${worker.role === 'admin' ? 'selected' : ''}>Administrador</option><option value="supervisor" ${worker.role === 'supervisor' ? 'selected' : ''}>Supervisor</option><option value="seller" ${['worker','seller'].includes(worker.role) ? 'selected' : ''}>Vendedor</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Cajero</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
           $('#saveWorkerPermissions').onclick = async () => {
             const permissions = {};
             $$('[data-permission-module]').forEach((input) => {
@@ -6384,7 +6420,7 @@ function parseMoney(value) {
               permissions[input.dataset.permissionModule][input.dataset.permissionAction] = input.checked;
             });
             try {
-              await window.click360UpdateWorkerPermissions(worker.uid || '', worker.inviteHash, $('#workerEditRole').value, permissions);
+              await window.click360UpdateWorkerPermissions(worker.uid || '', worker.inviteHash, $('#workerEditRole').value, permissions, worker.businessUnitId || currentBusiness()?.id || '');
               addAudit('worker_permissions_updated', { workerUid: worker.uid || '', inviteHash: worker.inviteHash, role: $('#workerEditRole').value });
               closeModal();
               await loadWorkers();
@@ -6454,7 +6490,7 @@ function parseMoney(value) {
       try {
          // 1. Write the cloud invitation before presenting it as active.
 	         if (!window.click360InviteWorkerEmail) throw new Error('La invitación en nube no está disponible.');
-	         const inviteMeta = await window.click360InviteWorkerEmail(email, name, { role });
+	         const inviteMeta = await window.click360InviteWorkerEmail(email, name, { role, businessUnitId:currentBusiness()?.id || '' });
 
          // 2. Add to local storage settings list
          state.settings ||= {};

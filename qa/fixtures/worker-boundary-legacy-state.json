@@ -1,0 +1,27 @@
+{
+  "revision": 7,
+  "activeBusinessId": "business-alpha",
+  "businesses": [
+    { "id": "business-alpha", "name": "Negocio QA Alpha", "settings": { "tax": { "enabled": true, "rate": 15 } } },
+    { "id": "business-beta", "name": "Negocio QA Beta" }
+  ],
+  "products": [
+    { "id": "product-alpha", "businessId": "business-alpha", "name": "Producto Alpha", "stock": 8, "price": 5 },
+    { "id": "product-beta", "businessId": "business-beta", "name": "Producto Beta", "stock": 99, "price": 20 }
+  ],
+  "sales": [
+    { "id": "sale-alpha", "businessId": "business-alpha", "subtotal": 5, "total": 5, "received": 5, "items": [{ "productId": "product-alpha", "name": "Producto Alpha", "qty": 1, "price": 5, "total": 5 }] }
+  ],
+  "layaways": [{ "id": "layaway-alpha", "businessId": "business-alpha", "total": 15, "paid": 5, "balance": 10, "payments": [{ "id": "payment-alpha", "amount": 5 }] }],
+  "cashSessions": [{ "id": "cash-alpha", "businessId": "business-alpha", "status": "closed", "openingAmount": 20, "countedCash": 25 }],
+  "movements": [{ "id": "movement-alpha", "businessId": "business-alpha", "type": "income", "amount": 5 }],
+  "auditLogs": [{ "id": "audit-alpha", "businessId": "business-alpha", "action": "sale_created" }],
+  "settings": {
+    "legacyDataBusinessId": "business-alpha",
+    "customers": [{ "id": "customer-alpha", "name": "Cliente QA" }],
+    "reminders": [],
+    "labelTemplates": [{ "id": "label-alpha", "businessId": "business-alpha" }],
+    "labelProfiles": [],
+    "policies": {}
+  }
+}
