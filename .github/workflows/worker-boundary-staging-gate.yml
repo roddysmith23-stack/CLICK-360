@@ -37,7 +37,7 @@ jobs:
       - name: Reject production and deploy credentials
         run: |
           test "$(node -p "require('./firebase.staging.json').hosting.site")" = "click360-staging-7620168025"
-          ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- . ':!fixtures/**' ':!vendor/**'
+          ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- . ':!fixtures/**' ':!vendor/**' ':!.github/workflows/p0-qa.yml' ':!.github/workflows/worker-boundary-staging-gate.yml'
           ! git grep -nE 'firebase deploy|gcloud run deploy' -- .github/workflows ':!.github/workflows/worker-boundary-staging-gate.yml'
 
   browser-and-print:
