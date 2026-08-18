@@ -39,7 +39,8 @@ assert.match(app, /addAudit\('worker_invited'/, 'worker invitations are audited 
 assert.match(app, /addAudit\('receipt_issued'/, 'successful receipt handoffs are audited');
 assert.match(app, /id="activityAction"/, 'activity can be filtered by action');
 assert.match(app, /function collectedInRange\(/, 'reports attribute collections by payment date');
-assert.match(app, /WORKER_TENANT_ACCESS_ENABLED = false/, 'worker operations remain honestly paused while state is monolithic');
+assert.match(app, /WORKER_TENANT_ACCESS_ENABLED = window\.CLICK360_WORKER_DATA_BOUNDARY\?\.enabledForProject/, 'worker operations are gated to the modular staging boundary');
+assert.match(firebase, /STATE_DOC = null;[\s\S]*MODULAR_GATEWAY = gateway;[\s\S]*MODULAR_MODE = true;/, 'workers never receive the monolithic state document');
 assert.match(firebase, /const FIRESTORE_SCHEMA_VERSION = '16\.2\.0'/, 'Rules-gated writes use the Firestore contract version');
 assert.match(firebase, /collection\('auditEvents'\)/, 'client emits separate audit events');
 assert.match(rules, /match \/businesses\/\{businessId\}\/auditEvents\/\{eventId\}/, 'audit event path is explicit');
