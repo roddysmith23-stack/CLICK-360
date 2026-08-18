@@ -590,6 +590,53 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    match /businesses/{businessId}/auditEvents/{eventId} {
+      allow read: if businessId != "demo-click360"
+        && ownerReadUser()
+        && request.auth.uid == businessId;
+      allow create: if businessId != "demo-click360"
+        && signedIn()
+        && (request.auth.uid == businessId || hasActiveMembership(businessId))
+        && request.resource.data.keys().hasAll([
+          "eventId", "businessId", "tenantKey", "actorUid", "actorRole", "actorName",
+          "action", "entityType", "entityId", "correlationId", "amount", "status",
+          "before", "after", "appVersion", "createdAt"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "eventId", "businessId", "tenantKey", "actorUid", "actorRole", "actorName",
+          "action", "entityType", "entityId", "correlationId", "amount", "status",
+          "before", "after", "appVersion", "createdAt"
+        ])
+        && request.resource.data.eventId == eventId
+        && request.resource.data.businessId == businessId
+        && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
+        && request.resource.data.actorUid == request.auth.uid
+        && (request.resource.data.actorRole == "owner" || request.resource.data.actorRole == "worker"
+          || request.resource.data.actorRole == "cashier" || request.resource.data.actorRole == "inventory")
+        && request.resource.data.actorName is string
+        && request.resource.data.actorName.size() <= 120
+        && request.resource.data.action is string
+        && request.resource.data.action.size() > 0
+        && request.resource.data.action.size() <= 80
+        && request.resource.data.entityType is string
+        && request.resource.data.entityType.size() <= 40
+        && request.resource.data.entityId is string
+        && request.resource.data.entityId.size() <= 100
+        && request.resource.data.correlationId is string
+        && request.resource.data.correlationId.size() > 0
+        && request.resource.data.correlationId.size() <= 100
+        && request.resource.data.amount is number
+        && request.resource.data.status is string
+        && request.resource.data.status.size() <= 40
+        && request.resource.data.before is map
+        && request.resource.data.before.keys().hasOnly(["status", "amount", "stock", "role"])
+        && request.resource.data.after is map
+        && request.resource.data.after.keys().hasOnly(["status", "amount", "stock", "role"])
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
     // Administrative operations run only through IAM-protected Admin SDK
     // tooling. Public clients can never inspect backups or audit records.
     match /adminBackups/{backupId} {

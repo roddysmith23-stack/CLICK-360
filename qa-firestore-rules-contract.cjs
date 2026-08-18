@@ -33,4 +33,9 @@ assert(rules.includes('data.status == "active"')
 assert(rules.includes('data.planCode != "pro_lifetime"'), 'malformed PRO Lifetime records cannot pass through the generic active paid branch');
 assert(rules.includes('match /adminBackups/{backupId}') && rules.includes('match /adminAuditLogs/{eventId}'), 'administrative backups and audit logs have explicit client-deny routes');
 assert(rules.includes('match /telemetryEvents/{eventId}') && rules.includes('request.resource.data.uidHash.size() == 16'), 'non-sensitive telemetry is allowlisted, bounded, and write-only');
+assert(rules.includes('match /businesses/{businessId}/auditEvents/{eventId}')
+  && rules.includes('request.resource.data.actorUid == request.auth.uid')
+  && rules.includes('request.resource.data.correlationId.size() > 0'), 'audit events are identity-bound and correlated');
+assert(rules.includes('request.resource.data.before.keys().hasOnly(["status", "amount", "stock", "role"])')
+  && rules.includes('request.resource.data.after.keys().hasOnly(["status", "amount", "stock", "role"])'), 'audit payloads cannot contain commercial snapshots');
 console.log('PASS Firestore rules P0 contract');

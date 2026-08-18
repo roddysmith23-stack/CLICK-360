@@ -9,7 +9,7 @@ const printing = read('printing-service.js');
 const index = read('index.html');
 const manifest = JSON.parse(read('manifest.webmanifest'));
 
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r20'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-stability-ops-r1'/);
 assert.match(app, /id="printOne"[\s\S]{0,120}Imprimir etiquetas/);
 assert.match(app, /id="savePdfBtn"[\s\S]{0,100}Guardar PDF/);
 assert.match(app, /\$\('#printOne'\)\.onclick = \(\) => runPrintJob\('system'\)/);
@@ -27,7 +27,7 @@ assert.match(printing, /dataset\.click360Printing = 'true'/);
 assert.match(printing, /pdf-render-blank/);
 assert.match(printing, /singleImagePdfBlob/);
 
-assert.match(index, /assets\/favicon\.png\?v=commercial-1-0-5-r20/);
+assert.match(index, /assets\/favicon\.png\?v=commercial-1-0-5-stability-ops-r1/);
 assert.match(index, /apple-touch-icon" sizes="180x180"/);
 for (const iconPath of ['assets/favicon.png', 'assets/favicon.ico', 'assets/icon-192.png', 'assets/icon-512.png', 'assets/apple-touch-icon.png']) {
   assert.equal(fs.existsSync(path.join(root, iconPath)), true, `missing PWA icon: ${iconPath}`);

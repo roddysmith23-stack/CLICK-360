@@ -13,8 +13,9 @@ const gitRefExists = (ref) => {
     return false;
   }
 };
-const base = ['origin/main', 'main'].find(gitRefExists);
-assert(base, 'main is required for the web release scope audit');
+const GOLDEN_BASE = 'dccee527fc310cd6e17c8e0c58f308c27e2338fb';
+const base = [GOLDEN_BASE, 'origin/hotfix/1.0.5-wednesday-recovery-cache'].find(gitRefExists);
+assert(base, 'the frozen WEDNESDAY_RECOVERY_1 baseline is required for the stability scope audit');
 
 let diffBase = base;
 let committed = execFileSync('git', ['diff', '--name-only', `${diffBase}...HEAD`], { cwd:root, encoding:'utf8' });
@@ -30,7 +31,6 @@ assert(changed.length > 0, 'the release must contain a reviewable web diff');
 const forbidden = [
   /^tools\/admin\//,
   /^functions\//,
-  /^firestore\.rules$/,
   /^scripts\/(?:admin-access-v16|audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs$/
 ];
 for (const file of changed) {
@@ -39,7 +39,7 @@ for (const file of changed) {
 
 const packageJson = JSON.parse(read('package.json'));
 const packageLock = JSON.parse(read('package-lock.json'));
-assert.equal(packageJson.version, '1.0.5');
+assert.equal(packageJson.version, '1.0.5-stability.1');
 assert.equal(Object.hasOwn(packageJson.dependencies || {}, 'firebase-admin'), false);
 assert.equal(Object.hasOwn(packageLock.packages[''].dependencies || {}, 'firebase-admin'), false);
 assert.equal(packageJson.devDependencies?.playwright, '1.62.0');
@@ -50,19 +50,20 @@ const worker = read('service-worker.js');
 const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
-assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r20'/);
+assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5-stability\.1'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-stability-ops-r1'/);
 assert.match(index, /By AIIA INTELLIGENCE TECHNOLOGIES/, 'startup splash shows the required AIIA footer');
-assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r20/, 'startup splash uses the HD logo instead of the low-resolution favicon');
-assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r20"/, 'startup HD logo is preloaded before scripts');
+assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-stability-ops-r1/, 'startup splash uses the HD logo instead of the low-resolution favicon');
+assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-stability-ops-r1"/, 'startup HD logo is preloaded before scripts');
 assert.match(index, /click360SplashProgress/, 'startup splash keeps a loading progress bar while the app prepares');
 assert.doesNotMatch(index, /click-360\.web\.app<\/span>/, 'startup splash must not show the public URL as footer copy');
 assert.match(app, /function markAppReady/, 'app explicitly marks the splash ready after real UI render');
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r20/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r20/);
-assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r20/);
-assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r20/);
-assert.match(worker, /click360-commercial-1-0-5-r20/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-stability-ops-r1/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-stability-ops-r1/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-stability-ops-r1/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-stability-ops-r1/);
+assert.match(worker, /click360-commercial-1-0-5-stability-ops-r1/);
+assert.match(read('firestore.rules'), /match \/businesses\/\{businessId\}\/auditEvents\/\{eventId\}[\s\S]*allow update, delete: if false;/, 'candidate Rules change is limited to append-only tenant audit events');
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
@@ -82,7 +83,7 @@ assert.match(app, /universalDocument,/);
 assert.match(app, /renderer:'universal-mm-v2'/);
 assert.match(app, /function shouldPromptInitialBusinessSetup/, 'onboarding is gated by real first-run detection');
 assert.match(app, /businessMaterialRecordCount/, 'existing products, sales, cash, customers, labels and modules suppress first-run setup');
-assert.match(app, /routes\.push\('finance','workers','reminders','reports','crm','more'\)/, 'reports and customers are first-class navigation items');
+assert.match(app, /routes\.push\('finance','workers','activity','reminders','reports','crm','more'\)/, 'activity, reports and customers are first-class navigation items');
 assert.match(app, /logisticsModuleEnabled\(\)\) routes\.push\('logistics'\)/, 'logistics appears in primary nav only for configured logistics businesses');
 assert.doesNotMatch(app, /data-more="logistics"/, 'logistics is not duplicated in More');
 assert.doesNotMatch(app, /data-more="finance"/, 'finance is not duplicated in More');
@@ -143,7 +144,7 @@ assert.match(printing, /pdf-render-blank/, 'PDF export rejects blank rendered ou
 assert.match(printing, /dataset\.click360Printing = 'true'/, 'system print exposes a ready state before invoking the native dialog');
 assert.match(printing, /element\.dataset\.printReady = 'true'/, 'system print portal is explicitly marked ready');
 assert.match(printing, /system-print-dialog-failed/, 'native dialog failures return an actionable code');
-assert.match(index, /rel="icon" type="image\/png" sizes="32x32" href="assets\/favicon\.png\?v=commercial-1-0-5-r20"/, 'browser receives the real 32 px favicon');
+assert.match(index, /rel="icon" type="image\/png" sizes="32x32" href="assets\/favicon\.png\?v=commercial-1-0-5-stability-ops-r1"/, 'browser receives the real 32 px favicon');
 assert.match(index, /rel="apple-touch-icon" sizes="180x180"/, 'iOS receives an explicit home-screen icon');
 for (const iconPath of ['assets/favicon.png', 'assets/favicon.ico', 'assets/icon-192.png', 'assets/icon-512.png', 'assets/apple-touch-icon.png']) {
   assert.equal(fs.existsSync(path.join(root, iconPath)), true, `missing PWA icon: ${iconPath}`);

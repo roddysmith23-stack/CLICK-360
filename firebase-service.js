@@ -12,7 +12,8 @@
   }
 
   // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'commercial-1-0-5-r20-recovery1';
+			  const APP_ASSET_VERSION = 'commercial-1-0-5-stability-ops-r1';
+	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -606,7 +607,7 @@
 		      uidHash: String(uidHash || '').slice(0, 16),
 		      businessId,
 		      tenantKey,
-		      appVersion: '1.0.5',
+		      appVersion: FIRESTORE_SCHEMA_VERSION,
 		      requestId: String(details.requestId || window.crypto?.randomUUID?.() || eventRef.id).slice(0, 64),
 		      mode: String(details.mode || window.click360AccessState?.mode || syncStatus.status || '').slice(0, 40),
 		      errorCode: String(details.errorCode || '').replace(/[^a-z0-9_./-]/gi, '').slice(0, 80),
@@ -1133,7 +1134,7 @@
 	          policies: settings.policies && typeof settings.policies === 'object' ? settings.policies : {},
 	          legal: settings.legal && typeof settings.legal === 'object' ? settings.legal : {},
               legacyDataBusinessId: String(settings.legacyDataBusinessId || ''),
-	          appVersion: '1.0.5'
+	          appVersion: '1.0.5-stability.1'
 	        },
 	        updatedAtMs: Number(state.updatedAtMs || Date.now()),
 	        updatedAt: state.updatedAt || new Date().toISOString()
@@ -1696,7 +1697,7 @@
       status: 'pending',
       notes: String(selection.notes || '').slice(0, 500),
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-	      appVersion: '1.0.5'
+	      appVersion: FIRESTORE_SCHEMA_VERSION
 	    });
 	    recordTelemetry('plan_request', { requestId: requestRef.id, mode: plan }).catch(() => {});
 	    return { requestId: requestRef.id, requestCode, plan, period, price, currency: 'USD' };
@@ -1721,10 +1722,47 @@
         locale: String(acceptance.locale || navigator.language || 'es-EC').slice(0, 20),
         source: String(acceptance.source || 'app').slice(0, 40),
         acceptedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        appVersion: '1.0.5'
+	        appVersion: FIRESTORE_SCHEMA_VERSION
       });
     });
     return { acceptanceId, termsVersion };
+  };
+
+  function safeAuditDelta(value = {}) {
+    const source = value && typeof value === 'object' ? value : {};
+    const result = {};
+    if (source.status != null) result.status = String(source.status).slice(0, 40);
+    if (Number.isFinite(Number(source.amount))) result.amount = Number(source.amount);
+    if (Number.isFinite(Number(source.stock))) result.stock = Number(source.stock);
+    if (source.role != null) result.role = String(source.role).slice(0, 40);
+    return result;
+  }
+  window.click360AppendAuditEvent = async function(event = {}) {
+    const user = auth.currentUser;
+    const context = ACTIVE_CONTEXT;
+    if (!user || !context || context.businessId === 'demo-click360') throw new Error('Sesion de auditoria no verificada.');
+    const eventId = String(event.id || db.collection('_').doc().id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
+    const details = event.details && typeof event.details === 'object' ? event.details : {};
+    const payload = {
+      eventId,
+      businessId: context.businessId,
+      tenantKey: context.tenantKey,
+      actorUid: user.uid,
+      actorRole: String(event.actorRole || window.click360User?.role || 'owner').slice(0, 40),
+      actorName: String(event.createdBy || user.displayName || 'Usuario').slice(0, 120),
+      action: String(event.action || '').replace(/[^a-z0-9_:-]/gi, '').slice(0, 80),
+      entityType: String(event.entityType || details.entityType || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 40),
+      entityId: String(event.entityId || details.entityId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 100),
+      correlationId: String(event.correlationId || details.correlationId || details.operationId || eventId).replace(/[^a-zA-Z0-9_:-]/g, '').slice(0, 100),
+      amount: Number.isFinite(Number(details.amount ?? details.total)) ? Number(details.amount ?? details.total) : 0,
+      status: String(details.status || '').slice(0, 40),
+      before: safeAuditDelta(details.before),
+      after: safeAuditDelta(details.after),
+      appVersion: FIRESTORE_SCHEMA_VERSION,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+    await db.collection('businesses').doc(context.businessId).collection('auditEvents').doc(eventId).set(payload);
+    return { eventId };
   };
 
   window.click360DebugAuth = function() {
@@ -1762,7 +1800,7 @@
 	      singleUse: true,
 	      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
 	      createdBy: ownerId,
-	      appVersion: '1.0.5'
+		      appVersion: FIRESTORE_SCHEMA_VERSION
 	    });
 	    batch.set(secret, {
 	      inviteHash,
@@ -2316,7 +2354,7 @@
 	      gate.innerHTML = `
 	        <div class="c360-gate-shell">
 	          <section class="c360-gate-hero" aria-label="CLICK 360">
-		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>1.0.5</small></div>
+		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>1.0.5-stability.1</small></div>
 	            <h1>Todo tu negocio en una sola aplicación</h1>
 	            <p>Controla inventario, ventas, caja, clientes y productos desde tu celular, de forma sencilla.</p>
 	            <p class="c360-gate-promise">Menos papeles. Menos confusión. Más control.</p>

@@ -270,13 +270,57 @@
   }
 
   function layawayStatus(layaway = {}, nowMs = Date.now()) {
-    if (['cancelled', 'refunded', 'disputed', 'picked_up'].includes(layaway.status)) return layaway.status;
+    if (['cancelled', 'refunded', 'disputed', 'picked_up', 'ready_for_pickup'].includes(layaway.status)) return layaway.status;
     const total = Math.max(0, Number(layaway.total) || 0);
     const paid = Math.max(0, Number(layaway.paid ?? layaway.received) || 0);
     if (paid >= total && total > 0) return layaway.pickedUpAt ? 'picked_up' : 'paid';
     const dueAt = timestampMs(layaway.pickupDueAt || layaway.dueAt || layaway.dueDate);
     if (dueAt && nowMs > dueAt) return 'expired';
     return paid > 0 ? 'partially_paid' : 'active';
+  }
+
+  function layawayPaymentDecision(layaway = {}, amountValue = 0, methodValue = 'Efectivo') {
+    const status = layawayStatus(layaway);
+    const balance = roundMoney(Math.max(0, Number(layaway.balance ?? (Number(layaway.total || 0) - Number(layaway.paid || 0))) || 0));
+    const amount = roundMoney(amountValue);
+    const method = String(methodValue || '').trim();
+    if (['cancelled', 'refunded', 'picked_up'].includes(status)) return { allowed:false, reason:`layaway_${status}`, balance, amount, method };
+    if (!Number.isFinite(amount) || amount <= 0) return { allowed:false, reason:'invalid_amount', balance, amount, method };
+    if (amount > balance) return { allowed:false, reason:'amount_exceeds_balance', balance, amount, method };
+    if (!['Efectivo', 'Tarjeta', 'Transferencia'].includes(method)) return { allowed:false, reason:'invalid_payment_method', balance, amount, method };
+    return { allowed:true, reason:'ok', balance, amount, method, nextBalance:roundMoney(balance - amount) };
+  }
+
+  function layawayTransitionDecision(layaway = {}, nextStatus = '') {
+    const current = layawayStatus(layaway);
+    const balance = roundMoney(Math.max(0, Number(layaway.balance ?? (Number(layaway.total || 0) - Number(layaway.paid || 0))) || 0));
+    const transitions = {
+      paid: new Set(['ready_for_pickup', 'picked_up']),
+      ready_for_pickup: new Set(['picked_up'])
+    };
+    if (balance > 0) return { allowed:false, reason:'balance_pending', current, nextStatus, balance };
+    if (!transitions[current]?.has(nextStatus)) return { allowed:false, reason:'invalid_transition', current, nextStatus, balance };
+    return { allowed:true, reason:'ok', current, nextStatus, balance };
+  }
+
+  function linkedMovementClosureDecision(movements = [], isClosed = () => false) {
+    const blocked = (Array.isArray(movements) ? movements : [])
+      .filter((movement) => movement?.status !== 'cancelled' && isClosed(movement?.date, movement))
+      .map((movement) => ({ id:String(movement.id || ''), date:String(movement.date || ''), cashSessionId:String(movement.cashSessionId || '') }));
+    return { allowed:blocked.length === 0, reason:blocked.length ? 'linked_closed_cash_session' : 'ok', blocked };
+  }
+
+  function operationAlreadyApplied(state = {}, operationId = '') {
+    const id = String(operationId || '');
+    if (!id) return false;
+    return (Array.isArray(state.operationLedger) && state.operationLedger.some((entry) => entry?.operationId === id))
+      || (Array.isArray(state.movements) && state.movements.some((entry) => entry?.operationId === id))
+      || (Array.isArray(state.auditLogs) && state.auditLogs.some((entry) => entry?.details?.operationId === id));
+  }
+
+  function cashAmountForPayment(amountValue, methodValue = '') {
+    const method = String(methodValue || '').trim();
+    return method === 'Efectivo' ? roundMoney(Math.max(0, Number(amountValue) || 0)) : 0;
   }
 
   function formatBusinessDate(value, locale = 'es-EC', timeZone = 'America/Guayaquil', includeTime = true) {
@@ -326,6 +370,11 @@
     taxLegend,
     normalizePhone,
     layawayStatus,
+    layawayPaymentDecision,
+    layawayTransitionDecision,
+    linkedMovementClosureDecision,
+    operationAlreadyApplied,
+    cashAmountForPayment,
     formatBusinessDate,
     sha256,
     randomToken
