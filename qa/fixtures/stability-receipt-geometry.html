@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CLICK 360 receipt geometry QA</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <style>body{margin:0;padding:20px;background:#ddd}.qaReceiptOutput{display:grid;gap:18px;justify-content:start}.receiptPaperSheet{margin:0!important}</style>
+</head>
+<body>
+  <main id="receiptGeometryOutput" class="qaReceiptOutput"></main>
+  <div id="app" hidden></div><div id="toast"></div><div id="modalRoot"></div><div id="printRoot"></div>
+  <script>try{Object.defineProperty(navigator,'serviceWorker',{value:{register:()=>Promise.resolve()},configurable:true})}catch{}</script>
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../vendor/lucide.min.js"></script>
+  <script src="../../p0-tenant-guard.js"></script>
+  <script src="../../v16-domain.js"></script>
+  <script src="../../v16-storage.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../p2-web-safe-flags.js"></script>
+  <script src="../../p2-restaurant-domain.js"></script>
+  <script src="../../p2-logistics-domain.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../universal-label-editor.js"></script>
+  <script src="../../printing-service.js"></script>
+  <script src="../../app.js"></script>
+  <script>
+    const sale = {
+      id:'receipt-physical-regression', when:'17/08/2026 18:45', method:'Efectivo',
+      customer:'Cliente QA', customerCedula:'0999999999', customerPhone:'0990000000', createdBy:'Cajera QA',
+      items:[
+        { id:'p1', name:'Producto de prueba con nombre extenso uno', qty:2, price:12.5, total:25 },
+        { id:'p2', name:'Segundo producto para comprobar columnas', qty:1, price:18, total:18 },
+        { id:'p3', name:'Tercer producto sin truncamiento silencioso', qty:3, price:4, total:12 },
+        { id:'p4', name:'Cuarto producto de fixture físico', qty:1, price:10, total:10 }
+      ],
+      subtotal:65, receiptSubtotal:65, iva:0, discount:0, total:65, received:65, tendered:70, change:5, balance:0
+    };
+    const business = { id:'qa-business', name:'Negocio QA', settings:{ ruc:'1799999999001', phone:'0990000000', address:'Dirección sintética de pruebas' } };
+    const template = {
+      paperType:'roll-2-40x30', mediaType:'roll', receiptWidthMm:40, receiptHeightMm:30,
+      mediaWidthMm:84, mediaHeightMm:30, columns:2, rows:1, gapXmm:4, gapYmm:0,
+      marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, startSlot:2,
+      contentRotation:0, showLogo:false, showCustomer:true, showSeller:true, showPayment:true,
+      showTax:true, showThanks:true, showDividers:true, note:'Gracias por elegir CLICK 360',
+      blocks:['branding','document','customer','items','payment','thanks'].map((id) => ({ id, visible:true }))
+    };
+    const api = window.click360ReceiptTest;
+    if (!api) throw new Error('Receipt test API unavailable');
+    document.getElementById('receiptGeometryOutput').innerHTML = api.buildPaperHtml(sale, business, template, { copies:2, preview:true });
+    document.documentElement.dataset.ready = 'true';
+  </script>
+</body>
+</html>

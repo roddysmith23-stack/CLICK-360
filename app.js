@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r33';
-  const APP_RELEASE_VERSION = '1.0.5';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r34-workers';
+  const APP_RELEASE_VERSION = '1.0.5-r34-workers.1';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -26,7 +26,7 @@
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
-  const WORKER_TENANT_ACCESS_ENABLED = true;
+  const WORKER_TENANT_ACCESS_ENABLED = false;
   const RECEIPT_FOOTER_TEXT = 'Control total de tu negocio con CLICK 360';
   const RECEIPT_DEFAULT_NOTE = 'Comprobante interno. No válido como factura electrónica.';
   const RECEIPT_WIDTH_PRESETS = Object.freeze({
@@ -1300,6 +1300,7 @@ function parseMoney(value) {
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     out.invoices ||= [];
     out.auditLogs ||= [];
+    out.operationLedger ||= [];
     out.deletedProducts ||= [];
     out.layaways ||= [];
     out.cashSessions ||= [];
@@ -1423,6 +1424,7 @@ function parseMoney(value) {
       invoices:[],
       dailyReports:[],
       auditLogs:[],
+      operationLedger:[],
       deletedProducts:[],
       layaways:[],
       cashSessions:[],
@@ -1443,7 +1445,7 @@ function parseMoney(value) {
 
   function addAudit(action, details={}) {
     state.auditLogs ||= [];
-    state.auditLogs.push({
+    const event = {
       id: uid('audit'),
       action,
       businessId: currentBusiness()?.id || state.activeBusinessId || 'biz_main',
@@ -1452,8 +1454,17 @@ function parseMoney(value) {
       createdBy: authUser().name || 'Sistema',
       createdAt: new Date().toISOString(),
       when: nowLabel(),
+      actorRole: authUser().role || 'owner',
+      correlationId: String(details.correlationId || details.operationId || ''),
+      entityType: String(details.entityType || ''),
+      entityId: String(details.entityId || details.saleId || details.layawayId || details.productId || ''),
       details
+    };
+    state.auditLogs.push(event);
+    window.click360AppendAuditEvent?.(event).catch((error) => {
+      console.warn('No se pudo confirmar el evento de auditoría append-only:', error?.code || error?.message || error);
     });
+    return event;
   }
 
   window.click360ReloadState = () => {
@@ -1980,17 +1991,17 @@ function parseMoney(value) {
 	    </div>${bottomNav(active)}<button type="button" id="floatingCalcBtn" class="floatingCalcBtn" aria-label="Abrir calculadora" title="Calculadora">${icon('calculator')}</button><div id="modalRoot"></div><div id="printRoot" class="printSheet"></div></div>`;
   }
 	  function primaryRouteKeys() {
-	    const routes = ['home','inventory','sell','cash'];
+	    const routes = ['home','inventory','sell','cash','debtors'];
 	    if (restaurantModuleEnabled()) routes.push('tables','kitchen','bar');
 	    if (logisticsModuleEnabled()) routes.push('logistics');
-	    routes.push('finance','workers','reminders','reports','crm','more');
+	    routes.push('finance','workers','activity','reminders','reports','crm','more');
 	    return routes;
 	  }
 	  function allowedRoutes(){
 	    const r=currentUser()?.role;
-	    if(r==='cashier') return ['home','sell','cash', ...(restaurantModuleEnabled() ? ['tables','bar'] : []), 'more'];
+	    if(r==='cashier') return ['home','sell','cash','debtors', ...(restaurantModuleEnabled() ? ['tables','bar'] : []), 'more'];
 	    if(r==='inventory') return ['home','inventory','reminders','more'];
-	    if(r==='worker') return ['home','inventory','sell','cash', ...(restaurantModuleEnabled() ? ['tables','kitchen','bar'] : []), 'reminders','more'];
+	    if(r==='worker') return ['home','inventory','sell','cash','debtors', ...(restaurantModuleEnabled() ? ['tables','kitchen','bar'] : []), 'reminders','more'];
 	    return primaryRouteKeys();
 	  }
   function navButtons(active, side=false) {
@@ -1998,7 +2009,7 @@ function parseMoney(value) {
       home:['home', 'Inicio'], inventory:['package', 'Inventario'], sell:['shopping-cart', 'Vender'], cash:['credit-card', 'Caja'],
       tables:['armchair', 'Mesas'], kitchen:['chef-hat', 'Cocina'], bar:['wine', 'Barra'], finance:['wallet-cards', 'Finanzas'],
       logistics:['truck', 'Rutas'], workers:['users-round', 'Trabajadores'], reminders:['alarm-clock', 'Recordatorios'],
-      reports:['chart-no-axes-combined', 'Reportes'], crm:['contact-round', 'Clientes'], more:['menu', 'Más']
+	      reports:['chart-no-axes-combined', 'Reportes'], crm:['contact-round', 'Clientes'], debtors:['hand-coins', 'Apartados'], activity:['history', 'Actividad'], more:['menu', 'Más']
     };
     const compactLabels = { inventory:'Invent.', workers:'Equipo', reminders:'Agenda', reports:'Reportes', logistics:'Rutas', finance:'Finanzas' };
     const items = allowedRoutes().map((key) => [key, icon(iconMap[key]?.[0] || 'circle'), iconMap[key]?.[1] || key]);
@@ -2060,7 +2071,7 @@ function parseMoney(value) {
 	      stopScanner(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
+	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2205,7 +2216,7 @@ function parseMoney(value) {
         <button class="btn primary" onclick="window.click360Route('home')">Ir al Inicio</button>
       </div>`;
     }
-	    return `<div class="pageHead"><div><h1>Vender</h1><p>Escanea QR o ingresa el código.</p></div><div class="toolbar"><button type="button" class="iconBtn" id="calculatorSellBtn" title="Calculadora" aria-label="Abrir calculadora">${icon('calculator')}</button></div></div>
+	    return `<div class="pageHead"><div><h1>Vender</h1><p>Escanea QR o ingresa el código.</p></div><div class="toolbar"><button type="button" class="btn silver" data-route="debtors">${icon('hand-coins')} Apartados</button><button type="button" class="iconBtn" id="calculatorSellBtn" title="Calculadora" aria-label="Abrir calculadora">${icon('calculator')}</button></div></div>
       <section class="sellWrap">
         <div class="card scanBox">
           <div class="scanRows">
@@ -2233,6 +2244,7 @@ function parseMoney(value) {
             <div class="field"><label>Cédula/RUC del Cliente</label><input id="customerCedula" placeholder="Ej. 1712345678" /></div>
             <div class="field"><label id="lblCustomerPhone">Teléfono (WhatsApp)</label><input id="customerPhone" placeholder="Ej. 593969399562" /></div>
             <div class="field" id="layawayDueDateField" style="display:none;"><label>Fecha Límite de Retiro</label><input type="date" id="layawayDueDate" /></div>
+            <div class="field" id="layawayInitialMethodField" style="display:none;"><label>Método del abono inicial</label><select id="layawayInitialMethod"><option value="Efectivo">Efectivo</option><option value="Tarjeta">Tarjeta</option><option value="Transferencia">Transferencia</option></select></div>
             <div class="field full" id="layawayTermsField" style="display:none;"><details class="termsDetails"><summary>Leer terminos del apartado</summary><p>${escapeHtml(layawayTermsText()).replace(/\n/g, '<br>')}</p><small>Estas politicas pertenecen al negocio. CLICK 360 proporciona herramientas de gestion, no asesoria legal.</small></details><label class="consentCheck"><input type="checkbox" id="layawayTermsAccepted"><span>El cliente conoce y acepta estos terminos.</span></label></div>
           </div>
           <div class="cartSummary" style="margin-bottom:10px; font-size:13px; color:var(--muted); text-align:right;">
@@ -2352,6 +2364,15 @@ function parseMoney(value) {
   }
   function labelKind(k){ return ({apertura:'Apertura',ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
 
+  function salePayments(sale = {}) {
+    if (Array.isArray(sale.payments) && sale.payments.length) return sale.payments;
+    return Number(sale.received || 0) > 0 ? [{ amount:Number(sale.received || 0), date:sale.date, method:sale.method }] : [];
+  }
+  function collectedInRange(sales = [], from = '', to = '') {
+    return sales.filter((sale) => sale.status !== 'cancelled').flatMap(salePayments)
+      .filter((payment) => String(payment.date || '').slice(0, 10) >= from && String(payment.date || '').slice(0, 10) <= to)
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  }
   function buildChartHtml(sales) {
      const last7Days = [];
      for(let i=6; i>=0; i--) {
@@ -2361,11 +2382,10 @@ function parseMoney(value) {
      }
      const salesByDay = {};
      last7Days.forEach(d => salesByDay[d] = 0);
-     sales.filter(s=>s.status!=='cancelled').forEach(s => {
-       if (salesByDay[s.date] !== undefined) {
-	       salesByDay[s.date] += collectedAmount(s);
-       }
-     });
+	     sales.filter(s=>s.status!=='cancelled').flatMap(salePayments).forEach((payment) => {
+	       const date = String(payment.date || '').slice(0, 10);
+	       if (salesByDay[date] !== undefined) salesByDay[date] += Number(payment.amount || 0);
+	     });
 
      const vals = last7Days.map(d => salesByDay[d]);
      const max = Math.max(...vals, 1);
@@ -2451,7 +2471,7 @@ function parseMoney(value) {
 	    const validSales = sales.filter(s => s.status !== 'cancelled');
 	    const tickets=validSales.length;
 	    const soldTotal=validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal=validSales.reduce((a,s)=>a+collectedAmount(s),0);
+	    const collectedTotal=collectedInRange(allSales, state.reportsFrom, state.reportsTo);
 	    const pendingTotal=validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
 	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
@@ -2467,7 +2487,7 @@ function parseMoney(value) {
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
       </div>
 	      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText">${fmt(soldTotal)}</strong></div><div class="card kpi"><small>Cobrado</small><strong class="goldText">${fmt(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${fmt(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div></section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Crecimiento</h3>${buildChartHtml(sales)}</section>
+	      <section class="card sectionCard" style="margin-top:14px"><h3>Cobros por fecha real</h3>${buildChartHtml(allSales)}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
         ${sales.slice().reverse().map(s=>`
@@ -2493,55 +2513,115 @@ function parseMoney(value) {
   }
 
   function debtorsView() {
-    const pendings = salesForBiz().filter(s=>s.status==='layaway' || s.status==='pending_payment');
-    const layaways = (state.layaways || []).filter((item) => item.businessId === currentBusiness().id && !['cancelled','refunded','picked_up'].includes(item.status));
-    const totalPending = pendings.reduce((a,s)=>a+(s.balance||0),0);
-    return `<div class="pageHead"><div><h1>Por Cobrar</h1><p>Apartados y deudas pendientes.</p></div></div>
-      <section class="grid cashGrid"><div class="card kpi"><small>Saldo en la calle</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Cuentas activas</small><strong>${pendings.length}</strong></div></section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Listado de Pendientes</h3>
-        ${pendings.slice().reverse().map(s=>`
-        <div class="movement" style="flex-direction:column; gap:8px;">
-          <div style="display:flex; justify-content:space-between; width:100%;">
-             <span>${escapeHtml(s.customer || 'Cliente sin nombre')} <br>
-               <small>${escapeHtml(s.when)} · ${Math.floor((new Date()-new Date(s.date))/(1000*60*60*24))} días transcurridos</small><br>
-               <span class="badge ${s.status==='layaway'?'gold':'danger'}">${s.status==='layaway'?'Apartado':'Pendiente'}</span>
-             </span>
-             <div style="text-align:right;">
-                <b class="neg">${fmt(s.balance)}</b><br>
-                <small>de ${fmt(s.total)}</small>
-             </div>
-          </div>
-          <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
-            ${s.customerPhone ? `
-            <button class="btn" style="min-height:32px; padding:6px 12px; font-size:12px; border:1px solid #25D366; color:#25D366; background:transparent;" onclick="window.sendWhatsAppReminder('${actionId(s.id)}')">
-               💬 Recordatorio
-            </button>` : ''}
-            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
-               Ticket
-            </button>
-            <button class="btn primary" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.payLayaway('${actionId(s.id)}')">
-               Abonar
-            </button>
-          </div>
-        </div>`).join('') || '<p class="empty">No hay apartados ni deudas pendientes.</p>'}
-      </section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Retiros de apartados</h3>${layaways.map((layaway) => { const status = window.CLICK360_V16_DOMAIN?.layawayStatus(layaway) || layaway.status; return `<div class="movement"><span><b>${escapeHtml(layaway.customerSnapshot?.name || 'Cliente')}</b><br><small>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(layaway.pickupDueAt ? `${layaway.pickupDueAt}T12:00:00` : '', 'es-EC', businessTimeZone(), false) || layaway.pickupDueAt || 'Sin fecha')}</small><br><span class="badge gold">${escapeHtml(status)}</span></span><div class="reminderActions">${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo para retiro</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregado</button>` : ''}</div></div>`; }).join('') || '<p class="empty">No hay retiros pendientes.</p>'}</section>`;
+    const businessId = currentBusiness()?.id || '';
+    const sales = salesForBiz(businessId).filter((sale) => ['layaway', 'pending_payment', 'paid'].includes(sale.status));
+    const layawayBySale = new Map((state.layaways || []).filter((item) => item.businessId === businessId).map((item) => [item.saleId, item]));
+    const records = sales.map((sale) => {
+      const layaway = layawayBySale.get(sale.id) || { id:sale.id, saleId:sale.id, businessId, status:sale.status, total:sale.total, paid:sale.received, balance:sale.balance, payments:sale.payments || [], customerSnapshot:{ name:sale.customer, phone:sale.customerPhone }, itemsSnapshot:saleItems(sale), pickupDueAt:sale.dueDate, createdAt:sale.createdAt || sale.when };
+      return { sale, layaway, status:window.CLICK360_V16_DOMAIN?.layawayStatus(layaway) || layaway.status };
+    }).sort((left, right) => String(right.layaway.updatedAt || right.layaway.createdAt || '').localeCompare(String(left.layaway.updatedAt || left.layaway.createdAt || '')));
+    const active = records.filter((record) => !['cancelled', 'refunded', 'picked_up'].includes(record.status));
+    const totalPending = active.reduce((sum, record) => sum + Math.max(0, Number(record.sale.balance || 0)), 0);
+    const statusLabel = (status) => ({ active:'Activo', partially_paid:'Abonado', paid:'Pagado', ready_for_pickup:'Listo para retiro', picked_up:'Entregado', expired:'Vencido', cancelled:'Cancelado', pending_payment:'Pendiente' }[status] || status);
+    return `<div class="pageHead"><div><h1>Apartados</h1><p>Consulta, abona, entrega y conserva el historial.</p></div><div class="toolbar"><button class="btn primary" data-route="sell">${icon('shopping-cart')} Nuevo apartado</button></div></div>
+      <section class="grid cashGrid"><div class="card kpi"><small>Saldo pendiente</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Apartados activos</small><strong>${active.length}</strong></div></section>
+      <section class="card sectionCard layawayFilterCard"><div class="field"><label>Estado</label><select id="layawayStatusFilter"><option value="active">Activos primero</option><option value="all">Todos</option><option value="paid">Pagados</option><option value="ready_for_pickup">Listos para retiro</option><option value="picked_up">Entregados</option><option value="cancelled">Cancelados</option></select></div></section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Historial de apartados</h3><div id="layawayList">${records.map(({ sale, layaway, status }) => {
+        const items = (layaway.itemsSnapshot || saleItems(sale) || []).map((item) => `${escapeHtml(item.name || item.code || 'Producto')} × ${Number(item.qty || 1)}`).join(', ');
+        const canPay = Number(sale.balance || 0) > 0 && !['cancelled', 'picked_up', 'refunded'].includes(status);
+        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}"><div class="layawaySummary"><span><b>${escapeHtml(sale.customer || layaway.customerSnapshot?.name || 'Cliente')}</b><small>#${escapeHtml(String(sale.id || '').slice(-6).toUpperCase())} · ${escapeHtml(sale.when || layaway.createdAt || '')}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.payLayaway('${actionId(sale.id)}')">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.cancelSale('${actionId(sale.id)}')">Cancelar</button>` : ''}</div></article>`;
+      }).join('') || '<p class="empty">Aún no hay apartados.</p>'}</div></section>`;
   }
 
-  window.markLayawayStatus = function(layawayId, nextStatus) {
-	  layawayId = decodeActionId(layawayId);
-	  if (!['ready_for_pickup','picked_up'].includes(nextStatus)) return;
-	  const layaway = state.layaways?.find((item) => item.id === layawayId && item.businessId === currentBusiness().id);
-	  if (!layaway) return toast('Apartado no encontrado.', 'err');
-	  if (nextStatus === 'picked_up' && !confirm('Confirma que el cliente recibio todos los productos reservados.')) return;
-	  layaway.status = nextStatus;
-	  layaway.updatedAt = new Date().toISOString();
-	  if (nextStatus === 'picked_up') layaway.pickedUpAt = layaway.updatedAt;
-	  addAudit('layaway_status_updated', { layawayId, saleId: layaway.saleId, status: nextStatus });
-	  if (!save()) return;
-	  renderApp('debtors');
-	  toast(nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro');
+  window.viewLayawayDetails = function(saleId) {
+	  saleId = decodeActionId(saleId);
+    const sale = salesForBiz().find((item) => item.id === saleId);
+    const layaway = (state.layaways || []).find((item) => item.saleId === saleId && item.businessId === currentBusiness()?.id);
+    if (!sale) return toast('Apartado no encontrado.', 'err');
+    const payments = sale.payments || layaway?.payments || [];
+    showModal(`<div class="modalHeader"><div><h2>Apartado #${escapeHtml(String(sale.id).slice(-6).toUpperCase())}</h2><p class="fieldHint">Historial de pagos y entrega.</p></div><button class="closeBtn" data-close>×</button></div><div class="layawayDetail"><p><b>Cliente:</b> ${escapeHtml(sale.customer || 'Sin nombre')}</p><p><b>Total:</b> ${fmt(sale.total)} · <b>Abonado:</b> ${fmt(sale.received)} · <b>Saldo:</b> ${fmt(sale.balance)}</p><h3>Pagos</h3>${payments.map((payment) => `<div class="movement"><span>${escapeHtml(payment.when || payment.date || '')}<br><small>${escapeHtml(payment.method || 'Sin método')} · ${escapeHtml(payment.createdBy || 'Sistema')}</small></span><b>${fmt(payment.amount)}</b></div>`).join('') || '<p class="empty">Sin pagos registrados.</p>'}<h3>Productos</h3>${saleItems(sale).map((item) => `<div class="movement"><span>${escapeHtml(item.name || item.code)}</span><b>× ${Number(item.qty || 1)}</b></div>`).join('')}</div>`);
+  };
+
+  window.markLayawayStatus = async function(layawayId, nextStatus) {
+		  layawayId = decodeActionId(layawayId);
+		  if (!['ready_for_pickup','picked_up'].includes(nextStatus)) return;
+		  const layaway = state.layaways?.find((item) => item.id === layawayId && item.businessId === currentBusiness().id);
+		  if (!layaway) return toast('Apartado no encontrado.', 'err');
+		  const decision = window.CLICK360_V16_DOMAIN?.layawayTransitionDecision(layaway, nextStatus);
+		  if (!decision?.allowed) return toast(decision?.reason === 'balance_pending' ? 'Completa el saldo antes de registrar la entrega.' : 'Ese cambio de estado no es válido.', 'err');
+		  if (nextStatus === 'picked_up' && !confirm('Confirma que el cliente recibio todos los productos reservados.')) return;
+		  const previousState = cloneState(state);
+		  const operationId = uid('laystatus');
+		  layaway.status = nextStatus;
+		  layaway.updatedAt = new Date().toISOString();
+		  if (nextStatus === 'picked_up') layaway.pickedUpAt = layaway.updatedAt;
+		  addAudit('layaway_status_updated', { layawayId, saleId: layaway.saleId, status: nextStatus, operationId, entityType:'layaway', entityId:layawayId });
+		  const committed = await commitCriticalMutation(previousState, 'layaway_status_updated', (next) => next.layaways?.some((item) => item.id === layawayId && item.status === nextStatus));
+		  if (!committed.ok) return;
+		  renderApp('debtors');
+		  toast(committed.pending ? 'Cambio guardado; sincronización pendiente.' : (nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro'));
 	};
+
+  function auditModule(action = '') {
+    if (/sale/.test(action)) return 'Ventas';
+    if (/layaway|payment/.test(action)) return 'Apartados';
+    if (/product|inventory|stock/.test(action)) return 'Inventario';
+    if (/cash|movement/.test(action)) return 'Caja';
+    if (/worker|invite|permission/.test(action)) return 'Trabajadores';
+    if (/receipt|print/.test(action)) return 'Comprobantes';
+    return 'Sistema';
+  }
+  function auditHumanText(event = {}) {
+    const actor = event.createdBy || 'Sistema';
+    const details = event.details || {};
+    const labels = {
+      sale_created: `${actor} registró una venta${Number.isFinite(Number(details.total)) ? ` por ${fmt(details.total)}` : ''}`,
+      sale_cancelled: `${actor} anuló la venta ${String(details.saleId || '').slice(-6).toUpperCase()}`,
+      layaway_created: `${actor} creó un apartado${Number.isFinite(Number(details.total)) ? ` por ${fmt(details.total)}` : ''}`,
+      layaway_payment_added: `${actor} recibió ${fmt(details.amount || 0)} de un apartado`,
+      layaway_status_updated: `${actor} cambió el apartado a ${details.status === 'picked_up' ? 'entregado' : 'listo para retiro'}`,
+      layaway_cancelled: `${actor} canceló un apartado`,
+      product_created: `${actor} creó un producto`,
+      product_updated: `${actor} modificó un producto`,
+      product_deleted: `${actor} eliminó un producto`,
+      worker_invited: `${actor} creó una invitación de trabajador`,
+      worker_permissions_updated: `${actor} actualizó permisos de un trabajador`,
+      worker_revoked: `${actor} revocó un acceso`,
+      cash_closed: `${actor} cerró caja`,
+      receipt_issued: `${actor} emitió un comprobante`
+    };
+    return labels[event.action] || `${actor} · ${String(event.action || 'evento').replaceAll('_', ' ')}`;
+  }
+  function activityView() {
+    const businessId = currentBusiness()?.id || '';
+    const events = (state.auditLogs || []).filter((event) => event.businessId === businessId).slice().reverse();
+    const actors = [...new Set(events.map((event) => event.createdBy).filter(Boolean))].sort();
+    const modules = [...new Set(events.map((event) => auditModule(event.action)))].sort();
+    const actions = [...new Set(events.map((event) => event.action).filter(Boolean))].sort();
+    return `<div class="pageHead"><div><h1>Actividad</h1><p>Historial operativo del negocio.</p></div></div>
+      <section class="card sectionCard activityFilters"><div class="formGrid">
+        <div class="field"><label>Fecha</label><input id="activityDate" type="date"></div>
+        <div class="field"><label>Trabajador</label><select id="activityActor"><option value="">Todos</option>${actors.map((actor) => `<option value="${escapeHtml(actor)}">${escapeHtml(actor)}</option>`).join('')}</select></div>
+        <div class="field"><label>Módulo</label><select id="activityModule"><option value="">Todos</option>${modules.map((module) => `<option value="${escapeHtml(module)}">${escapeHtml(module)}</option>`).join('')}</select></div>
+        <div class="field"><label>Acción</label><select id="activityAction"><option value="">Todas</option>${actions.map((action) => `<option value="${escapeHtml(action)}">${escapeHtml(String(action).replaceAll('_', ' '))}</option>`).join('')}</select></div>
+      </div></section>
+      <section class="card sectionCard" style="margin-top:14px"><div id="activityList" data-page-size="50">${activityRowsHtml(events)}</div></section>`;
+  }
+  function activityRowsHtml(events = []) {
+    return events.slice(0, 100).map((event) => `<article class="activityRow" data-activity-date="${escapeHtml(String(event.createdAt || '').slice(0, 10))}" data-activity-actor="${escapeHtml(event.createdBy || '')}" data-activity-module="${escapeHtml(auditModule(event.action))}" data-activity-action="${escapeHtml(event.action || '')}"><span class="activityIcon">${icon(auditModule(event.action) === 'Caja' ? 'wallet-cards' : auditModule(event.action) === 'Inventario' ? 'package' : auditModule(event.action) === 'Trabajadores' ? 'users-round' : 'history')}</span><span><b>${escapeHtml(auditHumanText(event))}</b><small>${escapeHtml(event.when || event.createdAt || '')} · ${escapeHtml(auditModule(event.action))}</small></span></article>`).join('') || '<p class="empty">Aún no hay actividad registrada para este negocio.</p>';
+  }
+  function bindActivity() {
+    const filter = () => {
+      const date = $('#activityDate')?.value || '';
+      const actor = $('#activityActor')?.value || '';
+      const module = $('#activityModule')?.value || '';
+      const action = $('#activityAction')?.value || '';
+      $$('.activityRow').forEach((row) => {
+        row.hidden = !!((date && row.dataset.activityDate !== date) || (actor && row.dataset.activityActor !== actor) || (module && row.dataset.activityModule !== module) || (action && row.dataset.activityAction !== action));
+      });
+    };
+    ['activityDate', 'activityActor', 'activityModule', 'activityAction'].forEach((id) => $('#' + id)?.addEventListener('change', filter));
+  }
 
 			  function purchaseWhatsAppUrl() {
 	    const plan = accessInfo().plan || 'base';
@@ -3777,9 +3857,11 @@ function parseMoney(value) {
 	    });
 	  }
 
-		function moreView(){
-		    const ownerTools = isOwnerUser() ? `
-		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
+			function moreView(){
+			    const ownerTools = isOwnerUser() ? `
+			      <button class="card bigRow" data-more="debtors"><span>${icon('hand-coins')} Apartados</span>${icon('chevron-right')}</button>
+			      <button class="card bigRow" data-more="activity"><span>${icon('history')} Actividad</span>${icon('chevron-right')}</button>
+			      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
 		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
@@ -3988,7 +4070,6 @@ function parseMoney(value) {
         const bizSettings = business?.settings || {};
         const paper = receiptPaperFromTemplate(template);
         const receiptWidthMm = paper.receiptWidthMm;
-        const fixedReceiptHeight = paper.mediaType === 'sheet' || paper.mediaType === 'roll' || paper.mediaType === 'custom';
         const compactReceipt = receiptWidthMm <= 60;
         const scale = clampNumber(template.textScale, 0.78, 1.25, 1);
         const baseFont = (compactReceipt ? 9.2 : 11.5) * scale;
@@ -4001,7 +4082,7 @@ function parseMoney(value) {
         const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
         const items = saleItems(s).length ? saleItems(s) : (s.items || []);
         return `
-          <div class="receiptPrintBody" style="box-sizing:border-box;font-family:monospace;color:#000;font-size:${baseFont}px;margin:0 auto;padding:${receiptPaddingMm}mm;width:${receiptWidthMm}mm;max-width:${receiptWidthMm}mm;${fixedReceiptHeight ? `height:${paper.receiptHeightMm}mm;overflow:hidden;` : ''}background:#fff;line-height:${compactReceipt ? 1.22 : 1.32};overflow-wrap:anywhere;text-align:left;"><div style="display:flex;flex-direction:column;">
+	          <div class="receiptPrintBody" style="box-sizing:border-box;font-family:monospace;color:#000;font-size:${baseFont}px;margin:0 auto;padding:${receiptPaddingMm}mm;width:${receiptWidthMm}mm;max-width:${receiptWidthMm}mm;background:#fff;line-height:${compactReceipt ? 1.22 : 1.32};overflow:visible;overflow-wrap:anywhere;text-align:left;"><div style="display:flex;flex-direction:column;">
             <section data-receipt-block="branding" style="${receiptBlockStyle(template, 'branding')}">
             ${logoUrl}
             <h2 style="font-size:${baseFont * 1.25}px;margin:0 0 2px;text-align:${textAlign};font-weight:bold;word-break:break-word;">${escapeHtml(business?.name || 'CLICK 360')}</h2>
@@ -4063,23 +4144,74 @@ function parseMoney(value) {
         const requiredHeight = paper.marginTopMm + paper.marginBottomMm + paper.rows * paper.receiptHeightMm + Math.max(0, paper.rows - 1) * paper.gapYmm;
         return { widthMm: Math.max(paper.mediaWidthMm, requiredWidth), heightMm: Math.max(paper.mediaHeightMm, requiredHeight) };
       }
+      function receiptBlockVisible(template, id) {
+        return normalizeReceiptBlocks(template.blocks).find((block) => block.id === id)?.visible !== false;
+      }
+      function chunkReceiptText(value, size = 140) {
+        const text = String(value || '').trim();
+        if (!text) return [];
+        const chunks = [];
+        let remaining = text;
+        while (remaining.length > size) {
+          let split = remaining.lastIndexOf(' ', size);
+          if (split < Math.floor(size * .55)) split = size;
+          chunks.push(remaining.slice(0, split).trim());
+          remaining = remaining.slice(split).trim();
+        }
+        if (remaining) chunks.push(remaining);
+        return chunks;
+      }
+      function receiptFlowSegments(s, business, template, paper) {
+        const biz = business?.settings || {};
+        const compact = paper.receiptWidthMm <= 60;
+        const fontSize = compact ? 7.4 : 9;
+        const ticket = String(s.id || '').slice(-6).toUpperCase();
+        const shell = (kind, title, body) => `<div class="receiptSegment" data-receipt-segment="${kind}" style="box-sizing:border-box;width:100%;height:100%;padding:${compact ? 1.5 : 2}mm;font:400 ${fontSize}px/1.22 monospace;color:#000;background:#fff;overflow:hidden;overflow-wrap:anywhere;"><header style="display:flex;justify-content:space-between;gap:3px;border-bottom:1px dashed #000;padding-bottom:2px;margin-bottom:3px;font-weight:700;"><span>${escapeHtml(title)}</span><small>#${escapeHtml(ticket)}</small></header>${body}</div>`;
+        const line = (label, value) => value ? `<div style="display:flex;justify-content:space-between;gap:3px;margin:2px 0;"><span>${escapeHtml(label)}</span><b style="text-align:right;overflow-wrap:anywhere;">${escapeHtml(value)}</b></div>` : '';
+        const segments = [];
+        if (receiptBlockVisible(template, 'branding')) {
+          const logo = safeImageSrc(biz.logoUrl);
+          segments.push(shell('branding', 'CLICK 360', `${logo && template.showLogo ? `<img src="${escapeHtml(logo)}" alt="" style="display:block;max-width:100%;height:${paper.receiptHeightMm <= 35 ? 7 : 10}mm;object-fit:contain;margin:0 auto 2px;">` : ''}<div style="text-align:center;font-weight:700;">${escapeHtml(business?.name || 'CLICK 360')}</div>${line('RUC/ID', biz.ruc)}${line('Tel.', biz.phone)}${biz.address ? `<div style="text-align:center;">${escapeHtml(biz.address)}</div>` : ''}`));
+        }
+        if (receiptBlockVisible(template, 'document')) segments.push(shell('document', 'COMPROBANTE DE VENTA', `${line('Ticket', ticket)}${line('Fecha', s.when || nowLabel())}${line('Método', s.method)}`));
+        if (receiptBlockVisible(template, 'customer')) segments.push(shell('customer', 'CLIENTE Y VENDEDOR', `${line('Cliente', s.customer || 'Consumidor final')}${line('Cédula/RUC', s.customerCedula)}${line('Teléfono', s.customerPhone)}${line('Vendedor', s.createdBy || s.user || 'Sistema')}`));
+        if (receiptBlockVisible(template, 'items')) {
+          const items = saleItems(s).length ? saleItems(s) : (s.items || []);
+          const perSegment = paper.receiptHeightMm >= 55 ? 4 : paper.receiptHeightMm >= 38 ? 2 : 1;
+          for (let index = 0; index < Math.max(1, items.length); index += perSegment) {
+            const group = items.slice(index, index + perSegment);
+            segments.push(shell('items', `DETALLE ${Math.floor(index / perSegment) + 1}`, group.map((item) => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px;border-bottom:1px dotted #aaa;padding:3px 0;"><span>${escapeHtml(item.name || item.code || 'Producto')}<small style="display:block;">${Number(item.qty || 0)} × ${fmt(item.price || 0)}</small></span><b>${fmt(receiptLineTotal(item))}</b></div>`).join('') || '<div>Sin detalle</div>'));
+          }
+        }
+        if (receiptBlockVisible(template, 'payment')) {
+          segments.push(shell('payment', 'RESUMEN DE PAGO', `${line('Subtotal', fmt(s.receiptSubtotal ?? (Number(s.subtotal || 0) + Number(s.discount || 0))))}${s.discount ? line('Descuento', `-${fmt(s.discount)}`) : ''}${s.iva ? line('IVA', fmt(s.iva)) : ''}${line('TOTAL', fmt(s.total))}${line('Pagado', fmt(collectedAmount(s)))}${Number(s.tendered || 0) > 0 ? line('Entregado', fmt(s.tendered)) : ''}${Number(s.change || 0) > 0 ? line('Cambio', fmt(s.change)) : ''}${Number(s.balance || 0) > 0 ? line('Saldo', fmt(s.balance)) : ''}`));
+          if (s.termsAccepted && s.terms) chunkReceiptText(s.terms, paper.receiptHeightMm <= 35 ? 100 : 190).forEach((part, index) => segments.push(shell('terms', `TÉRMINOS ${index + 1}`, `<p style="margin:0;">${escapeHtml(part)}</p>`)));
+        }
+        if (receiptBlockVisible(template, 'thanks')) segments.push(shell('footer', 'CIERRE', `<div style="text-align:center;">${template.showThanks ? '<b>¡Gracias por su compra!</b><br>' : ''}${escapeHtml(template.note || RECEIPT_DEFAULT_NOTE)}<hr style="border:0;border-top:1px dashed #000;margin:5px 0;"><small>${escapeHtml(RECEIPT_FOOTER_TEXT)}</small></div>`));
+        return segments;
+      }
       function buildReceiptPaperHtml(s, business = currentBusiness(), template = receiptTemplatePreferences(), options = {}) {
         const paper = receiptPaperFromTemplate(template);
         const media = receiptPrintMediaSize(template);
         const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
-        const receiptHtml = buildReceiptHtml(s, business, template);
-        if (continuous && !options.forceSheet) return receiptHtml;
-        const totalSlots = paper.columns * paper.rows;
-        const copies = Math.max(1, Math.min(totalSlots, Number(options.copies || 1)));
-        let remaining = copies;
-        const cells = [];
-        for (let slot = 1; slot <= totalSlots; slot += 1) {
-          const position = receiptCellPosition(paper, slot);
-          const printable = slot >= paper.startSlot && remaining > 0;
-          if (printable) remaining -= 1;
-          cells.push(`<div class="receiptPaperCell ${printable ? 'filled' : 'empty'}" data-slot="${slot}" style="position:absolute;left:${position.xMm}mm;top:${position.yMm}mm;width:${paper.receiptWidthMm}mm;height:${paper.receiptHeightMm}mm;box-sizing:border-box;overflow:hidden;border:${options.preview ? '1px dashed rgba(0,0,0,.28)' : '0'};background:${printable ? '#fff' : 'transparent'};">${printable ? `<div style="transform:rotate(${paper.contentRotation}deg);transform-origin:center center;width:${paper.receiptWidthMm}mm;min-height:${paper.receiptHeightMm}mm;">${receiptHtml}</div>` : (options.preview ? `<span style="display:grid;place-items:center;width:100%;height:100%;font:700 9px Arial;color:#aaa;">${slot}</span>` : '')}</div>`);
-        }
-        return `<section class="receiptPaperSheet" data-receipt-paper="${escapeHtml(paper.paperType)}" style="position:relative;width:${media.widthMm}mm;height:${media.heightMm || paper.receiptHeightMm}mm;box-sizing:border-box;background:#fff;color:#000;overflow:hidden;">${cells.join('')}</section>`;
+	        const receiptHtml = buildReceiptHtml(s, business, template);
+	        if (continuous) return receiptHtml;
+	        const totalSlots = paper.columns * paper.rows;
+	        const copies = Math.max(1, Math.min(20, Number(options.copies || 1)));
+	        const segments = Array.from({ length:copies }, () => receiptFlowSegments(s, business, template, paper)).flat();
+	        const leading = Math.max(0, Math.min(totalSlots - 1, Number(paper.startSlot || 1) - 1));
+	        const pageCount = Math.max(1, Math.ceil((leading + segments.length) / totalSlots));
+	        let segmentIndex = 0;
+	        return Array.from({ length:pageCount }, (_, pageIndex) => {
+	          const cells = [];
+	          for (let slot = 1; slot <= totalSlots; slot += 1) {
+	            const position = receiptCellPosition(paper, slot);
+	            const used = pageIndex === 0 && slot <= leading;
+	            const segment = used ? '' : segments[segmentIndex++] || '';
+	            cells.push(`<div class="receiptPaperCell ${segment ? 'filled' : used ? 'used' : 'empty'}" data-slot="${slot}" data-page="${pageIndex + 1}" style="position:absolute;left:${position.xMm}mm;top:${position.yMm}mm;width:${paper.receiptWidthMm}mm;height:${paper.receiptHeightMm}mm;box-sizing:border-box;overflow:hidden;border:${options.preview ? '1px dashed rgba(0,0,0,.28)' : '0'};background:${segment ? '#fff' : 'transparent'};">${segment ? `<div style="transform:rotate(${paper.contentRotation}deg);transform-origin:center center;width:100%;height:100%;">${segment}</div>` : (options.preview ? `<span style="display:grid;place-items:center;width:100%;height:100%;font:700 9px Arial;color:#aaa;">${used ? 'Usada' : slot}</span>` : '')}</div>`);
+	          }
+	          return `<section class="receiptPaperSheet" data-receipt-paper="${escapeHtml(paper.paperType)}" data-receipt-page="${pageIndex + 1}" style="position:relative;width:${media.widthMm}mm;height:${media.heightMm || paper.receiptHeightMm}mm;box-sizing:border-box;background:#fff;color:#000;overflow:hidden;">${cells.join('')}</section>`;
+	        }).join('');
       }
       function receiptPrintJob(s, business = currentBusiness(), template = receiptTemplatePreferences(), options = {}) {
         const paper = receiptPaperFromTemplate(template);
@@ -4099,7 +4231,11 @@ function parseMoney(value) {
       async function printReceiptWithFallback(s, business = currentBusiness(), template = receiptTemplatePreferences(), providerId = 'system') {
         const job = receiptPrintJob(s, business, template);
         const result = await handoffPrint(job, providerId);
-        if (result) return result;
+        if (result) {
+          addAudit('receipt_issued', { saleId:s.id, entityType:'sale', entityId:s.id, status:result.status || 'handed_off' });
+          save();
+          return result;
+        }
         if (providerId !== 'pdf') {
           toast('No se pudo abrir el diálogo de impresión. Usa Guardar PDF solo si quieres un archivo.', 'err');
         }
@@ -4632,7 +4768,9 @@ function parseMoney(value) {
     if(r==='more') bindMore();
     if(r==='backup') bindBackup();
     if(r==='settings') bindSettings();
-    if(r==='workers') bindWorkers();
+	    if(r==='workers') bindWorkers();
+	    if(r==='activity') bindActivity();
+	    if(r==='debtors') bindDebtors();
     if(r==='reports') bindReports();
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
@@ -4645,6 +4783,17 @@ function parseMoney(value) {
 	    if(r==='access') bindAccess();
 	    if(r==='printing') bindPrinting();
 	  }
+  function bindDebtors() {
+    const select = $('#layawayStatusFilter');
+    const apply = () => {
+      const value = select?.value || 'active';
+      $$('.layawayRow').forEach((row) => {
+        row.hidden = value === 'active' ? row.dataset.layawayActive !== 'true' : value !== 'all' && row.dataset.layawayStatus !== value;
+      });
+    };
+    select?.addEventListener('change', apply);
+    apply();
+  }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
     $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>x.name.toLowerCase().includes(q)||x.code.toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
@@ -4769,17 +4918,10 @@ function parseMoney(value) {
     $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit && p.businessId===currentBusiness()?.id)));
     $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
-    $$('[data-quick-print]').forEach(b=>b.onclick=()=>{
-      try {
-        const biz=currentBusiness();
-        if(!biz) return toast('Selecciona un negocio activo primero.','err');
-        const product=state.products.find(p=>p.id===b.dataset.quickPrint && p.businessId===biz?.id);
-        if(!product) return toast('Producto no encontrado.','err');
-        const templates=(state.settings?.labelTemplates||[]).filter(t=>t.businessId===biz.id||((!t.businessId)&&state.settings?.legacyDataBusinessId===biz.id));
-        const tpl=templates.find(t=>t.isDefault)||templates[0]||null;
-        if(!tpl) { openLabelModal(product); return toast('Configura y guarda una plantilla primero. Usa el botón QR dorado.','ok'); }
-        openLabelModal(product, tpl.id, { directPrint: true });
-      } catch(e) { console.warn('quick-print error:', e); toast('No se pudo imprimir.','err'); }
+    $$('[data-quick-print]').forEach((button) => {
+      button.onclick = () => runQuickLabelPrintFlow({
+        product:state.products.find((product) => product.id === button.dataset.quickPrint && product.businessId === currentBusiness()?.id)
+      });
     });
   }
 	  function openProductModal(product=null, initialCode=''){
@@ -4855,6 +4997,7 @@ function parseMoney(value) {
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
+	      const previousProductStock = product ? Number(product.qty || 0) : null;
 	      let savedProduct = product;
 	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
 	      else { savedProduct = {id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
@@ -4865,6 +5008,13 @@ function parseMoney(value) {
 	        if (ingredients || steps) Object.assign(existingRecipe || (state.restaurantRecipes.push({ id:uid('recipe'), businessId:b.id, productId:savedProduct.id, createdAt:new Date(updatedAtMs).toISOString() }), state.restaurantRecipes.at(-1)), { name:savedProduct.name, productName:savedProduct.name, ingredients, steps, updatedAtMs });
 	        else if (existingRecipe) state.restaurantRecipes = state.restaurantRecipes.filter((recipe) => recipe.id !== existingRecipe.id);
 	      }
+	      addAudit(product ? 'product_updated' : 'product_created', {
+	        productId:savedProduct.id,
+	        entityType:'product',
+	        entityId:savedProduct.id,
+	        before:product ? { stock:previousProductStock } : {},
+	        after:{ stock:Number(savedProduct.qty || 0) }
+	      });
 	      if(!save()) return; closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
 	    };
 	  }
@@ -4879,6 +5029,7 @@ function parseMoney(value) {
 	        state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
 	      }
 	      state.products=state.products.filter(x=>x.id!==id || x.businessId!==businessId);
+	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.qty || 0) }, after:{ stock:0 } });
 	      const committed = await commitCriticalMutation(previousState, 'product_deleted', (next) =>
 	        !next.products.some((item) => item.id === id && item.businessId === businessId)
 	        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId));
@@ -4931,7 +5082,8 @@ function parseMoney(value) {
         lblCustomer.textContent = 'Cliente (opcional)';
       }
 
-      const dueField = $('#layawayDueDateField');
+	      const dueField = $('#layawayDueDateField');
+	      const initialMethodField = $('#layawayInitialMethodField');
       const termsField = $('#layawayTermsField');
       if (method === 'Apartado') {
          if (dueField) {
@@ -4943,15 +5095,18 @@ function parseMoney(value) {
                dueInput.value = localDateKey(future);
             }
          }
-         if (termsField) termsField.style.display = 'grid';
-      } else {
+	         if (termsField) termsField.style.display = 'grid';
+	         if (initialMethodField) initialMethodField.style.display = 'grid';
+	      } else {
          if (dueField) dueField.style.display = 'none';
-         if (termsField) termsField.style.display = 'none';
+	         if (termsField) termsField.style.display = 'none';
+	         if (initialMethodField) initialMethodField.style.display = 'none';
       }
 
       if (method === 'Efectivo') {
         recF.style.display = 'grid'; chgF.style.display = 'grid';
-        const rec = parseMoney($('#cashReceived').value);
+	      const rec = parseMoney($('#cashReceived').value);
+	      const layawayInitialMethod = method === 'Apartado' ? ($('#layawayInitialMethod')?.value || 'Efectivo') : method;
         if(Number.isFinite(rec) && rec >= total) {
            $('#cashChange').value = fmt(rec - total);
         } else {
@@ -5126,7 +5281,7 @@ function parseMoney(value) {
 	        tendered,
 	        change,
 	        balance,
-	        payments: received > 0 ? [{ id: uid('pay'), date: today(), when: nowLabel(), amount: received, method, createdBy: authUser().name }] : [],
+	        payments: received > 0 ? [{ id: uid('pay'), date: today(), when: nowLabel(), amount: received, method:layawayInitialMethod, createdBy: authUser().name }] : [],
 	        createdAt: new Date(saleCreatedAtMs).toISOString(),
 	        createdAtMs: saleCreatedAtMs,
 	        updatedAt: new Date(saleCreatedAtMs).toISOString(),
@@ -5164,10 +5319,11 @@ function parseMoney(value) {
 
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
-	        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:authUser().name,saleId:sale.id,paymentMethod:sale.method,cashSessionId:sale.cashSessionId,createdAtMs:Date.now(),createdBy:authUser().name});
+		        state.movements.push({id:uid('mov'),operationId:sale.operationId,businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`${method === 'Apartado' ? 'Abono inicial de apartado' : `Venta ${sale.method}`}`,user:authUser().name,saleId:sale.id,paymentMethod:layawayInitialMethod,paymentType:method === 'Apartado' ? 'receivable_payment' : 'sale',cashSessionId:sale.cashSessionId,createdAtMs:Date.now(),createdBy:authUser().name});
       }
 
-      addAudit('sale_created', { saleId: sale.id, total: sale.total, method: sale.method, status: sale.status });
+	      state.operationLedger.push({ operationId:sale.operationId, type:method === 'Apartado' ? 'layaway_created' : 'sale_created', businessId:sale.businessId, entityId:sale.id, createdAt:sale.createdAt });
+	      addAudit(method === 'Apartado' ? 'layaway_created' : 'sale_created', { saleId: sale.id, total: sale.total, method: sale.method, paymentMethod:layawayInitialMethod, status: sale.status, operationId:sale.operationId, entityType:method === 'Apartado' ? 'layaway' : 'sale', entityId:sale.id });
       const committed = await commitCriticalMutation(previousState, 'sale_created', (next) =>
         next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId));
       if(!committed.ok) { renderApp('sell'); return; }
@@ -6178,8 +6334,9 @@ function parseMoney(value) {
       }
 
       list.innerHTML = workers.map(w => {
-        const active = ['active', 'accepted'].includes(w.status) && w.status !== 'revoked';
-        const statusLabel = active ? 'Activo' : w.status === 'pending' ? 'Invitacion pendiente' : w.status === 'revoked' ? 'Revocado' : 'Bloqueado';
+	        const accepted = ['active', 'accepted'].includes(w.status) && w.status !== 'revoked';
+	        const active = WORKER_TENANT_ACCESS_ENABLED && accepted;
+	        const statusLabel = accepted && !WORKER_TENANT_ACCESS_ENABLED ? 'Acceso operativo pausado' : active ? 'Activo' : w.status === 'pending' ? 'Invitacion pendiente' : w.status === 'revoked' ? 'Revocado' : 'Bloqueado';
         const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${escapeHtml(String(w.name || 'W').charAt(0).toUpperCase())}</div>`;
         return `
           <div class="movement" style="align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--line);">
@@ -6303,6 +6460,7 @@ function parseMoney(value) {
          state.settings ||= {};
          state.settings.workers ||= [];
 	         state.settings.workers.push({ email, name, status: 'pending', role, inviteHash: inviteMeta?.inviteHash || '', permissions: inviteMeta?.permissions || {}, ownerId: window.click360User.uid, createdAt: new Date().toISOString() });
+	         addAudit('worker_invited', { inviteHash:inviteMeta?.inviteHash || '', role, entityType:'worker_invitation', entityId:inviteMeta?.inviteHash || '' });
 	         if (!save()) {
 	           await window.click360CancelInviteEmail(email, inviteMeta?.inviteHash || '').catch(() => {});
 	           throw new Error('No se pudo guardar la invitación localmente; la invitación en nube fue cancelada.');
@@ -9403,12 +9561,19 @@ function parseMoney(value) {
     normalize:(input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.normalizeDocument(input),
     buildPlan:(product, input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.buildPrintPlan([{ product, copies:input?.quantity || 1 }], input, { startSlot:input?.startSlot || 1 }),
     render:(product, input) => buildUniversalLabelPrintNode(product, input),
+    open:(product) => openLabelModal(product),
     prepare:prepareLabelPrintJob,
     execute:executeCanonicalLabelPrint,
-    open:(product) => openLabelModal(product)
+    quick:runQuickLabelPrintFlow
   };
   window.click360PrepareLabelPrintJob = prepareLabelPrintJob;
   window.click360ExecuteCanonicalLabelPrint = executeCanonicalLabelPrint;
+  window.click360ReceiptTest = {
+    buildHtml:buildReceiptHtml,
+    buildPaperHtml:buildReceiptPaperHtml,
+    buildJob:receiptPrintJob,
+    flowSegments:receiptFlowSegments
+  };
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
   function printPaperFromOptions(options = {}) {
     return {
@@ -9905,16 +10070,25 @@ function parseMoney(value) {
   }
 
   window.cancelSale = async function(saleId) {
-	  saleId = decodeActionId(saleId);
+		  saleId = decodeActionId(saleId);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede anular ventas', 'err');
     }
-    if(!confirm('\u00bfSeguro que deseas anular esta venta? Esto no se puede deshacer y devolver\u00e1 el stock.')) return;
     const businessId = currentBusiness()?.id;
     const sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(sale.status === 'cancelled') return toast('Esta venta ya fue anulada.', 'err');
     if(isBusinessDateClosed(sale.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular la venta.', 'err');
+    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
+    if (linkedLayaway && window.CLICK360_V16_DOMAIN?.layawayStatus(linkedLayaway) === 'picked_up') {
+      return toast('Un apartado entregado no se puede cancelar. Registra una devolución controlada.', 'err');
+    }
+    const linkedMovements = state.movements.filter(m => m.businessId === businessId && m.saleId === sale.id && m.status !== 'cancelled');
+    const closure = window.CLICK360_V16_DOMAIN?.linkedMovementClosureDecision(linkedMovements, (date) => isBusinessDateClosed(date, businessId));
+    if (closure && !closure.allowed) return toast(`No se puede cancelar: existe un cobro en caja cerrada (${closure.blocked[0]?.date || 'fecha protegida'}).`, 'err');
+    const operationId = `cancel:${sale.id}`;
+    if (window.CLICK360_V16_DOMAIN?.operationAlreadyApplied(state, operationId)) return toast('Esta cancelación ya fue registrada.');
+    if(!confirm('\u00bfSeguro que deseas anular esta venta? Esto no se puede deshacer y devolver\u00e1 el stock.')) return;
     const reason = prompt('Motivo de anulación:');
     if(!reason || !reason.trim()) return toast('Debes indicar el motivo de anulación', 'err');
     const previousState = cloneState(state);
@@ -9932,15 +10106,13 @@ function parseMoney(value) {
 	    sale.cancelReason = reason.trim();
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
-	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
-	    if (linkedLayaway) {
+		    if (linkedLayaway) {
 	      linkedLayaway.status = 'cancelled';
 	      linkedLayaway.cancelledAt = new Date().toISOString();
 	      linkedLayaway.cancelReason = reason.trim();
 	    }
 
     // Anular todos los movimientos ligados a la venta, incluyendo abonos.
-    const linkedMovements = state.movements.filter(m => m.businessId === businessId && m.saleId === sale.id && m.status !== 'cancelled');
     linkedMovements.forEach(mov => {
        mov.status = 'cancelled';
        mov.cancelledBy = authUser().name || 'Usuario';
@@ -9952,7 +10124,7 @@ function parseMoney(value) {
 
     state.movements.push({
        id:uid('mov'),
-	       operationId:`cancel:${sale.id}`,
+		       operationId,
 	       businessId,
        date:today(),
        when:nowLabel(),
@@ -9970,12 +10142,24 @@ function parseMoney(value) {
        createdAtMs:Date.now()
     });
 
-    addAudit('sale_cancelled', { saleId: sale.id, total: sale.total, reason: reason.trim(), linkedMovements: linkedMovements.length });
+	    state.operationLedger.push({ operationId, type:'sale_cancelled', businessId, entityId:sale.id, createdAt:new Date().toISOString() });
+	    addAudit(linkedLayaway ? 'layaway_cancelled' : 'sale_cancelled', { saleId: sale.id, layawayId:linkedLayaway?.id || '', total: sale.total, reason: reason.trim(), linkedMovements: linkedMovements.length, operationId, entityType:linkedLayaway ? 'layaway' : 'sale', entityId:linkedLayaway?.id || sale.id });
     const committed = await commitCriticalMutation(previousState, 'sale_cancelled', (next) =>
       next.sales.some((item) => item.id === sale.id && item.businessId === businessId && item.status === 'cancelled'));
     renderApp('reports');
     if (committed.ok) toast(committed.pending ? 'Anulación guardada; sincronización pendiente.' : 'Venta anulada y stock devuelto');
   };
+
+  function requestLayawayPayment(sale) {
+    return new Promise((resolve) => {
+      showModal(`<div class="modalHeader"><div><h2>Registrar abono</h2><p class="fieldHint">Saldo pendiente: ${fmt(sale.balance || 0)}</p></div><button class="closeBtn" data-close>×</button></div><div class="formGrid"><div class="field"><label>Monto</label><input id="layawayPaymentAmount" inputmode="decimal" autocomplete="off"></div><div class="field"><label>Método</label><select id="layawayPaymentMethod"><option value="Efectivo">Efectivo</option><option value="Tarjeta">Tarjeta</option><option value="Transferencia">Transferencia</option></select></div></div><div class="modalActions"><button class="btn silver" id="cancelLayawayPayment">Cancelar</button><button class="btn primary" id="confirmLayawayPayment">Registrar abono</button></div>`);
+      const finish = (value) => { closeModal(); resolve(value); };
+      $('#cancelLayawayPayment').onclick = () => finish(null);
+      $('[data-close]').onclick = () => finish(null);
+      $('#confirmLayawayPayment').onclick = () => finish({ amount:parseMoney($('#layawayPaymentAmount').value), method:$('#layawayPaymentMethod').value, operationId:uid('laypay') });
+      $('#layawayPaymentAmount').focus();
+    });
+  }
 
   window.payLayaway = async function(saleId) {
 	  saleId = decodeActionId(saleId);
@@ -9986,13 +10170,15 @@ function parseMoney(value) {
     if(!sale) return toast('Venta no encontrada', 'err');
     if(!['layaway','pending_payment'].includes(sale.status)) return toast('Esta cuenta no tiene saldo pendiente', 'err');
 
-    const amountStr = prompt(`Saldo pendiente: ${fmt(sale.balance)}\nIngrese el monto a abonar:`);
-    if(!amountStr) return;
-    const amount = parseMoney(amountStr);
-    if(!Number.isFinite(amount) || amount <= 0) return toast('Monto inválido', 'err');
-    if(amount > sale.balance) return toast('El abono no puede superar el saldo pendiente', 'err');
-	    const previousState = cloneState(state);
-	    const paymentId = uid('pay');
+	  const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
+	  const request = await requestLayawayPayment(sale);
+	  if (!request) return;
+	  const decision = window.CLICK360_V16_DOMAIN?.layawayPaymentDecision(linkedLayaway || sale, request.amount, request.method);
+	  if (!decision?.allowed) return toast(decision?.reason === 'amount_exceeds_balance' ? 'El abono no puede superar el saldo pendiente.' : 'No se pudo validar el abono.', 'err');
+	  const { amount, method } = decision;
+	  const paymentId = request.operationId;
+	  if (window.CLICK360_V16_DOMAIN?.operationAlreadyApplied(state, paymentId)) return toast('Este abono ya fue registrado.');
+		    const previousState = cloneState(state);
 
 	    sale.received = (sale.received || 0) + amount;
 	    sale.balance -= amount;
@@ -10003,13 +10189,12 @@ function parseMoney(value) {
 	      date: today(),
 	      when: nowLabel(),
 	      amount,
-	      method: 'Efectivo',
+		      method,
 	      createdBy: authUser().name
 	    });
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
-	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
-	    if (linkedLayaway) {
+		    if (linkedLayaway) {
 	      linkedLayaway.paid = sale.received;
 	      linkedLayaway.balance = sale.balance;
 	      linkedLayaway.payments = sale.payments.map((payment) => ({ ...payment }));
@@ -10026,17 +10211,18 @@ function parseMoney(value) {
       date: today(),
       when: nowLabel(),
       kind: 'ingreso',
-      amount: amount,
+	      amount,
       note: `Abono a ticket ${saleId}`,
       user: authUser().name,
       saleId: sale.id,
-      paymentMethod: 'Efectivo',
+	      paymentMethod: method,
       paymentType: 'receivable_payment',
 	      cashSessionId: currentOpenCashSession(businessId)?.id || '',
 	      createdAtMs: Date.now(),
       createdBy: authUser().name
     });
-    addAudit('sale_payment_received', { saleId: sale.id, amount, balance: sale.balance });
+	    state.operationLedger.push({ operationId:paymentId, type:'layaway_payment', businessId, entityId:linkedLayaway?.id || sale.id, createdAt:new Date().toISOString() });
+	    addAudit('layaway_payment_added', { saleId: sale.id, layawayId:linkedLayaway?.id || '', amount, method, balance: sale.balance, operationId:paymentId, entityType:'layaway', entityId:linkedLayaway?.id || sale.id });
     const committed = await commitCriticalMutation(previousState, 'sale_payment_received', (next) =>
       next.sales.some((item) => item.id === sale.id && item.businessId === businessId
         && item.payments?.some((payment) => payment.id === paymentId)));
@@ -10089,8 +10275,8 @@ function parseMoney(value) {
        };
     }
 
-		    $('#printReceiptBtn').onclick = () => printReceiptWithFallback(s, business, receiptTemplate, 'system');
-		    $('#downloadPdfBtn').onclick = () => handoffPrint(receiptJob(), 'pdf');
+		    $('#printReceiptBtn').onclick = async () => { await printReceiptWithFallback(s, business, receiptTemplate, 'system'); };
+		    $('#downloadPdfBtn').onclick = async () => { await printReceiptWithFallback(s, business, receiptTemplate, 'pdf'); };
 
     $('#downloadImgBtn').onclick = () => {
       downloadHtmlAsPng(receiptHtml, `Recibo_${s.id.slice(-6).toUpperCase()}.png`);
@@ -10596,7 +10782,7 @@ function parseMoney(value) {
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
-	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','kitchen','bar','finance','help'].includes(h)) renderApp(h); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','activity','invoices','crm','reminders','access','legal','printing','tables','kitchen','bar','logistics','finance','help'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();

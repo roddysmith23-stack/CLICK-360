@@ -5,7 +5,7 @@ const {
   assertSucceeds,
   initializeTestEnvironment
 } = require('@firebase/rules-unit-testing');
-const { Timestamp, collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch } = require('firebase/firestore');
+const { Timestamp, collection, deleteDoc, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch } = require('firebase/firestore');
 
 const RULES = fs.readFileSync('firestore.rules', 'utf8');
 const PROJECT_ID = 'demo-click360-p0-rules';
@@ -125,6 +125,27 @@ function telemetry(eventId, businessId, eventType = 'bootstrap') {
     errorCode: '',
     deviceIdHash: 'b'.repeat(16),
     createdAt: serverTimestamp()
+  };
+}
+
+function auditEvent(eventId, businessId, actorUid, actorRole = 'owner') {
+  return {
+    eventId,
+    businessId,
+    tenantKey:`owner:${businessId}:business:${businessId}`,
+    actorUid,
+    actorRole,
+    actorName:'QA User',
+    action:'sale_created',
+    entityType:'sale',
+    entityId:'sale-qa',
+    correlationId:`operation-${eventId}`,
+    amount:12.5,
+    status:'confirmed',
+    before:{ amount:0 },
+    after:{ amount:12.5 },
+    appVersion:'16.2.0',
+    createdAt:serverTimestamp()
   };
 }
 
@@ -308,6 +329,17 @@ async function main() {
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'invalid-event'), telemetry('invalid-event', 'owner-a', 'document_dump')));
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'demo-event'), telemetry('demo-event', 'demo-click360')));
 
+    const ownerAuditRef = doc(ownerA, 'businesses', 'owner-a', 'auditEvents', 'owner-event');
+    const workerAuditRef = doc(workerA, 'businesses', 'owner-a', 'auditEvents', 'worker-event');
+    await assertSucceeds(setDoc(ownerAuditRef, auditEvent('owner-event', 'owner-a', 'owner-a')));
+    await assertSucceeds(setDoc(workerAuditRef, auditEvent('worker-event', 'owner-a', 'worker-a', 'worker')));
+    await assertSucceeds(getDoc(ownerAuditRef));
+    await assertFails(getDoc(doc(workerA, 'businesses', 'owner-a', 'auditEvents', 'owner-event')));
+    await assertFails(setDoc(doc(ownerB, 'businesses', 'owner-a', 'auditEvents', 'cross-event'), auditEvent('cross-event', 'owner-a', 'owner-b')));
+    await assertFails(setDoc(doc(ownerA, 'businesses', 'demo-click360', 'auditEvents', 'demo-event'), auditEvent('demo-event', 'demo-click360', 'owner-a')));
+    await assertFails(updateDoc(ownerAuditRef, { status:'changed' }));
+    await assertFails(deleteDoc(ownerAuditRef));
+
     await assertFails(getDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main')));
     await assertFails(setDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main'), state('owner-a', 2)));
     await assertFails(setDoc(doc(attacker, 'approvedUsers', 'attacker'), ownerProfile('attacker', 'attacker@example.test')));
@@ -407,6 +439,7 @@ async function main() {
     console.log('PASS Firestore emulator: active-but-unapproved and cross-tenant attempts are denied');
     console.log('PASS Firestore emulator: V16 invitations remain isolated and worker access to the monolithic snapshot is denied');
     console.log('PASS Firestore emulator: paid UID can transactionally create only its own first V10 tenant');
+    console.log('PASS Firestore emulator: audit events are tenant-bound and append-only');
   } finally {
     await env.cleanup();
   }

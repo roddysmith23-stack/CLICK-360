@@ -56,6 +56,9 @@ async function evaluateLayout(page, width, browserName) {
     const preview = box('.labelPreviewDisclosure');
     const controls = box('.labelControls');
     const footer = box('.smartWizardFooter');
+    const next = box('#smartPrintNext');
+    const back = box('#smartPrintBack');
+    const help = box('#smartPrintHelp');
     const simple = box('.labelModeSwitch button:first-child');
     const expert = box('.labelModeSwitch button:last-child');
     const step = box('.smartPrintSteps .active');
@@ -66,12 +69,16 @@ async function evaluateLayout(page, width, browserName) {
     return {
       scrollWidth:document.documentElement.scrollWidth,
       clientWidth:document.documentElement.clientWidth,
+      viewportHeight:window.innerHeight,
       modal,
       rail,
       layout,
       preview,
       controls,
       footer,
+      next,
+      back,
+      help,
       simple,
       expert,
       step,
@@ -90,6 +97,9 @@ async function evaluateLayout(page, width, browserName) {
     preview:result.preview,
     controls:result.controls,
     footer:result.footer,
+    next:result.next,
+    back:result.back,
+    help:result.help,
     simple:result.simple,
     expert:result.expert,
     step:result.step
@@ -98,6 +108,10 @@ async function evaluateLayout(page, width, browserName) {
   }
   if (result.rail.bottom > result.layout.top + 1) throw new Error(`${browserName} rail overlaps editor body at ${width}px`);
   if (result.layout.bottom > result.footer.top + 1) throw new Error(`${browserName} editor body overlaps footer at ${width}px`);
+  for (const [name, button] of [['next', result.next], ['back', result.back], ['help', result.help]]) {
+    if (button.top < result.footer.top - 1 || button.bottom > result.footer.bottom + 1) throw new Error(`${browserName} ${name} button leaves footer at ${width}px`);
+    if (button.bottom > result.viewportHeight + 1) throw new Error(`${browserName} ${name} button leaves viewport at ${width}px`);
+  }
   if (width < 900 && result.preview.bottom > result.controls.top + 1) {
     throw new Error(`${browserName} mobile preview overlaps controls at ${width}px`);
   }
