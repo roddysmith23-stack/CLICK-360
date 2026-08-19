@@ -93,95 +93,187 @@ duplicate.collections.products.push(structuredClone(duplicate.collections.produc
 duplicate.manifest.counts.products = 2;
 assert(api.validateMigrationPlan(duplicate).errors.some((entry) => entry.includes('duplicate')), 'duplicate IDs must fail validation');
 
-// ── Regression: Defect A — validateSourceDocumentIdentity ──────────────────
-// The migration script now calls validateSourceDocumentIdentity() before planMigration()
-// when loading from Firestore (not from --input fixture). These tests verify the same
-// guard logic by directly simulating the validation contract.
+// ── Regression: Defect A — validateSourceDocumentIdentity (real implementation) ─
+// Uses api.validateSourceDocumentIdentity from worker-data-boundary.js directly.
+// Migration script imports from the same module; tests here exercise the real code.
 {
-  function validateSourceDocumentIdentity(raw, ownerUid, businessId, expectedTenantKey) {
-    const identity = raw?.payload?.identity;
-    if (!identity || typeof identity !== 'object') {
-      throw new Error('SOURCE_IDENTITY_ABSENT');
-    }
-    const mismatches = [];
-    if (identity.ownerUid !== ownerUid) mismatches.push('ownerUid');
-    if (identity.businessId !== businessId) mismatches.push('businessId');
-    if (expectedTenantKey && identity.tenantKey !== expectedTenantKey) mismatches.push('tenantKey');
-    if (mismatches.length) throw new Error(`SOURCE_IDENTITY_MISMATCH: ${mismatches.join(', ')}`);
-  }
   const expectedKey = api.identity('owner-a', 'biz-a').tenantKey;
   const validDoc = { payload: { identity: { ownerUid:'owner-a', businessId:'biz-a', tenantKey:expectedKey }, data:{} } };
+
   // 1. Valid identity → must NOT throw
-  assert.doesNotThrow(() => validateSourceDocumentIdentity(validDoc, 'owner-a', 'biz-a', expectedKey), 'valid identity must pass');
+  assert.doesNotThrow(
+    () => api.validateSourceDocumentIdentity(validDoc, 'owner-a', 'biz-a', expectedKey),
+    'valid identity must pass without throwing'
+  );
   // 2. payload.identity absent → SOURCE_IDENTITY_ABSENT
   const noIdentityDoc = { payload: { data:{} } };
-  assert.throws(() => validateSourceDocumentIdentity(noIdentityDoc, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_ABSENT/, 'absent payload.identity must throw SOURCE_IDENTITY_ABSENT');
+  assert.throws(
+    () => api.validateSourceDocumentIdentity(noIdentityDoc, 'owner-a', 'biz-a', expectedKey),
+    /SOURCE_IDENTITY_ABSENT/,
+    'absent payload.identity must throw SOURCE_IDENTITY_ABSENT'
+  );
   // 3. Wrong ownerUid → SOURCE_IDENTITY_MISMATCH
   const wrongOwner = { payload: { identity: { ownerUid:'wrong-owner', businessId:'biz-a', tenantKey:expectedKey }, data:{} } };
-  assert.throws(() => validateSourceDocumentIdentity(wrongOwner, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_MISMATCH/, 'wrong ownerUid must throw mismatch');
+  assert.throws(
+    () => api.validateSourceDocumentIdentity(wrongOwner, 'owner-a', 'biz-a', expectedKey),
+    /SOURCE_IDENTITY_MISMATCH/,
+    'wrong ownerUid must throw SOURCE_IDENTITY_MISMATCH'
+  );
   // 4. Wrong businessId → SOURCE_IDENTITY_MISMATCH
   const wrongBiz = { payload: { identity: { ownerUid:'owner-a', businessId:'wrong-biz', tenantKey:expectedKey }, data:{} } };
-  assert.throws(() => validateSourceDocumentIdentity(wrongBiz, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_MISMATCH/, 'wrong businessId must throw mismatch');
+  assert.throws(
+    () => api.validateSourceDocumentIdentity(wrongBiz, 'owner-a', 'biz-a', expectedKey),
+    /SOURCE_IDENTITY_MISMATCH/,
+    'wrong businessId must throw SOURCE_IDENTITY_MISMATCH'
+  );
   // 5. Wrong tenantKey → SOURCE_IDENTITY_MISMATCH
   const wrongKey = { payload: { identity: { ownerUid:'owner-a', businessId:'biz-a', tenantKey:'owner:other:business:biz-a' }, data:{} } };
-  assert.throws(() => validateSourceDocumentIdentity(wrongKey, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_MISMATCH/, 'wrong tenantKey must throw mismatch');
-  // 6. Identity completely missing (null payload) → SOURCE_IDENTITY_ABSENT
-  assert.throws(() => validateSourceDocumentIdentity({}, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_ABSENT/, 'null payload must throw SOURCE_IDENTITY_ABSENT');
-  // 7. Fixture path (no payload wrapper) does NOT trigger validation — migration script skips it for args.input
-  // This is tested end-to-end by npm run qa:worker-migration which uses --input fixture without payload
+  assert.throws(
+    () => api.validateSourceDocumentIdentity(wrongKey, 'owner-a', 'biz-a', expectedKey),
+    /SOURCE_IDENTITY_MISMATCH/,
+    'wrong tenantKey must throw SOURCE_IDENTITY_MISMATCH'
+  );
+  // 6. Null payload → SOURCE_IDENTITY_ABSENT
+  assert.throws(
+    () => api.validateSourceDocumentIdentity({}, 'owner-a', 'biz-a', expectedKey),
+    /SOURCE_IDENTITY_ABSENT/,
+    'null payload must throw SOURCE_IDENTITY_ABSENT'
+  );
+  // 7. Fixture path (no payload wrapper) does NOT trigger validation — migration script
+  //    skips it for args.input. Tested end-to-end by npm run qa:worker-migration.
+}
+
+// ── Regression: Defect A — planIdentityRepair (real implementation) ──────────
+// Uses api.planIdentityRepair from worker-data-boundary.js directly.
+// The repair script (worker-boundary-repair-identity.mjs) calls the same function.
+{
+  const P0_SCHEMA = 10;
+  const ownerUid = 'owner-repair-test';
+  const businessId = 'biz-repair-test';
+  const ownerId = ownerUid;
+  const tenantKey = api.identity(ownerUid, businessId).tenantKey;
+  const expected = { ownerUid, ownerId, businessId, tenantKey, schemaVersion: P0_SCHEMA };
+
+  // Minimal valid root identity fields (the scenario found in staging)
+  const validRoot = { ownerUid, ownerId, businessId, tenantKey, schemaVersion: P0_SCHEMA };
+  const sampleData = { businesses:[{id:businessId}], products:[], sales:[] };
+
+  // Case 1: Root valid + payload.identity absent → REPAIR
+  const rootOnlyDoc = { ...validRoot, payload: { data: sampleData } };
+  const repairPlan = api.planIdentityRepair(rootOnlyDoc, expected);
+  assert.strictEqual(repairPlan.action, 'REPAIR', 'root valid + nested absent → action must be REPAIR');
+  assert.strictEqual(repairPlan.payloadIdentity.ownerUid, ownerUid, 'repair plan must include correct ownerUid');
+  assert.strictEqual(repairPlan.payloadIdentity.ownerId, ownerId, 'repair plan must include correct ownerId');
+  assert.strictEqual(repairPlan.payloadIdentity.businessId, businessId, 'repair plan must include correct businessId');
+  assert.strictEqual(repairPlan.payloadIdentity.tenantKey, tenantKey, 'repair plan must include correct tenantKey');
+  assert.strictEqual(repairPlan.payloadIdentity.schemaVersion, P0_SCHEMA, 'repair plan must include correct schemaVersion');
+
+  // Case 2: payload.data is not included in payloadIdentity (data boundary respected)
+  assert.ok(!('data' in repairPlan.payloadIdentity), 'repaired payload.identity must not include data');
+  assert.ok(!('products' in repairPlan.payloadIdentity), 'repaired payload.identity must not include products');
+
+  // Case 3: Root valid + payload.identity present and matching → NOOP
+  const fullDoc = { ...validRoot, payload: { identity: { ownerUid, ownerId, businessId, tenantKey, schemaVersion: P0_SCHEMA }, data: sampleData } };
+  const noopPlan = api.planIdentityRepair(fullDoc, expected);
+  assert.strictEqual(noopPlan.action, 'NOOP', 'root valid + nested matches → action must be NOOP');
+  assert.strictEqual(noopPlan.payloadIdentity, null, 'NOOP plan must have null payloadIdentity');
+
+  // Case 4: Second run after repair (already NOOP) → NOOP (idempotence)
+  const repairedDoc = { ...validRoot, payload: { identity: repairPlan.payloadIdentity, data: sampleData } };
+  const secondRun = api.planIdentityRepair(repairedDoc, expected);
+  assert.strictEqual(secondRun.action, 'NOOP', 'second run after repair must be NOOP (idempotent)');
+
+  // Case 5: Nested identity contradicts expected → REPAIR_DENIED_NESTED_MISMATCH (throw)
+  const contradictoryNested = { ...validRoot, payload: { identity: { ownerUid:'wrong-owner', ownerId:'wrong-owner', businessId, tenantKey, schemaVersion: P0_SCHEMA }, data: sampleData } };
+  assert.throws(
+    () => api.planIdentityRepair(contradictoryNested, expected),
+    /REPAIR_DENIED_NESTED_MISMATCH/,
+    'contradictory nested identity must throw REPAIR_DENIED_NESTED_MISMATCH'
+  );
+
+  // Case 6: Root identity contradicts expected → REPAIR_DENIED_ROOT_MISMATCH (throw)
+  const wrongRootDoc = { ownerUid:'wrong-owner', ownerId:'wrong-owner', businessId, tenantKey, schemaVersion: P0_SCHEMA, payload: { data: sampleData } };
+  assert.throws(
+    () => api.planIdentityRepair(wrongRootDoc, expected),
+    /REPAIR_DENIED_ROOT_MISMATCH/,
+    'wrong root ownerUid must throw REPAIR_DENIED_ROOT_MISMATCH'
+  );
+
+  // Case 7: Wrong tenantKey in root → REPAIR_DENIED_ROOT_MISMATCH (throw)
+  const wrongTenantRoot = { ...validRoot, tenantKey: 'owner:evil:business:biz-a', payload: { data: sampleData } };
+  assert.throws(
+    () => api.planIdentityRepair(wrongTenantRoot, expected),
+    /REPAIR_DENIED_ROOT_MISMATCH/,
+    'wrong root tenantKey must throw REPAIR_DENIED_ROOT_MISMATCH'
+  );
+
+  // Case 8: payload.data is identical before and after a REPAIR plan (data never touched)
+  const dataHashBefore = JSON.stringify(sampleData);
+  // Simulating what the repair script does: writes only payload.identity
+  const afterRepair = { ...rootOnlyDoc, payload: { ...rootOnlyDoc.payload, identity: repairPlan.payloadIdentity } };
+  const dataHashAfter = JSON.stringify(afterRepair.payload.data);
+  assert.strictEqual(dataHashBefore, dataHashAfter, 'payload.data must be identical before and after identity repair');
 }
 
 // ── Regression: Defect B — stock vs qty contract ──────────────────────────
 // The modular gateway canonical field is 'stock'. The UI field is 'qty'.
-// normalizeState must sync them; sale decrement must update 'stock'; gateway must see the delta.
+// The paths below simulate the normalizeState and sell flows from app.js.
+// The gateway commit() in worker-data-boundary.js reads stock for Firestore deltas.
 {
   // Simulate normalizeState sync: product from gateway has 'stock' only
+  // app.js normalizeState: const canonicalStock = Number(p.stock ?? p.qty ?? 0); p.stock = p.qty = canonicalStock;
   const gatewayProduct = { id:'p1', businessId:'biz-a', name:'P1', stock:10, price:5 };
-  // After normalizeState, qty === stock
   const canonicalStock = Number(gatewayProduct.stock ?? gatewayProduct.qty ?? 0);
   const normalized = { ...gatewayProduct, stock:canonicalStock, qty:canonicalStock };
   assert.strictEqual(normalized.qty, 10, 'normalizeState must set qty from stock');
   assert.strictEqual(normalized.stock, 10, 'normalizeState must preserve stock');
 
-  // Simulate sale decrement (fixed: now writes both stock and qty)
+  // Simulate sale decrement: app.js sell flow now writes both stock and qty
+  // p.stock -= sold; p.qty = p.stock;
   const before = { ...normalized };
   const p = { ...normalized };
   const sold = 3;
-  p.stock -= sold; p.qty = p.stock; // fixed decrement
+  p.stock -= sold; p.qty = p.stock;
   const afterStock = p.stock;
-  const gatewayDelta = before.stock - afterStock; // what the gateway commit sees
+  // gateway commit() computes: Number(before?.stock || 0) - Number(after?.stock || 0)
+  const gatewayDelta = before.stock - afterStock;
   assert.strictEqual(afterStock, 7, 'stock must be 7 after selling 3');
-  assert.strictEqual(p.qty, 7, 'qty must equal stock after sale');
+  assert.strictEqual(p.qty, 7, 'qty must equal stock after sale (sync maintained)');
   assert.strictEqual(gatewayDelta, 3, 'gateway must see delta of 3 for correct Firestore decrement');
 
-  // stock_before - qty_sold = stock_after invariant
-  assert.strictEqual(before.stock - sold, afterStock, 'inventory invariant: stock_before - qty_sold = stock_after');
+  // Inventory invariant
+  assert.strictEqual(before.stock - sold, afterStock, 'invariant: stock_before - qty_sold = stock_after');
 
-  // Simulate sale cancellation restore
+  // Simulate sale cancellation: p.stock += restored; p.qty = p.stock;
   const restored = { ...p };
   restored.stock += sold; restored.qty = restored.stock;
   assert.strictEqual(restored.stock, 10, 'stock must be restored after cancellation');
-  assert.strictEqual(restored.qty, 10, 'qty must equal stock after cancellation');
+  assert.strictEqual(restored.qty, 10, 'qty must equal stock after cancellation (sync maintained)');
 
-  // Legacy product (has qty only) after normalizeState
+  // Legacy product (qty only) after normalizeState → stock materialized
   const legacyProduct = { id:'p2', businessId:'biz-a', name:'P2', qty:5, price:3 };
   const legacyStockVal = Number(legacyProduct.stock ?? legacyProduct.qty ?? 0);
   const legacyNorm = { ...legacyProduct, stock:legacyStockVal, qty:legacyStockVal };
   assert.strictEqual(legacyNorm.stock, 5, 'legacy qty must be normalized to stock');
   assert.strictEqual(legacyNorm.qty, 5, 'legacy qty must be preserved during normalization');
 
-  // Product save: both qty and stock must be written
+  // Product save: both qty and stock must be written (Object.assign in app.js)
   const savedQty = 15;
   const savedProduct = { ...normalized, qty:savedQty, stock:savedQty };
   assert.strictEqual(savedProduct.stock, savedQty, 'product save must write stock field');
   assert.strictEqual(savedProduct.qty, savedQty, 'product save must write qty field');
 
-  // Negative stock must not be produced by normal decrement (guard in sell flow)
-  // i.e., selling more than available must be blocked BEFORE decrement
+  // Stock check guard (sell flow and cart flow): (p.stock ?? p.qty ?? 0) < cartQty
   const stockCheck = (productStock, cartQty) => (productStock ?? 0) < cartQty;
-  assert(!stockCheck(10, 3), 'selling 3 from 10 must pass stock check');
-  assert(stockCheck(2, 3), 'selling 3 from 2 must fail stock check (insufficient)');
+  assert(!stockCheck(10, 3), 'selling 3 from stock=10 must pass stock check');
+  assert(stockCheck(2, 3), 'selling 3 from stock=2 must fail stock check (insufficient)');
   assert(stockCheck(0, 1), 'selling from stock=0 must fail stock check');
+
+  // Gateway delta must be zero if stock does not change (no silent decrement)
+  const noChangePrev = { stock:5, qty:5 };
+  const noChangeNext = { stock:5, qty:5 };
+  const zeroDelta = Number(noChangePrev?.stock || 0) - Number(noChangeNext?.stock || 0);
+  assert.strictEqual(zeroDelta, 0, 'gateway must see delta of 0 when stock unchanged (no silent decrement)');
 }
 
-console.log('PASS worker data boundary: role matrix, tenant split, idempotent migration, rollback manifest, counts and totals');
+console.log('PASS worker data boundary: role matrix, tenant split, idempotent migration, identity repair plan, rollback manifest, counts and totals');

@@ -264,6 +264,110 @@
     return { equal: beforeValidation.valid && afterValidation.valid && mismatches.length === 0, mismatches, beforeValidation, afterValidation };
   }
 
+  /**
+   * Validates that a Firestore source document has a correct canonical identity
+   * at payload.identity before the migration is allowed to plan or commit.
+   *
+   * A document without a valid payload.identity will be accepted by
+   * extractLegacyState() but rejected at runtime by p0-tenant-guard's
+   * validBusinessPayload(). This guard blocks migration before declaring
+   * CUTOVER_VERIFIED from a document the tenant guard would subsequently reject.
+   *
+   * Only called when loading from Firestore (not from --input fixture).
+   * Fails closed: any absence or mismatch throws, blocking the migration.
+   *
+   * If payload.identity is absent, run worker-boundary-repair-identity.mjs first
+   * to materialize it from the document's valid root-level identity fields.
+   */
+  function validateSourceDocumentIdentity(raw, ownerUid, businessId, expectedTenantKey) {
+    const payloadIdentity = raw?.payload?.identity;
+    if (!payloadIdentity || typeof payloadIdentity !== 'object') {
+      throw new Error(
+        `SOURCE_IDENTITY_ABSENT: El documento state/main de businesses/${ownerUid} ` +
+        `no contiene payload.identity. Ejecute primero worker-boundary-repair-identity.mjs ` +
+        `para materializar la identidad anidada desde la identidad raíz válida del documento.`
+      );
+    }
+    const mismatches = [];
+    if (payloadIdentity.ownerUid !== ownerUid) mismatches.push(`ownerUid: esperado ${ownerUid}, encontrado ${payloadIdentity.ownerUid}`);
+    if (payloadIdentity.businessId !== businessId) mismatches.push(`businessId: esperado ${businessId}, encontrado ${payloadIdentity.businessId}`);
+    if (expectedTenantKey && payloadIdentity.tenantKey !== expectedTenantKey) mismatches.push(`tenantKey: esperado ${expectedTenantKey}, encontrado ${payloadIdentity.tenantKey}`);
+    if (mismatches.length) {
+      throw new Error(
+        `SOURCE_IDENTITY_MISMATCH: La identidad del documento fuente no coincide con el tenant esperado. ` +
+        `Diferencias: ${mismatches.join('; ')}. ` +
+        `No se puede declarar CUTOVER_VERIFIED con identidad contradictoria.`
+      );
+    }
+  }
+
+  /**
+   * Plans a repair for a Firestore state/main document that has a valid root-level
+   * identity but is missing payload.identity (the nested form required by p0-tenant-guard).
+   *
+   * Decision logic (all other cases throw REPAIR_DENIED):
+   *   - Root identity valid AND payload.identity absent  → REPAIR (materialize)
+   *   - Root identity valid AND payload.identity matches → NOOP (already correct)
+   *   - Root identity valid AND payload.identity contradicts → REPAIR_DENIED_NESTED_MISMATCH
+   *   - Root identity contradicts expected               → REPAIR_DENIED_ROOT_MISMATCH
+   *
+   * Returns { action: 'NOOP'|'REPAIR', payloadIdentity: object|null, reason: string }
+   * Never touches payload.data or any other field — only payload.identity.
+   *
+   * @param {object} raw - Raw Firestore document data (the full snapshot)
+   * @param {{ ownerUid, ownerId, businessId, tenantKey, schemaVersion }} expected
+   */
+  function planIdentityRepair(raw, expected) {
+    const { ownerUid: expOwnerUid, ownerId: expOwnerId, businessId: expBusinessId, tenantKey: expTenantKey, schemaVersion: expSchemaVersion } = expected;
+    // 1. Validate root-level identity fields (strict)
+    const rootMismatches = [];
+    if (raw?.ownerUid !== expOwnerUid) rootMismatches.push(`ownerUid: raíz=${raw?.ownerUid}, esperado=${expOwnerUid}`);
+    if (raw?.ownerId !== expOwnerId) rootMismatches.push(`ownerId: raíz=${raw?.ownerId}, esperado=${expOwnerId}`);
+    if (raw?.businessId !== expBusinessId) rootMismatches.push(`businessId: raíz=${raw?.businessId}, esperado=${expBusinessId}`);
+    if (raw?.tenantKey !== expTenantKey) rootMismatches.push(`tenantKey: raíz=${raw?.tenantKey}, esperado=${expTenantKey}`);
+    if (Number(raw?.schemaVersion) !== Number(expSchemaVersion)) rootMismatches.push(`schemaVersion: raíz=${raw?.schemaVersion}, esperado=${expSchemaVersion}`);
+    if (rootMismatches.length > 0) {
+      throw new Error(
+        `REPAIR_DENIED_ROOT_MISMATCH: La identidad raíz del documento no coincide con el contexto esperado. ` +
+        `Diferencias: ${rootMismatches.join('; ')}. ` +
+        `No se repara un documento con identidad raíz contradictoria.`
+      );
+    }
+    // Root is valid. Build the canonical payload.identity to materialize.
+    const canonicalPayloadIdentity = {
+      ownerUid: expOwnerUid,
+      ownerId: expOwnerId,
+      businessId: expBusinessId,
+      tenantKey: expTenantKey,
+      schemaVersion: Number(expSchemaVersion)
+    };
+    // 2. Check payload.identity
+    const existingNested = raw?.payload?.identity;
+    if (existingNested && typeof existingNested === 'object') {
+      // Nested exists — verify it agrees with root and expected
+      const nestedMismatches = [];
+      if (existingNested.ownerUid !== expOwnerUid) nestedMismatches.push(`ownerUid: anidado=${existingNested.ownerUid}, esperado=${expOwnerUid}`);
+      if (existingNested.ownerId !== expOwnerId) nestedMismatches.push(`ownerId: anidado=${existingNested.ownerId}, esperado=${expOwnerId}`);
+      if (existingNested.businessId !== expBusinessId) nestedMismatches.push(`businessId: anidado=${existingNested.businessId}, esperado=${expBusinessId}`);
+      if (existingNested.tenantKey !== expTenantKey) nestedMismatches.push(`tenantKey: anidado=${existingNested.tenantKey}, esperado=${expTenantKey}`);
+      if (Number(existingNested.schemaVersion) !== Number(expSchemaVersion)) nestedMismatches.push(`schemaVersion: anidado=${existingNested.schemaVersion}, esperado=${expSchemaVersion}`);
+      if (nestedMismatches.length > 0) {
+        throw new Error(
+          `REPAIR_DENIED_NESTED_MISMATCH: La payload.identity existente contradice el contexto esperado. ` +
+          `Diferencias: ${nestedMismatches.join('; ')}. ` +
+          `No se sobrescribirá una identidad anidada contradictoria.`
+        );
+      }
+      return { action: 'NOOP', payloadIdentity: null, reason: 'payload.identity ya existe y coincide con la identidad raíz y el contexto esperado.' };
+    }
+    // payload.identity absent, root valid → plan REPAIR
+    return {
+      action: 'REPAIR',
+      payloadIdentity: canonicalPayloadIdentity,
+      reason: 'payload.identity ausente; identidad raíz válida. Se materializará payload.identity sin alterar payload.data ni ningún dato comercial.'
+    };
+  }
+
   function assertNonProductionProject(projectId) {
     const normalized = String(projectId || '').trim();
     if (!normalized || normalized === PRODUCTION_PROJECT_ID) throw new Error('La frontera de trabajadores no puede ejecutarse contra producción.');
@@ -476,6 +580,8 @@
     planMigration,
     validateMigrationPlan,
     compareMigrationPlans,
+    validateSourceDocumentIdentity,
+    planIdentityRepair,
     assertNonProductionProject,
     enabledForProject,
     createFirestoreGateway
