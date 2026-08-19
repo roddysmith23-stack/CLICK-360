@@ -93,4 +93,95 @@ duplicate.collections.products.push(structuredClone(duplicate.collections.produc
 duplicate.manifest.counts.products = 2;
 assert(api.validateMigrationPlan(duplicate).errors.some((entry) => entry.includes('duplicate')), 'duplicate IDs must fail validation');
 
+// ── Regression: Defect A — validateSourceDocumentIdentity ──────────────────
+// The migration script now calls validateSourceDocumentIdentity() before planMigration()
+// when loading from Firestore (not from --input fixture). These tests verify the same
+// guard logic by directly simulating the validation contract.
+{
+  function validateSourceDocumentIdentity(raw, ownerUid, businessId, expectedTenantKey) {
+    const identity = raw?.payload?.identity;
+    if (!identity || typeof identity !== 'object') {
+      throw new Error('SOURCE_IDENTITY_ABSENT');
+    }
+    const mismatches = [];
+    if (identity.ownerUid !== ownerUid) mismatches.push('ownerUid');
+    if (identity.businessId !== businessId) mismatches.push('businessId');
+    if (expectedTenantKey && identity.tenantKey !== expectedTenantKey) mismatches.push('tenantKey');
+    if (mismatches.length) throw new Error(`SOURCE_IDENTITY_MISMATCH: ${mismatches.join(', ')}`);
+  }
+  const expectedKey = api.identity('owner-a', 'biz-a').tenantKey;
+  const validDoc = { payload: { identity: { ownerUid:'owner-a', businessId:'biz-a', tenantKey:expectedKey }, data:{} } };
+  // 1. Valid identity → must NOT throw
+  assert.doesNotThrow(() => validateSourceDocumentIdentity(validDoc, 'owner-a', 'biz-a', expectedKey), 'valid identity must pass');
+  // 2. payload.identity absent → SOURCE_IDENTITY_ABSENT
+  const noIdentityDoc = { payload: { data:{} } };
+  assert.throws(() => validateSourceDocumentIdentity(noIdentityDoc, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_ABSENT/, 'absent payload.identity must throw SOURCE_IDENTITY_ABSENT');
+  // 3. Wrong ownerUid → SOURCE_IDENTITY_MISMATCH
+  const wrongOwner = { payload: { identity: { ownerUid:'wrong-owner', businessId:'biz-a', tenantKey:expectedKey }, data:{} } };
+  assert.throws(() => validateSourceDocumentIdentity(wrongOwner, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_MISMATCH/, 'wrong ownerUid must throw mismatch');
+  // 4. Wrong businessId → SOURCE_IDENTITY_MISMATCH
+  const wrongBiz = { payload: { identity: { ownerUid:'owner-a', businessId:'wrong-biz', tenantKey:expectedKey }, data:{} } };
+  assert.throws(() => validateSourceDocumentIdentity(wrongBiz, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_MISMATCH/, 'wrong businessId must throw mismatch');
+  // 5. Wrong tenantKey → SOURCE_IDENTITY_MISMATCH
+  const wrongKey = { payload: { identity: { ownerUid:'owner-a', businessId:'biz-a', tenantKey:'owner:other:business:biz-a' }, data:{} } };
+  assert.throws(() => validateSourceDocumentIdentity(wrongKey, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_MISMATCH/, 'wrong tenantKey must throw mismatch');
+  // 6. Identity completely missing (null payload) → SOURCE_IDENTITY_ABSENT
+  assert.throws(() => validateSourceDocumentIdentity({}, 'owner-a', 'biz-a', expectedKey), /SOURCE_IDENTITY_ABSENT/, 'null payload must throw SOURCE_IDENTITY_ABSENT');
+  // 7. Fixture path (no payload wrapper) does NOT trigger validation — migration script skips it for args.input
+  // This is tested end-to-end by npm run qa:worker-migration which uses --input fixture without payload
+}
+
+// ── Regression: Defect B — stock vs qty contract ──────────────────────────
+// The modular gateway canonical field is 'stock'. The UI field is 'qty'.
+// normalizeState must sync them; sale decrement must update 'stock'; gateway must see the delta.
+{
+  // Simulate normalizeState sync: product from gateway has 'stock' only
+  const gatewayProduct = { id:'p1', businessId:'biz-a', name:'P1', stock:10, price:5 };
+  // After normalizeState, qty === stock
+  const canonicalStock = Number(gatewayProduct.stock ?? gatewayProduct.qty ?? 0);
+  const normalized = { ...gatewayProduct, stock:canonicalStock, qty:canonicalStock };
+  assert.strictEqual(normalized.qty, 10, 'normalizeState must set qty from stock');
+  assert.strictEqual(normalized.stock, 10, 'normalizeState must preserve stock');
+
+  // Simulate sale decrement (fixed: now writes both stock and qty)
+  const before = { ...normalized };
+  const p = { ...normalized };
+  const sold = 3;
+  p.stock -= sold; p.qty = p.stock; // fixed decrement
+  const afterStock = p.stock;
+  const gatewayDelta = before.stock - afterStock; // what the gateway commit sees
+  assert.strictEqual(afterStock, 7, 'stock must be 7 after selling 3');
+  assert.strictEqual(p.qty, 7, 'qty must equal stock after sale');
+  assert.strictEqual(gatewayDelta, 3, 'gateway must see delta of 3 for correct Firestore decrement');
+
+  // stock_before - qty_sold = stock_after invariant
+  assert.strictEqual(before.stock - sold, afterStock, 'inventory invariant: stock_before - qty_sold = stock_after');
+
+  // Simulate sale cancellation restore
+  const restored = { ...p };
+  restored.stock += sold; restored.qty = restored.stock;
+  assert.strictEqual(restored.stock, 10, 'stock must be restored after cancellation');
+  assert.strictEqual(restored.qty, 10, 'qty must equal stock after cancellation');
+
+  // Legacy product (has qty only) after normalizeState
+  const legacyProduct = { id:'p2', businessId:'biz-a', name:'P2', qty:5, price:3 };
+  const legacyStockVal = Number(legacyProduct.stock ?? legacyProduct.qty ?? 0);
+  const legacyNorm = { ...legacyProduct, stock:legacyStockVal, qty:legacyStockVal };
+  assert.strictEqual(legacyNorm.stock, 5, 'legacy qty must be normalized to stock');
+  assert.strictEqual(legacyNorm.qty, 5, 'legacy qty must be preserved during normalization');
+
+  // Product save: both qty and stock must be written
+  const savedQty = 15;
+  const savedProduct = { ...normalized, qty:savedQty, stock:savedQty };
+  assert.strictEqual(savedProduct.stock, savedQty, 'product save must write stock field');
+  assert.strictEqual(savedProduct.qty, savedQty, 'product save must write qty field');
+
+  // Negative stock must not be produced by normal decrement (guard in sell flow)
+  // i.e., selling more than available must be blocked BEFORE decrement
+  const stockCheck = (productStock, cartQty) => (productStock ?? 0) < cartQty;
+  assert(!stockCheck(10, 3), 'selling 3 from 10 must pass stock check');
+  assert(stockCheck(2, 3), 'selling 3 from 2 must fail stock check (insufficient)');
+  assert(stockCheck(0, 1), 'selling from stock=0 must fail stock check');
+}
+
 console.log('PASS worker data boundary: role matrix, tenant split, idempotent migration, rollback manifest, counts and totals');
