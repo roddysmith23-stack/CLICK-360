@@ -1340,6 +1340,11 @@ function parseMoney(value) {
     out.products.forEach(p => {
       p.code = String(p.code || '').trim().toUpperCase();
       p.updatedAtMs = Number(p.updatedAtMs || p.createdAtMs || 0);
+      // Canonical stock field is 'stock'. Legacy documents may use 'qty'.
+      // Normalize both so the UI (qty) and the modular gateway (stock) always agree.
+      const canonicalStock = Number(p.stock ?? p.qty ?? 0);
+      p.stock = canonicalStock;
+      p.qty = canonicalStock;
     });
     out.deletedProducts.forEach(t => {
       t.code = String(t.code || '').trim().toUpperCase();
@@ -3136,7 +3141,7 @@ function parseMoney(value) {
 	    const render = () => {
 	      const productOptions = productsForBiz().map((product) => ({
 	        product,
-	        available: Math.max(0, Number(product.qty || 0) - tableReservedQuantity(product.id, order.id))
+	        available: Math.max(0, Number(product.stock ?? product.qty ?? 0) - tableReservedQuantity(product.id, order.id))
 	      })).filter(({ available }) => available > 0).map(({ product, available }) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${fmt(product.price)} · ${available} disp.</option>`).join('');
 	      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(table.name)}</h2><p class="fieldHint">${escapeHtml(tableElapsedLabel(order))}</p></div><button class="closeBtn" data-close>×</button></div>
 	        <section class="tableOrderStatusStrip"><span class="${order.sentToKitchen ? 'sent' : ''}">${icon(order.sentToKitchen ? 'chef-hat' : 'notebook-pen')} ${escapeHtml(tableKitchenStatus(order))}</span><span>${icon('clock')} ${tableElapsedMinutes(order)} min de espera</span><span>${icon('users-round')} ${escapeHtml(tablePeopleLabel(table))}</span></section>
@@ -3370,7 +3375,7 @@ function parseMoney(value) {
 	    for (const item of order.items) {
 	      if (item.nonInventory) continue;
 	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
-	      if (!product || product.qty < item.qty) return toast(`Stock insuficiente: ${item.name}`, 'err');
+	      if (!product || (product.stock ?? product.qty ?? 0) < item.qty) return toast(`Stock insuficiente: ${item.name}`, 'err');
 	    }
 	    const saleId = uid('sale');
 	    const sale = {
@@ -3386,7 +3391,7 @@ function parseMoney(value) {
 	    order.items.forEach((item) => {
 	      if (item.nonInventory) return;
 	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
-	      product.qty -= item.qty;
+	      const soldQty=Number(item.qty||0); product.stock-=soldQty; product.qty=product.stock;
 	      product.updatedAtMs = Date.now();
 	      product.updatedAt = new Date().toISOString();
 	    });
@@ -3623,7 +3628,7 @@ function parseMoney(value) {
 	      const productId = decodeActionId($('#routeLoadProduct').value);
 	      const product = productsForBiz().find((item) => item.id === productId);
 	      const qty = Math.max(1, Math.trunc(Number($('#routeLoadQty').value || 1)));
-	      if (!product || qty > Number(product.qty || 0)) return toast('Inventario insuficiente para cargar ruta.', 'err');
+	      if (!product || qty > Number(product.stock ?? product.qty ?? 0)) return toast('Inventario insuficiente para cargar ruta.', 'err');
 	      let currentSheet = sheet || { id:uid('loadsheet'), businessId:currentBusiness().id, routeId:route.id, status:'draft', items:[], createdAt:new Date().toISOString() };
 	      if (!sheet) state.logistics.loadSheets.push(currentSheet);
 	      const existing = currentSheet.items.find((item) => item.productId === product.id);
@@ -4983,10 +4988,11 @@ function parseMoney(value) {
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
-	      const previousProductStock = product ? Number(product.qty || 0) : null;
+	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
 	      let savedProduct = product;
-	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
-	      else { savedProduct = {id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
+	      // Write both 'stock' (canonical, read by modular gateway) and 'qty' (legacy UI field) so both paths stay in sync.
+	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
+	      else { savedProduct = {id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
 	      if (restaurantModuleEnabled()) {
 	        const ingredients = $('#pRecipeIngredients')?.value.trim() || '';
 	        const steps = $('#pRecipeSteps')?.value.trim() || '';
@@ -4999,7 +5005,7 @@ function parseMoney(value) {
 	        entityType:'product',
 	        entityId:savedProduct.id,
 	        before:product ? { stock:previousProductStock } : {},
-	        after:{ stock:Number(savedProduct.qty || 0) }
+	        after:{ stock:Number(savedProduct.stock ?? savedProduct.qty ?? 0) }
 	      });
 	      if(!save()) return; closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
 	    };
@@ -5015,7 +5021,7 @@ function parseMoney(value) {
 	        state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
 	      }
 	      state.products=state.products.filter(x=>x.id!==id || x.businessId!==businessId);
-	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.qty || 0) }, after:{ stock:0 } });
+	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.stock ?? p.qty ?? 0) }, after:{ stock:0 } });
 	      const committed = await commitCriticalMutation(previousState, 'product_deleted', (next) =>
 	        !next.products.some((item) => item.id === id && item.businessId === businessId)
 	        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId));
@@ -5057,7 +5063,7 @@ function parseMoney(value) {
 
       $('#cartItems').innerHTML=cart.length?cart.map(i=>{ const src=safeImageSrc(i.imageData); return `<div class="cartItem cartWithImage">${src ? `<img class="productImg small" src="${escapeHtml(src)}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(isCard ? i.cardPrice : i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button type="button" data-minus="${escapeHtml(i.id)}">−</button><b>${i.qty}</b><button type="button" data-plus="${escapeHtml(i.id)}">＋</button><button type="button" class="iconBtn danger" data-remove="${escapeHtml(i.id)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`; }).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
-      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=it && state.products.find(p=>p.id===it.id && p.businessId===currentBusiness()?.id); if (!it || (!it.isCustom && (!p || it.qty >= p.qty))) return toast('No hay mas stock disponible', 'err'); it.qty++; renderCart();});
+      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=it && state.products.find(p=>p.id===it.id && p.businessId===currentBusiness()?.id); if (!it || (!it.isCustom && (!p || it.qty >= (p.stock??p.qty??0)))) return toast('No hay mas stock disponible', 'err'); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
 
       const recF = $('#receivedField'), chgF = $('#changeField'), lblCustomer = $('#lblCustomer');
@@ -5134,9 +5140,9 @@ function parseMoney(value) {
         else toast(`Producto no encontrado: ${code || 'sin código'}`,'err');
         return;
       }
-      if(p.qty<=0){ beep('err'); return toast('Sin stock disponible','err'); }
+      if((p.stock??p.qty??0)<=0){ beep('err'); return toast('Sin stock disponible','err'); }
       const it=cart.find(x=>x.id===p.id);
-      if(it){ if(it.qty>=p.qty){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
+      if(it){ if(it.qty>=(p.stock??p.qty??0)){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
       else cart.push({id:p.id,name:p.name,price:p.price,cardPrice:p.cardPrice||p.price,qty:1,code:p.code,imageData:p.imageData||'',taxMode:p.taxMode||'inherit'});
       renderCart(); beep(); toast(`${p.name} agregado`);
     };
@@ -5192,7 +5198,7 @@ function parseMoney(value) {
       for(const i of cart){
         if(i.isCustom) continue;
         const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id);
-        if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); }
+        if(!p||(p.stock??p.qty??0)<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); }
       }
 
       const rec = parseMoney($('#cashReceived').value);
@@ -5301,7 +5307,7 @@ function parseMoney(value) {
 	          notes: ''
 	        });
 	      }
-	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id); if(p) { p.qty-=i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
+	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id); if(p) { const sold=Number(i.qty||0); p.stock-=sold; p.qty=p.stock; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
 
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
@@ -9646,7 +9652,7 @@ function parseMoney(value) {
     // Devolver stock
 	    saleItems(sale).forEach(i => {
 	       const p = state.products.find(prod=>prod.id === i.id && prod.businessId === businessId);
-	       if(p) { p.qty += i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; }
+	       if(p) { const restored=Number(i.qty||0); p.stock+=restored; p.qty=p.stock; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; }
 	    });
 
 	    sale.status = 'cancelled';
