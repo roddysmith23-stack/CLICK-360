@@ -95,51 +95,72 @@ assert(api.validateMigrationPlan(duplicate).errors.some((entry) => entry.include
 
 // ── Regression: Defect A — validateSourceDocumentIdentity (real implementation) ─
 // Uses api.validateSourceDocumentIdentity from worker-data-boundary.js directly.
-// Migration script imports from the same module; tests here exercise the real code.
+// Validates the complete p0-tenant-guard contract: ownerUid, ownerId, businessId,
+// tenantKey, and schemaVersion. Blocks migration before CUTOVER_VERIFIED if any field
+// is wrong or absent. Migration script imports from the same module; tests here exercise
+// the real code path.
 {
+  const P0_SCHEMA = 10;
   const expectedKey = api.identity('owner-a', 'biz-a').tenantKey;
-  const validDoc = { payload: { identity: { ownerUid:'owner-a', businessId:'biz-a', tenantKey:expectedKey }, data:{} } };
+  const expectedCtx = { ownerUid:'owner-a', ownerId:'owner-a', businessId:'biz-a', tenantKey:expectedKey, schemaVersion:P0_SCHEMA };
+  // Complete valid payload.identity (all 5 p0-tenant-guard fields)
+  const validId = { ownerUid:'owner-a', ownerId:'owner-a', businessId:'biz-a', tenantKey:expectedKey, schemaVersion:P0_SCHEMA };
+  const validDoc = { payload: { identity: validId, data:{} } };
 
-  // 1. Valid identity → must NOT throw
+  // 1. Valid identity (all 5 fields) → must NOT throw
   assert.doesNotThrow(
-    () => api.validateSourceDocumentIdentity(validDoc, 'owner-a', 'biz-a', expectedKey),
-    'valid identity must pass without throwing'
+    () => api.validateSourceDocumentIdentity(validDoc, expectedCtx),
+    'complete valid identity (all 5 p0 fields) must pass without throwing'
   );
   // 2. payload.identity absent → SOURCE_IDENTITY_ABSENT
   const noIdentityDoc = { payload: { data:{} } };
   assert.throws(
-    () => api.validateSourceDocumentIdentity(noIdentityDoc, 'owner-a', 'biz-a', expectedKey),
+    () => api.validateSourceDocumentIdentity(noIdentityDoc, expectedCtx),
     /SOURCE_IDENTITY_ABSENT/,
     'absent payload.identity must throw SOURCE_IDENTITY_ABSENT'
   );
-  // 3. Wrong ownerUid → SOURCE_IDENTITY_MISMATCH
-  const wrongOwner = { payload: { identity: { ownerUid:'wrong-owner', businessId:'biz-a', tenantKey:expectedKey }, data:{} } };
+  // 3. Wrong ownerUid → SOURCE_IDENTITY_MISMATCH (blocks CUTOVER_VERIFIED)
+  const wrongOwner = { payload: { identity: { ...validId, ownerUid:'wrong-owner' }, data:{} } };
   assert.throws(
-    () => api.validateSourceDocumentIdentity(wrongOwner, 'owner-a', 'biz-a', expectedKey),
+    () => api.validateSourceDocumentIdentity(wrongOwner, expectedCtx),
     /SOURCE_IDENTITY_MISMATCH/,
     'wrong ownerUid must throw SOURCE_IDENTITY_MISMATCH'
   );
-  // 4. Wrong businessId → SOURCE_IDENTITY_MISMATCH
-  const wrongBiz = { payload: { identity: { ownerUid:'owner-a', businessId:'wrong-biz', tenantKey:expectedKey }, data:{} } };
+  // 4. Wrong ownerId → SOURCE_IDENTITY_MISMATCH (blocks CUTOVER_VERIFIED)
+  const wrongOwnerId = { payload: { identity: { ...validId, ownerId:'wrong-owner-id' }, data:{} } };
   assert.throws(
-    () => api.validateSourceDocumentIdentity(wrongBiz, 'owner-a', 'biz-a', expectedKey),
+    () => api.validateSourceDocumentIdentity(wrongOwnerId, expectedCtx),
+    /SOURCE_IDENTITY_MISMATCH/,
+    'wrong ownerId must throw SOURCE_IDENTITY_MISMATCH — ownerId is a required p0-tenant-guard field'
+  );
+  // 5. Wrong businessId → SOURCE_IDENTITY_MISMATCH (blocks CUTOVER_VERIFIED)
+  const wrongBiz = { payload: { identity: { ...validId, businessId:'wrong-biz' }, data:{} } };
+  assert.throws(
+    () => api.validateSourceDocumentIdentity(wrongBiz, expectedCtx),
     /SOURCE_IDENTITY_MISMATCH/,
     'wrong businessId must throw SOURCE_IDENTITY_MISMATCH'
   );
-  // 5. Wrong tenantKey → SOURCE_IDENTITY_MISMATCH
-  const wrongKey = { payload: { identity: { ownerUid:'owner-a', businessId:'biz-a', tenantKey:'owner:other:business:biz-a' }, data:{} } };
+  // 6. Wrong tenantKey → SOURCE_IDENTITY_MISMATCH (blocks CUTOVER_VERIFIED)
+  const wrongKey = { payload: { identity: { ...validId, tenantKey:'owner:other:business:biz-a' }, data:{} } };
   assert.throws(
-    () => api.validateSourceDocumentIdentity(wrongKey, 'owner-a', 'biz-a', expectedKey),
+    () => api.validateSourceDocumentIdentity(wrongKey, expectedCtx),
     /SOURCE_IDENTITY_MISMATCH/,
     'wrong tenantKey must throw SOURCE_IDENTITY_MISMATCH'
   );
-  // 6. Null payload → SOURCE_IDENTITY_ABSENT
+  // 7. Wrong schemaVersion → SOURCE_IDENTITY_MISMATCH (blocks CUTOVER_VERIFIED)
+  const wrongSchema = { payload: { identity: { ...validId, schemaVersion:9 }, data:{} } };
   assert.throws(
-    () => api.validateSourceDocumentIdentity({}, 'owner-a', 'biz-a', expectedKey),
+    () => api.validateSourceDocumentIdentity(wrongSchema, expectedCtx),
+    /SOURCE_IDENTITY_MISMATCH/,
+    'wrong schemaVersion must throw SOURCE_IDENTITY_MISMATCH — schemaVersion is a required p0-tenant-guard field'
+  );
+  // 8. Null payload → SOURCE_IDENTITY_ABSENT
+  assert.throws(
+    () => api.validateSourceDocumentIdentity({}, expectedCtx),
     /SOURCE_IDENTITY_ABSENT/,
     'null payload must throw SOURCE_IDENTITY_ABSENT'
   );
-  // 7. Fixture path (no payload wrapper) does NOT trigger validation — migration script
+  // 9. Fixture path (no payload wrapper) does NOT trigger validation — migration script
   //    skips it for args.input. Tested end-to-end by npm run qa:worker-migration.
 }
 
@@ -213,6 +234,37 @@ assert(api.validateMigrationPlan(duplicate).errors.some((entry) => entry.include
   const afterRepair = { ...rootOnlyDoc, payload: { ...rootOnlyDoc.payload, identity: repairPlan.payloadIdentity } };
   const dataHashAfter = JSON.stringify(afterRepair.payload.data);
   assert.strictEqual(dataHashBefore, dataHashAfter, 'payload.data must be identical before and after identity repair');
+
+  // Case 9: After planIdentityRepair + simulated write, validateSourceDocumentIdentity passes
+  // the full p0-tenant-guard contract (all 5 fields: ownerUid, ownerId, businessId,
+  // tenantKey, schemaVersion). This confirms the repair output is accepted by the migrate guard.
+  assert.doesNotThrow(
+    () => api.validateSourceDocumentIdentity(afterRepair, expected),
+    'after identity repair, validateSourceDocumentIdentity must pass with all 5 p0 fields'
+  );
+
+  // Case 10: ownerId missing from payload.identity blocks validateSourceDocumentIdentity
+  // (demonstrates the pre-fix gap: old code only checked ownerUid/businessId/tenantKey)
+  const missingOwnerId = { ...rootOnlyDoc, payload: { ...rootOnlyDoc.payload,
+    identity: { ownerUid, businessId, tenantKey, schemaVersion: P0_SCHEMA }
+    // ownerId intentionally omitted
+  }};
+  assert.throws(
+    () => api.validateSourceDocumentIdentity(missingOwnerId, expected),
+    /SOURCE_IDENTITY_MISMATCH/,
+    'missing ownerId in payload.identity must throw SOURCE_IDENTITY_MISMATCH — blocks migration before CUTOVER_VERIFIED'
+  );
+
+  // Case 11: schemaVersion mismatch in payload.identity blocks validateSourceDocumentIdentity
+  const wrongSchemaVersion = { ...rootOnlyDoc, payload: { ...rootOnlyDoc.payload,
+    identity: { ownerUid, ownerId, businessId, tenantKey, schemaVersion: 9 }
+    // schemaVersion 9 instead of 10
+  }};
+  assert.throws(
+    () => api.validateSourceDocumentIdentity(wrongSchemaVersion, expected),
+    /SOURCE_IDENTITY_MISMATCH/,
+    'wrong schemaVersion (9 vs 10) in payload.identity must throw SOURCE_IDENTITY_MISMATCH — blocks migration before CUTOVER_VERIFIED'
+  );
 }
 
 // ── Regression: Defect B — stock vs qty contract ──────────────────────────
