@@ -28,6 +28,42 @@ function extractLegacyState(document) {
   return document;
 }
 
+/**
+ * Validates that a Firestore source document has a correct canonical identity
+ * (payload.identity) before the migration is allowed to plan or commit.
+ *
+ * A document without a valid payload.identity will pass `extractLegacyState`
+ * but will be rejected at runtime by p0-tenant-guard's validBusinessPayload().
+ * This guard ensures the migration never produces CUTOVER_VERIFIED from a
+ * document that the tenant guard will subsequently reject.
+ *
+ * Only called when loading from Firestore (not from --input fixture).
+ * Fixture-based QA documents do not have the payload wrapper.
+ *
+ * Fails closed: any absence or mismatch throws, blocking the migration.
+ */
+function validateSourceDocumentIdentity(raw, ownerUid, businessId, expectedTenantKey) {
+  const identity = raw?.payload?.identity;
+  if (!identity || typeof identity !== 'object') {
+    throw new Error(
+      `SOURCE_IDENTITY_ABSENT: El documento state/main de businesses/${ownerUid} ` +
+      `no contiene payload.identity. La migración no puede proceder. ` +
+      `Corrija la identidad del documento fuente antes de volver a ejecutar la migración.`
+    );
+  }
+  const mismatches = [];
+  if (identity.ownerUid !== ownerUid) mismatches.push(`ownerUid: esperado ${ownerUid}, encontrado ${identity.ownerUid}`);
+  if (identity.businessId !== businessId) mismatches.push(`businessId: esperado ${businessId}, encontrado ${identity.businessId}`);
+  if (expectedTenantKey && identity.tenantKey !== expectedTenantKey) mismatches.push(`tenantKey: esperado ${expectedTenantKey}, encontrado ${identity.tenantKey}`);
+  if (mismatches.length) {
+    throw new Error(
+      `SOURCE_IDENTITY_MISMATCH: La identidad del documento fuente no coincide con el tenant esperado. ` +
+      `Diferencias: ${mismatches.join('; ')}. ` +
+      `No se puede declarar CUTOVER_VERIFIED con identidad contradictoria.`
+    );
+  }
+}
+
 function assertIdentity(value, expected, label) {
   for (const key of ['ownerUid', 'businessId', 'tenantKey', 'boundarySchemaVersion']) {
     if (value?.[key] !== expected[key]) throw new Error(`${label} identity mismatch: ${key}`);
@@ -218,9 +254,16 @@ let source;
 if (args.input) {
   const raw = await loadJson(args.input);
   source = { raw, state:extractLegacyState(raw), updateTime:'fixture', ref:null };
+  // Fixture-based sources do not carry a payload wrapper; identity validation is skipped.
+  // Fixture runs are DRY_RUN only (enforced below) and never reach CUTOVER_VERIFIED.
 } else {
   db = await connectAdmin(projectId);
   source = await sourceFromFirestore(db, String(args.owner));
+  // Validate canonical identity BEFORE planning. A Firestore document without
+  // payload.identity will be accepted by extractLegacyState but rejected at
+  // runtime by p0-tenant-guard. We block here to prevent a false CUTOVER_VERIFIED.
+  const expectedTenantKey = boundary.identity(String(args.owner), String(args.business)).tenantKey;
+  validateSourceDocumentIdentity(source.raw, String(args.owner), String(args.business), expectedTenantKey);
 }
 if ((apply || rollback || promote) && args.input) throw new Error('Apply/promote/rollback must reread the staging state/main source; fixture execution is forbidden.');
 
