@@ -279,7 +279,19 @@
    * If payload.identity is absent, run worker-boundary-repair-identity.mjs first
    * to materialize it from the document's valid root-level identity fields.
    */
-  function validateSourceDocumentIdentity(raw, ownerUid, businessId, expectedTenantKey) {
+  /**
+   * Validates that raw.payload.identity satisfies the complete p0-tenant-guard contract:
+   * ownerUid, ownerId, businessId, tenantKey, and schemaVersion (must equal 10).
+   * Throws SOURCE_IDENTITY_ABSENT when payload.identity is missing.
+   * Throws SOURCE_IDENTITY_MISMATCH when any of the five fields contradict expected.
+   * Called by the migration script before allowing CUTOVER_VERIFIED and by the repair
+   * script after writing payload.identity to confirm the write was correct.
+   *
+   * @param {object} raw - Raw Firestore document (full snapshot data)
+   * @param {{ ownerUid, ownerId, businessId, tenantKey, schemaVersion }} expected
+   */
+  function validateSourceDocumentIdentity(raw, expected) {
+    const { ownerUid, ownerId, businessId, tenantKey, schemaVersion } = expected;
     const payloadIdentity = raw?.payload?.identity;
     if (!payloadIdentity || typeof payloadIdentity !== 'object') {
       throw new Error(
@@ -290,8 +302,10 @@
     }
     const mismatches = [];
     if (payloadIdentity.ownerUid !== ownerUid) mismatches.push(`ownerUid: esperado ${ownerUid}, encontrado ${payloadIdentity.ownerUid}`);
+    if (payloadIdentity.ownerId !== ownerId) mismatches.push(`ownerId: esperado ${ownerId}, encontrado ${payloadIdentity.ownerId}`);
     if (payloadIdentity.businessId !== businessId) mismatches.push(`businessId: esperado ${businessId}, encontrado ${payloadIdentity.businessId}`);
-    if (expectedTenantKey && payloadIdentity.tenantKey !== expectedTenantKey) mismatches.push(`tenantKey: esperado ${expectedTenantKey}, encontrado ${payloadIdentity.tenantKey}`);
+    if (payloadIdentity.tenantKey !== tenantKey) mismatches.push(`tenantKey: esperado ${tenantKey}, encontrado ${payloadIdentity.tenantKey}`);
+    if (Number(payloadIdentity.schemaVersion) !== Number(schemaVersion)) mismatches.push(`schemaVersion: esperado ${schemaVersion}, encontrado ${payloadIdentity.schemaVersion}`);
     if (mismatches.length) {
       throw new Error(
         `SOURCE_IDENTITY_MISMATCH: La identidad del documento fuente no coincide con el tenant esperado. ` +

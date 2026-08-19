@@ -7,6 +7,7 @@ await import('../worker-data-boundary.js');
 const boundary = globalThis.CLICK360_WORKER_DATA_BOUNDARY;
 const STAGING_PROJECT = 'click360-staging-7620168025';
 const PRODUCTION_PROJECT = 'click-360';
+const P0_SCHEMA_VERSION = 10; // Must match p0-tenant-guard.js SCHEMA_VERSION
 
 function parseArgs(argv) {
   const result = {};
@@ -226,8 +227,17 @@ if (args.input) {
   // Validate canonical identity BEFORE planning. A Firestore document without
   // payload.identity will be accepted by extractLegacyState but rejected at
   // runtime by p0-tenant-guard. We block here to prevent a false CUTOVER_VERIFIED.
-  const expectedTenantKey = boundary.identity(String(args.owner), String(args.business)).tenantKey;
-  validateSourceDocumentIdentity(source.raw, String(args.owner), String(args.business), expectedTenantKey);
+  const ownerUid = String(args.owner);
+  const businessId = String(args.business);
+  const expectedTenantKey = boundary.identity(ownerUid, businessId).tenantKey;
+  // Validate the complete p0-tenant-guard contract (all 5 fields) before allowing CUTOVER_VERIFIED.
+  boundary.validateSourceDocumentIdentity(source.raw, {
+    ownerUid,
+    ownerId: ownerUid, // ownerId === ownerUid by CLICK 360 convention
+    businessId,
+    tenantKey: expectedTenantKey,
+    schemaVersion: P0_SCHEMA_VERSION
+  });
 }
 if ((apply || rollback || promote) && args.input) throw new Error('Apply/promote/rollback must reread the staging state/main source; fixture execution is forbidden.');
 

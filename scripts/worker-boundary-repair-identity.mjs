@@ -163,8 +163,8 @@ if (dataHashBefore !== dataHashAfter) {
   throw new Error('REPAIR_INTEGRITY_FAILED: payload.data cambió inesperadamente durante la reparación. Revisar inmediatamente.');
 }
 
-// Confirm payload.identity is now correct
-boundary.validateSourceDocumentIdentity(rawAfter, ownerUid, businessId, expectedTenantKey);
+// Confirm payload.identity is now correct — validate the full p0-tenant-guard contract (all 5 fields)
+boundary.validateSourceDocumentIdentity(rawAfter, expected);
 
 report.payloadIdentityWritten = plan.payloadIdentity;
 report.hashAfter = stableHash(rawAfter);
