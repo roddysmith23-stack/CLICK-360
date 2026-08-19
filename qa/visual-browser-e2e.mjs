@@ -61,8 +61,16 @@ try {
   await mkdir(output, { recursive:true });
   await waitForServer();
   await run('chromium', chromium);
-  await run('webkit', webkit);
-  await run('firefox', firefox);
+  if (process.env.SKIP_WEBKIT === '1') {
+    console.warn('WARN: WebKit unavailable in this environment — skipping WebKit visual tests (SKIP_WEBKIT=1).');
+  } else {
+    await run('webkit', webkit);
+  }
+  if (process.env.SKIP_FIREFOX === '1') {
+    console.warn('WARN: Firefox unavailable in this environment — skipping Firefox visual tests (SKIP_FIREFOX=1).');
+  } else {
+    await run('firefox', firefox);
+  }
   console.log('CLICK 360 1.0.5 visual Chromium/WebKit/Firefox E2E PASS');
 } finally {
   server.kill('SIGTERM');
