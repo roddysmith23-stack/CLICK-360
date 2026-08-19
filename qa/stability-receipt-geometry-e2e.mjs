@@ -79,7 +79,11 @@ async function run(name, browserType) {
 try {
   await waitForServer();
   await run('chromium', chromium);
-  await run('webkit', webkit);
+  if (process.env.SKIP_WEBKIT === '1') {
+    console.warn('WARN: WebKit unavailable in this environment — skipping WebKit receipt geometry tests (SKIP_WEBKIT=1).');
+  } else {
+    await run('webkit', webkit);
+  }
 } finally {
   server.kill('SIGTERM');
 }

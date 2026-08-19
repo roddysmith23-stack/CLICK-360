@@ -62,7 +62,13 @@ async function run(browserName, browserType, width) {
 
 try {
   await waitForServer();
-  for (const [browserName, browserType] of [['chromium', chromium], ['webkit', webkit]]) {
+  const browsers = [['chromium', chromium]];
+  if (process.env.SKIP_WEBKIT !== '1') {
+    browsers.push(['webkit', webkit]);
+  } else {
+    console.warn('WARN: WebKit unavailable in this environment — skipping WebKit continuous receipt tests (SKIP_WEBKIT=1).');
+  }
+  for (const [browserName, browserType] of browsers) {
     for (const width of ['58', '80', 'fixed']) await run(browserName, browserType, width);
   }
 } finally {

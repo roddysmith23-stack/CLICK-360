@@ -144,8 +144,16 @@ async function run(browserName, browserType) {
 try {
   await waitForServer();
   await run('chromium', chromium);
-  await run('webkit', webkit);
-  await run('firefox', firefox);
+  if (process.env.SKIP_WEBKIT === '1') {
+    console.warn('WARN: WebKit unavailable in this environment — skipping WebKit label wizard tests (SKIP_WEBKIT=1).');
+  } else {
+    await run('webkit', webkit);
+  }
+  if (process.env.SKIP_FIREFOX === '1') {
+    console.warn('WARN: Firefox unavailable in this environment — skipping Firefox label wizard tests (SKIP_FIREFOX=1).');
+  } else {
+    await run('firefox', firefox);
+  }
   console.log('CLICK 360 label wizard layout E2E PASS');
 } finally {
   server.kill('SIGTERM');

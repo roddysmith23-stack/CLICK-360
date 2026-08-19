@@ -62,8 +62,16 @@ async function run(name, browserType, verifyPdf = false) {
 try {
   await waitForServer();
   await run('chromium', chromium, true);
-  await run('webkit', webkit);
-  await run('firefox', firefox);
+  if (process.env.SKIP_WEBKIT === '1') {
+    console.warn('WARN: WebKit unavailable in this environment — skipping WebKit golden Shary tests (SKIP_WEBKIT=1).');
+  } else {
+    await run('webkit', webkit);
+  }
+  if (process.env.SKIP_FIREFOX === '1') {
+    console.warn('WARN: Firefox unavailable in this environment — skipping Firefox golden Shary tests (SKIP_FIREFOX=1).');
+  } else {
+    await run('firefox', firefox);
+  }
 } finally {
   server.kill('SIGTERM');
 }
