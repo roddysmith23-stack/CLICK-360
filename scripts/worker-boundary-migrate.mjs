@@ -113,6 +113,18 @@ async function applyPlan({ db, plan, source, sourceHash, expectedSourceHash }) {
     if (root.sourceHash !== sourceHash || !['PREPARED', 'VERIFIED'].includes(root.status)) throw new Error('Existing businessUnit is not resumable.');
   }
 
+  // P0 commercial rule: provision the 2-free-seat worker entitlement counter
+  // alongside the businessUnit root. Clients can never create this doc
+  // themselves (see firestore.rules); it must exist before any invite can be
+  // accepted into this business.
+  const seatRef = rootRef.collection('entitlement').doc('seats');
+  const seatSnapshot = await seatRef.get();
+  if (!seatSnapshot.exists) {
+    await seatRef.create(boundary.seatEntitlement(ownerUid, businessId, { updatedBy:'worker-boundary-migrate', updatedAt:new Date().toISOString() }));
+  } else {
+    assertIdentity(seatSnapshot.data(), expectedIdentity, 'seatEntitlement');
+  }
+
   const preflight = await verifyExistingRecords(rootRef, plan);
   if (preflight.mismatches.length) throw new Error(`Create-only collision: ${preflight.mismatches.join(', ')}`);
   for (let offset = 0; offset < preflight.missing.length; offset += 400) {

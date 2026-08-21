@@ -45,6 +45,12 @@ function permissions(role) {
   }
   return result;
 }
+function seats(ownerUid, businessId, extra = {}) {
+  return {
+    ownerUid, businessId, tenantKey:tenantKey(ownerUid, businessId), boundarySchemaVersion:1,
+    baseSeatCap:2, addOnSeats:0, activeMembers:0, updatedBy:ownerUid, updatedAt:new Date(), ...extra
+  };
+}
 function unit(ownerUid, businessId) {
   return {
     id:businessId, ownerUid, businessId, tenantKey:tenantKey(ownerUid, businessId), boundarySchemaVersion:1,
@@ -85,6 +91,12 @@ async function main() {
       await setDoc(doc(db, 'approvedUsers', OTHER_OWNER), ownerProfile(OTHER_OWNER));
       await setDoc(doc(db, 'businesses', OWNER, 'businessUnits', BUSINESS), unit(OWNER, BUSINESS));
       await setDoc(doc(db, 'businesses', OTHER_OWNER, 'businessUnits', OTHER_BUSINESS), unit(OTHER_OWNER, OTHER_BUSINESS));
+      // Pre-seeded fixture members below (admin-a, supervisor-a, seller-a, inventory-a) are
+      // written with rules disabled, so the entitlement counter is seeded to match reality
+      // (4 already active) with enough addOnSeats to also cover the WORKER activation later
+      // in this file via the normal seat-consuming path.
+      await setDoc(doc(db, 'businesses', OWNER, 'businessUnits', BUSINESS, 'entitlement', 'seats'), seats(OWNER, BUSINESS, { addOnSeats:3, activeMembers:4 }));
+      await setDoc(doc(db, 'businesses', OTHER_OWNER, 'businessUnits', OTHER_BUSINESS, 'entitlement', 'seats'), seats(OTHER_OWNER, OTHER_BUSINESS));
       await setDoc(doc(db, 'businesses', OWNER, 'businessUnits', BUSINESS, 'products', 'product-a'), {
         ...boundaryRecord(OWNER, BUSINESS, 'products', 'product-a', OWNER, { name:'Producto QA', stock:10, price:5 }),
         createdAt:new Date(), updatedAt:new Date()
@@ -134,10 +146,15 @@ async function main() {
       transaction.set(doc(workerDb, 'approvedUsers', WORKER), approvedWorker(WORKER, WORKER_EMAIL, 'cashier', permissions('cashier')));
       transaction.update(workerInviteRef, { status:'accepted', acceptedBy:WORKER, acceptedAt:serverTimestamp(), consumed:true });
     }));
-    await assertSucceeds(setDoc(doc(workerDb, ...unitPath('members', WORKER)), boundaryRecord(
+    const acceptBatch = writeBatch(workerDb);
+    acceptBatch.set(doc(workerDb, ...unitPath('members', WORKER)), boundaryRecord(
       OWNER, BUSINESS, 'members', WORKER, WORKER,
       { uid:WORKER, email:WORKER_EMAIL, role:'cashier', permissions:permissions('cashier'), status:'active' }
-    )));
+    ));
+    acceptBatch.update(doc(workerDb, ...unitPath('entitlement', 'seats')), {
+      activeMembers:5, lastActionUid:WORKER, updatedBy:WORKER, updatedAt:serverTimestamp()
+    });
+    await assertSucceeds(acceptBatch.commit());
 
     const saleRef = doc(workerDb, ...unitPath('sales', 'sale-worker-1'));
     const saleBatch = writeBatch(workerDb);
@@ -227,6 +244,9 @@ async function main() {
     revoke.update(doc(ownerDb, 'businesses', OWNER, 'members', WORKER), {
       status:'revoked', updatedAt:serverTimestamp(), updatedBy:OWNER, revokedAt:serverTimestamp(), revokedBy:OWNER
     });
+    revoke.update(doc(ownerDb, ...unitPath('entitlement', 'seats')), {
+      activeMembers:4, lastActionUid:WORKER, updatedBy:OWNER, updatedAt:serverTimestamp()
+    });
     await assertSucceeds(revoke.commit());
     await assertFails(getDoc(doc(workerDb, ...unitPath('products', 'product-a'))));
     await assertFails(setDoc(doc(workerDb, ...unitPath('sales', 'sale-after-revoke')), boundaryRecord(
@@ -234,7 +254,105 @@ async function main() {
     )));
 
     await assertFails(getDoc(doc(workerDb, 'businesses', OWNER, 'state', 'main')));
-    console.log('PASS worker boundary emulator: invite, accept, module permissions, sale, layaway payment, cash, audit, revoke and tenant isolation');
+
+    // ── P0 commercial rule: 2 free worker seats + parametrizable paid add-on ─
+    const SEAT_OWNER = 'owner-seats';
+    const SEAT_BUSINESS = 'business-seats';
+    const CROSS_OWNER = 'owner-seats-cross';
+    const CROSS_BUSINESS = 'business-seats-cross';
+    const seatWorkers = ['seat-w1', 'seat-w2', 'seat-w3', 'seat-w4'];
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'approvedUsers', SEAT_OWNER), ownerProfile(SEAT_OWNER));
+      await setDoc(doc(db, 'businesses', SEAT_OWNER, 'businessUnits', SEAT_BUSINESS), unit(SEAT_OWNER, SEAT_BUSINESS));
+      await setDoc(doc(db, 'businesses', SEAT_OWNER, 'businessUnits', SEAT_BUSINESS, 'entitlement', 'seats'), seats(SEAT_OWNER, SEAT_BUSINESS));
+      await setDoc(doc(db, 'approvedUsers', CROSS_OWNER), ownerProfile(CROSS_OWNER));
+      await setDoc(doc(db, 'businesses', CROSS_OWNER, 'businessUnits', CROSS_BUSINESS), unit(CROSS_OWNER, CROSS_BUSINESS));
+      await setDoc(doc(db, 'businesses', CROSS_OWNER, 'businessUnits', CROSS_BUSINESS, 'entitlement', 'seats'), seats(CROSS_OWNER, CROSS_BUSINESS));
+      for (const uid of [...seatWorkers, 'cross-w1', 'cross-w2', 'cross-w3']) {
+        await setDoc(doc(db, 'businesses', uid.startsWith('cross') ? CROSS_OWNER : SEAT_OWNER, 'members', uid), {
+          uid, email:`${uid}@example.test`, name:'QA Seat Worker', role:'seller', permissions:permissions('seller'),
+          status:'active', ownerId:uid.startsWith('cross') ? CROSS_OWNER : SEAT_OWNER, businessId:uid.startsWith('cross') ? CROSS_OWNER : SEAT_OWNER,
+          businessUnitId:uid.startsWith('cross') ? CROSS_BUSINESS : SEAT_BUSINESS,
+          tenantKey:`owner:${uid.startsWith('cross') ? CROSS_OWNER : SEAT_OWNER}:business:${uid.startsWith('cross') ? CROSS_OWNER : SEAT_OWNER}`,
+          invitationHash:'x'.repeat(64), acceptedAt:new Date(), lastAccessAt:new Date()
+        });
+      }
+    });
+    const seatOwnerDb = env.authenticatedContext(SEAT_OWNER, { email:`${SEAT_OWNER}@example.test` }).firestore();
+    const crossOwnerDb = env.authenticatedContext(CROSS_OWNER, { email:`${CROSS_OWNER}@example.test` }).firestore();
+    const seatUnitPath = (...parts) => ['businesses', SEAT_OWNER, 'businessUnits', SEAT_BUSINESS, ...parts];
+    const crossUnitPath = (...parts) => ['businesses', CROSS_OWNER, 'businessUnits', CROSS_BUSINESS, ...parts];
+
+    async function activateSeatMember(actorDb, unitPathFn, uid, expectedBefore) {
+      const batch = writeBatch(actorDb);
+      batch.set(doc(actorDb, ...unitPathFn('members', uid)), boundaryRecord(
+        unitPathFn === seatUnitPath ? SEAT_OWNER : CROSS_OWNER, unitPathFn === seatUnitPath ? SEAT_BUSINESS : CROSS_BUSINESS,
+        'members', uid, uid, { uid, email:`${uid}@example.test`, role:'seller', permissions:permissions('seller'), status:'active' }
+      ));
+      batch.update(doc(actorDb, ...unitPathFn('entitlement', 'seats')), {
+        activeMembers:expectedBefore + 1, lastActionUid:uid, updatedBy:uid, updatedAt:serverTimestamp()
+      });
+      return batch.commit();
+    }
+
+    // Scenario 1: owner + 2 workers (seat-w1, seat-w2) = allowed (baseSeatCap=2, addOnSeats=0).
+    const seatW1Db = env.authenticatedContext('seat-w1', { email:'seat-w1@example.test' }).firestore();
+    const seatW2Db = env.authenticatedContext('seat-w2', { email:'seat-w2@example.test' }).firestore();
+    const seatW3Db = env.authenticatedContext('seat-w3', { email:'seat-w3@example.test' }).firestore();
+    const seatW4Db = env.authenticatedContext('seat-w4', { email:'seat-w4@example.test' }).firestore();
+    await assertSucceeds(activateSeatMember(seatW1Db, seatUnitPath, 'seat-w1', 0));
+    await assertSucceeds(activateSeatMember(seatW2Db, seatUnitPath, 'seat-w2', 1));
+
+    // Scenario 2: worker #3 without an add-on = DENY (2/2 seats already in use).
+    await assertFails(activateSeatMember(seatW3Db, seatUnitPath, 'seat-w3', 2));
+    const deniedThirdMember = await getDoc(doc(seatOwnerDb, ...seatUnitPath('members', 'seat-w3')));
+    assert.strictEqual(deniedThirdMember.exists(), false, 'worker #3 must not have been created when the seat cap was full');
+
+    // Scenario 3: owner purchases +1 add-on seat (parametrizable, no price enforced here) → worker #3 now allowed.
+    await assertSucceeds(updateDoc(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')), {
+      addOnSeats:1, updatedBy:SEAT_OWNER, updatedAt:serverTimestamp()
+    }));
+    await assertSucceeds(activateSeatMember(seatW3Db, seatUnitPath, 'seat-w3', 2));
+    // Capacity is now exactly full again (3/3): a 4th worker must still be denied.
+    await assertFails(activateSeatMember(seatW4Db, seatUnitPath, 'seat-w4', 3));
+
+    // Scenario 4: revoking a worker frees its seat for the next activation.
+    const seatRevoke = writeBatch(seatOwnerDb);
+    seatRevoke.update(doc(seatOwnerDb, ...seatUnitPath('members', 'seat-w1')), {
+      status:'revoked', recordVersion:2, updatedBy:SEAT_OWNER, updatedAt:serverTimestamp(), revokedBy:SEAT_OWNER, revokedAt:serverTimestamp()
+    });
+    seatRevoke.update(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')), {
+      activeMembers:2, lastActionUid:'seat-w1', updatedBy:SEAT_OWNER, updatedAt:serverTimestamp()
+    });
+    await assertSucceeds(seatRevoke.commit());
+    await assertSucceeds(activateSeatMember(seatW4Db, seatUnitPath, 'seat-w4', 2));
+
+    // A "phantom" seat release (decrementing the counter without revoking any
+    // member in the same write) must be rejected: lastActionUid still points
+    // at the last real activation (seat-w4), which never actually revokes.
+    await assertFails(updateDoc(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')), {
+      activeMembers:2, updatedBy:SEAT_OWNER, updatedAt:serverTimestamp()
+    }));
+    const untamperedSeats = await getDoc(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')));
+    assert.strictEqual(untamperedSeats.data().activeMembers, 3, 'a standalone counter write must never change activeMembers without a paired member transition');
+
+    // Scenario 5: cross-tenant tenants never share the seat pool. Filling CROSS_BUSINESS
+    // to its own 2-seat cap must not be affected by, or affect, SEAT_BUSINESS's cap.
+    const crossW1Db = env.authenticatedContext('cross-w1', { email:'cross-w1@example.test' }).firestore();
+    const crossW2Db = env.authenticatedContext('cross-w2', { email:'cross-w2@example.test' }).firestore();
+    const crossW3Db = env.authenticatedContext('cross-w3', { email:'cross-w3@example.test' }).firestore();
+    await assertSucceeds(activateSeatMember(crossW1Db, crossUnitPath, 'cross-w1', 0));
+    await assertSucceeds(activateSeatMember(crossW2Db, crossUnitPath, 'cross-w2', 1));
+    await assertFails(activateSeatMember(crossW3Db, crossUnitPath, 'cross-w3', 2));
+    // A worker authenticated in one tenant cannot spend the OTHER tenant's seats either.
+    await assertFails(activateSeatMember(seatW1Db, crossUnitPath, 'seat-w1', 2));
+    const crossSeatsAfter = await getDoc(doc(crossOwnerDb, ...crossUnitPath('entitlement', 'seats')));
+    assert.strictEqual(crossSeatsAfter.data().activeMembers, 2, 'cross-tenant seat pool must stay untouched by the other tenant');
+    const seatBusinessSeatsAfter = await getDoc(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')));
+    assert.strictEqual(seatBusinessSeatsAfter.data().activeMembers, 3, 'SEAT_BUSINESS pool must be unaffected by CROSS_BUSINESS activity');
+
+    console.log('PASS worker boundary emulator: invite, accept, module permissions, sale, layaway payment, cash, audit, revoke, tenant isolation and 2-seat entitlement (deny #3, +1 add-on, revoke frees seat, no cross-tenant sharing)');
   } finally {
     await env.cleanup();
   }
