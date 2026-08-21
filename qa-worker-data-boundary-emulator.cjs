@@ -1,7 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const { assertFails, assertSucceeds, initializeTestEnvironment } = require('@firebase/rules-unit-testing');
-const { collection, deleteDoc, doc, getDoc, getDocs, runTransaction, serverTimestamp, setDoc, updateDoc, writeBatch } = require('firebase/firestore');
+const { collection, deleteDoc, doc, getDoc, getDocs, increment, runTransaction, serverTimestamp, setDoc, updateDoc, writeBatch } = require('firebase/firestore');
 
 const RULES = fs.readFileSync('firestore.rules', 'utf8');
 const PROJECT_ID = 'demo-click360-worker-boundary';
@@ -260,7 +260,7 @@ async function main() {
     const SEAT_BUSINESS = 'business-seats';
     const CROSS_OWNER = 'owner-seats-cross';
     const CROSS_BUSINESS = 'business-seats-cross';
-    const seatWorkers = ['seat-w1', 'seat-w2', 'seat-w3', 'seat-w4'];
+    const seatWorkers = ['seat-w0', 'seat-w1', 'seat-w2', 'seat-w3', 'seat-w4'];
     await env.withSecurityRulesDisabled(async (context) => {
       const db = context.firestore();
       await setDoc(doc(db, 'approvedUsers', SEAT_OWNER), ownerProfile(SEAT_OWNER));
@@ -295,6 +295,37 @@ async function main() {
       });
       return batch.commit();
     }
+
+    // Regression: a first-time acceptor (not yet a member, not the owner) can
+    // NEVER read entitlement/seats directly -- firestore.rules only grants
+    // read to the owner or an already-active member. acceptInvitationFromUrl
+    // in firebase-service.js must therefore consume the seat with a blind
+    // FieldValue.increment(1) write (no prior transaction.get on the seat
+    // doc), which the write-time rule (seatConsumedForSelf) independently
+    // re-verifies at commit. This reproduces exactly the P0 bug found during
+    // live staging QA (E2E owner smoke test) and locks in the fix.
+    const seatW0Db = env.authenticatedContext('seat-w0', { email:'seat-w0@example.test' }).firestore();
+    await assertFails(getDoc(doc(seatW0Db, ...seatUnitPath('entitlement', 'seats'))));
+    const firstTimeAcceptBatch = writeBatch(seatW0Db);
+    firstTimeAcceptBatch.set(doc(seatW0Db, ...seatUnitPath('members', 'seat-w0')), boundaryRecord(
+      SEAT_OWNER, SEAT_BUSINESS, 'members', 'seat-w0', 'seat-w0', { uid:'seat-w0', email:'seat-w0@example.test', role:'seller', permissions:permissions('seller'), status:'active' }
+    ));
+    firstTimeAcceptBatch.update(doc(seatW0Db, ...seatUnitPath('entitlement', 'seats')), {
+      activeMembers:increment(1), lastActionUid:'seat-w0', updatedBy:'seat-w0', updatedAt:serverTimestamp()
+    });
+    await assertSucceeds(firstTimeAcceptBatch.commit());
+    const seatsAfterFirstTimeAccept = await getDoc(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')));
+    assert.strictEqual(seatsAfterFirstTimeAccept.data().activeMembers, 1, 'blind increment(1) by a first-time acceptor must land correctly with no prior read');
+
+    // Revoke seat-w0 so the numbered scenarios below start from a clean 0/2.
+    const seatW0Revoke = writeBatch(seatOwnerDb);
+    seatW0Revoke.update(doc(seatOwnerDb, ...seatUnitPath('members', 'seat-w0')), {
+      status:'revoked', recordVersion:2, updatedBy:SEAT_OWNER, updatedAt:serverTimestamp(), revokedBy:SEAT_OWNER, revokedAt:serverTimestamp()
+    });
+    seatW0Revoke.update(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')), {
+      activeMembers:0, lastActionUid:'seat-w0', updatedBy:SEAT_OWNER, updatedAt:serverTimestamp()
+    });
+    await assertSucceeds(seatW0Revoke.commit());
 
     // Scenario 1: owner + 2 workers (seat-w1, seat-w2) = allowed (baseSeatCap=2, addOnSeats=0).
     const seatW1Db = env.authenticatedContext('seat-w1', { email:'seat-w1@example.test' }).firestore();

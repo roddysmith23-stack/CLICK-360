@@ -1419,7 +1419,8 @@
 		    const approved = db.collection('approvedUsers').doc(user.uid);
 		    const normalizedEmail = String(user.email || '').trim().toLowerCase();
 		    const trustedNowMs = await trustedAuthServerNowMs(user);
-		    await db.runTransaction(async (transaction) => {
+		    try {
+	    await db.runTransaction(async (transaction) => {
 	      const snapshot = await transaction.get(invite);
 	      if (!snapshot.exists) throw new Error('La invitacion no existe o fue eliminada.');
 	      const data = snapshot.data() || {};
@@ -1448,20 +1449,21 @@
 	      };
 	      // P0 commercial rule: this business includes at most 2 active workers
 	      // (excluding the owner) unless additional paid seats were purchased.
-	      // Firestore transactions require all reads before any writes, so the
-	      // seat entitlement is read and planned here, before any transaction.set
-	      // below, then consumed atomically with the member activation writes.
+	      // The entitlement doc is NOT read here on purpose: a first-time acceptor
+	      // is neither the owner nor an active member yet, so firestore.rules'
+	      // read rule for entitlement/seats would reject that read immediately
+	      // (reads are checked against currently-committed state, before this
+	      // transaction's writes exist). FieldValue.increment(1) needs no prior
+	      // read; the write-time rule (seatConsumedForSelf) independently
+	      // re-verifies capacity and the real member-activation transition at
+	      // commit, when the full transaction IS visible to the rules engine.
 	      const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
 	      let seatRef = null;
-	      let seatPlan = null;
 	      if (data.businessUnitId) {
 	        const boundaryIdentity = boundary?.identity?.(ownerId, data.businessUnitId);
 	        if (!boundaryIdentity) throw new Error('La invitación no tiene una frontera modular válida.');
 	        seatRef = db.collection('businesses').doc(ownerId).collection('businessUnits')
 	          .doc(data.businessUnitId).collection('entitlement').doc('seats');
-	        const seatSnapshot = await transaction.get(seatRef);
-	        if (!seatSnapshot.exists) throw new Error('El negocio modular no tiene cupos de trabajador configurados.');
-	        seatPlan = boundary.planSeatConsumption(seatSnapshot.data(), boundaryIdentity, user.uid);
 	      }
 	      transaction.set(member, memberData);
 	      if (data.businessUnitId) {
@@ -1485,8 +1487,8 @@
 	          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
 	        });
 	        transaction.update(seatRef, {
-	          activeMembers:seatPlan.activeMembers,
-	          lastActionUid:seatPlan.lastActionUid,
+	          activeMembers:firebase.firestore.FieldValue.increment(1),
+	          lastActionUid:user.uid,
 	          updatedBy:user.uid,
 	          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
 	        });
@@ -1514,6 +1516,12 @@
 	      });
 	      transaction.update(invite, { status: 'accepted', acceptedBy: user.uid, acceptedAt: firebase.firestore.FieldValue.serverTimestamp(), consumed: true });
 	    });
+	    } catch (transactionError) {
+	      if (transactionError?.code === 'permission-denied') {
+	        throw new Error('No hay cupos de trabajador disponibles para este negocio. Pide al dueño que compre un cupo adicional o libere uno.');
+	      }
+	      throw transactionError;
+	    }
 		    clearInvitationIntent({ cleanUrl: true });
 		    clearPublicAuthIntent();
 			    recordTelemetryOnce(`invite-accept:${ownerId}:${computedHash}:${user.uid}`, 'invitation', { mode: 'accepted' });
