@@ -184,9 +184,24 @@ service cloud.firestore {
         && data.boundarySchemaVersion == 1;
     }
 
+    // Phase 3.2 gradual rollout gate: a tenant's Workers module is only
+    // reachable while businesses/{ownerUid}/featureFlags/workers exists with
+    // { enabled: true }. This doc is provisioned by the trusted migration
+    // admin process (worker-boundary-migrate.mjs) and adjusted only by
+    // scripts/worker-boundary-admin.mjs (both bypass rules via the Admin
+    // SDK); no client can create, update, or delete it. This is the single
+    // chokepoint every businessUnits rule below funnels through via
+    // businessUnitReady(), so per-tenant activation/deactivation cannot be
+    // bypassed from a modified client.
+    function workersFeatureFlagEnabled(ownerUid) {
+      return exists(/databases/$(database)/documents/businesses/$(ownerUid)/featureFlags/workers)
+        && get(/databases/$(database)/documents/businesses/$(ownerUid)/featureFlags/workers).data.enabled == true;
+    }
+
     function businessUnitReady(ownerUid, businessId) {
       let unit = businessUnitData(ownerUid, businessId);
       return signedIn()
+        && workersFeatureFlagEnabled(ownerUid)
         && exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId))
         && validBusinessUnitIdentity(unit, ownerUid, businessId)
         && unit.status == "CUTOVER_VERIFIED";
@@ -709,6 +724,33 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Phase 3.2 per-tenant Workers rollout switch. Admin-provisioned and
+    // admin-adjusted only (worker-boundary-migrate.mjs / worker-boundary-admin.mjs
+    // via the Admin SDK, which bypasses rules) -- see workersFeatureFlagEnabled().
+    // The owner may read their own tenant's flag (e.g. to show rollout status);
+    // no client may ever write it.
+    match /businesses/{ownerUid}/featureFlags/{docId} {
+      allow read: if request.auth.uid == ownerUid;
+      allow create, update, delete: if false;
+    }
+
+    // Owner-initiated, immutable request log for additional worker seats
+    // ("Trabajadores adicionales" screen), while no self-serve purchase
+    // flow exists yet. The owner can only create their own request record;
+    // fulfillment happens out-of-band via scripts/worker-boundary-admin.mjs
+    // (which bypasses rules), not by writing back to this doc from a client.
+    match /businesses/{ownerUid}/seatRequests/{requestId} {
+      allow read: if request.auth.uid == ownerUid;
+      allow create: if request.auth.uid == ownerUid
+        && request.resource.data.ownerUid == ownerUid
+        && request.resource.data.requestedBy == request.auth.uid
+        && request.resource.data.businessId is string
+        && request.resource.data.businessId.size() > 0
+        && request.resource.data.requestedAt == request.time
+        && request.resource.data.status == "pending";
+      allow update, delete: if false;
+    }
+
     // P2 modular boundary. The parent document is an administrative cutover
     // manifest. Public clients cannot create or promote a business unit.
     match /businesses/{ownerUid}/businessUnits/{businessId} {
@@ -936,25 +978,55 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // ownerId lets a modular Workers session (where businessId is the
+    // business UNIT id, e.g. "biz-p31", not the owner's uid) report
+    // telemetry too: tenantKey must be "owner:{ownerId}:business:{businessId}"
+    // and the requester must be that tenant's owner or an active unit
+    // member. Legacy/owner sessions keep working unchanged: ownerId simply
+    // equals businessId there, same as tenantKey's existing self-referential
+    // shape.
+    function validTelemetryTenant(data) {
+      return data.businessId != "demo-click360"
+        && data.tenantKey == "owner:" + data.ownerId + ":business:" + data.businessId
+        && (
+          (data.ownerId == data.businessId && (data.businessId == request.auth.uid || hasActiveMembership(data.businessId)))
+          || (data.ownerId != data.businessId && (businessUnitOwner(data.ownerId, data.businessId) || activeBusinessUnitMember(data.ownerId, data.businessId)))
+        );
+    }
+
+    // Phase 3.2 diagnostic events fire exactly when membership/permission
+    // checks fail or a tenant hasn't fully activated -- validTelemetryTenant
+    // (which requires proving active membership) would reject the very
+    // report of that failure. These event types only require the reporter
+    // to be signed in; they carry no write access to tenant data, so a
+    // self-reported businessId/tenantKey here is a diagnostics-only signal,
+    // not a trust boundary.
+    function isTelemetryDiagnosticEvent(eventType) {
+      return eventType == "worker_invite_failed" || eventType == "worker_login_failed"
+        || eventType == "worker_permission_denied" || eventType == "worker_stock_error"
+        || eventType == "worker_cross_tenant_denied" || eventType == "worker_seat_exhausted";
+    }
+
     match /telemetryEvents/{eventId} {
       allow create: if signedIn()
         && request.resource.data.keys().hasAll([
-          "eventId", "eventType", "uidHash", "businessId", "tenantKey", "appVersion",
+          "eventId", "eventType", "uidHash", "ownerId", "businessId", "tenantKey", "appVersion",
           "requestId", "mode", "errorCode", "deviceIdHash", "createdAt"
         ])
         && request.resource.data.keys().hasOnly([
-          "eventId", "eventType", "uidHash", "businessId", "tenantKey", "appVersion",
+          "eventId", "eventType", "uidHash", "ownerId", "businessId", "tenantKey", "appVersion",
           "requestId", "mode", "errorCode", "deviceIdHash", "createdAt"
         ])
         && request.resource.data.eventId == eventId
-        && request.resource.data.businessId != "demo-click360"
-        && request.resource.data.tenantKey == "owner:" + request.resource.data.businessId + ":business:" + request.resource.data.businessId
-        && (request.resource.data.businessId == request.auth.uid || hasActiveMembership(request.resource.data.businessId))
+        && request.resource.data.ownerId is string
+        && (isTelemetryDiagnosticEvent(request.resource.data.eventType) || validTelemetryTenant(request.resource.data))
         && (request.resource.data.eventType == "login" || request.resource.data.eventType == "bootstrap"
           || request.resource.data.eventType == "cache_failure" || request.resource.data.eventType == "online_only"
           || request.resource.data.eventType == "sync" || request.resource.data.eventType == "plan_request"
           || request.resource.data.eventType == "invitation" || request.resource.data.eventType == "cash_open"
-          || request.resource.data.eventType == "cash_close" || request.resource.data.eventType == "template_save_failure")
+          || request.resource.data.eventType == "cash_close" || request.resource.data.eventType == "template_save_failure"
+          || isTelemetryDiagnosticEvent(request.resource.data.eventType)
+          || request.resource.data.eventType == "seat_request")
         && request.resource.data.uidHash is string
         && request.resource.data.uidHash.size() == 16
         && request.resource.data.deviceIdHash is string

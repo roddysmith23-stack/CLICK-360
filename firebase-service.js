@@ -601,14 +601,20 @@
 			  };
 		  const TELEMETRY_EVENTS = new Set([
 		    'login', 'bootstrap', 'cache_failure', 'online_only', 'sync', 'plan_request',
-		    'invitation', 'cash_open', 'cash_close', 'template_save_failure'
+		    'invitation', 'cash_open', 'cash_close', 'template_save_failure',
+		    // Phase 3.2 Workers rollout: failed invitations, failed worker login,
+		    // permission denials, stock errors, cross-tenant denials, and seat
+		    // exhaustion, so the pilot can be observed without reading raw logs.
+		    'worker_invite_failed', 'worker_login_failed', 'worker_permission_denied',
+		    'worker_stock_error', 'worker_cross_tenant_denied', 'worker_seat_exhausted', 'seat_request'
 		  ]);
 		  const TELEMETRY_ONCE = new Set();
-		  async function recordTelemetry(eventType, details = {}) {
+		  async function recordTelemetry(eventType, details = {}, contextOverride = null) {
 		    const user = auth.currentUser;
-		    const context = ACTIVE_CONTEXT;
+		    const context = contextOverride || ACTIVE_CONTEXT;
 		    if (!user || !TELEMETRY_EVENTS.has(eventType)) return false;
 		    const businessId = context?.businessId || user.uid;
+		    const ownerId = context?.ownerId || businessId;
 		    const tenantKey = context?.tenantKey || tenantKeyFor(user.uid, user.uid);
 		    if (businessId === 'demo-click360' || tenantKey.includes('demo-click360')) return false;
 		    const eventRef = db.collection('telemetryEvents').doc();
@@ -620,6 +626,7 @@
 		      eventId: eventRef.id,
 		      eventType,
 		      uidHash: String(uidHash || '').slice(0, 16),
+		      ownerId,
 		      businessId,
 		      tenantKey,
 		      // firestore.rules gates telemetryEvents on the internal V16.x contract version
@@ -775,11 +782,25 @@
 	  async function applyWorkerBoundaryIdentity(user, data, source = "remote", expectedEpoch = AUTH_EPOCH) {
 	    const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
 	    const projectId = window.CLICK360_FIREBASE_CONFIG?.projectId || '';
-	    if (!boundary?.enabledForProject?.(projectId)) {
+	    const ownerId = String(data.ownerId || '');
+	    // Phase 3.2 gradual rollout: staging/demo stay always-enabled; in
+	    // production a tenant is enabled only by an explicit, admin-managed
+	    // featureFlags/workers doc (never client-writable). This read only
+	    // happens when the project-level gate alone doesn't already allow it,
+	    // so staging behavior and cost are unchanged.
+	    let workersFlag = null;
+	    if (!boundary?.enabledForProject?.(projectId) && ownerId) {
+	      try {
+	        const flagSnapshot = await db.collection('businesses').doc(ownerId).collection('featureFlags').doc('workers').get({ source:'server' });
+	        workersFlag = flagSnapshot.exists ? flagSnapshot.data() : null;
+	      } catch (_error) {
+	        workersFlag = null;
+	      }
+	    }
+	    if (!boundary?.workersEnabledForTenant?.(projectId, workersFlag)) {
 	      setPendingUser(user, data, 'worker_module_upgrade');
 	      return false;
 	    }
-	    const ownerId = String(data.ownerId || '');
 	    const businessUnitId = String(data.businessUnitId || data.activeBusinessId || '');
 	    if (!ownerId || !businessUnitId || ownerId === user.uid || ownerId === 'demo-click360') {
 	      setPendingUser(user, data, 'worker_boundary_not_assigned');
@@ -799,6 +820,14 @@
 	      modularState = await gateway.pull();
 	    } catch (error) {
 	      console.warn('Frontera modular de trabajador no disponible:', error.code || error.message);
+	      const telemetryContext = {
+	        ownerId, businessId:businessUnitId,
+	        tenantKey:boundary.identity(ownerId, businessUnitId).tenantKey
+	      };
+	      const isMembershipMismatch = /membres/i.test(error?.message || '');
+	      recordTelemetry(isMembershipMismatch ? 'worker_cross_tenant_denied' : 'worker_login_failed', {
+	        errorCode:error?.code || 'worker_boundary_not_ready'
+	      }, telemetryContext).catch(() => {});
 	      setPendingUser(user, data, 'worker_boundary_not_ready');
 	      return false;
 	    }
@@ -1517,9 +1546,12 @@
 	      transaction.update(invite, { status: 'accepted', acceptedBy: user.uid, acceptedAt: firebase.firestore.FieldValue.serverTimestamp(), consumed: true });
 	    });
 	    } catch (transactionError) {
+	      const acceptTelemetryContext = { ownerId, businessId:ownerId, tenantKey:tenantKeyFor(ownerId, ownerId) };
 	      if (transactionError?.code === 'permission-denied') {
+	        recordTelemetry('worker_seat_exhausted', { errorCode:'permission-denied' }, acceptTelemetryContext).catch(() => {});
 	        throw new Error('No hay cupos de trabajador disponibles para este negocio. Pide al dueño que compre un cupo adicional o libere uno.');
 	      }
+	      recordTelemetry('worker_login_failed', { errorCode:String(transactionError?.code || 'accept_failed').slice(0, 80) }, acceptTelemetryContext).catch(() => {});
 	      throw transactionError;
 	    }
 		    clearInvitationIntent({ cleanUrl: true });
@@ -1930,9 +1962,25 @@
   };
 	  window.click360IsModularBoundarySession = () => MODULAR_MODE && !!MODULAR_GATEWAY;
 	  window.click360CanModularAction = (moduleName, action) => MODULAR_MODE && MODULAR_GATEWAY?.may?.(moduleName, action) === true;
+	  // Phase 3.2 gradual rollout: same gate as applyWorkerBoundaryIdentity,
+	  // reused by every owner-initiated Workers action below. The owner is
+	  // always allowed to read their own featureFlags/workers doc.
+	  async function currentOwnerWorkersEnabled(ownerId) {
+	    const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	    const projectId = window.CLICK360_FIREBASE_CONFIG?.projectId || '';
+	    if (boundary?.enabledForProject?.(projectId)) return true;
+	    if (!ownerId) return false;
+	    try {
+	      const flagSnapshot = await db.collection('businesses').doc(ownerId).collection('featureFlags').doc('workers').get({ source:'server' });
+	      return boundary?.workersEnabledForTenant?.(projectId, flagSnapshot.exists ? flagSnapshot.data() : null) === true;
+	    } catch (_error) {
+	      return false;
+	    }
+	  }
 	  window.click360ListBusinessUnitAuditEvents = async function(businessUnitId) {
-	    if (!window.click360User?.isOwner || !window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(window.CLICK360_FIREBASE_CONFIG?.projectId)) return [];
+	    if (!window.click360User?.isOwner) return [];
 	    const ownerId = window.click360User.uid;
+	    if (!(await currentOwnerWorkersEnabled(ownerId))) return [];
 	    const safeBusinessId = String(businessUnitId || '').trim();
 	    if (!safeBusinessId || safeBusinessId === 'demo-click360') return [];
 	    const snapshot = await db.collection('businesses').doc(ownerId).collection('businessUnits')
@@ -1947,7 +1995,7 @@
 	    const role = ['worker', 'seller', 'cashier', 'inventory', 'supervisor', 'admin'].includes(options.role) ? options.role : 'worker';
 	    const permissions = options.permissions && typeof options.permissions === 'object' ? options.permissions : defaultWorkerPermissions(role);
 	    const businessUnitId = String(options.businessUnitId || '').trim();
-	    if (window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(window.CLICK360_FIREBASE_CONFIG?.projectId) && !businessUnitId) {
+	    if ((await currentOwnerWorkersEnabled(ownerId)) && !businessUnitId) {
 	      throw new Error('Selecciona el negocio modular antes de crear la invitación.');
 	    }
 	    const inviteToken = window.CLICK360_V16_DOMAIN?.randomToken();
@@ -1980,7 +2028,12 @@
 	      ownerId,
 	      createdAt: firebase.firestore.FieldValue.serverTimestamp()
 		    });
-		    await batch.commit();
+		    try {
+		      await batch.commit();
+		    } catch (inviteError) {
+		      recordTelemetry('worker_invite_failed', { errorCode:String(inviteError?.code || 'invite_failed').slice(0, 80) }).catch(() => {});
+		      throw inviteError;
+		    }
 		    recordTelemetry('invitation', { requestId: inviteHash, mode: 'created' }).catch(() => {});
 		    return { inviteToken, inviteHash, ownerId, businessUnitId, role, permissions, expiresAfterDays: 7 };
 	  };
@@ -2034,7 +2087,7 @@
 	    if (workerUid) {
 	      batch.set(memberRef(ownerId, workerUid), { role: nextRole, permissions, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: ownerId }, { merge: true });
 	      batch.set(db.collection('approvedUsers').doc(workerUid), { role: nextRole, permissions, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
-	      if (businessUnitId && window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(window.CLICK360_FIREBASE_CONFIG?.projectId)) {
+	      if (businessUnitId && (await currentOwnerWorkersEnabled(ownerId))) {
 	        const unitMember = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(businessUnitId).collection('members').doc(workerUid);
 	        const current = await unitMember.get({ source:'server' });
 	        if (!current.exists) throw new Error('La membresía modular no existe.');
@@ -2077,7 +2130,7 @@
 	      batch.set(memberRef(ownerId, workerUid), { status: 'revoked', revokedAt: firebase.firestore.FieldValue.serverTimestamp(), revokedBy: ownerId }, { merge: true });
 	      batch.set(db.collection('approvedUsers').doc(workerUid), { status: 'revoked', approved: false, revokedAt: firebase.firestore.FieldValue.serverTimestamp(), revokedBy: ownerId }, { merge: true });
 	      writes += 2;
-	      if (inviteData?.businessUnitId && window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(window.CLICK360_FIREBASE_CONFIG?.projectId)) {
+	      if (inviteData?.businessUnitId && (await currentOwnerWorkersEnabled(ownerId))) {
 	        const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
 	        const unitRoot = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(inviteData.businessUnitId);
 	        const unitMember = unitRoot.collection('members').doc(workerUid);
@@ -2119,8 +2172,8 @@
 	  // this only ever changes the quota number itself.
 	  window.click360SetWorkerSeatAddOn = async function(businessUnitId, addOnSeats) {
 	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
-	    if (!window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(window.CLICK360_FIREBASE_CONFIG?.projectId)) throw new Error('La frontera modular no esta habilitada para este proyecto.');
 	    const ownerId = window.click360User.uid;
+	    if (!(await currentOwnerWorkersEnabled(ownerId))) throw new Error('La frontera modular no esta habilitada para este proyecto.');
 	    const safeBusinessId = String(businessUnitId || '').trim();
 	    const nextAddOnSeats = Number(addOnSeats);
 	    if (!safeBusinessId) throw new Error('Selecciona el negocio modular.');
@@ -2128,6 +2181,48 @@
 	    const seatRef = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(safeBusinessId).collection('entitlement').doc('seats');
 	    await seatRef.update({ addOnSeats:nextAddOnSeats, updatedBy:ownerId, updatedAt:firebase.firestore.FieldValue.serverTimestamp() });
 	    return true;
+	  };
+
+	  // Read-only seat status for the owner's "Trabajadores adicionales" screen:
+	  // included seats, seats in use, seats available, and whether the owner is
+	  // already at capacity. Returns null if the tenant has no entitlement doc
+	  // yet (Workers not migrated/enabled for this business).
+	  window.click360GetWorkerSeatStatus = async function(businessUnitId) {
+	    if (!window.click360User?.isOwner) return null;
+	    const ownerId = window.click360User.uid;
+	    const safeBusinessId = String(businessUnitId || '').trim();
+	    if (!safeBusinessId) return null;
+	    const seatSnapshot = await db.collection('businesses').doc(ownerId).collection('businessUnits')
+	      .doc(safeBusinessId).collection('entitlement').doc('seats').get({ source:'server' }).catch(() => null);
+	    if (!seatSnapshot || !seatSnapshot.exists) return null;
+	    const data = seatSnapshot.data() || {};
+	    const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	    const capacity = boundary?.seatCapacity?.(data) ?? (Number(data.baseSeatCap || 0) + Number(data.addOnSeats || 0));
+	    const used = Number(data.activeMembers || 0);
+	    return {
+	      baseSeatCap:Number(data.baseSeatCap || 0), addOnSeats:Number(data.addOnSeats || 0),
+	      capacity, used, available:Math.max(0, capacity - used), atCapacity:used >= capacity
+	    };
+	  };
+
+	  // Owner-initiated request for additional seats. Does NOT change the seat
+	  // count itself (no billing automation exists yet) -- it only logs an
+	  // immutable, owner-scoped request that AIIA (or a trusted operator)
+	  // reviews and fulfills manually via:
+	  //   node scripts/worker-boundary-admin.mjs --action set-addon-seats ...
+	  window.click360RequestAdditionalSeats = async function(businessUnitId, note = '') {
+	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
+	    const ownerId = window.click360User.uid;
+	    const safeBusinessId = String(businessUnitId || '').trim();
+	    if (!safeBusinessId) throw new Error('Selecciona el negocio modular.');
+	    const requestRef = db.collection('businesses').doc(ownerId).collection('seatRequests').doc();
+	    await requestRef.set({
+	      ownerUid:ownerId, businessId:safeBusinessId, requestedBy:ownerId,
+	      note:String(note || '').slice(0, 300), status:'pending',
+	      requestedAt:firebase.firestore.FieldValue.serverTimestamp()
+	    });
+	    recordTelemetry('seat_request', { requestId:requestRef.id, businessId:safeBusinessId }).catch(() => {});
+	    return { requestId:requestRef.id };
 	  };
 
 	  function syncError(code, message, details = {}) {
@@ -2915,6 +3010,13 @@
 	      return true;
 		    } catch (error) {
 		      console.warn('Cambio modular rechazado:', error.code || error.message);
+		      const stockChanged = (MODULAR_BASELINE?.products || []).some((before) => {
+		        const after = (next.products || []).find((candidate) => candidate.id === before.id);
+		        return after && Number(after.stock) !== Number(before.stock);
+		      });
+		      recordTelemetry(stockChanged ? 'worker_stock_error' : 'worker_permission_denied', {
+		        errorCode:String(error.code || 'permission_denied').slice(0, 80)
+		      }).catch(() => {});
 		      setSyncStatus('error', 'El cambio no fue autorizado para este rol. La nube no fue modificada.', {
 		        reason:'modular_write_rejected', errorCode:String(error.code || 'permission_denied')
 		      });

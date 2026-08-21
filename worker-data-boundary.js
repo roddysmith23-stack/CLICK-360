@@ -108,6 +108,29 @@
     return `${boundaryRootPath(ownerUid, businessId)}/entitlement/seats`;
   }
 
+  function workersFeatureFlagPath(ownerUid) {
+    return `businesses/${safeId(ownerUid, 'ownerUid')}/featureFlags/workers`;
+  }
+
+  /**
+   * Per-tenant rollout gate for Workers, independent of and in addition to
+   * enabledForProject(). Staging/demo projects stay always-enabled (QA is
+   * unaffected). In production, a tenant is enabled ONLY by an explicit,
+   * admin-managed featureFlags/workers doc with { enabled: true } (see
+   * scripts/worker-boundary-admin.mjs) -- clients can never write this doc
+   * themselves, and its absence means NOT enabled (default-closed pilot
+   * opt-in; production has zero tenants live on Workers before this flag
+   * exists, so there is nothing to grandfather). worker-boundary-migrate.mjs
+   * always provisions this doc explicitly (enabled:true for staging/demo,
+   * enabled:false for production) so no migrated tenant is ever left
+   * without one.
+   */
+  function workersEnabledForTenant(projectId, flagData) {
+    if (enabledForProject(projectId)) return true;
+    if (String(projectId || '').trim() !== PRODUCTION_PROJECT_ID) return false;
+    return flagData?.enabled === true;
+  }
+
   function seatEntitlement(ownerUid, businessId, overrides = {}) {
     return {
       ...identity(ownerUid, businessId),
@@ -673,6 +696,9 @@
     seatCapacity,
     hasSeatAvailable,
     planSeatConsumption,
-    planSeatRelease
+    planSeatRelease,
+    PRODUCTION_PROJECT_ID,
+    workersFeatureFlagPath,
+    workersEnabledForTenant
   });
 })(typeof window !== 'undefined' ? window : globalThis);
