@@ -7,6 +7,7 @@ const buildScript = fs.readFileSync('scripts/build-static-release.mjs', 'utf8');
 const serviceWorker = fs.readFileSync('service-worker.js', 'utf8');
 const index = fs.readFileSync('index.html', 'utf8');
 const migrationRunner = fs.readFileSync('scripts/worker-boundary-migrate.mjs', 'utf8');
+const adminTool = fs.readFileSync('scripts/worker-boundary-admin.mjs', 'utf8');
 const context = { globalThis: {} };
 vm.createContext(context);
 vm.runInContext(source, context, { filename: 'worker-data-boundary.js' });
@@ -19,6 +20,10 @@ assert(index.indexOf('worker-data-boundary.js') < index.indexOf('firebase-servic
 assert(migrationRunner.includes("projectId === PRODUCTION_PROJECT") && migrationRunner.includes('Production is forbidden'), 'migration runner must reject production');
 assert(migrationRunner.includes("writePolicy:'create_only'") && migrationRunner.includes("status:'CUTOVER_VERIFIED'") && migrationRunner.includes("status:'ROLLBACK_ONLY'"), 'migration phases must be progressive and reversible');
 assert(!migrationRunner.includes("collection('state').doc('main').set") && !migrationRunner.includes('source.ref.set('), 'migration runner must never overwrite state/main');
+assert(adminTool.includes("requiredConfirm = `${enabled ? 'ENABLE' : 'DISABLE'}_WORKERS_${isProduction ? 'PRODUCTION' : 'STAGING'}_TENANT`"), 'admin tool must require a distinct confirm string per project and per enable/disable action');
+assert(adminTool.includes("requiredConfirm = `SET_SEATS_${isProduction ? 'PRODUCTION' : 'STAGING'}_TENANT`"), 'admin tool must require a distinct confirm string per project for seat changes');
+assert(adminTool.includes('Clients can never write this doc'), 'admin tool must document that the flag doc is never client-writable');
+assert(!adminTool.includes('.delete('), 'admin tool must never delete tenant data, only flip flags and adjust seat counters');
 assert.deepStrictEqual([...api.MODULES], [
   'members', 'products', 'sales', 'layaways', 'cashSessions', 'movements', 'auditEvents', 'settings'
 ]);
@@ -328,4 +333,19 @@ assert(api.validateMigrationPlan(duplicate).errors.some((entry) => entry.include
   assert.strictEqual(zeroDelta, 0, 'gateway must see delta of 0 when stock unchanged (no silent decrement)');
 }
 
-console.log('PASS worker data boundary: role matrix, tenant split, idempotent migration, identity repair plan, rollback manifest, counts and totals');
+// ── Phase 3.2: per-tenant Workers rollout flag (pure logic) ──────────────
+{
+  const STAGING = 'click360-staging-7620168025';
+  const PRODUCTION = 'click-360';
+  const DEMO = 'demo-click360-anything';
+  assert.strictEqual(api.workersEnabledForTenant(STAGING, null), true, 'staging is always enabled regardless of flag');
+  assert.strictEqual(api.workersEnabledForTenant(STAGING, { enabled:false }), true, 'staging ignores an explicit disabled flag too (project-level gate wins)');
+  assert.strictEqual(api.workersEnabledForTenant(DEMO, null), true, 'demo-* projects are always enabled');
+  assert.strictEqual(api.workersEnabledForTenant(PRODUCTION, null), false, 'production with no flag doc must be disabled (default-closed pilot opt-in)');
+  assert.strictEqual(api.workersEnabledForTenant(PRODUCTION, {}), false, 'production with an empty flag doc must be disabled');
+  assert.strictEqual(api.workersEnabledForTenant(PRODUCTION, { enabled:false }), false, 'production explicitly disabled must be disabled');
+  assert.strictEqual(api.workersEnabledForTenant(PRODUCTION, { enabled:true }), true, 'production explicitly enabled by admin must be enabled');
+  assert.strictEqual(api.workersFeatureFlagPath('owner-x'), 'businesses/owner-x/featureFlags/workers', 'flag doc path must match firestore.rules and worker-boundary-admin.mjs');
+}
+
+console.log('PASS worker data boundary: role matrix, tenant split, idempotent migration, identity repair plan, rollback manifest, counts and totals, per-tenant Workers rollout flag');

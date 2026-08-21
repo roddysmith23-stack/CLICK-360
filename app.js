@@ -4648,6 +4648,10 @@ function parseMoney(value) {
             <button class="btn silver block" id="copyInviteLinkBtn" type="button">Copiar Enlace</button>
          </div>
       </section>
+      <section class="card sectionCard" id="workerSeatCard" style="margin-top:14px; display:none;">
+         <h3>Trabajadores adicionales</h3>
+         <div id="workerSeatStatus"><p class="empty">Cargando cupos...</p></div>
+      </section>
       <section class="card sectionCard" style="margin-top:14px">
          <h3>Trabajadores Registrados</h3>
          <div id="workersList"></div>
@@ -6306,7 +6310,49 @@ function parseMoney(value) {
      }
   }
 
+  // "Trabajadores adicionales": read-only seat status (included/used/available)
+  // plus a request-only CTA -- there is no self-serve purchase flow yet, so
+  // requesting logs an owner-scoped request that AIIA/a trusted operator
+  // fulfills manually via scripts/worker-boundary-admin.mjs. Hidden entirely
+  // when the tenant has no modular entitlement (Workers not enabled here).
+  async function renderWorkerSeatStatus() {
+    const card = $('#workerSeatCard');
+    const box = $('#workerSeatStatus');
+    if (!card || !box) return;
+    if (typeof window.click360GetWorkerSeatStatus !== 'function' || !window.click360User?.isOwner) { card.style.display = 'none'; return; }
+    const businessUnitId = currentBusiness()?.id || '';
+    let seatStatus = null;
+    try { seatStatus = businessUnitId ? await window.click360GetWorkerSeatStatus(businessUnitId) : null; }
+    catch (error) { console.warn('No se pudo cargar el estado de cupos de trabajador:', error.message); }
+    if (!seatStatus) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    box.innerHTML = `
+      <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px;">
+        <div><small class="fieldHint">Incluidos</small><div style="font-size:20px; font-weight:bold;">${seatStatus.baseSeatCap}</div></div>
+        <div><small class="fieldHint">Adicionales</small><div style="font-size:20px; font-weight:bold;">${seatStatus.addOnSeats}</div></div>
+        <div><small class="fieldHint">En uso</small><div style="font-size:20px; font-weight:bold;">${seatStatus.used}</div></div>
+        <div><small class="fieldHint">Disponibles</small><div style="font-size:20px; font-weight:bold; color:${seatStatus.available > 0 ? 'var(--green)' : 'var(--red, #e05252)'};">${seatStatus.available}</div></div>
+      </div>
+      ${seatStatus.atCapacity ? '<p class="cloudStatus">Has usado todos tus cupos de trabajador. Solicita cupos adicionales para invitar a más personas.</p>' : ''}
+      <button type="button" class="btn silver block" id="requestMoreSeatsBtn">Solicitar cupos adicionales</button>
+      <p class="fieldHint" style="margin-top:6px;">La compra automática de cupos aún no está disponible; tu solicitud se revisa y activa manualmente.</p>
+    `;
+    const requestBtn = $('#requestMoreSeatsBtn');
+    if (requestBtn) requestBtn.onclick = async () => {
+      requestBtn.disabled = true;
+      try {
+        await window.click360RequestAdditionalSeats(businessUnitId);
+        toast('Solicitud enviada. Te contactaremos para activar los cupos adicionales.');
+      } catch (error) {
+        toast(error.message || 'No se pudo enviar la solicitud.');
+      } finally {
+        requestBtn.disabled = false;
+      }
+    };
+  }
+
   async function bindWorkers() {
+    renderWorkerSeatStatus().catch(() => {});
     const list = $('#workersList');
     if (!window.click360User || window.click360User.role !== 'owner') {
       list.innerHTML = '<p class="empty">Solo el dueño puede administrar trabajadores.</p>';

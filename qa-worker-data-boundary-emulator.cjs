@@ -51,6 +51,9 @@ function seats(ownerUid, businessId, extra = {}) {
     baseSeatCap:2, addOnSeats:0, activeMembers:0, updatedBy:ownerUid, updatedAt:new Date(), ...extra
   };
 }
+function workersFlag(ownerUid, extra = {}) {
+  return { ownerUid, enabled:true, enabledAt:new Date(), enabledBy:'test-seed', updatedBy:'test-seed', updatedAt:new Date(), ...extra };
+}
 function unit(ownerUid, businessId) {
   return {
     id:businessId, ownerUid, businessId, tenantKey:tenantKey(ownerUid, businessId), boundarySchemaVersion:1,
@@ -91,6 +94,8 @@ async function main() {
       await setDoc(doc(db, 'approvedUsers', OTHER_OWNER), ownerProfile(OTHER_OWNER));
       await setDoc(doc(db, 'businesses', OWNER, 'businessUnits', BUSINESS), unit(OWNER, BUSINESS));
       await setDoc(doc(db, 'businesses', OTHER_OWNER, 'businessUnits', OTHER_BUSINESS), unit(OTHER_OWNER, OTHER_BUSINESS));
+      await setDoc(doc(db, 'businesses', OWNER, 'featureFlags', 'workers'), workersFlag(OWNER));
+      await setDoc(doc(db, 'businesses', OTHER_OWNER, 'featureFlags', 'workers'), workersFlag(OTHER_OWNER));
       // Pre-seeded fixture members below (admin-a, supervisor-a, seller-a, inventory-a) are
       // written with rules disabled, so the entitlement counter is seeded to match reality
       // (4 already active) with enough addOnSeats to also cover the WORKER activation later
@@ -211,6 +216,26 @@ async function main() {
     }));
     await assertSucceeds(getDocs(collection(supervisorDb, ...unitPath('auditEvents'))));
 
+    // Phase 3.2: a modular Workers session (ownerId != businessId, businessId
+    // is the business unit id) can report telemetry as an active member.
+    await assertSucceeds(setDoc(doc(workerDb, 'telemetryEvents', 'worker-modular-telemetry'), {
+      eventId:'worker-modular-telemetry', eventType:'sync', uidHash:'a'.repeat(16),
+      ownerId:OWNER, businessId:BUSINESS, tenantKey:tenantKey(OWNER, BUSINESS), appVersion:'16.2.0',
+      requestId:'req-1', mode:'modular', errorCode:'', deviceIdHash:'b'.repeat(16), createdAt:serverTimestamp()
+    }));
+    // A worker cannot report modular telemetry for a business unit they don't belong to.
+    await assertFails(setDoc(doc(workerDb, 'telemetryEvents', 'worker-modular-telemetry-cross'), {
+      eventId:'worker-modular-telemetry-cross', eventType:'sync', uidHash:'a'.repeat(16),
+      ownerId:OTHER_OWNER, businessId:OTHER_BUSINESS, tenantKey:tenantKey(OTHER_OWNER, OTHER_BUSINESS), appVersion:'16.2.0',
+      requestId:'req-2', mode:'modular', errorCode:'', deviceIdHash:'b'.repeat(16), createdAt:serverTimestamp()
+    }));
+    // But a diagnostic event (e.g. worker_permission_denied) is always allowed to self-report, even cross-tenant.
+    await assertSucceeds(setDoc(doc(workerDb, 'telemetryEvents', 'worker-diagnostic-cross'), {
+      eventId:'worker-diagnostic-cross', eventType:'worker_permission_denied', uidHash:'a'.repeat(16),
+      ownerId:OTHER_OWNER, businessId:OTHER_BUSINESS, tenantKey:tenantKey(OTHER_OWNER, OTHER_BUSINESS), appVersion:'16.2.0',
+      requestId:'req-3', mode:'modular', errorCode:'permission-denied', deviceIdHash:'b'.repeat(16), createdAt:serverTimestamp()
+    }));
+
     // Regression: firestore.rules scopes businessUnits/{id}/settings reads to
     // the single document id "main" (recordId == "main"), unlike every other
     // module which is a normal multi-record collection. Firestore's rules
@@ -281,9 +306,11 @@ async function main() {
       await setDoc(doc(db, 'approvedUsers', SEAT_OWNER), ownerProfile(SEAT_OWNER));
       await setDoc(doc(db, 'businesses', SEAT_OWNER, 'businessUnits', SEAT_BUSINESS), unit(SEAT_OWNER, SEAT_BUSINESS));
       await setDoc(doc(db, 'businesses', SEAT_OWNER, 'businessUnits', SEAT_BUSINESS, 'entitlement', 'seats'), seats(SEAT_OWNER, SEAT_BUSINESS));
+      await setDoc(doc(db, 'businesses', SEAT_OWNER, 'featureFlags', 'workers'), workersFlag(SEAT_OWNER));
       await setDoc(doc(db, 'approvedUsers', CROSS_OWNER), ownerProfile(CROSS_OWNER));
       await setDoc(doc(db, 'businesses', CROSS_OWNER, 'businessUnits', CROSS_BUSINESS), unit(CROSS_OWNER, CROSS_BUSINESS));
       await setDoc(doc(db, 'businesses', CROSS_OWNER, 'businessUnits', CROSS_BUSINESS, 'entitlement', 'seats'), seats(CROSS_OWNER, CROSS_BUSINESS));
+      await setDoc(doc(db, 'businesses', CROSS_OWNER, 'featureFlags', 'workers'), workersFlag(CROSS_OWNER));
       for (const uid of [...seatWorkers, 'cross-w1', 'cross-w2', 'cross-w3']) {
         await setDoc(doc(db, 'businesses', uid.startsWith('cross') ? CROSS_OWNER : SEAT_OWNER, 'members', uid), {
           uid, email:`${uid}@example.test`, name:'QA Seat Worker', role:'seller', permissions:permissions('seller'),
@@ -398,7 +425,82 @@ async function main() {
     const seatBusinessSeatsAfter = await getDoc(doc(seatOwnerDb, ...seatUnitPath('entitlement', 'seats')));
     assert.strictEqual(seatBusinessSeatsAfter.data().activeMembers, 3, 'SEAT_BUSINESS pool must be unaffected by CROSS_BUSINESS activity');
 
-    console.log('PASS worker boundary emulator: invite, accept, module permissions, sale, layaway payment, cash, audit, revoke, tenant isolation and 2-seat entitlement (deny #3, +1 add-on, revoke frees seat, no cross-tenant sharing)');
+    // ── Phase 3.2: owner-initiated "Trabajadores adicionales" seat requests ──
+    const seatRequestPayload = (ownerUid) => ({
+      ownerUid, businessId:SEAT_BUSINESS, requestedBy:ownerUid, note:'necesito mas cupos',
+      status:'pending', requestedAt:serverTimestamp()
+    });
+    await assertSucceeds(setDoc(doc(seatOwnerDb, 'businesses', SEAT_OWNER, 'seatRequests', 'req-1'), seatRequestPayload(SEAT_OWNER)));
+    await assertSucceeds(getDoc(doc(seatOwnerDb, 'businesses', SEAT_OWNER, 'seatRequests', 'req-1')));
+    // A worker cannot request seats on the owner's behalf, and no one can request on another tenant's behalf.
+    await assertFails(setDoc(doc(seatW1Db, 'businesses', SEAT_OWNER, 'seatRequests', 'req-2'), seatRequestPayload(SEAT_OWNER)));
+    await assertFails(setDoc(doc(crossOwnerDb, 'businesses', SEAT_OWNER, 'seatRequests', 'req-3'), seatRequestPayload(SEAT_OWNER)));
+    // The request log is immutable once created -- no client can edit or delete it (fulfillment is admin-only, out of band).
+    await assertFails(updateDoc(doc(seatOwnerDb, 'businesses', SEAT_OWNER, 'seatRequests', 'req-1'), { status:'fulfilled' }));
+    await assertFails(deleteDoc(doc(seatOwnerDb, 'businesses', SEAT_OWNER, 'seatRequests', 'req-1')));
+    // No other tenant, including the cross-tenant owner, can read this owner's requests.
+    await assertFails(getDoc(doc(crossOwnerDb, 'businesses', SEAT_OWNER, 'seatRequests', 'req-1')));
+
+    console.log('PASS worker boundary emulator: invite, accept, module permissions, sale, layaway payment, cash, audit, revoke, tenant isolation, 2-seat entitlement (deny #3, +1 add-on, revoke frees seat, no cross-tenant sharing), modular telemetry, and seat requests');
+
+    // ── Phase 3.2: per-tenant Workers rollout flag (featureFlags/workers) ──
+    const FLAG_OWNER = 'owner-flag-rollout';
+    const FLAG_BUSINESS = 'business-flag-rollout';
+    const FLAG_WORKER = 'flag-worker';
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'approvedUsers', FLAG_OWNER), ownerProfile(FLAG_OWNER));
+      await setDoc(doc(db, 'businesses', FLAG_OWNER, 'businessUnits', FLAG_BUSINESS), unit(FLAG_OWNER, FLAG_BUSINESS));
+      await setDoc(doc(db, 'businesses', FLAG_OWNER, 'businessUnits', FLAG_BUSINESS, 'entitlement', 'seats'), seats(FLAG_OWNER, FLAG_BUSINESS));
+      await setDoc(doc(db, 'businesses', FLAG_OWNER, 'businessUnits', FLAG_BUSINESS, 'products', 'product-flag'), {
+        ...boundaryRecord(FLAG_OWNER, FLAG_BUSINESS, 'products', 'product-flag', FLAG_OWNER, { name:'Producto flag', stock:5, price:1 }),
+        createdAt:new Date(), updatedAt:new Date()
+      });
+      // No featureFlags/workers doc yet: absence must deny (Phase 3.2 default-closed pilot opt-in).
+    });
+    const flagOwnerDb = env.authenticatedContext(FLAG_OWNER, { email:`${FLAG_OWNER}@example.test` }).firestore();
+    const flagUnitPath = (...parts) => ['businesses', FLAG_OWNER, 'businessUnits', FLAG_BUSINESS, ...parts];
+
+    // 1. No flag doc at all -> the owner's own businessUnits access is denied.
+    await assertFails(getDoc(doc(flagOwnerDb, ...flagUnitPath('products', 'product-flag'))));
+
+    // 2. Flag explicitly disabled -> still denied.
+    await env.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'businesses', FLAG_OWNER, 'featureFlags', 'workers'), workersFlag(FLAG_OWNER, { enabled:false }));
+    });
+    await assertFails(getDoc(doc(flagOwnerDb, ...flagUnitPath('products', 'product-flag'))));
+
+    // 3. No client, including the owner, may ever write the flag doc directly.
+    await assertFails(setDoc(doc(flagOwnerDb, 'businesses', FLAG_OWNER, 'featureFlags', 'workers'), workersFlag(FLAG_OWNER, { enabled:true })));
+    await assertFails(updateDoc(doc(flagOwnerDb, 'businesses', FLAG_OWNER, 'featureFlags', 'workers'), { enabled:true }));
+
+    // 4. Admin (rules-disabled, simulating worker-boundary-admin.mjs) flips it on -> access opens immediately.
+    await env.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'businesses', FLAG_OWNER, 'featureFlags', 'workers'), workersFlag(FLAG_OWNER, { enabled:true }));
+    });
+    await assertSucceeds(getDoc(doc(flagOwnerDb, ...flagUnitPath('products', 'product-flag'))));
+
+    // 5. The owner may read their own flag doc (e.g. to show rollout status) but not another tenant's.
+    await assertSucceeds(getDoc(doc(flagOwnerDb, 'businesses', FLAG_OWNER, 'featureFlags', 'workers')));
+    await assertFails(getDoc(doc(flagOwnerDb, 'businesses', OWNER, 'featureFlags', 'workers')));
+
+    // 6. Admin flips it back off -> access closes immediately again, including for an active worker.
+    await env.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'businesses', FLAG_OWNER, 'members', FLAG_WORKER), {
+        uid:FLAG_WORKER, email:`${FLAG_WORKER}@example.test`, role:'seller', status:'active',
+        ownerId:FLAG_OWNER, businessId:FLAG_OWNER, tenantKey:`owner:${FLAG_OWNER}:business:${FLAG_OWNER}`
+      });
+      await setDoc(doc(db, ...flagUnitPath('members', FLAG_WORKER)), {
+        ...boundaryRecord(FLAG_OWNER, FLAG_BUSINESS, 'members', FLAG_WORKER, FLAG_WORKER, { uid:FLAG_WORKER, email:`${FLAG_WORKER}@example.test`, role:'seller', permissions:permissions('seller'), status:'active' }),
+        createdAt:new Date(), updatedAt:new Date()
+      });
+      await updateDoc(doc(db, 'businesses', FLAG_OWNER, 'businessUnits', FLAG_BUSINESS, 'entitlement', 'seats'), { activeMembers:1, lastActionUid:FLAG_WORKER });
+      await setDoc(doc(db, 'businesses', FLAG_OWNER, 'featureFlags', 'workers'), workersFlag(FLAG_OWNER, { enabled:false }));
+    });
+    const flagWorkerDb = env.authenticatedContext(FLAG_WORKER, { email:`${FLAG_WORKER}@example.test` }).firestore();
+    await assertFails(getDoc(doc(flagWorkerDb, ...flagUnitPath('products', 'product-flag'))));
+    console.log('PASS worker boundary emulator: per-tenant Workers rollout flag (absent/disabled denies, admin-only enable/disable, owner can read only their own flag)');
   } finally {
     await env.cleanup();
   }

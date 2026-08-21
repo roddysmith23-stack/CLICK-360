@@ -112,13 +112,14 @@ function state(ownerId, revision = 1) {
   };
 }
 
-function telemetry(eventId, businessId, eventType = 'bootstrap') {
+function telemetry(eventId, businessId, eventType = 'bootstrap', ownerId = businessId) {
   return {
     eventId,
     eventType,
     uidHash: 'a'.repeat(16),
+    ownerId,
     businessId,
-    tenantKey: `owner:${businessId}:business:${businessId}`,
+    tenantKey: `owner:${ownerId}:business:${businessId}`,
     appVersion: '16.2.0',
     requestId: `request-${eventId}`,
     mode: 'ready',
@@ -328,6 +329,18 @@ async function main() {
     await assertFails(getDoc(doc(ownerA, 'telemetryEvents', 'owner-a-bootstrap')));
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'invalid-event'), telemetry('invalid-event', 'owner-a', 'document_dump')));
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'demo-event'), telemetry('demo-event', 'demo-click360')));
+    // Phase 3.2: a diagnostic event (fires exactly when membership/permission
+    // checks fail) must not itself require proof of membership -- otherwise
+    // the report of the failure would fail for the same reason.
+    await assertSucceeds(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-worker-login-failed'), telemetry('owner-a-worker-login-failed', 'some-business-not-owned-by-owner-a', 'worker_login_failed', 'some-other-owner')));
+    // A non-diagnostic event still requires the legacy self-referential shape and real membership.
+    await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-fake-bootstrap'), telemetry('owner-a-fake-bootstrap', 'some-business-not-owned-by-owner-a', 'bootstrap', 'some-other-owner')));
+    // ownerId is now a required field; a legacy-shaped doc missing it must fail.
+    await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-no-ownerid'), {
+      eventId:'owner-a-no-ownerid', eventType:'bootstrap', uidHash:'a'.repeat(16), businessId:'owner-a',
+      tenantKey:'owner:owner-a:business:owner-a', appVersion:'16.2.0', requestId:'r', mode:'ready',
+      errorCode:'', deviceIdHash:'b'.repeat(16), createdAt:serverTimestamp()
+    }));
 
     const ownerAuditRef = doc(ownerA, 'businesses', 'owner-a', 'auditEvents', 'owner-event');
     const workerAuditRef = doc(workerA, 'businesses', 'owner-a', 'auditEvents', 'worker-event');

@@ -125,6 +125,22 @@ async function applyPlan({ db, plan, source, sourceHash, expectedSourceHash }) {
     assertIdentity(seatSnapshot.data(), expectedIdentity, 'seatEntitlement');
   }
 
+  // Phase 3.2 per-tenant rollout gate: provision featureFlags/workers if
+  // absent. This script only ever runs against STAGING_PROJECT (enforced
+  // below), so it is always safe to enable here -- staging QA must not
+  // require a separate manual activation step. A future, deliberately
+  // reviewed extension of this script to support production migrations
+  // MUST default this to enabled:false there instead, activated per-tenant
+  // only via scripts/worker-boundary-admin.mjs for the pilot rollout.
+  const flagRef = db.collection('businesses').doc(ownerUid).collection('featureFlags').doc('workers');
+  const flagSnapshot = await flagRef.get();
+  if (!flagSnapshot.exists) {
+    await flagRef.create({
+      ownerUid, enabled:true, enabledAt:new Date().toISOString(), enabledBy:'worker-boundary-migrate',
+      updatedBy:'worker-boundary-migrate', updatedAt:new Date().toISOString(), notes:'auto-enabled: staging QA migration'
+    });
+  }
+
   const preflight = await verifyExistingRecords(rootRef, plan);
   if (preflight.mismatches.length) throw new Error(`Create-only collision: ${preflight.mismatches.join(', ')}`);
   for (let offset = 0; offset < preflight.missing.length; offset += 400) {
