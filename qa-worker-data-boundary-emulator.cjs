@@ -441,7 +441,19 @@ async function main() {
     // No other tenant, including the cross-tenant owner, can read this owner's requests.
     await assertFails(getDoc(doc(crossOwnerDb, 'businesses', SEAT_OWNER, 'seatRequests', 'req-1')));
 
-    console.log('PASS worker boundary emulator: invite, accept, module permissions, sale, layaway payment, cash, audit, revoke, tenant isolation, 2-seat entitlement (deny #3, +1 add-on, revoke frees seat, no cross-tenant sharing), modular telemetry, and seat requests');
+    // Phase 3.3: activationLog is Admin-SDK-only (like adminBackups), owner
+    // can read their own tenant's trail but no client can ever write it.
+    await env.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'businesses', SEAT_OWNER, 'activationLog', 'activate-1'), {
+        activationId:'activate-1', ownerUid:SEAT_OWNER, businessId:SEAT_BUSINESS, status:'ACTIVATED'
+      });
+    });
+    await assertSucceeds(getDoc(doc(seatOwnerDb, 'businesses', SEAT_OWNER, 'activationLog', 'activate-1')));
+    await assertFails(getDoc(doc(crossOwnerDb, 'businesses', SEAT_OWNER, 'activationLog', 'activate-1')));
+    await assertFails(setDoc(doc(seatOwnerDb, 'businesses', SEAT_OWNER, 'activationLog', 'activate-2'), { activationId:'activate-2', ownerUid:SEAT_OWNER, businessId:SEAT_BUSINESS, status:'ACTIVATED' }));
+    await assertFails(updateDoc(doc(seatOwnerDb, 'businesses', SEAT_OWNER, 'activationLog', 'activate-1'), { status:'tampered' }));
+
+    console.log('PASS worker boundary emulator: invite, accept, module permissions, sale, layaway payment, cash, audit, revoke, tenant isolation, 2-seat entitlement (deny #3, +1 add-on, revoke frees seat, no cross-tenant sharing), modular telemetry, seat requests, and activation log');
 
     // ── Phase 3.2: per-tenant Workers rollout flag (featureFlags/workers) ──
     const FLAG_OWNER = 'owner-flag-rollout';

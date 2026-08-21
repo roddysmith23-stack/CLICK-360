@@ -4678,11 +4678,17 @@ function parseMoney(value) {
       </section>`;
   }
   function workersView(){
+    // Initial paint uses the static, project-only WORKER_TENANT_ACCESS_ENABLED
+    // (correct immediately for staging/demo, and a safe default-closed guess
+    // for production before the owner's own tenant flag is known).
+    // bindWorkers() re-checks the real per-tenant flag asynchronously right
+    // after this renders and corrects both the notice and the form's
+    // visibility if they disagree -- see Phase 3.3 staging-only-dependency audit.
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
-	  ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<section class="card sectionCard"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>'}
-      <section class="card sectionCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
+	  <section class="card sectionCard" id="workerRegistrationPausedNotice" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:none' : ''}"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>
+      <section class="card sectionCard" id="workerRegistrationCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
          <h3>Registrar Trabajador</h3>
-         ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<p class="fieldHint">Disponible en una fase posterior; no se activó en este release P1.1.</p>'}
+         <p class="fieldHint" id="workerRegistrationHint" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:none' : ''}">Disponible en una fase posterior; no se activó en este release P1.1.</p>
 	         <form id="addWorkerForm" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:flex' : 'display:none'}; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
             <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
@@ -6409,6 +6415,22 @@ function parseMoney(value) {
       return;
     }
 
+    // Phase 3.3: re-check the real per-tenant flag (not just the static,
+    // project-only WORKER_TENANT_ACCESS_ENABLED) and reconcile the DOM --
+    // production tenants explicitly enabled via worker-boundary-admin.mjs
+    // must see the registration form even though the static flag defaults
+    // closed there.
+    const tenantAccessEnabled = WORKER_TENANT_ACCESS_ENABLED
+      || (await window.click360CurrentOwnerWorkersEnabled?.(window.click360User.uid).catch(() => false));
+    const pausedNotice = $('#workerRegistrationPausedNotice');
+    const registrationCard = $('#workerRegistrationCard');
+    const registrationHint = $('#workerRegistrationHint');
+    const addWorkerForm = $('#addWorkerForm');
+    if (pausedNotice) pausedNotice.style.display = tenantAccessEnabled ? 'none' : '';
+    if (registrationCard) tenantAccessEnabled ? registrationCard.removeAttribute('aria-disabled') : registrationCard.setAttribute('aria-disabled', 'true');
+    if (registrationHint) registrationHint.style.display = tenantAccessEnabled ? 'none' : '';
+    if (addWorkerForm) addWorkerForm.style.display = tenantAccessEnabled ? 'flex' : 'none';
+
     let displayedWorkers = [];
     const loadWorkers = async () => {
       let workers = (state.settings?.workers || []).map(worker => ({ ...worker }));
@@ -6423,8 +6445,8 @@ function parseMoney(value) {
 
       list.innerHTML = workers.map(w => {
 	        const accepted = ['active', 'accepted'].includes(w.status) && w.status !== 'revoked';
-	        const active = WORKER_TENANT_ACCESS_ENABLED && accepted;
-	        const statusLabel = accepted && !WORKER_TENANT_ACCESS_ENABLED ? 'Acceso operativo pausado' : active ? 'Activo' : w.status === 'pending' ? 'Invitacion pendiente' : w.status === 'revoked' ? 'Revocado' : 'Bloqueado';
+	        const active = tenantAccessEnabled && accepted;
+	        const statusLabel = accepted && !tenantAccessEnabled ? 'Acceso operativo pausado' : active ? 'Activo' : w.status === 'pending' ? 'Invitacion pendiente' : w.status === 'revoked' ? 'Revocado' : 'Bloqueado';
         const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${escapeHtml(String(w.name || 'W').charAt(0).toUpperCase())}</div>`;
         return `
           <div class="movement" style="align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--line);">
@@ -6516,7 +6538,7 @@ function parseMoney(value) {
     };
 
     await loadWorkers();
-	    if (!WORKER_TENANT_ACCESS_ENABLED) return;
+	    if (!tenantAccessEnabled) return;
 
     $('#addWorkerForm').onsubmit = async (e) => {
       e.preventDefault();

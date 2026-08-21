@@ -751,6 +751,14 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Phase 3.3 activation evidence trail (worker-boundary-activate-tenant.mjs).
+    // Admin-SDK-only, like adminBackups -- written before any mutation and
+    // updated once at the end, never by a client.
+    match /businesses/{ownerUid}/activationLog/{activationId} {
+      allow read: if request.auth.uid == ownerUid;
+      allow create, update, delete: if false;
+    }
+
     // P2 modular boundary. The parent document is an administrative cutover
     // manifest. Public clients cannot create or promote a business unit.
     match /businesses/{ownerUid}/businessUnits/{businessId} {

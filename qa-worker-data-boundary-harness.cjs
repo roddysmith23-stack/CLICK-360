@@ -17,7 +17,12 @@ assert(api, 'worker data boundary API must be published');
 assert(buildScript.includes("'worker-data-boundary.js'"), 'static release must include the worker boundary runtime');
 assert(serviceWorker.includes("'./worker-data-boundary.js'"), 'PWA cache must include the worker boundary runtime');
 assert(index.indexOf('worker-data-boundary.js') < index.indexOf('firebase-service.js'), 'worker boundary must load before Firebase service');
-assert(migrationRunner.includes("projectId === PRODUCTION_PROJECT") && migrationRunner.includes('Production is forbidden'), 'migration runner must reject production');
+// Phase 3.3: production is no longer blanket-forbidden (the pilot needs a
+// path to real customers), but every production call MUST pass through the
+// independent, exact-tenant pilot-authorization gate before touching
+// Firestore, and MUST use a distinct PRODUCTION confirm string per action.
+assert(migrationRunner.includes("assertTenantAuthorizedForProduction"), 'migration runner must check the pilot authorization allowlist before any production Firestore access');
+assert(migrationRunner.includes('APPLY_${envTag}_WORKER_BOUNDARY') && migrationRunner.includes("envTag = isProduction ? 'PRODUCTION' : 'STAGING'"), 'migration runner must require a distinct confirm string per environment');
 assert(migrationRunner.includes("writePolicy:'create_only'") && migrationRunner.includes("status:'CUTOVER_VERIFIED'") && migrationRunner.includes("status:'ROLLBACK_ONLY'"), 'migration phases must be progressive and reversible');
 assert(!migrationRunner.includes("collection('state').doc('main').set") && !migrationRunner.includes('source.ref.set('), 'migration runner must never overwrite state/main');
 assert(adminTool.includes("requiredConfirm = `${enabled ? 'ENABLE' : 'DISABLE'}_WORKERS_${isProduction ? 'PRODUCTION' : 'STAGING'}_TENANT`"), 'admin tool must require a distinct confirm string per project and per enable/disable action');
@@ -27,8 +32,13 @@ assert(!adminTool.includes('.delete('), 'admin tool must never delete tenant dat
 assert.deepStrictEqual([...api.MODULES], [
   'members', 'products', 'sales', 'layaways', 'cashSessions', 'movements', 'auditEvents', 'settings'
 ]);
-assert.throws(() => api.assertNonProductionProject('click-360'), /producci/i);
-assert.strictEqual(api.assertNonProductionProject('click360-staging-7620168025'), 'click360-staging-7620168025');
+// Phase 3.3: the gateway now allows production for a flag-enabled tenant
+// (the client can no longer be the sole blocker -- firestore.rules'
+// businessUnitReady() is the authoritative, unbypassable gate). Only an
+// empty/missing projectId is rejected here.
+assert.throws(() => api.assertValidGatewayProject(''), /projectId/i);
+assert.strictEqual(api.assertValidGatewayProject('click-360'), 'click-360');
+assert.strictEqual(api.assertValidGatewayProject('click360-staging-7620168025'), 'click360-staging-7620168025');
 
 const seller = api.normalizePermissionMap('vendedor');
 assert.strictEqual(api.can(seller, 'sales', 'create'), true);

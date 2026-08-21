@@ -1977,6 +1977,12 @@
 	      return false;
 	    }
 	  }
+	  // Exposed so app.js's workersView()/bindWorkers() can dynamically
+	  // re-check tenant-level (not just project-level) rollout status at
+	  // render time, instead of relying solely on the static, project-only
+	  // WORKER_TENANT_ACCESS_ENABLED computed once at boot (see Phase 3.3
+	  // staging-only-dependency audit).
+	  window.click360CurrentOwnerWorkersEnabled = currentOwnerWorkersEnabled;
 	  window.click360ListBusinessUnitAuditEvents = async function(businessUnitId) {
 	    if (!window.click360User?.isOwner) return [];
 	    const ownerId = window.click360User.uid;

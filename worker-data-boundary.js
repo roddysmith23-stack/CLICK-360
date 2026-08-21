@@ -460,9 +460,23 @@
     };
   }
 
-  function assertNonProductionProject(projectId) {
+  /**
+   * Phase 3.3: this used to hard-block any projectId === production, back
+   * when Workers had no per-tenant activation mechanism and production
+   * access had to be blocked unconditionally at every layer including the
+   * client gateway. That is now redundant AND actively wrong: a pilot
+   * tenant explicitly enabled via businesses/{ownerUid}/featureFlags/workers
+   * (see workersEnabledForTenant()) legitimately needs its real workers to
+   * reach production Firestore through this same gateway. The authoritative
+   * gate is firestore.rules' businessUnitReady() (unbypassable, checked on
+   * every read/write), which applyWorkerBoundaryIdentity() in
+   * firebase-service.js already re-checks client-side via
+   * workersEnabledForTenant() BEFORE ever constructing this gateway. This
+   * function now only guards against a missing/empty projectId.
+   */
+  function assertValidGatewayProject(projectId) {
     const normalized = String(projectId || '').trim();
-    if (!normalized || normalized === PRODUCTION_PROJECT_ID) throw new Error('La frontera de trabajadores no puede ejecutarse contra producción.');
+    if (!normalized) throw new Error('La frontera de trabajadores requiere un projectId valido.');
     return normalized;
   }
 
@@ -486,7 +500,7 @@
     const role = normalizedRole(options.role);
     const permissionMap = options.permissions || normalizePermissionMap(role);
     if (!db || !firebase?.firestore?.FieldValue || !user?.uid) throw new Error('Gateway modular incompleto.');
-    assertNonProductionProject(options.projectId);
+    assertValidGatewayProject(options.projectId);
     const rootRef = db.collection('businesses').doc(ownerUid).collection('businessUnits').doc(businessId);
     const serverTimestamp = () => firebase.firestore.FieldValue.serverTimestamp();
     const moduleRef = (moduleName) => rootRef.collection(moduleName);
@@ -688,7 +702,7 @@
     compareMigrationPlans,
     validateSourceDocumentIdentity,
     planIdentityRepair,
-    assertNonProductionProject,
+    assertValidGatewayProject,
     enabledForProject,
     createFirestoreGateway,
     seatEntitlementPath,
