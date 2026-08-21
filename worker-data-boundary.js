@@ -496,6 +496,19 @@
 
     async function readModule(moduleName) {
       if (!may(moduleName, 'read')) return [];
+      // firestore.rules restricts businessUnits/{id}/settings reads to the
+      // single document id "main" (recordId == "main"). Firestore's rules
+      // engine rejects an unfiltered collection list() unless it can prove
+      // every possible result satisfies the rule, which an id-scoped rule
+      // never allows for a generic list -- so this module must be read as a
+      // single doc get, not a collection query, even though every other
+      // module here is a normal multi-record collection.
+      if (moduleName === 'settings') {
+        const snapshot = await moduleRef('settings').doc('main').get({ source:'server' });
+        if (!snapshot.exists) return [];
+        const record = snapshot.data();
+        return record.status === 'deleted' ? [] : [record];
+      }
       const snapshot = await moduleRef(moduleName).get({ source:'server' });
       return snapshot.docs.map((entry) => entry.data()).filter((record) => record.status !== 'deleted');
     }
