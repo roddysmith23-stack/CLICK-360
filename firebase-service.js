@@ -1446,10 +1446,26 @@
 	        acceptedAt: firebase.firestore.FieldValue.serverTimestamp(),
 	        lastAccessAt: firebase.firestore.FieldValue.serverTimestamp()
 	      };
+	      // P0 commercial rule: this business includes at most 2 active workers
+	      // (excluding the owner) unless additional paid seats were purchased.
+	      // Firestore transactions require all reads before any writes, so the
+	      // seat entitlement is read and planned here, before any transaction.set
+	      // below, then consumed atomically with the member activation writes.
+	      const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	      let seatRef = null;
+	      let seatPlan = null;
+	      if (data.businessUnitId) {
+	        const boundaryIdentity = boundary?.identity?.(ownerId, data.businessUnitId);
+	        if (!boundaryIdentity) throw new Error('La invitación no tiene una frontera modular válida.');
+	        seatRef = db.collection('businesses').doc(ownerId).collection('businessUnits')
+	          .doc(data.businessUnitId).collection('entitlement').doc('seats');
+	        const seatSnapshot = await transaction.get(seatRef);
+	        if (!seatSnapshot.exists) throw new Error('El negocio modular no tiene cupos de trabajador configurados.');
+	        seatPlan = boundary.planSeatConsumption(seatSnapshot.data(), boundaryIdentity, user.uid);
+	      }
 	      transaction.set(member, memberData);
 	      if (data.businessUnitId) {
-	        const boundaryIdentity = window.CLICK360_WORKER_DATA_BOUNDARY?.identity?.(ownerId, data.businessUnitId);
-	        if (!boundaryIdentity) throw new Error('La invitación no tiene una frontera modular válida.');
+	        const boundaryIdentity = boundary.identity(ownerId, data.businessUnitId);
 	        const unitMember = db.collection('businesses').doc(ownerId).collection('businessUnits')
 	          .doc(data.businessUnitId).collection('members').doc(user.uid);
 	        transaction.set(unitMember, {
@@ -1466,6 +1482,12 @@
 	          createdBy:user.uid,
 	          updatedBy:user.uid,
 	          createdAt:firebase.firestore.FieldValue.serverTimestamp(),
+	          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+	        });
+	        transaction.update(seatRef, {
+	          activeMembers:seatPlan.activeMembers,
+	          lastActionUid:seatPlan.lastActionUid,
+	          updatedBy:user.uid,
 	          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
 	        });
 	      }
@@ -2048,20 +2070,55 @@
 	      batch.set(db.collection('approvedUsers').doc(workerUid), { status: 'revoked', approved: false, revokedAt: firebase.firestore.FieldValue.serverTimestamp(), revokedBy: ownerId }, { merge: true });
 	      writes += 2;
 	      if (inviteData?.businessUnitId && window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(window.CLICK360_FIREBASE_CONFIG?.projectId)) {
-	        const unitMember = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(inviteData.businessUnitId).collection('members').doc(workerUid);
+	        const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	        const unitRoot = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(inviteData.businessUnitId);
+	        const unitMember = unitRoot.collection('members').doc(workerUid);
 	        const current = await unitMember.get({ source:'server' });
-	        if (current.exists) {
+	        if (current.exists && current.data()?.status !== 'revoked') {
 	          batch.update(unitMember, {
 	            status:'revoked', recordVersion:Number(current.data()?.recordVersion || 1) + 1,
 	            updatedAt:firebase.firestore.FieldValue.serverTimestamp(), updatedBy:ownerId,
 	            revokedAt:firebase.firestore.FieldValue.serverTimestamp(), revokedBy:ownerId
 	          });
 	          writes += 1;
+	          // P0 commercial rule: revoking a worker frees its seat. This is the
+	          // only client path that decrements the counter, and Firestore
+	          // rules independently re-verify that this exact worker's doc
+	          // transitioned active -> revoked in this same batch before
+	          // accepting the decrement (see seatReleased in firestore.rules).
+	          const seatRef = unitRoot.collection('entitlement').doc('seats');
+	          const seatSnapshot = await seatRef.get({ source:'server' });
+	          if (seatSnapshot.exists) {
+	            const seatPlan = boundary.planSeatRelease(seatSnapshot.data(), boundary.identity(ownerId, inviteData.businessUnitId), workerUid);
+	            batch.update(seatRef, {
+	              activeMembers:seatPlan.activeMembers, lastActionUid:seatPlan.lastActionUid,
+	              updatedBy:ownerId, updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+	            });
+	            writes += 1;
+	          }
 	        }
 	      }
 	    }
 	    if (!writes) throw new Error('No se encontro una invitacion ni una cuenta para revocar.');
 	    await batch.commit();
+	    return true;
+	  };
+
+	  // P0 commercial rule: every business includes 2 free worker seats; this
+	  // lets the owner change the purchased add-on seat quota for one modular
+	  // business. No price is enforced or computed here by design -- that stays
+	  // a separate business/billing decision made before calling this function;
+	  // this only ever changes the quota number itself.
+	  window.click360SetWorkerSeatAddOn = async function(businessUnitId, addOnSeats) {
+	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
+	    if (!window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(window.CLICK360_FIREBASE_CONFIG?.projectId)) throw new Error('La frontera modular no esta habilitada para este proyecto.');
+	    const ownerId = window.click360User.uid;
+	    const safeBusinessId = String(businessUnitId || '').trim();
+	    const nextAddOnSeats = Number(addOnSeats);
+	    if (!safeBusinessId) throw new Error('Selecciona el negocio modular.');
+	    if (!Number.isInteger(nextAddOnSeats) || nextAddOnSeats < 0) throw new Error('El numero de cupos adicionales no es valido.');
+	    const seatRef = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(safeBusinessId).collection('entitlement').doc('seats');
+	    await seatRef.update({ addOnSeats:nextAddOnSeats, updatedBy:ownerId, updatedAt:firebase.firestore.FieldValue.serverTimestamp() });
 	    return true;
 	  };
 

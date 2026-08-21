@@ -216,6 +216,80 @@ service cloud.firestore {
           && member.permissions.get(moduleName, {}).get(action, false) == true);
     }
 
+    // P0 commercial rule: every business includes at most 2 active workers
+    // (excluding the owner) unless additional paid seats are purchased. This
+    // is enforced server-side so it cannot be bypassed by a modified client:
+    // any write that activates or deactivates a businessUnits member must
+    // atomically write the matching entitlement/seats counter in the SAME
+    // transaction/batch, or the whole write is rejected.
+    function seatEntitlementDoc(ownerUid, businessId) {
+      return get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/entitlement/seats);
+    }
+
+    function seatEntitlementData(ownerUid, businessId) {
+      return seatEntitlementDoc(ownerUid, businessId).data;
+    }
+
+    function seatEntitlementAfter(ownerUid, businessId) {
+      return getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/entitlement/seats).data;
+    }
+
+    function validSeatEntitlementIdentity(data, ownerUid, businessId) {
+      return data.ownerUid == ownerUid
+        && data.businessId == businessId
+        && data.tenantKey == "owner:" + ownerUid + ":business:" + businessId
+        && data.boundarySchemaVersion == 1;
+    }
+
+    function seatCapacity(entitlement) {
+      return entitlement.baseSeatCap + entitlement.addOnSeats;
+    }
+
+    // A seat was validly consumed for request.auth.uid's own activation in
+    // this same write: the entitlement counter increases by exactly one,
+    // stays within capacity, is tagged with the acting uid, and that same
+    // uid's member doc genuinely transitions into "active" in this same
+    // transaction (was absent or non-active before, active after). Tying the
+    // counter to a real, independently-verified transition means the counter
+    // itself can never be bumped by a standalone write.
+    function seatConsumedForSelf(ownerUid, businessId) {
+      let before = seatEntitlementData(ownerUid, businessId);
+      let after = seatEntitlementAfter(ownerUid, businessId);
+      let memberPath = /databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/members/$(request.auth.uid);
+      let memberAfter = getAfter(memberPath).data;
+      return validSeatEntitlementIdentity(after, ownerUid, businessId)
+        && after.baseSeatCap == before.baseSeatCap
+        && after.addOnSeats == before.addOnSeats
+        && after.activeMembers == before.activeMembers + 1
+        && after.activeMembers <= seatCapacity(after)
+        && after.lastActionUid == request.auth.uid
+        && memberAfter.uid == request.auth.uid
+        && memberAfter.status == "active"
+        && (!exists(memberPath) || get(memberPath).data.status != "active");
+    }
+
+    // A seat was validly released by an owner/admin revoking exactly the
+    // member named in the entitlement write's own lastActionUid, in this
+    // same transaction: the counter decreases by exactly one, and that
+    // member's doc genuinely transitions from "active" to "revoked" in this
+    // same write. Tying the decrement to a real, named transition means the
+    // counter can never be freed by a standalone write without an actual
+    // revocation.
+    function seatReleased(ownerUid, businessId) {
+      let before = seatEntitlementData(ownerUid, businessId);
+      let after = seatEntitlementAfter(ownerUid, businessId);
+      let releasedUid = after.lastActionUid;
+      let memberPath = /databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/members/$(releasedUid);
+      return validSeatEntitlementIdentity(after, ownerUid, businessId)
+        && after.baseSeatCap == before.baseSeatCap
+        && after.addOnSeats == before.addOnSeats
+        && after.activeMembers == before.activeMembers - 1
+        && after.activeMembers >= 0
+        && releasedUid is string && releasedUid.size() > 0
+        && get(memberPath).data.status == "active"
+        && getAfter(memberPath).data.status == "revoked";
+    }
+
     function validBoundaryCreate(ownerUid, businessId, moduleName, recordId) {
       return validBusinessUnitIdentity(request.resource.data, ownerUid, businessId)
         && request.resource.data.id == recordId
@@ -646,6 +720,9 @@ service cloud.firestore {
     match /businesses/{ownerUid}/businessUnits/{businessId}/members/{uid} {
       allow read: if businessUnitOwner(ownerUid, businessId)
         || (request.auth.uid == uid && activeBusinessUnitMember(ownerUid, businessId));
+      // Seat gate: activation (create, or reactivation via update) must
+      // consume exactly one seat in the same write via seatConsumedForSelf,
+      // which independently re-checks capacity from the entitlement doc.
       allow create: if businessUnitReady(ownerUid, businessId)
         && request.auth.uid == uid
         && rootMembershipAfter(ownerUid).uid == request.auth.uid
@@ -655,7 +732,8 @@ service cloud.firestore {
         && request.resource.data.uid == uid
         && request.resource.data.role == rootMembershipAfter(ownerUid).role
         && request.resource.data.permissions == rootMembershipAfter(ownerUid).permissions
-        && request.resource.data.status == "active";
+        && request.resource.data.status == "active"
+        && seatConsumedForSelf(ownerUid, businessId);
       allow update: if businessUnitPermission(ownerUid, businessId, "members", "manage")
         && validBoundaryUpdate(ownerUid, businessId, "members", uid)
         && request.resource.data.uid == uid
@@ -664,7 +742,41 @@ service cloud.firestore {
         && (request.resource.data.status == "active" || request.resource.data.status == "revoked")
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           "role", "permissions", "status", "recordVersion", "updatedBy", "updatedAt", "revokedBy", "revokedAt"
-        ]);
+        ])
+        && (
+          resource.data.status == request.resource.data.status
+          || (resource.data.status == "active" && request.resource.data.status == "revoked" && seatReleased(ownerUid, businessId))
+          || (resource.data.status == "revoked" && request.resource.data.status == "active" && seatConsumedForSelf(ownerUid, businessId))
+        );
+      allow delete: if false;
+    }
+
+    // Seat entitlement counter for the P0 worker-seat commercial rule.
+    // Provisioned only by the trusted migration admin process (bypasses
+    // rules); clients may only move it by exactly +/-1 atomically alongside
+    // the member write that earns/frees the seat (see seatConsumedForSelf
+    // and seatReleased above), or, for the owner, to change the purchased
+    // addOnSeats quota (no price is enforced here; that stays a business
+    // decision made before calling this write).
+    match /businesses/{ownerUid}/businessUnits/{businessId}/entitlement/{docId} {
+      allow read: if businessUnitOwner(ownerUid, businessId)
+        || activeBusinessUnitMember(ownerUid, businessId);
+      allow create: if false;
+      allow update: if docId == "seats" && validSeatEntitlementIdentity(request.resource.data, ownerUid, businessId) && (
+        (businessUnitOwner(ownerUid, businessId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["addOnSeats", "updatedAt", "updatedBy"])
+          && request.resource.data.addOnSeats is int
+          && request.resource.data.addOnSeats >= 0
+          && request.resource.data.activeMembers == resource.data.activeMembers
+          && request.resource.data.updatedBy == request.auth.uid
+          && request.resource.data.updatedAt == request.time)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(["activeMembers", "lastActionUid", "updatedAt", "updatedBy"])
+          && request.resource.data.updatedAt == request.time
+          && (
+            (request.resource.data.updatedBy == request.auth.uid && seatConsumedForSelf(ownerUid, businessId))
+            || (businessUnitPermission(ownerUid, businessId, "members", "manage") && seatReleased(ownerUid, businessId))
+          ))
+      );
       allow delete: if false;
     }
 

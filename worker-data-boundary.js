@@ -4,6 +4,7 @@
   const VERSION = '1.0.0';
   const SCHEMA_VERSION = 1;
   const PRODUCTION_PROJECT_ID = 'click-360';
+  const DEFAULT_BASE_SEAT_CAP = 2;
   const MODULES = Object.freeze([
     'members',
     'products',
@@ -101,6 +102,60 @@
 
   function boundaryRootPath(ownerUid, businessId) {
     return `businesses/${safeId(ownerUid, 'ownerUid')}/businessUnits/${safeId(businessId, 'businessId')}`;
+  }
+
+  function seatEntitlementPath(ownerUid, businessId) {
+    return `${boundaryRootPath(ownerUid, businessId)}/entitlement/seats`;
+  }
+
+  function seatEntitlement(ownerUid, businessId, overrides = {}) {
+    return {
+      ...identity(ownerUid, businessId),
+      baseSeatCap: DEFAULT_BASE_SEAT_CAP,
+      addOnSeats: 0,
+      activeMembers: 0,
+      ...overrides
+    };
+  }
+
+  function seatCapacity(entitlement) {
+    return Number(entitlement?.baseSeatCap ?? DEFAULT_BASE_SEAT_CAP) + Number(entitlement?.addOnSeats ?? 0);
+  }
+
+  function hasSeatAvailable(entitlement) {
+    return Number(entitlement?.activeMembers ?? 0) < seatCapacity(entitlement);
+  }
+
+  /**
+   * Plans the entitlement write for activating one worker (invite accepted or
+   * member reactivated). Throws SEAT_LIMIT_EXCEEDED if no seat remains; the
+   * caller must abort the member activation write in the same transaction.
+   * `lastActionUid` must be the uid of the member whose doc is transitioning
+   * to active in the SAME write: Firestore rules re-verify that transition
+   * server-side, so a counter change can never be submitted on its own.
+   */
+  function planSeatConsumption(entitlement, expected, lastActionUid) {
+    if (!entitlement) throw new Error('SEAT_ENTITLEMENT_ABSENT: el negocio modular no tiene cupos configurados.');
+    for (const key of ['ownerUid', 'businessId', 'tenantKey', 'boundarySchemaVersion']) {
+      if (entitlement[key] !== expected[key]) throw new Error(`SEAT_ENTITLEMENT_IDENTITY_MISMATCH: ${key}`);
+    }
+    if (!hasSeatAvailable(entitlement)) {
+      throw new Error(`SEAT_LIMIT_EXCEEDED: ${entitlement.activeMembers}/${seatCapacity(entitlement)} cupos en uso.`);
+    }
+    return { activeMembers: Number(entitlement.activeMembers || 0) + 1, lastActionUid: safeId(lastActionUid, 'lastActionUid') };
+  }
+
+  /**
+   * Plans the entitlement write for deactivating (revoking) one worker.
+   * `lastActionUid` must be the uid of the member whose doc is transitioning
+   * to revoked in the SAME write (see planSeatConsumption).
+   */
+  function planSeatRelease(entitlement, expected, lastActionUid) {
+    if (!entitlement) throw new Error('SEAT_ENTITLEMENT_ABSENT: el negocio modular no tiene cupos configurados.');
+    for (const key of ['ownerUid', 'businessId', 'tenantKey', 'boundarySchemaVersion']) {
+      if (entitlement[key] !== expected[key]) throw new Error(`SEAT_ENTITLEMENT_IDENTITY_MISMATCH: ${key}`);
+    }
+    return { activeMembers: Math.max(0, Number(entitlement.activeMembers || 0) - 1), lastActionUid: safeId(lastActionUid, 'lastActionUid') };
   }
 
   function collectionPath(ownerUid, businessId, moduleName) {
@@ -583,6 +638,7 @@
     MODULES,
     CUTOVER_STATUSES,
     ROLE_PERMISSIONS,
+    DEFAULT_BASE_SEAT_CAP,
     normalizedRole,
     normalizePermissionMap,
     can,
@@ -598,6 +654,12 @@
     planIdentityRepair,
     assertNonProductionProject,
     enabledForProject,
-    createFirestoreGateway
+    createFirestoreGateway,
+    seatEntitlementPath,
+    seatEntitlement,
+    seatCapacity,
+    hasSeatAvailable,
+    planSeatConsumption,
+    planSeatRelease
   });
 })(typeof window !== 'undefined' ? window : globalThis);
