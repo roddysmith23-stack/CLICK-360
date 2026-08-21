@@ -7,6 +7,7 @@ const ASSETS = [
   './app.js',
   './firebase-config.js',
   './p0-tenant-guard.js',
+  './worker-data-boundary.js',
   './v16-domain.js',
   './v16-storage.js',
   './access-flow.js',

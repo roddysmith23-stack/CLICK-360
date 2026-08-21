@@ -48,7 +48,7 @@
     };
     const api = window.click360ReceiptTest;
     if (!api) throw new Error('Receipt test API unavailable');
-    document.getElementById('receiptGeometryOutput').innerHTML = api.buildPaperHtml(sale, business, template, { copies:2, preview:true });
+    document.getElementById('receiptGeometryOutput').innerHTML = api.buildPaperHtml(sale, business, template, { copies:2, preview:true, segmentedPhysicalLayout:true });
     document.documentElement.dataset.ready = 'true';
   </script>
 </body>

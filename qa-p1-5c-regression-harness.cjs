@@ -69,7 +69,6 @@ for (const asset of cachedAssets) {
 }
 
 const forbidden = [
-  'firebase-config.js',
   'p0-tenant-guard.js',
   'access-flow.js'
 ];
@@ -78,6 +77,10 @@ try {
   changed = childProcess.execFileSync('git', ['diff', '--name-only', '6aa097f9ce48fbb308d7851a0917122d5ed2695a'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
 } catch {}
 for (const file of forbidden) assert.equal(changed.includes(file), false, `${file} is untouched`);
+const firebaseConfig = read('firebase-config.js');
+assert.match(firebaseConfig, /projectId:\s*"click-360"/, 'production Firebase project remains intact');
+assert.match(firebaseConfig, /const CLICK360_STAGING_FIREBASE_CONFIG = \{[\s\S]*projectId:\s*"click360-staging-7620168025"/, 'staging Firebase config is separate');
+assert.match(firebaseConfig, /CLICK360_IS_STAGING_HOST[\s\S]*CLICK360_STAGING_FIREBASE_CONFIG[\s\S]*CLICK360_PRODUCTION_FIREBASE_CONFIG/, 'runtime selects exactly one environment config');
 if (changed.includes('firestore.rules')) {
   const rules = read('firestore.rules');
   assert.match(rules, /match \/businesses\/\{businessId\}\/auditEvents\/\{eventId\}[\s\S]*allow update, delete: if false;/, 'stability candidate permits only its separately tested append-only audit contract');

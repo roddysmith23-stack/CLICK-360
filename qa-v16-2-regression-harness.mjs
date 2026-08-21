@@ -32,7 +32,7 @@ assert(firebase.includes("setPendingUser(user, data, 'worker_module_upgrade')"),
 
 assert(app.includes("toast('Guardando el cambio de forma segura...', 'ok')"));
 assert(!app.includes('Cambio guardado en la nube. El modo sin conexion no esta disponible'), 'online-only mode never announces success before commit');
-assert(firebase.includes("pushLocalToFirestore('online_only_change').then"));
+assert(firebase.includes("onlineCommit('online_only_change').then") && firebase.includes('MODULAR_MODE ? pushModularState : pushLocalToFirestore'));
 assert(app.includes("window.addEventListener('click360-online-only-commit'"));
 assert(app.includes('onlineOnlyCommitCheckpoints.get(key)') && app.includes('checkpoint.previousState'), 'failed cloud-only writes restore only their correlated confirmed state');
 assert(app.includes('function localStorageReady(') && app.includes("mode: navigator.onLine ? 'online_only_safe' : 'unavailable'"));

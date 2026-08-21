@@ -91,7 +91,7 @@ assert(firebaseService.includes("['cache_missing', 'localstorage_unavailable'].i
 assert(firebaseService.includes('click360LoadIndexedTenantCache(context)'), 'IndexedDB is checked before a missing remote can receive a new seed');
 assert(firebaseService.includes('localCacheStatus.valid === true'), 'fresh in-memory seed is never treated as a verified local edit');
 assert(firebaseService.includes('OFFLINE_APPROVAL_MAX_AGE_MS'), 'offline approval cache expires');
-assert(firebaseService.includes("const allowedRoles = ['owner', 'worker', 'cashier', 'inventory']") && firebaseService.includes("role === 'owner' && ownerId !== user.uid"), 'missing or contradictory roles cannot become owner by default');
+assert(firebaseService.includes("const allowedRoles = ['owner', 'worker', 'seller', 'cashier', 'inventory', 'supervisor', 'admin']") && firebaseService.includes("role === 'owner' && ownerId !== user.uid"), 'missing or contradictory roles cannot become owner by default');
 assert(firebaseService.includes("addEventListener('click360-local-state-saved'") && !firebaseService.includes('localStorage.setItem = function'), 'explicit tenant save events trigger sync without monkey-patching Storage');
 assert(firebaseService.includes('La migraci') && firebaseService.includes('administrativa'), 'public legacy migration is disabled');
 assert(!firebaseService.includes('tempOwners') && !rules.includes('tempOwnerEmail'), 'hard-coded owner fallback is removed');
