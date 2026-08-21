@@ -211,6 +211,21 @@ async function main() {
     }));
     await assertSucceeds(getDocs(collection(supervisorDb, ...unitPath('auditEvents'))));
 
+    // Regression: firestore.rules scopes businessUnits/{id}/settings reads to
+    // the single document id "main" (recordId == "main"), unlike every other
+    // module which is a normal multi-record collection. Firestore's rules
+    // engine rejects an unfiltered collection list() unless it can prove
+    // every possible result satisfies the rule -- an id-scoped rule never
+    // allows that proof for a generic list, so the list is denied even
+    // though the collection only ever contains one document. This is exactly
+    // the P0 bug found live during the Phase 3.1 owner smoke test: gateway
+    // pull() called the generic collection.get() for every module including
+    // settings, so a real worker's very first login after accepting an
+    // invite failed with permission-denied. readModule('settings') in
+    // worker-data-boundary.js now reads doc('main') directly instead.
+    await assertFails(getDocs(collection(workerDb, ...unitPath('settings'))));
+    await assertSucceeds(getDoc(doc(workerDb, ...unitPath('settings', 'main'))));
+
     await assertSucceeds(getDoc(doc(sellerDb, ...unitPath('products', 'product-a'))));
     await assertFails(setDoc(doc(sellerDb, ...unitPath('products', 'product-seller')), boundaryRecord(
       OWNER, BUSINESS, 'products', 'product-seller', 'seller-a', { name:'No autorizado', stock:1, price:1 }
