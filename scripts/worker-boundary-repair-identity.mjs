@@ -1,7 +1,7 @@
 /**
  * worker-boundary-repair-identity.mjs
  *
- * Staging-only, idempotent, reversible repair for the case where
+ * Idempotent, reversible repair for the case where
  * businesses/{ownerUid}/state/main has a valid root-level identity but is
  * missing payload.identity (which p0-tenant-guard requires at runtime).
  *
@@ -16,21 +16,34 @@
  * than silently overwriting a racing update.
  *
  * Only payload.identity is written. payload.data and all other fields are
- * never touched. Production (click-360) is forbidden.
+ * never touched.
  *
- * Usage:
+ * Phase 3.3: production (click-360) is allowed, but ONLY for a tenant
+ * explicitly present in scripts/config/pilot-authorized-tenants.json (see
+ * scripts/lib/pilot-authorization.mjs) -- checked before any Firestore
+ * access at all, dry-run included -- AND with the environment-specific
+ * --confirm string. There is no way to authorize more than one exact
+ * ownerUid+businessId pair per allowlist entry, so this can never become a
+ * batch/mass operation.
+ *
+ * Usage (staging, default project):
  *   node scripts/worker-boundary-repair-identity.mjs \
  *     --owner <ownerUid> \
  *     --business <businessId> \
- *     [--project click360-staging-7620168025]   # default
  *     [--dry-run]                                # plan only, no write
  *     --confirm REPAIR_STAGING_IDENTITY          # required for any write
+ *
+ * Usage (production, requires the tenant to already be in the allowlist):
+ *   node scripts/worker-boundary-repair-identity.mjs \
+ *     --owner <ownerUid> --business <businessId> --project click-360 \
+ *     [--dry-run] --confirm REPAIR_PRODUCTION_IDENTITY
  *
  * Output: JSON report with action, hashes before/after, updateTime.
  */
 
 import crypto from 'node:crypto';
 import process from 'node:process';
+import { assertTenantAuthorizedForProduction } from './lib/pilot-authorization.mjs';
 
 await import('../worker-data-boundary.js');
 const boundary = globalThis.CLICK360_WORKER_DATA_BOUNDARY;
@@ -69,18 +82,20 @@ const dryRun = args['dry-run'] === true || args['dry-run'] === 'true';
 const confirm = String(args.confirm || '');
 
 // ── Safety guards ────────────────────────────────────────────────────────────
-if (projectId === PRODUCTION_PROJECT) {
-  throw new Error('REPAIR_FORBIDDEN: worker-boundary-repair-identity.mjs no puede ejecutarse contra producción (click-360).');
-}
-if (projectId !== STAGING_PROJECT) {
-  throw new Error(`REPAIR_FORBIDDEN: Proyecto no aprobado para reparación de identidad: ${projectId}. Solo se permite ${STAGING_PROJECT}.`);
+const isProduction = projectId === PRODUCTION_PROJECT;
+if (projectId !== STAGING_PROJECT && projectId !== PRODUCTION_PROJECT) {
+  throw new Error(`REPAIR_FORBIDDEN: Proyecto no aprobado para reparación de identidad: ${projectId}.`);
 }
 if (!args.owner || !args.business) {
   throw new Error('--owner y --business son obligatorios.');
 }
-if (!dryRun && confirm !== 'REPAIR_STAGING_IDENTITY') {
-  throw new Error('La escritura requiere --confirm=REPAIR_STAGING_IDENTITY. Use --dry-run para planificar sin escribir.');
+const envTag = isProduction ? 'PRODUCTION' : 'STAGING';
+if (!dryRun && confirm !== `REPAIR_${envTag}_IDENTITY`) {
+  throw new Error(`La escritura requiere --confirm=REPAIR_${envTag}_IDENTITY. Use --dry-run para planificar sin escribir.`);
 }
+// Phase 3.3: independent, exact-tenant authorization gate for production --
+// checked before ANY connection to Firestore, including plain dry-run reads.
+const pilotAuthorization = await assertTenantAuthorizedForProduction(projectId, String(args.owner), String(args.business));
 
 const ownerUid = String(args.owner);
 const businessId = String(args.business);
@@ -113,6 +128,7 @@ const plan = boundary.planIdentityRepair(raw, expected);
 
 const report = {
   projectId,
+  pilotAuthorization,
   ownerUid,
   businessId,
   sourcePath: `businesses/${ownerUid}/state/main`,

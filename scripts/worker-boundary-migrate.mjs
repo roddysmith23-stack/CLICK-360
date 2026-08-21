@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { assertTenantAuthorizedForProduction } from './lib/pilot-authorization.mjs';
 
 await import('../worker-data-boundary.js');
 const boundary = globalThis.CLICK360_WORKER_DATA_BOUNDARY;
@@ -125,19 +126,22 @@ async function applyPlan({ db, plan, source, sourceHash, expectedSourceHash }) {
     assertIdentity(seatSnapshot.data(), expectedIdentity, 'seatEntitlement');
   }
 
-  // Phase 3.2 per-tenant rollout gate: provision featureFlags/workers if
-  // absent. This script only ever runs against STAGING_PROJECT (enforced
-  // below), so it is always safe to enable here -- staging QA must not
-  // require a separate manual activation step. A future, deliberately
-  // reviewed extension of this script to support production migrations
-  // MUST default this to enabled:false there instead, activated per-tenant
-  // only via scripts/worker-boundary-admin.mjs for the pilot rollout.
+  // Phase 3.2/3.3 per-tenant rollout gate: provision featureFlags/workers if
+  // absent. Staging auto-enables (QA must not require a separate manual
+  // activation step). Production migrations NEVER auto-enable, even though
+  // the tenant is already pilot-authorized (see pilotAuthorization above) --
+  // migration and activation are deliberately separate steps; the tenant
+  // stays dark until scripts/worker-boundary-admin.mjs --action enable-workers
+  // is run explicitly (or the single activate-tenant command, which calls
+  // that as its own final, separate step).
   const flagRef = db.collection('businesses').doc(ownerUid).collection('featureFlags').doc('workers');
   const flagSnapshot = await flagRef.get();
   if (!flagSnapshot.exists) {
     await flagRef.create({
-      ownerUid, enabled:true, enabledAt:new Date().toISOString(), enabledBy:'worker-boundary-migrate',
-      updatedBy:'worker-boundary-migrate', updatedAt:new Date().toISOString(), notes:'auto-enabled: staging QA migration'
+      ownerUid, enabled:!isProduction,
+      enabledAt:isProduction ? null : new Date().toISOString(), enabledBy:isProduction ? null : 'worker-boundary-migrate',
+      updatedBy:'worker-boundary-migrate', updatedAt:new Date().toISOString(),
+      notes:isProduction ? 'migrated, not yet activated (Phase 3.3 pilot)' : 'auto-enabled: staging QA migration'
     });
   }
 
@@ -229,18 +233,23 @@ async function promotePlan({ db, plan, source, sourceHash, expectedSourceHash })
 
 const args = parseArgs(process.argv.slice(2));
 const projectId = String(args.project || STAGING_PROJECT);
+const isProduction = projectId === PRODUCTION_PROJECT;
 const apply = args.apply === true;
 const rollback = args.rollback === true;
 const promote = args.promote === true;
 if (!boundary) throw new Error('Worker boundary module did not initialize.');
-if (projectId === PRODUCTION_PROJECT) throw new Error('Production is forbidden for worker boundary migration.');
-if (projectId !== STAGING_PROJECT) throw new Error(`Unapproved staging project: ${projectId}`);
+if (projectId !== STAGING_PROJECT && projectId !== PRODUCTION_PROJECT) throw new Error(`Unapproved project: ${projectId}`);
 if (!args.owner || !args.business) throw new Error('--owner and --business are required.');
 if ([apply, rollback, promote].filter(Boolean).length > 1) throw new Error('--apply, --promote and --rollback are mutually exclusive.');
-if (apply && args.confirm !== 'APPLY_STAGING_WORKER_BOUNDARY') throw new Error('--apply requires --confirm=APPLY_STAGING_WORKER_BOUNDARY.');
-if (rollback && args.confirm !== 'ROLLBACK_STAGING_WORKER_BOUNDARY') throw new Error('--rollback requires --confirm=ROLLBACK_STAGING_WORKER_BOUNDARY.');
-if (promote && args.confirm !== 'PROMOTE_STAGING_WORKER_BOUNDARY') throw new Error('--promote requires --confirm=PROMOTE_STAGING_WORKER_BOUNDARY.');
+const envTag = isProduction ? 'PRODUCTION' : 'STAGING';
+if (apply && args.confirm !== `APPLY_${envTag}_WORKER_BOUNDARY`) throw new Error(`--apply requires --confirm=APPLY_${envTag}_WORKER_BOUNDARY.`);
+if (rollback && args.confirm !== `ROLLBACK_${envTag}_WORKER_BOUNDARY`) throw new Error(`--rollback requires --confirm=ROLLBACK_${envTag}_WORKER_BOUNDARY.`);
+if (promote && args.confirm !== `PROMOTE_${envTag}_WORKER_BOUNDARY`) throw new Error(`--promote requires --confirm=PROMOTE_${envTag}_WORKER_BOUNDARY.`);
 if ((apply || rollback || promote) && !args['source-hash']) throw new Error('--apply/--promote/--rollback requires --source-hash from the reviewed dry-run.');
+// Phase 3.3: independent, exact-tenant authorization gate for production --
+// checked before ANY connection to Firestore, including plain dry-run reads.
+// See scripts/lib/pilot-authorization.mjs and scripts/config/pilot-authorized-tenants.json.
+const pilotAuthorization = await assertTenantAuthorizedForProduction(projectId, String(args.owner), String(args.business));
 
 let db;
 let source;
@@ -256,14 +265,22 @@ if (args.input) {
   // payload.identity will be accepted by extractLegacyState but rejected at
   // runtime by p0-tenant-guard. We block here to prevent a false CUTOVER_VERIFIED.
   const ownerUid = String(args.owner);
-  const businessId = String(args.business);
-  const expectedTenantKey = boundary.identity(ownerUid, businessId).tenantKey;
+  // The P0 legacy identity on state/main (payload.identity) is ALWAYS
+  // self-referential -- businessId === ownerUid -- by CLICK 360 convention,
+  // the same convention every real login/invitation code path in
+  // firebase-service.js already relies on (e.g. tenantKeyFor(ownerId, ownerId)).
+  // It is NOT the modular business-unit id being migrated (--business below,
+  // e.g. "business-alpha"): one owner can migrate multiple business units
+  // over time from the SAME state/main document, so payload.identity must
+  // stay stable across all of them rather than being expected to match
+  // whichever unit is currently being migrated.
+  const expectedP0TenantKey = boundary.identity(ownerUid, ownerUid).tenantKey;
   // Validate the complete p0-tenant-guard contract (all 5 fields) before allowing CUTOVER_VERIFIED.
   boundary.validateSourceDocumentIdentity(source.raw, {
     ownerUid,
     ownerId: ownerUid, // ownerId === ownerUid by CLICK 360 convention
-    businessId,
-    tenantKey: expectedTenantKey,
+    businessId: ownerUid,
+    tenantKey: expectedP0TenantKey,
     schemaVersion: P0_SCHEMA_VERSION
   });
 }
@@ -281,7 +298,8 @@ if (!validation.valid) throw new Error(`Migration plan invalid: ${validation.err
 
 const report = {
   projectId,
-  mode:apply ? 'APPLY_STAGING' : promote ? 'PROMOTE_STAGING' : rollback ? 'ROLLBACK_STAGING' : 'DRY_RUN',
+  pilotAuthorization,
+  mode:apply ? `APPLY_${envTag}` : promote ? `PROMOTE_${envTag}` : rollback ? `ROLLBACK_${envTag}` : 'DRY_RUN',
   sourcePath:`businesses/${args.owner}/state/main`,
   sourceHash,
   stateMainWriteCount:0,
