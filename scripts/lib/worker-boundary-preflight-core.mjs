@@ -59,10 +59,19 @@ export async function runPreflightChecks({ boundary, db, auth, ownerUid, busines
       const products = (legacyState.products || []).filter((product) => product.businessId === businessId);
       const sales = (legacyState.sales || []).filter((sale) => sale.businessId === businessId);
       check('modules', 'PASS', `business "${business.name}" found; products=${products.length}, sales=${sales.length}.`);
-      const badStock = products.filter((product) => typeof product.stock !== 'number' || Number.isNaN(product.stock) || product.stock < 0);
+      // Migration normalizes stock from qty when stock is absent (mirrors app.js's
+      // normalizeState() / fix 18fd918) -- a product is only a real blocker here if
+      // NEITHER field resolves to a valid non-negative number, since that's what
+      // would still migrate as NaN/undefined.
+      const resolvedStock = (product) => {
+        if (typeof product.stock === 'number' && !Number.isNaN(product.stock)) return product.stock;
+        if (typeof product.qty === 'number' && !Number.isNaN(product.qty)) return product.qty;
+        return NaN;
+      };
+      const badStock = products.filter((product) => Number.isNaN(resolvedStock(product)) || resolvedStock(product) < 0);
       check('stock', badStock.length === 0 ? 'PASS' : 'FAIL', badStock.length === 0
-        ? `All ${products.length} products have a valid non-negative stock.`
-        : `${badStock.length} product(s) have missing/negative/non-numeric stock: ${badStock.map((p) => p.id).join(', ')}.`);
+        ? `All ${products.length} products have a valid non-negative stock (directly or via qty fallback, normalized during migration).`
+        : `${badStock.length} product(s) have no valid stock or qty (missing/negative/non-numeric on both): ${badStock.map((p) => p.id).join(', ')}.`);
       const cashSessions = (legacyState.cashSessions || []).filter((session) => session.businessId === businessId);
       const staleOpenCash = cashSessions.filter((session) => session.status === 'open');
       check('cash', staleOpenCash.length === 0 ? 'PASS' : 'WARN', staleOpenCash.length === 0
