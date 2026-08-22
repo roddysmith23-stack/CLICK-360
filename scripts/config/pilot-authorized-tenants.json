@@ -3,10 +3,10 @@
   "click-360": [
     {
       "ownerUid": "iESlWpF92JXaGDoYTQ28ThWs93y1",
-      "businessId": "industrias-omega",
+      "businessId": "biz_main",
       "authorizedBy": "Roddy Smith",
       "authorizedAt": "2026-08-22T18:45:00.000Z",
-      "notes": "Canary tenant for Workers rollout. Named explicitly by the owner in-conversation. Simple retail (ropa), no existing workers, healthy P0 identity, low footprint (1 product, 4 sales)."
+      "notes": "Canary tenant for Workers rollout: 'Industrias Omega' (legacy business id biz_main). This account also runs a second, separate business ('Industrias Alfa', biz_e4dd1eac-a501-4c25-8ae4-dd7f3bf50eb8) that is NOT authorized and must not be touched. Selected for its low footprint (1 product, 4 sales) and healthy P0 identity."
     }
   ]
 }
