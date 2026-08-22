@@ -43,7 +43,7 @@
     },
     seller: {
       products: ['read'], sales: ['read', 'create'], layaways: ['read', 'create', 'payment'],
-      cashSessions: ['read'], movements: ['read'], auditEvents: ['create'], settings: ['read']
+      cashSessions: ['read'], movements: ['read', 'create'], auditEvents: ['create'], settings: ['read']
     },
     cashier: {
       products: ['read'], sales: ['read', 'create'], layaways: ['read', 'create', 'payment'],
@@ -645,7 +645,7 @@
           if (moduleName === 'products' && action === 'update' && !may(moduleName, action)) {
             const changedKeys = new Set([...Object.keys(previousRecord || {}), ...Object.keys(nextRecord || {})]
               .filter((key) => canonicalJson(previousRecord?.[key]) !== canonicalJson(nextRecord?.[key])));
-            const onlyStock = [...changedKeys].every((key) => ['stock', 'updatedAt', 'updatedAtMs'].includes(key));
+            const onlyStock = [...changedKeys].every((key) => ['stock', 'qty', 'updatedAt', 'updatedAtMs', 'updatedBy'].includes(key));
             saleStockOperationId = productSaleId.get(id) || '';
             if (onlyStock && saleStockOperationId && may('sales', 'create')) action = 'sale_stock';
           }

@@ -346,7 +346,7 @@ service cloud.firestore {
               ]))
             || (salesPermissions.get("create", false) == true
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-                "stock", "updatedAtMs", "lastOperationId", "recordVersion", "updatedBy", "updatedAt"
+                "stock", "qty", "updatedAtMs", "lastOperationId", "recordVersion", "updatedBy", "updatedAt"
               ])
               && request.resource.data.stock is number
               && request.resource.data.stock >= 0
