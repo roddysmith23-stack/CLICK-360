@@ -6,14 +6,35 @@
       "businessId": "biz_main",
       "authorizedBy": "Roddy Smith",
       "authorizedAt": "2026-08-22T18:45:00.000Z",
-      "notes": "Canary tenant for Workers rollout: 'Industrias Omega' (legacy business id biz_main). This account also runs a second, separate business ('Industrias Alfa', biz_e4dd1eac-a501-4c25-8ae4-dd7f3bf50eb8) that is NOT authorized and must not be touched. Selected for its low footprint (1 product, 4 sales) and healthy P0 identity. Preflight NO-GO (bad stock data on prod_vp5ejtsg6l, pre-existing) -- not activated, left Workers OFF."
+      "notes": "Canary tenant for Workers rollout: 'Industrias Omega' (legacy business id biz_main). This account also runs a second, separate business ('Industrias Alfa', biz_e4dd1eac-a501-4c25-8ae4-dd7f3bf50eb8) that is NOT authorized and must not be touched. Selected for its low footprint (1 product, 4 sales) and healthy P0 identity. Initial preflight was NO-GO (bad stock data, fixed in the qty->stock migration normalization fix); ACTIVATED 2026-08-22T19:24Z after the fix, businessUnit CUTOVER_VERIFIED, Workers flag ON, structural smoke PASS."
     },
     {
       "ownerUid": "3UTjgHd1QNSvqlcXNKQ6tL79X7u2",
       "businessId": "biz_main",
       "authorizedBy": "Roddy Smith",
       "authorizedAt": "2026-08-22T19:05:00.000Z",
-      "notes": "Second tenant for Workers rollout: 'SHARY' (ropa). Named explicitly by the owner in-conversation. Highest real activity of the 5 production tenants (419 products, 17 sales), no existing workers, healthy P0 identity."
+      "notes": "Second tenant for Workers rollout: 'SHARY' (ropa). Named explicitly by the owner in-conversation. Highest real activity of the 5 production tenants (419 products, 17 sales), no existing workers, healthy P0 identity. Migration reached VERIFIED but promotion twice hit 'state/main changed' -- SHARY has genuine concurrent live edits (products grew 419->424 mid-migration). businessUnit is stuck at VERIFIED (not CUTOVER_VERIFIED), Workers flag still OFF -- zero impact on SHARY's live app, no client reads modular data pre-cutover. Needs a retry during a quieter window; the migrate tool has no clean 'abandon and restart' path when both resume-apply and rollback are hash-gated to now-stale state."
+    },
+    {
+      "ownerUid": "UCfRR5x7pagYAoZkj6XuVpcAyFw1",
+      "businessId": "biz_main",
+      "authorizedBy": "Roddy Smith",
+      "authorizedAt": "2026-08-22T19:35:00.000Z",
+      "notes": "Third tenant for Workers rollout: 'Lia perfumería' (ropa, 8 products, 0 sales). This account also runs a second business ('Nipponflex', biz_4ac84958-c757-414f-a251-f8c92fea5dcf) that is NOT authorized. Low real activity, part of the GO/NO-GO batch shown to the owner."
+    },
+    {
+      "ownerUid": "cPy0PqLSHGO6Ei3xlRc2DHufQ5B3",
+      "businessId": "biz_main",
+      "authorizedBy": "Roddy Smith",
+      "authorizedAt": "2026-08-22T19:35:00.000Z",
+      "notes": "Fourth tenant for Workers rollout: 'Lía Perfumeria' (restaurante, 2 products, 3 sales, 2 EXISTING legacy workers already). This account also runs a second business ('PEPTIDOS', biz_45a9c61c-d854-425a-a39e-0274393dceb5) that is NOT authorized. Flagged as higher complexity (restaurant type + pre-existing workers) but included per the owner's explicit GO/NO-GO batch instruction."
+    },
+    {
+      "ownerUid": "g9e8NjJjrDS3ldvNxHLlhqvzm3E3",
+      "businessId": "biz_main",
+      "authorizedBy": "Roddy Smith",
+      "authorizedAt": "2026-08-22T19:35:00.000Z",
+      "notes": "Fifth tenant for Workers rollout: 'Mi Negocio' (ropa, 0 products, 0 sales -- effectively unused). Part of the owner's explicit GO/NO-GO batch instruction."
     }
   ]
 }
