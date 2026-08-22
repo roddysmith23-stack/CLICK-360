@@ -47,7 +47,7 @@ async function run(name, browserType, options = {}) {
       timeout:15000
     });
     const release = await page.evaluate(() => window.CLICK360_RUNTIME_GUARD?.getReleaseMetadata?.() || null);
-    if (release?.appVersion !== '1.0.5-r34-workers.1') throw new Error(`${name} wrong app version: ${JSON.stringify(release)}`);
+    if (release?.appVersion !== '1.0.5') throw new Error(`${name} wrong app version: ${JSON.stringify(release)}`);
     if (release?.assetVersion !== 'commercial-1-0-5-r34-workers') throw new Error(`${name} wrong asset version: ${JSON.stringify(release)}`);
     if (!release?.buildSha || release.buildSha === '__CLICK360_BUILD_SHA__') throw new Error(`${name} build SHA was not injected`);
     const manifest = await page.evaluate(async () => {

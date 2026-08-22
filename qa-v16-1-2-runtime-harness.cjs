@@ -74,16 +74,16 @@ function runtimeContext(userAgent) {
 
 const firefoxQa = runtimeContext('Mozilla/5.0 Firefox/128.0');
 assert.equal(firefoxQa.context.__firefox__, true, 'Firefox is detected without reading an undeclared global');
-assert.equal(firefoxQa.context.CLICK360_RUNTIME_GUARD.APP_VERSION, '1.0.5-stability.1');
+assert.equal(firefoxQa.context.CLICK360_RUNTIME_GUARD.APP_VERSION, '1.0.5');
 assert.equal(firefoxQa.context.CLICK360_RUNTIME_GUARD.browser.name, 'Firefox');
 firefoxQa.context.CLICK360_RUNTIME_GUARD.setReleaseMetadata({
-  appVersion: '1.0.5-stability.1',
+  appVersion: '1.0.5',
   assetVersion,
   buildSha: 'abc123def456'
 });
 assert.deepEqual(
   JSON.parse(JSON.stringify(firefoxQa.context.CLICK360_RUNTIME_GUARD.getReleaseMetadata())),
-  { appVersion:'1.0.5-stability.1', assetVersion, buildSha:'abc123def456', environment:'production' },
+  { appVersion:'1.0.5', assetVersion, buildSha:'abc123def456', environment:'production' },
   'runtime guard exposes sanitized release metadata for support and artifact smoke'
 );
 firefoxQa.context.location.hash = '#cash';
@@ -104,7 +104,7 @@ assert.equal(reports[0].filename, 'safari-web-extension://extension/content.js')
 assert.equal(reports[0].sourceKind, 'external_or_injected');
 assert.equal(reports[0].line, 1);
 assert.equal(reports[0].browser.name, 'Firefox');
-assert.equal(reports[0].appVersion, '1.0.5-stability.1');
+assert.equal(reports[0].appVersion, '1.0.5');
 assert.equal(reports[0].buildSha, 'abc123def456');
 assert.equal(reports[0].assetVersion, assetVersion);
 assert.equal(reports[0].displayMode, 'standalone');
@@ -114,7 +114,7 @@ assert.equal(reports[0].effectiveAccess.readOnly, false);
 assert.match(reports[0].activeBusinessId, /^anon_[0-9a-f]{8}$/);
 assert(!reports[0].pageUrl.includes('secret') && !reports[0].stack.includes('secret'), 'tokens are removed from saved reports');
 assert(!firefoxQa.toast.children.map((node) => node.textContent || '').join(' ').includes('__firefox__'), 'the customer never sees raw technical errors');
-assert(firefoxQa.toast.children.some((node) => node.href?.includes('Version%3A%201.0.5-stability.1%20abc123def456')), 'support link includes release version and SHA');
+assert(firefoxQa.toast.children.some((node) => node.href?.includes('Version%3A%201.0.5%20abc123def456')), 'support link includes release version and SHA');
 
 const shary = {
   authUid: '3UTjgHd1QNSvqlcXNKQ6tL79X7u2',
@@ -142,8 +142,8 @@ for (const file of ['app.js', 'firebase-service.js', 'p0-tenant-guard.js', 'v16-
 }
 
 assert(!app.includes('window.onerror'), 'legacy raw-error handler was removed');
-assert(app.includes("const APP_RELEASE_VERSION = '1.0.5-stability.1'") && app.includes('APP_VISIBLE_VERSION') && app.includes('class="brandSlogan">Control total de tu negocio</small>'));
-assert(firebase.includes('<small>1.0.5-stability.1</small>'));
+assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'") && app.includes('APP_VISIBLE_VERSION') && app.includes('class="brandSlogan">Control total de tu negocio</small>'));
+assert(firebase.includes('<small>1.0.5</small>'));
 assert(app.includes('CLICK360_RUNTIME_GUARD?.setContext(activeTenantContext)'));
 assert(app.includes('CLICK360_RUNTIME_GUARD?.clearContext()'));
 assert(html.indexOf(`runtime-guard.js?v=${assetVersion}`) < html.indexOf('vendor/qrcode-generator.js'), 'runtime guard loads before all application libraries');

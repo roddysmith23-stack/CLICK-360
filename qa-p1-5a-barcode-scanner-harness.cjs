@@ -9,7 +9,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 const publicBundle = `${app}\n${styles}\n${html}\n${worker}`;
 
-const RELEASE = '1.0.5-r34-workers.1';
+const RELEASE = '1.0.5';
 const ASSET = 'commercial-1-0-5-r34-workers';
 const BARCODE_FORMATS = ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
 

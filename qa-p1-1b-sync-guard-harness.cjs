@@ -99,8 +99,8 @@ assert(firebase.includes('PENDING_REMOTE_SYNC_GRACE_MS'), 'temporary pending gat
 assert(firebase.includes('pendingRemoteSync = event.detail?.pendingRemoteSync !== false'), 'local-state events distinguish real pending writes from non-blocking switches');
 assert(storage.includes('materialHash: String(metadata.materialHash'), 'IndexedDB snapshot stores material hash');
 assert(storage.includes('pendingCreatedAtMs: Number(metadata.pendingCreatedAtMs'), 'IndexedDB snapshot stores pending creation time');
-assert(app.includes("const APP_RELEASE_VERSION = '1.0.5-r34-workers.1'"), 'app version is current candidate');
-assert(runtime.includes("const APP_VERSION = '1.0.5-r34-workers.1'"), 'runtime version is current candidate');
+assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');
+assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is current candidate');
 assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r34-workers'"), 'app asset version matches recovery release');
 assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r34-workers'"), 'service worker cache matches recovery release');
 assert(app.includes('window.click360GetLocalBusinessSyncStats = localBusinessSyncStats'), 'app exposes local business sync stats');

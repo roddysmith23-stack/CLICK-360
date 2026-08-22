@@ -632,7 +632,7 @@
 		      // firestore.rules gates telemetryEvents on the internal V16.x contract version
 		      // (16.0.0/16.2.0), not the commercial release number — sending '1.0.5' here always
 		      // hit permission-denied and silently dropped every telemetry write.
-		      appVersion: FIRESTORE_SCHEMA_VERSION,
+		      appVersion: '16.2.0',
 		      requestId: String(details.requestId || window.crypto?.randomUUID?.() || eventRef.id).slice(0, 64),
 		      mode: String(details.mode || window.click360AccessState?.mode || syncStatus.status || '').slice(0, 40),
 		      errorCode: String(details.errorCode || '').replace(/[^a-z0-9_./-]/gi, '').slice(0, 80),
@@ -1259,7 +1259,7 @@
 	          policies: settings.policies && typeof settings.policies === 'object' ? settings.policies : {},
 	          legal: settings.legal && typeof settings.legal === 'object' ? settings.legal : {},
               legacyDataBusinessId: String(settings.legacyDataBusinessId || ''),
-	          appVersion: '1.0.5-stability.1'
+	          appVersion: '1.0.5'
 	        },
 	        updatedAtMs: Number(state.updatedAtMs || Date.now()),
 	        updatedAt: state.updatedAt || new Date().toISOString()
@@ -1881,7 +1881,7 @@
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
 	      // Must match firestore.rules' activationRequests contract (16.0.0/16.2.0), not the
 	      // commercial version — see the appVersion fix in click360InviteWorkerEmail.
-	      appVersion: FIRESTORE_SCHEMA_VERSION
+	      appVersion: '16.2.0'
 	    });
 	    recordTelemetry('plan_request', { requestId: requestRef.id, mode: plan }).catch(() => {});
 	    return { requestId: requestRef.id, requestCode, plan, period, price, currency: 'USD' };
@@ -1908,7 +1908,7 @@
         acceptedAt: firebase.firestore.FieldValue.serverTimestamp(),
         // Must match firestore.rules' legalAcceptances contract (16.0.0/16.2.0), not the
         // commercial version — see the appVersion fix in click360InviteWorkerEmail.
-        appVersion: FIRESTORE_SCHEMA_VERSION
+        appVersion: '16.2.0'
       });
     });
     return { acceptanceId, termsVersion };
@@ -1945,7 +1945,7 @@
       status: String(details.status || '').slice(0, 40),
       before: safeAuditDelta(details.before),
       after: safeAuditDelta(details.after),
-      appVersion: FIRESTORE_SCHEMA_VERSION,
+      appVersion: '16.2.0',
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     };
     await db.collection('businesses').doc(context.businessId).collection('auditEvents').doc(eventId).set(payload);
@@ -2025,7 +2025,7 @@
 	      singleUse: true,
 	      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
 	      createdBy: ownerId,
-	      appVersion: FIRESTORE_SCHEMA_VERSION
+	      appVersion: '16.2.0'
 	    });
 	    batch.set(secret, {
 	      inviteHash,
@@ -2688,7 +2688,7 @@
 	      gate.innerHTML = `
 	        <div class="c360-gate-shell">
 	          <section class="c360-gate-hero" aria-label="CLICK 360">
-		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>1.0.5-stability.1</small></div>
+		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>1.0.5</small></div>
 	            <h1>Todo tu negocio en una sola aplicación</h1>
 	            <p>Controla inventario, ventas, caja, clientes y productos desde tu celular, de forma sencilla.</p>
 	            <p class="c360-gate-promise">Menos papeles. Menos confusión. Más control.</p>

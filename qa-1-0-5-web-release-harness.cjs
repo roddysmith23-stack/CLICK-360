@@ -39,7 +39,7 @@ for (const file of changed) {
 
 const packageJson = JSON.parse(read('package.json'));
 const packageLock = JSON.parse(read('package-lock.json'));
-assert.equal(packageJson.version, '1.0.5-stability.1');
+assert.equal(packageJson.version, '1.0.5');
 assert.equal(Object.hasOwn(packageJson.dependencies || {}, 'firebase-admin'), false);
 assert.equal(Object.hasOwn(packageLock.packages[''].dependencies || {}, 'firebase-admin'), false);
 assert.equal(packageJson.devDependencies?.playwright, '1.62.0');
@@ -50,7 +50,7 @@ const worker = read('service-worker.js');
 const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
-assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5-r34-workers\.1'/);
+assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
 assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r34-workers'/);
 assert.match(index, /By AIIA INTELLIGENCE TECHNOLOGIES/, 'startup splash shows the required AIIA footer');
 assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r34-workers/, 'startup splash uses the HD logo instead of the low-resolution favicon');
