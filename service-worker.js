@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r33';
+const CACHE = 'click360-commercial-1-0-5-r34-workers';
 const ASSETS = [
   './',
   './index.html',
@@ -7,6 +7,7 @@ const ASSETS = [
   './app.js',
   './firebase-config.js',
   './p0-tenant-guard.js',
+  './worker-data-boundary.js',
   './v16-domain.js',
   './v16-storage.js',
   './access-flow.js',

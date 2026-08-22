@@ -5,7 +5,7 @@ const {
   assertSucceeds,
   initializeTestEnvironment
 } = require('@firebase/rules-unit-testing');
-const { Timestamp, collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch } = require('firebase/firestore');
+const { Timestamp, collection, deleteDoc, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch } = require('firebase/firestore');
 
 const RULES = fs.readFileSync('firestore.rules', 'utf8');
 const PROJECT_ID = 'demo-click360-p0-rules';
@@ -112,19 +112,41 @@ function state(ownerId, revision = 1) {
   };
 }
 
-function telemetry(eventId, businessId, eventType = 'bootstrap') {
+function telemetry(eventId, businessId, eventType = 'bootstrap', ownerId = businessId) {
   return {
     eventId,
     eventType,
     uidHash: 'a'.repeat(16),
+    ownerId,
     businessId,
-    tenantKey: `owner:${businessId}:business:${businessId}`,
+    tenantKey: `owner:${ownerId}:business:${businessId}`,
     appVersion: '16.2.0',
     requestId: `request-${eventId}`,
     mode: 'ready',
     errorCode: '',
     deviceIdHash: 'b'.repeat(16),
     createdAt: serverTimestamp()
+  };
+}
+
+function auditEvent(eventId, businessId, actorUid, actorRole = 'owner') {
+  return {
+    eventId,
+    businessId,
+    tenantKey:`owner:${businessId}:business:${businessId}`,
+    actorUid,
+    actorRole,
+    actorName:'QA User',
+    action:'sale_created',
+    entityType:'sale',
+    entityId:'sale-qa',
+    correlationId:`operation-${eventId}`,
+    amount:12.5,
+    status:'confirmed',
+    before:{ amount:0 },
+    after:{ amount:12.5 },
+    appVersion:'16.2.0',
+    createdAt:serverTimestamp()
   };
 }
 
@@ -307,6 +329,29 @@ async function main() {
     await assertFails(getDoc(doc(ownerA, 'telemetryEvents', 'owner-a-bootstrap')));
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'invalid-event'), telemetry('invalid-event', 'owner-a', 'document_dump')));
     await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'demo-event'), telemetry('demo-event', 'demo-click360')));
+    // Phase 3.2: a diagnostic event (fires exactly when membership/permission
+    // checks fail) must not itself require proof of membership -- otherwise
+    // the report of the failure would fail for the same reason.
+    await assertSucceeds(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-worker-login-failed'), telemetry('owner-a-worker-login-failed', 'some-business-not-owned-by-owner-a', 'worker_login_failed', 'some-other-owner')));
+    // A non-diagnostic event still requires the legacy self-referential shape and real membership.
+    await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-fake-bootstrap'), telemetry('owner-a-fake-bootstrap', 'some-business-not-owned-by-owner-a', 'bootstrap', 'some-other-owner')));
+    // ownerId is now a required field; a legacy-shaped doc missing it must fail.
+    await assertFails(setDoc(doc(ownerA, 'telemetryEvents', 'owner-a-no-ownerid'), {
+      eventId:'owner-a-no-ownerid', eventType:'bootstrap', uidHash:'a'.repeat(16), businessId:'owner-a',
+      tenantKey:'owner:owner-a:business:owner-a', appVersion:'16.2.0', requestId:'r', mode:'ready',
+      errorCode:'', deviceIdHash:'b'.repeat(16), createdAt:serverTimestamp()
+    }));
+
+    const ownerAuditRef = doc(ownerA, 'businesses', 'owner-a', 'auditEvents', 'owner-event');
+    const workerAuditRef = doc(workerA, 'businesses', 'owner-a', 'auditEvents', 'worker-event');
+    await assertSucceeds(setDoc(ownerAuditRef, auditEvent('owner-event', 'owner-a', 'owner-a')));
+    await assertSucceeds(setDoc(workerAuditRef, auditEvent('worker-event', 'owner-a', 'worker-a', 'worker')));
+    await assertSucceeds(getDoc(ownerAuditRef));
+    await assertFails(getDoc(doc(workerA, 'businesses', 'owner-a', 'auditEvents', 'owner-event')));
+    await assertFails(setDoc(doc(ownerB, 'businesses', 'owner-a', 'auditEvents', 'cross-event'), auditEvent('cross-event', 'owner-a', 'owner-b')));
+    await assertFails(setDoc(doc(ownerA, 'businesses', 'demo-click360', 'auditEvents', 'demo-event'), auditEvent('demo-event', 'demo-click360', 'owner-a')));
+    await assertFails(updateDoc(ownerAuditRef, { status:'changed' }));
+    await assertFails(deleteDoc(ownerAuditRef));
 
     await assertFails(getDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main')));
     await assertFails(setDoc(doc(workerA, 'businesses', 'owner-a', 'state', 'main'), state('owner-a', 2)));
@@ -407,6 +452,7 @@ async function main() {
     console.log('PASS Firestore emulator: active-but-unapproved and cross-tenant attempts are denied');
     console.log('PASS Firestore emulator: V16 invitations remain isolated and worker access to the monolithic snapshot is denied');
     console.log('PASS Firestore emulator: paid UID can transactionally create only its own first V10 tenant');
+    console.log('PASS Firestore emulator: audit events are tenant-bound and append-only');
   } finally {
     await env.cleanup();
   }

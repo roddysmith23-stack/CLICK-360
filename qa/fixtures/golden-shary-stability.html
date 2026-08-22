@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLICK 360 Golden Shary</title><link rel="stylesheet" href="../../styles.css"></head>
+<body>
+  <div id="app" hidden></div><div id="toast"></div><div id="modalRoot"></div><div id="printRoot"></div>
+  <script>try{Object.defineProperty(navigator,'serviceWorker',{value:{register:()=>Promise.resolve()},configurable:true})}catch{}</script>
+  <script src="../../vendor/qrcode-generator.js"></script><script src="../../vendor/jsbarcode.min.js"></script><script src="../../vendor/lucide.min.js"></script><script src="../../vendor/html2pdf.bundle.min.js"></script>
+  <script src="../../p0-tenant-guard.js"></script><script src="../../v16-domain.js"></script><script src="../../v16-storage.js"></script><script src="../../smart-print-core.js"></script><script src="../../p2-web-safe-flags.js"></script><script src="../../p2-restaurant-domain.js"></script><script src="../../p2-logistics-domain.js"></script><script src="../../universal-label-canvas.js"></script><script src="../../universal-label-editor.js"></script><script src="../../printing-service.js"></script><script src="../../app.js"></script>
+  <script>
+    (() => {
+      const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+      const product = { id:'golden-product', businessId:'qa-business', name:'Blusa Golden QA', code:'SHA-04060', price:12.5, cardPrice:13.25, qty:8 };
+      const documentModel = canvasApi.normalizeDocument({
+        schemaVersion:2,
+        paper:{ id:'golden-40x60-2col', mediaType:'roll-2', widthMm:40, heightMm:60, mediaWidthMm:82, mediaHeightMm:0, columns:2, rows:1, gapXmm:2, gapYmm:0, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203 },
+        objects:[
+          { id:'qr', type:'qr', xMm:6, yMm:3, widthMm:28, heightMm:28 },
+          { id:'name', type:'name', xMm:2, yMm:33, widthMm:36, heightMm:8 },
+          { id:'price', type:'price', xMm:2, yMm:43, widthMm:36, heightMm:9 },
+          { id:'sku', type:'sku', xMm:2, yMm:53, widthMm:36, heightMm:5 }
+        ],
+        quantity:3,
+        startSlot:2
+      });
+      const priceText = 'Ef. $12.50 · Tj. $13.25';
+      let capture = null;
+      let printCalls = 0;
+      window.print = () => {
+        printCalls += 1;
+        const portal = document.getElementById('click360PrintPortal');
+        capture = {
+          pageCss:document.getElementById('click360-print-page-style')?.textContent || '',
+          pages:[...(portal?.querySelectorAll('.labelPrintPage') || [])].map((page) => ({
+            width:page.style.width,
+            height:page.style.height,
+            cells:[...page.querySelectorAll('.labelPrintCell')].map((cell) => ({
+              status:cell.classList.contains('filled') ? 'filled' : cell.classList.contains('used') ? 'used' : 'empty',
+              left:cell.style.left,
+              top:cell.style.top,
+              image:cell.querySelector('img')?.src || ''
+            }))
+          }))
+        };
+        setTimeout(() => window.dispatchEvent(new Event('afterprint')), 0);
+      };
+      const prepared = { product, document:documentModel, renderData:{ price:priceText }, fingerprint:'golden-shary-stability' };
+      window.runGoldenSystem = async () => {
+        printCalls = 0;
+        capture = null;
+        const result = await window.click360ExecuteCanonicalLabelPrint(prepared, 'system');
+        return { printCalls, capture, planCount:result.plan.count, pageCount:result.plan.pages.length, columns:result.plan.columns, priceText };
+      };
+      window.runGoldenPdf = () => window.click360ExecuteCanonicalLabelPrint(prepared, 'pdf');
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>

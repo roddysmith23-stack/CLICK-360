@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "click-360"
+    "default": "click-360",
+    "staging": "click360-staging-7620168025"
   }
 }

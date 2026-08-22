@@ -1,0 +1,81 @@
+name: CLICK 360 Worker Boundary Staging Gate
+
+on:
+  push:
+    branches: [stabilization/1.0.5-worker-data-boundary]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-boundary-staging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boundary-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npm run qa:staging-target
+      - run: npm run qa:worker-migration
+      - run: npm run qa
+      - run: npm run qa:rules
+      - run: npm run qa:simulator:full
+      - run: npm run build:static
+      - name: Reject production and deploy credentials
+        run: |
+          test "$(node -p "require('./firebase.staging.json').hosting.site")" = "click360-staging-7620168025"
+          private_key_pattern='BEGIN PRIVATE'' KEY|private_''key"[[:space:]]*:'
+          ! git grep -nE "$private_key_pattern" -- . ':!fixtures/**' ':!vendor/**' ':!.github/workflows/p0-qa.yml' ':!.github/workflows/worker-boundary-staging-gate.yml'
+          ! git grep -nE 'firebase deploy|gcloud run deploy' -- .github/workflows ':!.github/workflows/worker-boundary-staging-gate.yml'
+
+  browser-and-print:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: brew install poppler
+      - run: npx --no-install playwright install chromium webkit firefox
+      - run: npm run qa:integration
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worker-boundary-browser-evidence
+          path: |
+            output/playwright/
+            qa/reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+  staging-gate:
+    if: always()
+    needs: [boundary-core, browser-and-print]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Emit staging-only decision
+        env:
+          CORE: ${{ needs.boundary-core.result }}
+          BROWSER: ${{ needs.browser-and-print.result }}
+        run: |
+          if [ "$CORE $BROWSER" != "success success" ]; then
+            echo "NO_GO"
+            exit 1
+          fi
+          echo "STAGING_READY_FOR_OWNER_VERIFICATION"
+          echo "No deploy or production promotion is part of this workflow."

@@ -33,4 +33,21 @@ assert(rules.includes('data.status == "active"')
 assert(rules.includes('data.planCode != "pro_lifetime"'), 'malformed PRO Lifetime records cannot pass through the generic active paid branch');
 assert(rules.includes('match /adminBackups/{backupId}') && rules.includes('match /adminAuditLogs/{eventId}'), 'administrative backups and audit logs have explicit client-deny routes');
 assert(rules.includes('match /telemetryEvents/{eventId}') && rules.includes('request.resource.data.uidHash.size() == 16'), 'non-sensitive telemetry is allowlisted, bounded, and write-only');
+assert(rules.includes('match /businesses/{businessId}/auditEvents/{eventId}')
+  && rules.includes('request.resource.data.actorUid == request.auth.uid')
+  && rules.includes('request.resource.data.correlationId.size() > 0'), 'audit events are identity-bound and correlated');
+assert(rules.includes('request.resource.data.before.keys().hasOnly(["status", "amount", "stock", "role"])')
+  && rules.includes('request.resource.data.after.keys().hasOnly(["status", "amount", "stock", "role"])'), 'audit payloads cannot contain commercial snapshots');
+assert(rules.includes('match /businesses/{ownerUid}/businessUnits/{businessId}/products/{recordId}')
+  && rules.includes('match /businesses/{ownerUid}/businessUnits/{businessId}/sales/{recordId}')
+  && rules.includes('match /businesses/{ownerUid}/businessUnits/{businessId}/layaways/{recordId}')
+  && rules.includes('match /businesses/{ownerUid}/businessUnits/{businessId}/cashSessions/{recordId}')
+  && rules.includes('match /businesses/{ownerUid}/businessUnits/{businessId}/movements/{recordId}')
+  && rules.includes('match /businesses/{ownerUid}/businessUnits/{businessId}/auditEvents/{recordId}')
+  && rules.includes('match /businesses/{ownerUid}/businessUnits/{businessId}/settings/{recordId}'), 'worker business data is split into explicit module collections');
+assert(rules.includes('unit.status == "CUTOVER_VERIFIED"')
+  && rules.includes('allow create, update, delete: if false;'), 'only an administratively verified cutover can enable modular access');
+assert(rules.includes('member.permissions.get(moduleName, {}).get(action, false) == true'), 'module access is action-specific');
+assert(rules.includes('allow read: if stateId == "main" && tenantReadable(businessId)')
+  && rules.includes('return ownerReadUser() && request.auth.uid == businessId;'), 'workers remain unable to read state/main');
 console.log('PASS Firestore rules P0 contract');

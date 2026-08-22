@@ -10,7 +10,7 @@ const worker = fs.readFileSync('service-worker.js', 'utf8');
 const manifest = fs.readFileSync('manifest.webmanifest', 'utf8');
 const styles = fs.readFileSync('styles.css', 'utf8');
 const hosting = JSON.parse(fs.readFileSync('firebase.json', 'utf8'));
-const assetVersion = 'commercial-1-0-5-r33';
+const assetVersion = 'commercial-1-0-5-r34-workers';
 
 class StorageMock {
   constructor() { this.values = new Map(); this.failWrites = false; }

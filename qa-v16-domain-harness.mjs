@@ -94,4 +94,43 @@ assert.match(domain.formatBusinessDate('2026-07-13T12:00:00-05:00', 'es-EC', 'Am
 const token = domain.randomToken();
 assert.equal(token.length, 64);
 assert.equal((await domain.sha256(token)).length, 64);
-console.log('PASS V16 domain: server-time entitlements, plans, IVA, apartados, dates, and secure invitation tokens');
+
+// ── Phase 3.4: Apartados WhatsApp reminder -- phone normalization/validation ──
+// Root cause of "WhatsApp opens the contact but the prefilled message is
+// gone": a cashier-typed 9-digit Ecuadorian mobile number with neither the
+// leading 0 nor the country code (e.g. "987654321" instead of "0987654321")
+// used to pass through normalizePhone() unchanged, producing an incomplete
+// wa.me link that WhatsApp can't resolve to an exact contact.
+assert.equal(domain.normalizePhone('0987654321'), '593987654321', 'leading-0 Ecuadorian mobile normalizes with country code');
+assert.equal(domain.normalizePhone('987654321'), '593987654321', 'bare 9-digit mobile (no leading 0, no country code) must also get the country code prepended');
+assert.equal(domain.normalizePhone('593987654321'), '593987654321', 'already-complete E.164 number is left unchanged');
+assert.equal(domain.normalizePhone('00593987654321'), '593987654321', 'international 00 prefix is stripped');
+assert.equal(domain.normalizePhone('098-765-4321'), '593987654321', 'punctuation/spaces are stripped before normalizing');
+assert.equal(domain.normalizePhone(''), '', 'empty input stays empty, never a bare country code');
+assert.equal(domain.normalizePhone('   '), '', 'whitespace-only input stays empty');
+
+assert.equal(domain.isValidWhatsAppPhone('593987654321'), true, 'complete Ecuadorian E.164 mobile is valid');
+assert.equal(domain.isValidWhatsAppPhone('987654321'), false, 'a 9-digit number without country code is NOT valid, even though it has digits');
+assert.equal(domain.isValidWhatsAppPhone(''), false, 'empty is never valid');
+assert.equal(domain.isValidWhatsAppPhone('5939876a4321'), false, 'non-digit characters are never valid');
+assert.equal(domain.isValidWhatsAppPhone('593'), false, 'a bare country code alone is never valid');
+
+const okLink = domain.buildWhatsAppReminderLink('987654321', 'Hola María, saldo $12.50');
+assert.equal(okLink.valid, true, 'a fixable 9-digit number must build a valid link, not be rejected');
+assert.equal(okLink.normalized, '593987654321');
+assert.equal(okLink.url, 'https://wa.me/593987654321?text=Hola%20Mar%C3%ADa%2C%20saldo%20%2412.50', 'accented characters and $ must be correctly percent-encoded in the text param');
+assert.equal(new URL(okLink.url).searchParams.get('text'), 'Hola María, saldo $12.50', 'decoding the built URL must round-trip to the exact original message');
+
+const missingLink = domain.buildWhatsAppReminderLink('', 'test');
+assert.equal(missingLink.valid, false);
+assert.equal(missingLink.reason, 'phone_missing');
+assert.equal(missingLink.url, undefined, 'an invalid link must never be opened -- no url is returned');
+
+// A layaway/Apartado customer that was never part of a prior sale -- the
+// function must not care about provenance, only about the phone digits
+// actually present. Simulates the "customer born directly in Apartados" case.
+const directApartadoLink = domain.buildWhatsAppReminderLink('0912345678', 'Hola Carlos, tu apartado #A1B2C3 vence el 2026-09-01.');
+assert.equal(directApartadoLink.valid, true);
+assert.equal(directApartadoLink.normalized, '593912345678');
+
+console.log('PASS V16 domain: server-time entitlements, plans, IVA, apartados, dates, secure invitation tokens, and Apartados WhatsApp phone normalization/link building');
