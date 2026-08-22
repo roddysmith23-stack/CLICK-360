@@ -63,7 +63,8 @@ const legacy = {
   ],
   products: [
     { id: 'p-a', businessId: 'biz-a', name: 'Producto A', stock: 7 },
-    { id: 'p-b', businessId: 'biz-b', name: 'Producto B', stock: 99 }
+    { id: 'p-b', businessId: 'biz-b', name: 'Producto B', stock: 99 },
+    { id: 'p-c', businessId: 'biz-a', name: 'Producto C (legacy qty-only)', qty: 12 }
   ],
   sales: [{ id: 's-a', businessId: 'biz-a', subtotal: 10, total: 10, received: 10, items: [{ productId: 'p-a', qty: 1, price: 10, total: 10 }] }],
   layaways: [{ id: 'l-a', businessId: 'biz-a', total: 20, balance: 5 }],
@@ -90,13 +91,24 @@ assert.strictEqual(first.manifest.sourcePath, 'businesses/owner-a/state/main');
 assert.strictEqual(first.manifest.rollbackPath, 'businesses/owner-a/state/main');
 assert.strictEqual(first.manifest.writePolicy, 'create_only');
 assert.strictEqual(first.manifest.status, 'PREPARED');
-assert.strictEqual(first.collections.products.length, 1, 'business A receives only its product');
+assert.strictEqual(first.collections.products.length, 2, 'business A receives both its products');
 assert.strictEqual(first.collections.products[0].id, 'p-a');
 assert.strictEqual(first.collections.products[0].tenantKey, 'owner:owner-a:business:biz-a');
+
+// ── Regression: a legacy product with qty-only (no stock field, the real-world
+// production shape found across every existing click-360 tenant) must migrate
+// with a normalized stock, mirroring app.js's normalizeState() (fix 18fd918).
+// Without this, planMigration() copied the record through as-is via
+// modularRecord()'s spread, producing stock:undefined -- every subsequent
+// sale_stock delta on that product would compute NaN.
+const migratedProductC = first.collections.products.find((p) => p.id === 'p-c');
+assert.ok(migratedProductC, 'qty-only product must still be present in the migration plan');
+assert.strictEqual(migratedProductC.stock, 12, 'stock must be normalized from qty during migration');
+assert.strictEqual(migratedProductC.qty, 12, 'qty must be preserved alongside the normalized stock');
 assert.strictEqual(first.collections.settings[0].customers.length, 1, 'legacy unscoped customer follows explicit fallback');
 assert.strictEqual(first.collections.settings[0].reminders.length, 0, 'business B reminder cannot cross boundary');
 assert.strictEqual(first.manifest.totals.salesTotal, 10);
-assert.strictEqual(first.manifest.totals.stock, 7);
+assert.strictEqual(first.manifest.totals.stock, 19, 'stock total includes the normalized qty-only product (7 + 12)');
 assert.strictEqual(api.validateMigrationPlan(first).valid, true);
 assert.strictEqual(api.compareMigrationPlans(first, second).equal, true);
 

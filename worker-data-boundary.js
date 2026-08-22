@@ -210,6 +210,16 @@
     });
   }
 
+  // Mirrors app.js's normalizeState() (fix 18fd918): legacy product records may
+  // carry only 'qty', never 'stock' -- the canonical modular field. Without this,
+  // a migrated product's stock is undefined, and every subsequent sale_stock
+  // delta becomes NaN. Applied only to products; other modules are untouched.
+  function normalizeProductStock(record) {
+    if (!record || typeof record !== 'object') return record;
+    const canonicalStock = Number(record.stock ?? record.qty ?? 0);
+    return { ...record, stock: canonicalStock, qty: canonicalStock };
+  }
+
   function modularRecord(record, ownerUid, businessId, moduleName, index, generatedAt = '') {
     const rawId = record?.id || `${moduleName}-${index + 1}`;
     const recordId = safeId(rawId, `${moduleName}.id`);
@@ -269,7 +279,7 @@
     if (!business) throw new Error('El negocio no existe en el snapshot legacy.');
     const collections = {
       members: (options.members || []).map((item, index) => modularRecord(item, ownerUid, businessId, 'members', index, generatedAt)),
-      products: recordsForBusiness(legacyState.products, businessId).map((item, index) => modularRecord(item, ownerUid, businessId, 'products', index, generatedAt)),
+      products: recordsForBusiness(legacyState.products, businessId).map((item, index) => modularRecord(normalizeProductStock(item), ownerUid, businessId, 'products', index, generatedAt)),
       sales: recordsForBusiness(legacyState.sales, businessId).map((item, index) => modularRecord(item, ownerUid, businessId, 'sales', index, generatedAt)),
       layaways: recordsForBusiness(legacyState.layaways, businessId).map((item, index) => modularRecord(item, ownerUid, businessId, 'layaways', index, generatedAt)),
       cashSessions: recordsForBusiness(legacyState.cashSessions, businessId).map((item, index) => modularRecord(item, ownerUid, businessId, 'cashSessions', index, generatedAt)),
