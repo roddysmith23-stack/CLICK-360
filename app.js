@@ -7,8 +7,8 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r20-recovery1';
-  const APP_RELEASE_VERSION = '1.0.5';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-stability-ops-r1';
+  const APP_RELEASE_VERSION = '1.0.5-stability.1';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
   window.CLICK360_RUNTIME_GUARD?.setReleaseMetadata?.({
@@ -26,7 +26,9 @@
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
-  const WORKER_TENANT_ACCESS_ENABLED = true;
+  const WORKER_TENANT_ACCESS_ENABLED = window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(
+    window.CLICK360_FIREBASE_CONFIG?.projectId
+  ) === true;
   const RECEIPT_FOOTER_TEXT = 'Control total de tu negocio con CLICK 360';
   const RECEIPT_DEFAULT_NOTE = 'Comprobante interno. No válido como factura electrónica.';
   const RECEIPT_WIDTH_PRESETS = Object.freeze({
@@ -363,7 +365,7 @@
     _printDialogState = state;
     // Disable/enable primary print buttons while printing is active
     if (typeof document !== 'undefined') {
-      ['printOne', 'savePdfBtn', 'ulcPrint', 'ulcSystemPrint', 'printReceiptBtn', 'downloadPdfBtn', 'receiptDesignerPdf', 'receiptDesignerPdfInline', 'printerTest'].forEach(id => {
+      ['printOne', 'savePdfBtn', 'ulcPrint', 'ulcSystemPrint', 'printReceiptBtn', 'downloadPdfBtn', 'receiptDesignerPdf', 'receiptDesignerPdfInline', 'printerTest', 'routePrintBtn'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = (state !== 'idle' && state !== 'finished');
       });
@@ -659,7 +661,7 @@ function parseMoney(value) {
     const previousState = cloneState(lastPersistedState);
     lastSavePersistence = null;
     try {
-      if (!isOwnerUser()) {
+      if (!isOwnerUser() && window.click360IsModularBoundarySession?.() !== true) {
         const error = new Error('El acceso operativo para trabajadores está temporalmente pausado.');
         error.code = 'click360/permission-denied';
         throw error;
@@ -1288,6 +1290,7 @@ function parseMoney(value) {
     out.products ||= []; out.sales ||= []; out.movements ||= []; out.dailyReports ||= [];
     out.invoices ||= [];
     out.auditLogs ||= [];
+    out.operationLedger ||= [];
     out.deletedProducts ||= [];
     out.layaways ||= [];
     out.cashSessions ||= [];
@@ -1337,6 +1340,11 @@ function parseMoney(value) {
     out.products.forEach(p => {
       p.code = String(p.code || '').trim().toUpperCase();
       p.updatedAtMs = Number(p.updatedAtMs || p.createdAtMs || 0);
+      // Canonical stock field is 'stock'. Legacy documents may use 'qty'.
+      // Normalize both so the UI (qty) and the modular gateway (stock) always agree.
+      const canonicalStock = Number(p.stock ?? p.qty ?? 0);
+      p.stock = canonicalStock;
+      p.qty = canonicalStock;
     });
     out.deletedProducts.forEach(t => {
       t.code = String(t.code || '').trim().toUpperCase();
@@ -1411,6 +1419,7 @@ function parseMoney(value) {
       invoices:[],
       dailyReports:[],
       auditLogs:[],
+      operationLedger:[],
       deletedProducts:[],
       layaways:[],
       cashSessions:[],
@@ -1431,7 +1440,7 @@ function parseMoney(value) {
 
   function addAudit(action, details={}) {
     state.auditLogs ||= [];
-    state.auditLogs.push({
+    const event = {
       id: uid('audit'),
       action,
       businessId: currentBusiness()?.id || state.activeBusinessId || 'biz_main',
@@ -1440,8 +1449,17 @@ function parseMoney(value) {
       createdBy: authUser().name || 'Sistema',
       createdAt: new Date().toISOString(),
       when: nowLabel(),
+      actorRole: authUser().role || 'owner',
+      correlationId: String(details.correlationId || details.operationId || ''),
+      entityType: String(details.entityType || ''),
+      entityId: String(details.entityId || details.saleId || details.layawayId || details.productId || ''),
       details
+    };
+    state.auditLogs.push(event);
+    window.click360AppendAuditEvent?.(event).catch((error) => {
+      console.warn('No se pudo confirmar el evento de auditoría append-only:', error?.code || error?.message || error);
     });
+    return event;
   }
 
   window.click360ReloadState = () => {
@@ -1761,12 +1779,17 @@ function parseMoney(value) {
   function can(section) {
     const role = authUser().role;
     if (role === 'owner') return true;
-	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','cashier','inventory'].includes(role);
+	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','seller','cashier','inventory','supervisor','admin'].includes(role);
     const permissions = window.click360User?.permissions || {};
-    const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
-    if (routeModule && Object.keys(permissions).length) return permissions[routeModule]?.view === true;
-    if (role === 'worker') return ['inventory','sell','cash','settings'].includes(section);
-    if (role === 'cashier') return ['sell','cash'].includes(section);
+    const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers', debtors: 'layaways' }[section];
+	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:'settings', reminders:'settings', workers:'members', printing:'settings', debtors:'layaways' }[section];
+	    if (routeModule && Object.keys(permissions).length) {
+	      return permissions[routeModule]?.view === true || permissions[boundaryModule]?.read === true;
+	    }
+    if (role === 'worker') return ['inventory','sell','cash','settings','debtors'].includes(section);
+	    if (role === 'seller') return ['sell','cash','debtors'].includes(section);
+	    if (role === 'supervisor') return ['inventory','sell','cash','settings','reports','debtors'].includes(section);
+    if (role === 'cashier') return ['sell','cash','debtors'].includes(section);
     if (role === 'inventory') return section === 'inventory';
     return false;
   }
@@ -1950,17 +1973,17 @@ function parseMoney(value) {
 	    </div>${bottomNav(active)}<button type="button" id="floatingCalcBtn" class="floatingCalcBtn" aria-label="Abrir calculadora" title="Calculadora">${icon('calculator')}</button><div id="modalRoot"></div><div id="printRoot" class="printSheet"></div></div>`;
   }
 	  function primaryRouteKeys() {
-	    const routes = ['home','inventory','sell','cash'];
+	    const routes = ['home','inventory','sell','cash','debtors'];
 	    if (restaurantModuleEnabled()) routes.push('tables','kitchen','bar');
 	    if (logisticsModuleEnabled()) routes.push('logistics');
-	    routes.push('finance','workers','reminders','reports','crm','more');
+	    routes.push('finance','workers','activity','reminders','reports','crm','more');
 	    return routes;
 	  }
 	  function allowedRoutes(){
 	    const r=currentUser()?.role;
-	    if(r==='cashier') return ['home','sell','cash', ...(restaurantModuleEnabled() ? ['tables','bar'] : []), 'more'];
+	    if(r==='cashier') return ['home','sell','cash','debtors', ...(restaurantModuleEnabled() ? ['tables','bar'] : []), 'more'];
 	    if(r==='inventory') return ['home','inventory','reminders','more'];
-	    if(r==='worker') return ['home','inventory','sell','cash', ...(restaurantModuleEnabled() ? ['tables','kitchen','bar'] : []), 'reminders','more'];
+	    if(r==='worker') return ['home','inventory','sell','cash','debtors', ...(restaurantModuleEnabled() ? ['tables','kitchen','bar'] : []), 'reminders','more'];
 	    return primaryRouteKeys();
 	  }
   function navButtons(active, side=false) {
@@ -1968,7 +1991,7 @@ function parseMoney(value) {
       home:['home', 'Inicio'], inventory:['package', 'Inventario'], sell:['shopping-cart', 'Vender'], cash:['credit-card', 'Caja'],
       tables:['armchair', 'Mesas'], kitchen:['chef-hat', 'Cocina'], bar:['wine', 'Barra'], finance:['wallet-cards', 'Finanzas'],
       logistics:['truck', 'Rutas'], workers:['users-round', 'Trabajadores'], reminders:['alarm-clock', 'Recordatorios'],
-      reports:['chart-no-axes-combined', 'Reportes'], crm:['contact-round', 'Clientes'], more:['menu', 'Más']
+	      reports:['chart-no-axes-combined', 'Reportes'], crm:['contact-round', 'Clientes'], debtors:['hand-coins', 'Apartados'], activity:['history', 'Actividad'], more:['menu', 'Más']
     };
     const compactLabels = { inventory:'Invent.', workers:'Equipo', reminders:'Agenda', reports:'Reportes', logistics:'Rutas', finance:'Finanzas' };
     const items = allowedRoutes().map((key) => [key, icon(iconMap[key]?.[0] || 'circle'), iconMap[key]?.[1] || key]);
@@ -2030,7 +2053,7 @@ function parseMoney(value) {
 	      stopScanner(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
+	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2154,7 +2177,7 @@ function parseMoney(value) {
     return products.map(p=>`<article class="card productCard hasImage" data-pid="${escapeHtml(p.id)}">
       ${imageThumb(p)}
       <div class="productInfo"><h3>${escapeHtml(p.name)}</h3><div class="meta"><span>${escapeHtml(p.category||'General')}</span><span class="badge">${escapeHtml(p.code)}</span><span>Stock: <b>${p.qty}</b></span><span class="badge gold">${fmt(p.price)}${p.cardPrice && p.cardPrice !== p.price ? ' / ' + fmt(p.cardPrice) + ' tarjeta' : ''}${productTaxLegend(p) ? ` <span style="font-size:10px;opacity:.8;">(${escapeHtml(productTaxLegend(p))})</span>` : ''}</span></div></div>
-      <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Diseñar etiqueta QR" aria-label="Diseñar etiqueta QR">${icon('qr-code')}</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar producto" aria-label="Editar producto">${icon('pencil')}</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar producto" aria-label="Borrar producto">${icon('trash-2')}</button></div>
+      <div class="actions"><button class="iconBtn gold" data-label="${escapeHtml(p.id)}" title="Diseñar etiqueta QR" aria-label="Diseñar etiqueta QR">${icon('qr-code')}</button><button class="iconBtn" data-quick-print="${escapeHtml(p.id)}" title="Imprimir etiqueta" aria-label="Imprimir etiqueta">${icon('printer')}</button><button class="iconBtn" data-edit="${escapeHtml(p.id)}" title="Editar producto" aria-label="Editar producto">${icon('pencil')}</button><button class="iconBtn danger" data-del="${escapeHtml(p.id)}" title="Borrar producto" aria-label="Borrar producto">${icon('trash-2')}</button></div>
     </article>`).join('');
   }
 
@@ -2175,7 +2198,7 @@ function parseMoney(value) {
         <button class="btn primary" onclick="window.click360Route('home')">Ir al Inicio</button>
       </div>`;
     }
-	    return `<div class="pageHead"><div><h1>Vender</h1><p>Escanea QR o ingresa el código.</p></div><div class="toolbar"><button type="button" class="iconBtn" id="calculatorSellBtn" title="Calculadora" aria-label="Abrir calculadora">${icon('calculator')}</button></div></div>
+	    return `<div class="pageHead"><div><h1>Vender</h1><p>Escanea QR o ingresa el código.</p></div><div class="toolbar"><button type="button" class="btn silver" data-route="debtors">${icon('hand-coins')} Apartados</button><button type="button" class="iconBtn" id="calculatorSellBtn" title="Calculadora" aria-label="Abrir calculadora">${icon('calculator')}</button></div></div>
       <section class="sellWrap">
         <div class="card scanBox">
           <div class="scanRows">
@@ -2203,6 +2226,7 @@ function parseMoney(value) {
             <div class="field"><label>Cédula/RUC del Cliente</label><input id="customerCedula" placeholder="Ej. 1712345678" /></div>
             <div class="field"><label id="lblCustomerPhone">Teléfono (WhatsApp)</label><input id="customerPhone" placeholder="Ej. 593969399562" /></div>
             <div class="field" id="layawayDueDateField" style="display:none;"><label>Fecha Límite de Retiro</label><input type="date" id="layawayDueDate" /></div>
+            <div class="field" id="layawayInitialMethodField" style="display:none;"><label>Método del abono inicial</label><select id="layawayInitialMethod"><option value="Efectivo">Efectivo</option><option value="Tarjeta">Tarjeta</option><option value="Transferencia">Transferencia</option></select></div>
             <div class="field full" id="layawayTermsField" style="display:none;"><details class="termsDetails"><summary>Leer terminos del apartado</summary><p>${escapeHtml(layawayTermsText()).replace(/\n/g, '<br>')}</p><small>Estas politicas pertenecen al negocio. CLICK 360 proporciona herramientas de gestion, no asesoria legal.</small></details><label class="consentCheck"><input type="checkbox" id="layawayTermsAccepted"><span>El cliente conoce y acepta estos terminos.</span></label></div>
           </div>
           <div class="cartSummary" style="margin-bottom:10px; font-size:13px; color:var(--muted); text-align:right;">
@@ -2322,6 +2346,15 @@ function parseMoney(value) {
   }
   function labelKind(k){ return ({apertura:'Apertura',ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
 
+  function salePayments(sale = {}) {
+    if (Array.isArray(sale.payments) && sale.payments.length) return sale.payments;
+    return Number(sale.received || 0) > 0 ? [{ amount:Number(sale.received || 0), date:sale.date, method:sale.method }] : [];
+  }
+  function collectedInRange(sales = [], from = '', to = '') {
+    return sales.filter((sale) => sale.status !== 'cancelled').flatMap(salePayments)
+      .filter((payment) => String(payment.date || '').slice(0, 10) >= from && String(payment.date || '').slice(0, 10) <= to)
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  }
   function buildChartHtml(sales) {
      const last7Days = [];
      for(let i=6; i>=0; i--) {
@@ -2331,11 +2364,10 @@ function parseMoney(value) {
      }
      const salesByDay = {};
      last7Days.forEach(d => salesByDay[d] = 0);
-     sales.filter(s=>s.status!=='cancelled').forEach(s => {
-       if (salesByDay[s.date] !== undefined) {
-	       salesByDay[s.date] += collectedAmount(s);
-       }
-     });
+	     sales.filter(s=>s.status!=='cancelled').flatMap(salePayments).forEach((payment) => {
+	       const date = String(payment.date || '').slice(0, 10);
+	       if (salesByDay[date] !== undefined) salesByDay[date] += Number(payment.amount || 0);
+	     });
 
      const vals = last7Days.map(d => salesByDay[d]);
      const max = Math.max(...vals, 1);
@@ -2421,7 +2453,7 @@ function parseMoney(value) {
 	    const validSales = sales.filter(s => s.status !== 'cancelled');
 	    const tickets=validSales.length;
 	    const soldTotal=validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal=validSales.reduce((a,s)=>a+collectedAmount(s),0);
+	    const collectedTotal=collectedInRange(allSales, state.reportsFrom, state.reportsTo);
 	    const pendingTotal=validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
 	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
@@ -2437,7 +2469,7 @@ function parseMoney(value) {
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
       </div>
 	      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText">${fmt(soldTotal)}</strong></div><div class="card kpi"><small>Cobrado</small><strong class="goldText">${fmt(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${fmt(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div></section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Crecimiento</h3>${buildChartHtml(sales)}</section>
+	      <section class="card sectionCard" style="margin-top:14px"><h3>Cobros por fecha real</h3>${buildChartHtml(allSales)}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
         ${sales.slice().reverse().map(s=>`
@@ -2463,55 +2495,143 @@ function parseMoney(value) {
   }
 
   function debtorsView() {
-    const pendings = salesForBiz().filter(s=>s.status==='layaway' || s.status==='pending_payment');
-    const layaways = (state.layaways || []).filter((item) => item.businessId === currentBusiness().id && !['cancelled','refunded','picked_up'].includes(item.status));
-    const totalPending = pendings.reduce((a,s)=>a+(s.balance||0),0);
-    return `<div class="pageHead"><div><h1>Por Cobrar</h1><p>Apartados y deudas pendientes.</p></div></div>
-      <section class="grid cashGrid"><div class="card kpi"><small>Saldo en la calle</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Cuentas activas</small><strong>${pendings.length}</strong></div></section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Listado de Pendientes</h3>
-        ${pendings.slice().reverse().map(s=>`
-        <div class="movement" style="flex-direction:column; gap:8px;">
-          <div style="display:flex; justify-content:space-between; width:100%;">
-             <span>${escapeHtml(s.customer || 'Cliente sin nombre')} <br>
-               <small>${escapeHtml(s.when)} · ${Math.floor((new Date()-new Date(s.date))/(1000*60*60*24))} días transcurridos</small><br>
-               <span class="badge ${s.status==='layaway'?'gold':'danger'}">${s.status==='layaway'?'Apartado':'Pendiente'}</span>
-             </span>
-             <div style="text-align:right;">
-                <b class="neg">${fmt(s.balance)}</b><br>
-                <small>de ${fmt(s.total)}</small>
-             </div>
-          </div>
-          <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
-            ${s.customerPhone ? `
-            <button class="btn" style="min-height:32px; padding:6px 12px; font-size:12px; border:1px solid #25D366; color:#25D366; background:transparent;" onclick="window.sendWhatsAppReminder('${actionId(s.id)}')">
-               💬 Recordatorio
-            </button>` : ''}
-            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
-               Ticket
-            </button>
-            <button class="btn primary" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.payLayaway('${actionId(s.id)}')">
-               Abonar
-            </button>
-          </div>
-        </div>`).join('') || '<p class="empty">No hay apartados ni deudas pendientes.</p>'}
+    const businessId = currentBusiness()?.id || '';
+    const sales = salesForBiz(businessId).filter((sale) => ['layaway', 'pending_payment', 'paid'].includes(sale.status));
+    const layawayBySale = new Map((state.layaways || []).filter((item) => item.businessId === businessId).map((item) => [item.saleId, item]));
+    const records = sales.map((sale) => {
+      const layaway = layawayBySale.get(sale.id) || { id:sale.id, saleId:sale.id, businessId, status:sale.status, total:sale.total, paid:sale.received, balance:sale.balance, payments:sale.payments || [], customerSnapshot:{ name:sale.customer, phone:sale.customerPhone }, itemsSnapshot:saleItems(sale), pickupDueAt:sale.dueDate, createdAt:sale.createdAt || sale.when };
+      return { sale, layaway, status:window.CLICK360_V16_DOMAIN?.layawayStatus(layaway) || layaway.status };
+    }).sort((left, right) => String(right.layaway.updatedAt || right.layaway.createdAt || '').localeCompare(String(left.layaway.updatedAt || left.layaway.createdAt || '')));
+    const active = records.filter((record) => !['cancelled', 'refunded', 'picked_up'].includes(record.status));
+    const totalPending = active.reduce((sum, record) => sum + Math.max(0, Number(record.sale.balance || 0)), 0);
+    const statusLabel = (status) => ({ active:'Activo', partially_paid:'Abonado', paid:'Pagado', ready_for_pickup:'Listo para retiro', picked_up:'Entregado', expired:'Vencido', cancelled:'Cancelado', pending_payment:'Pendiente' }[status] || status);
+    return `<div class="pageHead"><div><h1>Apartados</h1><p>Consulta, abona, entrega y conserva el historial.</p></div><div class="toolbar"><button class="btn primary" data-route="sell">${icon('shopping-cart')} Nuevo apartado</button></div></div>
+      <section class="grid cashGrid"><div class="card kpi"><small>Saldo pendiente</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Apartados activos</small><strong>${active.length}</strong></div></section>
+      <section class="card sectionCard layawayFilterCard">
+        <div class="field"><label>Buscar</label><input id="layawaySearch" type="search" placeholder="Nombre, teléfono o # de apartado" autocomplete="off"></div>
+        <div class="field"><label>Estado</label><select id="layawayStatusFilter"><option value="active">Activos primero</option><option value="all">Todos</option><option value="paid">Pagados</option><option value="ready_for_pickup">Listos para retiro</option><option value="picked_up">Entregados</option><option value="cancelled">Cancelados</option></select></div>
       </section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Retiros de apartados</h3>${layaways.map((layaway) => { const status = window.CLICK360_V16_DOMAIN?.layawayStatus(layaway) || layaway.status; return `<div class="movement"><span><b>${escapeHtml(layaway.customerSnapshot?.name || 'Cliente')}</b><br><small>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate(layaway.pickupDueAt ? `${layaway.pickupDueAt}T12:00:00` : '', 'es-EC', businessTimeZone(), false) || layaway.pickupDueAt || 'Sin fecha')}</small><br><span class="badge gold">${escapeHtml(status)}</span></span><div class="reminderActions">${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo para retiro</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregado</button>` : ''}</div></div>`; }).join('') || '<p class="empty">No hay retiros pendientes.</p>'}</section>`;
+      <section class="card sectionCard" style="margin-top:14px"><h3>Historial de apartados</h3><div id="layawayList">${records.map(({ sale, layaway, status }) => {
+        const items = (layaway.itemsSnapshot || saleItems(sale) || []).map((item) => `${escapeHtml(item.name || item.code || 'Producto')} × ${Number(item.qty || 1)}`).join(', ');
+        const canPay = Number(sale.balance || 0) > 0 && !['cancelled', 'picked_up', 'refunded'].includes(status);
+        const customerName = sale.customer || layaway.customerSnapshot?.name || 'Cliente';
+        const shortId = String(sale.id || '').slice(-6).toUpperCase();
+        const dueDate = sale.dueDate || layaway.pickupDueAt || '';
+        const searchKey = [customerName, sale.customerPhone || layaway.customerSnapshot?.phone || '', shortId, sale.id || ''].join(' ').toLowerCase();
+        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}" data-layaway-search="${escapeHtml(searchKey)}"><div class="layawaySummary"><span><b>${escapeHtml(customerName)}</b><small>#${escapeHtml(shortId)} · ${escapeHtml(sale.when || layaway.createdAt || '')}${dueDate ? ` · Límite: ${escapeHtml(dueDate)}` : ''}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.payLayaway('${actionId(sale.id)}')">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.cancelSale('${actionId(sale.id)}')">Cancelar</button>` : ''}</div></article>`;
+      }).join('') || '<p class="empty">Aún no hay apartados.</p>'}</div></section>`;
   }
 
-  window.markLayawayStatus = function(layawayId, nextStatus) {
-	  layawayId = decodeActionId(layawayId);
-	  if (!['ready_for_pickup','picked_up'].includes(nextStatus)) return;
-	  const layaway = state.layaways?.find((item) => item.id === layawayId && item.businessId === currentBusiness().id);
-	  if (!layaway) return toast('Apartado no encontrado.', 'err');
-	  if (nextStatus === 'picked_up' && !confirm('Confirma que el cliente recibio todos los productos reservados.')) return;
-	  layaway.status = nextStatus;
-	  layaway.updatedAt = new Date().toISOString();
-	  if (nextStatus === 'picked_up') layaway.pickedUpAt = layaway.updatedAt;
-	  addAudit('layaway_status_updated', { layawayId, saleId: layaway.saleId, status: nextStatus });
-	  if (!save()) return;
-	  renderApp('debtors');
-	  toast(nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro');
+  window.viewLayawayDetails = function(saleId) {
+	  saleId = decodeActionId(saleId);
+    const sale = salesForBiz().find((item) => item.id === saleId);
+    const layaway = (state.layaways || []).find((item) => item.saleId === saleId && item.businessId === currentBusiness()?.id);
+    if (!sale) return toast('Apartado no encontrado.', 'err');
+    const payments = sale.payments || layaway?.payments || [];
+    showModal(`<div class="modalHeader"><div><h2>Apartado #${escapeHtml(String(sale.id).slice(-6).toUpperCase())}</h2><p class="fieldHint">Historial de pagos y entrega.</p></div><button class="closeBtn" data-close>×</button></div><div class="layawayDetail"><p><b>Cliente:</b> ${escapeHtml(sale.customer || 'Sin nombre')}</p><p><b>Total:</b> ${fmt(sale.total)} · <b>Abonado:</b> ${fmt(sale.received)} · <b>Saldo:</b> ${fmt(sale.balance)}</p><h3>Pagos</h3>${payments.map((payment) => `<div class="movement"><span>${escapeHtml(payment.when || payment.date || '')}<br><small>${escapeHtml(payment.method || 'Sin método')} · ${escapeHtml(payment.createdBy || 'Sistema')}</small></span><b>${fmt(payment.amount)}</b></div>`).join('') || '<p class="empty">Sin pagos registrados.</p>'}<h3>Productos</h3>${saleItems(sale).map((item) => `<div class="movement"><span>${escapeHtml(item.name || item.code)}</span><b>× ${Number(item.qty || 1)}</b></div>`).join('')}</div>`);
+  };
+
+  window.markLayawayStatus = async function(layawayId, nextStatus) {
+		  layawayId = decodeActionId(layawayId);
+		  if (!['ready_for_pickup','picked_up'].includes(nextStatus)) return;
+		  const layaway = state.layaways?.find((item) => item.id === layawayId && item.businessId === currentBusiness().id);
+		  if (!layaway) return toast('Apartado no encontrado.', 'err');
+		  const decision = window.CLICK360_V16_DOMAIN?.layawayTransitionDecision(layaway, nextStatus);
+		  if (!decision?.allowed) return toast(decision?.reason === 'balance_pending' ? 'Completa el saldo antes de registrar la entrega.' : 'Ese cambio de estado no es válido.', 'err');
+		  if (nextStatus === 'picked_up' && !confirm('Confirma que el cliente recibio todos los productos reservados.')) return;
+		  const previousState = cloneState(state);
+		  const operationId = uid('laystatus');
+		  layaway.status = nextStatus;
+		  layaway.updatedAt = new Date().toISOString();
+		  if (nextStatus === 'picked_up') layaway.pickedUpAt = layaway.updatedAt;
+		  addAudit('layaway_status_updated', { layawayId, saleId: layaway.saleId, status: nextStatus, operationId, entityType:'layaway', entityId:layawayId });
+		  const committed = await commitCriticalMutation(previousState, 'layaway_status_updated', (next) => next.layaways?.some((item) => item.id === layawayId && item.status === nextStatus));
+		  if (!committed.ok) return;
+		  renderApp('debtors');
+		  toast(committed.pending ? 'Cambio guardado; sincronización pendiente.' : (nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro'));
 	};
+
+  function auditModule(action = '') {
+    if (/sale/.test(action)) return 'Ventas';
+    if (/layaway|payment/.test(action)) return 'Apartados';
+    if (/product|inventory|stock/.test(action)) return 'Inventario';
+    if (/cash|movement/.test(action)) return 'Caja';
+    if (/worker|invite|permission/.test(action)) return 'Trabajadores';
+    if (/receipt|print/.test(action)) return 'Comprobantes';
+    return 'Sistema';
+  }
+  function auditHumanText(event = {}) {
+    const actor = event.createdBy || 'Sistema';
+    const details = event.details || {};
+    const labels = {
+      sale_created: `${actor} registró una venta${Number.isFinite(Number(details.total)) ? ` por ${fmt(details.total)}` : ''}`,
+      sale_cancelled: `${actor} anuló la venta ${String(details.saleId || '').slice(-6).toUpperCase()}`,
+      layaway_created: `${actor} creó un apartado${Number.isFinite(Number(details.total)) ? ` por ${fmt(details.total)}` : ''}`,
+      layaway_payment_added: `${actor} recibió ${fmt(details.amount || 0)} de un apartado`,
+      layaway_status_updated: `${actor} cambió el apartado a ${details.status === 'picked_up' ? 'entregado' : 'listo para retiro'}`,
+      layaway_cancelled: `${actor} canceló un apartado`,
+      product_created: `${actor} creó un producto`,
+      product_updated: `${actor} modificó un producto`,
+      product_deleted: `${actor} eliminó un producto`,
+      worker_invited: `${actor} creó una invitación de trabajador`,
+      worker_permissions_updated: `${actor} actualizó permisos de un trabajador`,
+      worker_revoked: `${actor} revocó un acceso`,
+      cash_closed: `${actor} cerró caja`,
+      receipt_issued: `${actor} emitió un comprobante`
+    };
+    return labels[event.action] || `${actor} · ${String(event.action || 'evento').replaceAll('_', ' ')}`;
+  }
+  function activityView() {
+    const businessId = currentBusiness()?.id || '';
+    const events = (state.auditLogs || []).filter((event) => event.businessId === businessId).slice().reverse();
+    const actors = [...new Set(events.map((event) => event.createdBy).filter(Boolean))].sort();
+    const modules = [...new Set(events.map((event) => auditModule(event.action)))].sort();
+    const actions = [...new Set(events.map((event) => event.action).filter(Boolean))].sort();
+    return `<div class="pageHead"><div><h1>Actividad</h1><p>Historial operativo del negocio.</p></div></div>
+      <section class="card sectionCard activityFilters"><div class="formGrid">
+        <div class="field"><label>Fecha</label><input id="activityDate" type="date"></div>
+        <div class="field"><label>Trabajador</label><select id="activityActor"><option value="">Todos</option>${actors.map((actor) => `<option value="${escapeHtml(actor)}">${escapeHtml(actor)}</option>`).join('')}</select></div>
+        <div class="field"><label>Módulo</label><select id="activityModule"><option value="">Todos</option>${modules.map((module) => `<option value="${escapeHtml(module)}">${escapeHtml(module)}</option>`).join('')}</select></div>
+        <div class="field"><label>Acción</label><select id="activityAction"><option value="">Todas</option>${actions.map((action) => `<option value="${escapeHtml(action)}">${escapeHtml(String(action).replaceAll('_', ' '))}</option>`).join('')}</select></div>
+      </div></section>
+      <section class="card sectionCard" style="margin-top:14px"><div id="activityList" data-page-size="50">${activityRowsHtml(events)}</div></section>`;
+  }
+  function activityRowsHtml(events = []) {
+    return events.slice(0, 100).map((event) => `<article class="activityRow" data-activity-date="${escapeHtml(String(event.createdAt || '').slice(0, 10))}" data-activity-actor="${escapeHtml(event.createdBy || '')}" data-activity-module="${escapeHtml(auditModule(event.action))}" data-activity-action="${escapeHtml(event.action || '')}"><span class="activityIcon">${icon(auditModule(event.action) === 'Caja' ? 'wallet-cards' : auditModule(event.action) === 'Inventario' ? 'package' : auditModule(event.action) === 'Trabajadores' ? 'users-round' : 'history')}</span><span><b>${escapeHtml(auditHumanText(event))}</b><small>${escapeHtml(event.when || event.createdAt || '')} · ${escapeHtml(auditModule(event.action))}</small></span></article>`).join('') || '<p class="empty">Aún no hay actividad registrada para este negocio.</p>';
+  }
+  async function bindActivity() {
+	  if (isOwnerUser() && typeof window.click360ListBusinessUnitAuditEvents === 'function') {
+	    try {
+	      const remoteEvents = await window.click360ListBusinessUnitAuditEvents(currentBusiness()?.id || '');
+	      const known = new Set((state.auditLogs || []).map((event) => event.id || event.eventId));
+	      const additions = remoteEvents.filter((event) => !known.has(event.id || event.eventId)).map((event) => ({
+	        ...event,
+	        id:event.id || event.eventId,
+	        createdBy:event.createdBy || event.actorName || 'Trabajador',
+	        createdAt:event.createdAt?.toDate?.().toISOString?.() || event.createdAt || '',
+	        when:event.when || event.createdAt?.toDate?.().toLocaleString?.('es-EC') || ''
+	      }));
+	      if (additions.length) {
+	        state.auditLogs.push(...additions);
+	        const events = state.auditLogs.filter((event) => event.businessId === currentBusiness()?.id).slice().reverse();
+	        const list = $('#activityList');
+	        if (list) list.innerHTML = activityRowsHtml(events);
+	      }
+	    } catch (error) {
+	      console.warn('No se pudo cargar auditoría modular:', error.code || error.message);
+	    }
+	  }
+    const filter = () => {
+      const date = $('#activityDate')?.value || '';
+      const actor = $('#activityActor')?.value || '';
+      const module = $('#activityModule')?.value || '';
+      const action = $('#activityAction')?.value || '';
+      $$('.activityRow').forEach((row) => {
+        row.hidden = !!((date && row.dataset.activityDate !== date) || (actor && row.dataset.activityActor !== actor) || (module && row.dataset.activityModule !== module) || (action && row.dataset.activityAction !== action));
+      });
+    };
+    ['activityDate', 'activityActor', 'activityModule', 'activityAction'].forEach((id) => $('#' + id)?.addEventListener('change', filter));
+  }
 
 			  function purchaseWhatsAppUrl() {
 	    const plan = accessInfo().plan || 'base';
@@ -3028,7 +3148,7 @@ function parseMoney(value) {
 	    const render = () => {
 	      const productOptions = productsForBiz().map((product) => ({
 	        product,
-	        available: Math.max(0, Number(product.qty || 0) - tableReservedQuantity(product.id, order.id))
+	        available: Math.max(0, Number(product.stock ?? product.qty ?? 0) - tableReservedQuantity(product.id, order.id))
 	      })).filter(({ available }) => available > 0).map(({ product, available }) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${fmt(product.price)} · ${available} disp.</option>`).join('');
 	      showModal(`<div class="modalHeader"><div><h2>${escapeHtml(table.name)}</h2><p class="fieldHint">${escapeHtml(tableElapsedLabel(order))}</p></div><button class="closeBtn" data-close>×</button></div>
 	        <section class="tableOrderStatusStrip"><span class="${order.sentToKitchen ? 'sent' : ''}">${icon(order.sentToKitchen ? 'chef-hat' : 'notebook-pen')} ${escapeHtml(tableKitchenStatus(order))}</span><span>${icon('clock')} ${tableElapsedMinutes(order)} min de espera</span><span>${icon('users-round')} ${escapeHtml(tablePeopleLabel(table))}</span></section>
@@ -3262,7 +3382,7 @@ function parseMoney(value) {
 	    for (const item of order.items) {
 	      if (item.nonInventory) continue;
 	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
-	      if (!product || product.qty < item.qty) return toast(`Stock insuficiente: ${item.name}`, 'err');
+	      if (!product || (product.stock ?? product.qty ?? 0) < item.qty) return toast(`Stock insuficiente: ${item.name}`, 'err');
 	    }
 	    const saleId = uid('sale');
 	    const sale = {
@@ -3278,7 +3398,7 @@ function parseMoney(value) {
 	    order.items.forEach((item) => {
 	      if (item.nonInventory) return;
 	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
-	      product.qty -= item.qty;
+	      const soldQty=Number(item.qty||0); product.stock-=soldQty; product.qty=product.stock;
 	      product.updatedAtMs = Date.now();
 	      product.updatedAt = new Date().toISOString();
 	    });
@@ -3515,7 +3635,7 @@ function parseMoney(value) {
 	      const productId = decodeActionId($('#routeLoadProduct').value);
 	      const product = productsForBiz().find((item) => item.id === productId);
 	      const qty = Math.max(1, Math.trunc(Number($('#routeLoadQty').value || 1)));
-	      if (!product || qty > Number(product.qty || 0)) return toast('Inventario insuficiente para cargar ruta.', 'err');
+	      if (!product || qty > Number(product.stock ?? product.qty ?? 0)) return toast('Inventario insuficiente para cargar ruta.', 'err');
 	      let currentSheet = sheet || { id:uid('loadsheet'), businessId:currentBusiness().id, routeId:route.id, status:'draft', items:[], createdAt:new Date().toISOString() };
 	      if (!sheet) state.logistics.loadSheets.push(currentSheet);
 	      const existing = currentSheet.items.find((item) => item.productId === product.id);
@@ -3581,12 +3701,14 @@ function parseMoney(value) {
 	      closeModal(); renderApp('logistics'); toast('Ruta liquidada');
 	    };
 	    $('#routePrintBtn').onclick = () => {
-	      const html = `<h1>${escapeHtml(route.name)}</h1><p>${escapeHtml(route.zone || '')} · ${escapeHtml(route.date || '')}</p><h2>Hoja de carga</h2>${(sheet?.items || []).map((item) => `<p>${escapeHtml(item.name)} · ${item.qty} · ${fmt(item.total)}</p>`).join('') || '<p>Sin carga</p>'}<h2>Liquidación</h2><p>Venta: ${fmt(summary.sold)}</p><p>Cobrado: ${fmt(summary.collected)}</p><p>Retornos: ${fmt(summary.returned)}</p>`;
-	      const popup = window.open('', '_blank');
-	      if (!popup) return toast('Permite ventanas emergentes para imprimir.', 'err');
-	      popup.document.write(`<!doctype html><title>Ruta</title><body>${html}</body>`);
-	      popup.document.close();
-	      popup.print();
+	      // Used to be a standalone window.open() + a print() call on that
+	      // popup window, entirely bypassing handoffPrint -- no anti-double
+	      // print guard, no button disabling, no shared error handling, and
+	      // silently blocked by popup blockers with only a generic toast.
+	      // Routed through the same handoffPrint() path as every other print
+	      // button so this route sheet gets the same protections for free.
+	      const html = `<section class="printReceipt"><h1>${escapeHtml(route.name)}</h1><p>${escapeHtml(route.zone || '')} · ${escapeHtml(route.date || '')}</p><h2>Hoja de carga</h2>${(sheet?.items || []).map((item) => `<p>${escapeHtml(item.name)} · ${item.qty} · ${fmt(item.total)}</p>`).join('') || '<p>Sin carga</p>'}<h2>Liquidación</h2><p>Venta: ${fmt(summary.sold)}</p><p>Cobrado: ${fmt(summary.collected)}</p><p>Retornos: ${fmt(summary.returned)}</p></section>`;
+	      handoffPrint({ html, media:'receipt-80' }, 'system');
 	    };
 	    refreshIcons();
 	  }
@@ -3729,9 +3851,11 @@ function parseMoney(value) {
 	    });
 	  }
 
-		function moreView(){
-		    const ownerTools = isOwnerUser() ? `
-		      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
+			function moreView(){
+			    const ownerTools = isOwnerUser() ? `
+			      <button class="card bigRow" data-more="debtors"><span>${icon('hand-coins')} Apartados</span>${icon('chevron-right')}</button>
+			      <button class="card bigRow" data-more="activity"><span>${icon('history')} Actividad</span>${icon('chevron-right')}</button>
+			      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
 		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
@@ -3940,7 +4064,6 @@ function parseMoney(value) {
         const bizSettings = business?.settings || {};
         const paper = receiptPaperFromTemplate(template);
         const receiptWidthMm = paper.receiptWidthMm;
-        const fixedReceiptHeight = paper.mediaType === 'sheet' || paper.mediaType === 'roll' || paper.mediaType === 'custom';
         const compactReceipt = receiptWidthMm <= 60;
         const scale = clampNumber(template.textScale, 0.78, 1.25, 1);
         const baseFont = (compactReceipt ? 9.2 : 11.5) * scale;
@@ -3953,7 +4076,7 @@ function parseMoney(value) {
         const currentIva = Number(s.taxRate ?? bizSettings.tax?.rate ?? bizSettings.iva ?? 0);
         const items = saleItems(s).length ? saleItems(s) : (s.items || []);
         return `
-          <div class="receiptPrintBody" style="box-sizing:border-box;font-family:monospace;color:#000;font-size:${baseFont}px;margin:0 auto;padding:${receiptPaddingMm}mm;width:${receiptWidthMm}mm;max-width:${receiptWidthMm}mm;${fixedReceiptHeight ? `height:${paper.receiptHeightMm}mm;overflow:hidden;` : ''}background:#fff;line-height:${compactReceipt ? 1.22 : 1.32};overflow-wrap:anywhere;text-align:left;"><div style="display:flex;flex-direction:column;">
+	          <div class="receiptPrintBody" style="box-sizing:border-box;font-family:monospace;color:#000;font-size:${baseFont}px;margin:0 auto;padding:${receiptPaddingMm}mm;width:${receiptWidthMm}mm;max-width:${receiptWidthMm}mm;background:#fff;line-height:${compactReceipt ? 1.22 : 1.32};overflow:visible;overflow-wrap:anywhere;text-align:left;"><div style="display:flex;flex-direction:column;">
             <section data-receipt-block="branding" style="${receiptBlockStyle(template, 'branding')}">
             ${logoUrl}
             <h2 style="font-size:${baseFont * 1.25}px;margin:0 0 2px;text-align:${textAlign};font-weight:bold;word-break:break-word;">${escapeHtml(business?.name || 'CLICK 360')}</h2>
@@ -4015,43 +4138,104 @@ function parseMoney(value) {
         const requiredHeight = paper.marginTopMm + paper.marginBottomMm + paper.rows * paper.receiptHeightMm + Math.max(0, paper.rows - 1) * paper.gapYmm;
         return { widthMm: Math.max(paper.mediaWidthMm, requiredWidth), heightMm: Math.max(paper.mediaHeightMm, requiredHeight) };
       }
+      function receiptBlockVisible(template, id) {
+        return normalizeReceiptBlocks(template.blocks).find((block) => block.id === id)?.visible !== false;
+      }
+      function chunkReceiptText(value, size = 140) {
+        const text = String(value || '').trim();
+        if (!text) return [];
+        const chunks = [];
+        let remaining = text;
+        while (remaining.length > size) {
+          let split = remaining.lastIndexOf(' ', size);
+          if (split < Math.floor(size * .55)) split = size;
+          chunks.push(remaining.slice(0, split).trim());
+          remaining = remaining.slice(split).trim();
+        }
+        if (remaining) chunks.push(remaining);
+        return chunks;
+      }
+      function receiptFlowSegments(s, business, template, paper) {
+        const biz = business?.settings || {};
+        const compact = paper.receiptWidthMm <= 60;
+        const fontSize = compact ? 7.4 : 9;
+        const ticket = String(s.id || '').slice(-6).toUpperCase();
+        const shell = (kind, title, body) => `<div class="receiptSegment" data-receipt-segment="${kind}" style="box-sizing:border-box;width:100%;height:100%;padding:${compact ? 1.5 : 2}mm;font:400 ${fontSize}px/1.22 monospace;color:#000;background:#fff;overflow:hidden;overflow-wrap:anywhere;"><header style="display:flex;justify-content:space-between;gap:3px;border-bottom:1px dashed #000;padding-bottom:2px;margin-bottom:3px;font-weight:700;"><span>${escapeHtml(title)}</span><small>#${escapeHtml(ticket)}</small></header>${body}</div>`;
+        const line = (label, value) => value ? `<div style="display:flex;justify-content:space-between;gap:3px;margin:2px 0;"><span>${escapeHtml(label)}</span><b style="text-align:right;overflow-wrap:anywhere;">${escapeHtml(value)}</b></div>` : '';
+        const segments = [];
+        if (receiptBlockVisible(template, 'branding')) {
+          const logo = safeImageSrc(biz.logoUrl);
+          segments.push(shell('branding', 'CLICK 360', `${logo && template.showLogo ? `<img src="${escapeHtml(logo)}" alt="" style="display:block;max-width:100%;height:${paper.receiptHeightMm <= 35 ? 7 : 10}mm;object-fit:contain;margin:0 auto 2px;">` : ''}<div style="text-align:center;font-weight:700;">${escapeHtml(business?.name || 'CLICK 360')}</div>${line('RUC/ID', biz.ruc)}${line('Tel.', biz.phone)}${biz.address ? `<div style="text-align:center;">${escapeHtml(biz.address)}</div>` : ''}`));
+        }
+        if (receiptBlockVisible(template, 'document')) segments.push(shell('document', 'COMPROBANTE DE VENTA', `${line('Ticket', ticket)}${line('Fecha', s.when || nowLabel())}${line('Método', s.method)}`));
+        if (receiptBlockVisible(template, 'customer')) segments.push(shell('customer', 'CLIENTE Y VENDEDOR', `${line('Cliente', s.customer || 'Consumidor final')}${line('Cédula/RUC', s.customerCedula)}${line('Teléfono', s.customerPhone)}${line('Vendedor', s.createdBy || s.user || 'Sistema')}`));
+        if (receiptBlockVisible(template, 'items')) {
+          const items = saleItems(s).length ? saleItems(s) : (s.items || []);
+          const perSegment = paper.receiptHeightMm >= 55 ? 4 : paper.receiptHeightMm >= 38 ? 2 : 1;
+          for (let index = 0; index < Math.max(1, items.length); index += perSegment) {
+            const group = items.slice(index, index + perSegment);
+            segments.push(shell('items', `DETALLE ${Math.floor(index / perSegment) + 1}`, group.map((item) => `<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px;border-bottom:1px dotted #aaa;padding:3px 0;"><span>${escapeHtml(item.name || item.code || 'Producto')}<small style="display:block;">${Number(item.qty || 0)} × ${fmt(item.price || 0)}</small></span><b>${fmt(receiptLineTotal(item))}</b></div>`).join('') || '<div>Sin detalle</div>'));
+          }
+        }
+        if (receiptBlockVisible(template, 'payment')) {
+          segments.push(shell('payment', 'RESUMEN DE PAGO', `${line('Subtotal', fmt(s.receiptSubtotal ?? (Number(s.subtotal || 0) + Number(s.discount || 0))))}${s.discount ? line('Descuento', `-${fmt(s.discount)}`) : ''}${s.iva ? line('IVA', fmt(s.iva)) : ''}${line('TOTAL', fmt(s.total))}${line('Pagado', fmt(collectedAmount(s)))}${Number(s.tendered || 0) > 0 ? line('Entregado', fmt(s.tendered)) : ''}${Number(s.change || 0) > 0 ? line('Cambio', fmt(s.change)) : ''}${Number(s.balance || 0) > 0 ? line('Saldo', fmt(s.balance)) : ''}`));
+          if (s.termsAccepted && s.terms) chunkReceiptText(s.terms, paper.receiptHeightMm <= 35 ? 100 : 190).forEach((part, index) => segments.push(shell('terms', `TÉRMINOS ${index + 1}`, `<p style="margin:0;">${escapeHtml(part)}</p>`)));
+        }
+        if (receiptBlockVisible(template, 'thanks')) segments.push(shell('footer', 'CIERRE', `<div style="text-align:center;">${template.showThanks ? '<b>¡Gracias por su compra!</b><br>' : ''}${escapeHtml(template.note || RECEIPT_DEFAULT_NOTE)}<hr style="border:0;border-top:1px dashed #000;margin:5px 0;"><small>${escapeHtml(RECEIPT_FOOTER_TEXT)}</small></div>`));
+        return segments;
+      }
       function buildReceiptPaperHtml(s, business = currentBusiness(), template = receiptTemplatePreferences(), options = {}) {
         const paper = receiptPaperFromTemplate(template);
         const media = receiptPrintMediaSize(template);
         const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
-        const receiptHtml = buildReceiptHtml(s, business, template);
-        if (continuous && !options.forceSheet) return receiptHtml;
-        const totalSlots = paper.columns * paper.rows;
-        const copies = Math.max(1, Math.min(totalSlots, Number(options.copies || 1)));
-        let remaining = copies;
-        const cells = [];
-        for (let slot = 1; slot <= totalSlots; slot += 1) {
-          const position = receiptCellPosition(paper, slot);
-          const printable = slot >= paper.startSlot && remaining > 0;
-          if (printable) remaining -= 1;
-          cells.push(`<div class="receiptPaperCell ${printable ? 'filled' : 'empty'}" data-slot="${slot}" style="position:absolute;left:${position.xMm}mm;top:${position.yMm}mm;width:${paper.receiptWidthMm}mm;height:${paper.receiptHeightMm}mm;box-sizing:border-box;overflow:hidden;border:${options.preview ? '1px dashed rgba(0,0,0,.28)' : '0'};background:${printable ? '#fff' : 'transparent'};">${printable ? `<div style="transform:rotate(${paper.contentRotation}deg);transform-origin:center center;width:${paper.receiptWidthMm}mm;min-height:${paper.receiptHeightMm}mm;">${receiptHtml}</div>` : (options.preview ? `<span style="display:grid;place-items:center;width:100%;height:100%;font:700 9px Arial;color:#aaa;">${slot}</span>` : '')}</div>`);
-        }
-        return `<section class="receiptPaperSheet" data-receipt-paper="${escapeHtml(paper.paperType)}" style="position:relative;width:${media.widthMm}mm;height:${media.heightMm || paper.receiptHeightMm}mm;box-sizing:border-box;background:#fff;color:#000;overflow:hidden;">${cells.join('')}</section>`;
+	        const copies = Math.max(1, Math.min(20, Number(options.copies || 1)));
+	        const segmentedPhysicalLayout = options.segmentedPhysicalLayout === true || options.forceSheet === true;
+	        const receiptHtml = buildReceiptHtml(s, business, template);
+	        if (continuous || !segmentedPhysicalLayout) {
+	          return Array.from({ length:copies }, (_, index) => `<section class="receiptContinuousCopy" data-receipt-copy="${index + 1}" style="break-after:${index + 1 < copies ? 'page' : 'auto'};page-break-after:${index + 1 < copies ? 'always' : 'auto'};">${receiptHtml}</section>`).join('');
+	        }
+	        const totalSlots = paper.columns * paper.rows;
+	        const segments = Array.from({ length:copies }, () => receiptFlowSegments(s, business, template, paper)).flat();
+	        const leading = Math.max(0, Math.min(totalSlots - 1, Number(paper.startSlot || 1) - 1));
+	        const pageCount = Math.max(1, Math.ceil((leading + segments.length) / totalSlots));
+	        let segmentIndex = 0;
+	        return Array.from({ length:pageCount }, (_, pageIndex) => {
+	          const cells = [];
+	          for (let slot = 1; slot <= totalSlots; slot += 1) {
+	            const position = receiptCellPosition(paper, slot);
+	            const used = pageIndex === 0 && slot <= leading;
+	            const segment = used ? '' : segments[segmentIndex++] || '';
+	            cells.push(`<div class="receiptPaperCell ${segment ? 'filled' : used ? 'used' : 'empty'}" data-slot="${slot}" data-page="${pageIndex + 1}" style="position:absolute;left:${position.xMm}mm;top:${position.yMm}mm;width:${paper.receiptWidthMm}mm;height:${paper.receiptHeightMm}mm;box-sizing:border-box;overflow:hidden;border:${options.preview ? '1px dashed rgba(0,0,0,.28)' : '0'};background:${segment ? '#fff' : 'transparent'};">${segment ? `<div style="transform:rotate(${paper.contentRotation}deg);transform-origin:center center;width:100%;height:100%;">${segment}</div>` : (options.preview ? `<span style="display:grid;place-items:center;width:100%;height:100%;font:700 9px Arial;color:#aaa;">${used ? 'Usada' : slot}</span>` : '')}</div>`);
+	          }
+	          return `<section class="receiptPaperSheet" data-receipt-paper="${escapeHtml(paper.paperType)}" data-receipt-page="${pageIndex + 1}" style="position:relative;width:${media.widthMm}mm;height:${media.heightMm || paper.receiptHeightMm}mm;box-sizing:border-box;background:#fff;color:#000;overflow:hidden;">${cells.join('')}</section>`;
+	        }).join('');
       }
       function receiptPrintJob(s, business = currentBusiness(), template = receiptTemplatePreferences(), options = {}) {
         const paper = receiptPaperFromTemplate(template);
         const media = receiptPrintMediaSize(template);
         const continuous = paper.mediaType === 'receipt' || paper.mediaType === 'continuous';
+	        const segmentedPhysicalLayout = options.segmentedPhysicalLayout === true;
+	        const effectiveContinuous = continuous || !segmentedPhysicalLayout;
         return {
-          html: buildReceiptPaperHtml(s, business, template, { copies:options.copies || 1 }),
-          media: receiptPrintMedia(template),
-          mediaWidthMm: media.widthMm || paper.receiptWidthMm,
-          mediaHeightMm: continuous ? undefined : media.heightMm,
-          widthMm: paper.receiptWidthMm,
-          heightMm: continuous ? undefined : paper.receiptHeightMm,
-          copiesHandled:true,
+	          html: buildReceiptPaperHtml(s, business, template, { copies:options.copies || 1, segmentedPhysicalLayout }),
+	          media: effectiveContinuous ? (paper.receiptWidthMm <= 60 ? 'receipt-58' : 'receipt-80') : receiptPrintMedia(template),
+	          mediaWidthMm: effectiveContinuous ? paper.receiptWidthMm : (media.widthMm || paper.receiptWidthMm),
+	          mediaHeightMm: effectiveContinuous ? undefined : media.heightMm,
+	          widthMm: paper.receiptWidthMm,
+	          heightMm: effectiveContinuous ? undefined : paper.receiptHeightMm,
+	          copiesHandled:true,
+	          layoutMode:effectiveContinuous ? 'continuous' : 'segmented_fixture',
           filename: options.filename || `Recibo_${String(s.id || uid('rec')).slice(-6).toUpperCase()}.pdf`
         };
       }
       async function printReceiptWithFallback(s, business = currentBusiness(), template = receiptTemplatePreferences(), providerId = 'system') {
         const job = receiptPrintJob(s, business, template);
         const result = await handoffPrint(job, providerId);
-        if (result) return result;
+        if (result) {
+          addAudit('receipt_issued', { saleId:s.id, entityType:'sale', entityId:s.id, status:result.status || 'handed_off' });
+          save();
+          return result;
+        }
         if (providerId !== 'pdf') {
           toast('No se pudo abrir el diálogo de impresión. Usa Guardar PDF solo si quieres un archivo.', 'err');
         }
@@ -4455,15 +4639,21 @@ function parseMoney(value) {
       </section>`;
   }
   function workersView(){
+    // Initial paint uses the static, project-only WORKER_TENANT_ACCESS_ENABLED
+    // (correct immediately for staging/demo, and a safe default-closed guess
+    // for production before the owner's own tenant flag is known).
+    // bindWorkers() re-checks the real per-tenant flag asynchronously right
+    // after this renders and corrects both the notice and the form's
+    // visibility if they disagree -- see Phase 3.3 staging-only-dependency audit.
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
-	  ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<section class="card sectionCard"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>'}
-      <section class="card sectionCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
+	  <section class="card sectionCard" id="workerRegistrationPausedNotice" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:none' : ''}"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>
+      <section class="card sectionCard" id="workerRegistrationCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
          <h3>Registrar Trabajador</h3>
-         ${WORKER_TENANT_ACCESS_ENABLED ? '' : '<p class="fieldHint">Disponible en una fase posterior; no se activó en este release P1.1.</p>'}
+         <p class="fieldHint" id="workerRegistrationHint" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:none' : ''}">Disponible en una fase posterior; no se activó en este release P1.1.</p>
 	         <form id="addWorkerForm" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:flex' : 'display:none'}; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
             <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
-            <div class="field"><label>Rol inicial</label><select id="workerRole"><option value="worker">Operador</option><option value="cashier">Caja y ventas</option><option value="inventory">Inventario</option></select></div>
+            <div class="field"><label>Rol inicial</label><select id="workerRole"><option value="admin">Administrador</option><option value="supervisor">Supervisor</option><option value="seller">Vendedor</option><option value="cashier">Cajero</option><option value="inventory">Inventario</option></select></div>
             <button class="btn primary block" type="submit">Crear invitacion segura</button>
          </form>
 
@@ -4472,6 +4662,10 @@ function parseMoney(value) {
             <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:8px; border-radius:8px;">
             <button class="btn silver block" id="copyInviteLinkBtn" type="button">Copiar Enlace</button>
          </div>
+      </section>
+      <section class="card sectionCard" id="workerSeatCard" style="margin-top:14px; display:none;">
+         <h3>Trabajadores adicionales</h3>
+         <div id="workerSeatStatus"><p class="empty">Cargando cupos...</p></div>
       </section>
       <section class="card sectionCard" style="margin-top:14px">
          <h3>Trabajadores Registrados</h3>
@@ -4584,7 +4778,9 @@ function parseMoney(value) {
     if(r==='more') bindMore();
     if(r==='backup') bindBackup();
     if(r==='settings') bindSettings();
-    if(r==='workers') bindWorkers();
+	    if(r==='workers') bindWorkers();
+	    if(r==='activity') bindActivity();
+	    if(r==='debtors') bindDebtors();
     if(r==='reports') bindReports();
     if(r==='invoices') bindInvoices();
     if(r==='crm') bindCrm();
@@ -4597,6 +4793,28 @@ function parseMoney(value) {
 	    if(r==='access') bindAccess();
 	    if(r==='printing') bindPrinting();
 	  }
+  function bindDebtors() {
+    const select = $('#layawayStatusFilter');
+    const search = $('#layawaySearch');
+    const apply = () => {
+      const value = select?.value || 'active';
+      const query = (search?.value || '').trim().toLowerCase();
+      $$('.layawayRow').forEach((row) => {
+        // A search always looks across every status: the point is finding
+        // ONE specific Apartado the worker already knows the customer/phone
+        // for, regardless of whether it's active, paid, or delivered -- the
+        // status dropdown only applies when browsing without a search term.
+        if (query.length > 0) {
+          row.hidden = !(row.dataset.layawaySearch || '').includes(query);
+          return;
+        }
+        row.hidden = value === 'active' ? row.dataset.layawayActive !== 'true' : value !== 'all' && row.dataset.layawayStatus !== value;
+      });
+    };
+    select?.addEventListener('change', apply);
+    search?.addEventListener('input', apply);
+    apply();
+  }
   function bindInventory(){
     $('#newProduct').onclick=()=>openProductModal();
     $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>x.name.toLowerCase().includes(q)||x.code.toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
@@ -4721,6 +4939,11 @@ function parseMoney(value) {
     $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit && p.businessId===currentBusiness()?.id)));
     $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
+    $$('[data-quick-print]').forEach((button) => {
+      button.onclick = () => runQuickLabelPrintFlow({
+        product:state.products.find((product) => product.id === button.dataset.quickPrint && product.businessId === currentBusiness()?.id)
+      });
+    });
   }
 	  function openProductModal(product=null, initialCode=''){
 	    const b=currentBusiness(), v=businessVocabulary(b.type);
@@ -4795,9 +5018,11 @@ function parseMoney(value) {
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
+	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
 	      let savedProduct = product;
-	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
-	      else { savedProduct = {id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
+	      // Write both 'stock' (canonical, read by modular gateway) and 'qty' (legacy UI field) so both paths stay in sync.
+	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
+	      else { savedProduct = {id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
 	      if (restaurantModuleEnabled()) {
 	        const ingredients = $('#pRecipeIngredients')?.value.trim() || '';
 	        const steps = $('#pRecipeSteps')?.value.trim() || '';
@@ -4805,6 +5030,13 @@ function parseMoney(value) {
 	        if (ingredients || steps) Object.assign(existingRecipe || (state.restaurantRecipes.push({ id:uid('recipe'), businessId:b.id, productId:savedProduct.id, createdAt:new Date(updatedAtMs).toISOString() }), state.restaurantRecipes.at(-1)), { name:savedProduct.name, productName:savedProduct.name, ingredients, steps, updatedAtMs });
 	        else if (existingRecipe) state.restaurantRecipes = state.restaurantRecipes.filter((recipe) => recipe.id !== existingRecipe.id);
 	      }
+	      addAudit(product ? 'product_updated' : 'product_created', {
+	        productId:savedProduct.id,
+	        entityType:'product',
+	        entityId:savedProduct.id,
+	        before:product ? { stock:previousProductStock } : {},
+	        after:{ stock:Number(savedProduct.stock ?? savedProduct.qty ?? 0) }
+	      });
 	      if(!save()) return; closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
 	    };
 	  }
@@ -4819,6 +5051,7 @@ function parseMoney(value) {
 	        state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
 	      }
 	      state.products=state.products.filter(x=>x.id!==id || x.businessId!==businessId);
+	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.stock ?? p.qty ?? 0) }, after:{ stock:0 } });
 	      const committed = await commitCriticalMutation(previousState, 'product_deleted', (next) =>
 	        !next.products.some((item) => item.id === id && item.businessId === businessId)
 	        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId));
@@ -4860,7 +5093,7 @@ function parseMoney(value) {
 
       $('#cartItems').innerHTML=cart.length?cart.map(i=>{ const src=safeImageSrc(i.imageData); return `<div class="cartItem cartWithImage">${src ? `<img class="productImg small" src="${escapeHtml(src)}" alt="${escapeHtml(i.name)}">` : '<div class="productImg small emptyImg">▧</div>'}<div><b>${escapeHtml(i.name)}</b><br><small>${fmt(isCard ? i.cardPrice : i.price)} /u · ${escapeHtml(i.code)}</small></div><div class="qtyControls"><button type="button" data-minus="${escapeHtml(i.id)}">−</button><b>${i.qty}</b><button type="button" data-plus="${escapeHtml(i.id)}">＋</button><button type="button" class="iconBtn danger" data-remove="${escapeHtml(i.id)}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg></button></div></div>`; }).join(''):'<p class="empty">Vacío. Agrega productos para vender.</p>';
       $$('[data-minus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.minus); if(it.qty>1)it.qty--; else cart=cart.filter(x=>x.id!==it.id); renderCart();});
-      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=it && state.products.find(p=>p.id===it.id && p.businessId===currentBusiness()?.id); if (!it || (!it.isCustom && (!p || it.qty >= p.qty))) return toast('No hay mas stock disponible', 'err'); it.qty++; renderCart();});
+      $$('[data-plus]').forEach(b=>b.onclick=()=>{const it=cart.find(x=>x.id===b.dataset.plus); const p=it && state.products.find(p=>p.id===it.id && p.businessId===currentBusiness()?.id); if (!it || (!it.isCustom && (!p || it.qty >= (p.stock??p.qty??0)))) return toast('No hay mas stock disponible', 'err'); it.qty++; renderCart();});
       $$('[data-remove]').forEach(b=>b.onclick=()=>{cart=cart.filter(x=>x.id!==b.dataset.remove); renderCart();});
 
       const recF = $('#receivedField'), chgF = $('#changeField'), lblCustomer = $('#lblCustomer');
@@ -4871,7 +5104,8 @@ function parseMoney(value) {
         lblCustomer.textContent = 'Cliente (opcional)';
       }
 
-      const dueField = $('#layawayDueDateField');
+	      const dueField = $('#layawayDueDateField');
+	      const initialMethodField = $('#layawayInitialMethodField');
       const termsField = $('#layawayTermsField');
       if (method === 'Apartado') {
          if (dueField) {
@@ -4883,19 +5117,22 @@ function parseMoney(value) {
                dueInput.value = localDateKey(future);
             }
          }
-         if (termsField) termsField.style.display = 'grid';
-      } else {
+	         if (termsField) termsField.style.display = 'grid';
+	         if (initialMethodField) initialMethodField.style.display = 'grid';
+	      } else {
          if (dueField) dueField.style.display = 'none';
-         if (termsField) termsField.style.display = 'none';
+	         if (termsField) termsField.style.display = 'none';
+	         if (initialMethodField) initialMethodField.style.display = 'none';
       }
 
       if (method === 'Efectivo') {
         recF.style.display = 'grid'; chgF.style.display = 'grid';
-        const rec = parseMoney($('#cashReceived').value);
+	      const rec = parseMoney($('#cashReceived').value);
+	      const layawayInitialMethod = method === 'Apartado' ? ($('#layawayInitialMethod')?.value || 'Efectivo') : method;
         if(Number.isFinite(rec) && rec >= total) {
-           $('#cashChange').value = fmt(rec - total);
+           if ($('#cashChange')) $('#cashChange').value = fmt(rec - total);
         } else {
-           $('#cashChange').value = '$0.00';
+           if ($('#cashChange')) $('#cashChange').value = '$0.00';
         }
       } else if(method === 'Apartado') {
         recF.style.display = 'grid'; chgF.style.display = 'grid';
@@ -4903,9 +5140,9 @@ function parseMoney(value) {
         $('#changeField label').textContent = 'Saldo Pendiente';
         const rec = parseMoney($('#cashReceived').value);
         if(Number.isFinite(rec)) {
-           $('#cashChange').value = fmt(Math.max(0, total - rec));
+           if ($('#cashChange')) $('#cashChange').value = fmt(Math.max(0, total - rec));
         } else {
-           $('#cashChange').value = fmt(total);
+           if ($('#cashChange')) $('#cashChange').value = fmt(total);
         }
       } else {
         recF.style.display = 'none'; chgF.style.display = 'none';
@@ -4933,9 +5170,9 @@ function parseMoney(value) {
         else toast(`Producto no encontrado: ${code || 'sin código'}`,'err');
         return;
       }
-      if(p.qty<=0){ beep('err'); return toast('Sin stock disponible','err'); }
+      if((p.stock??p.qty??0)<=0){ beep('err'); return toast('Sin stock disponible','err'); }
       const it=cart.find(x=>x.id===p.id);
-      if(it){ if(it.qty>=p.qty){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
+      if(it){ if(it.qty>=(p.stock??p.qty??0)){ beep('err'); return toast('No hay más stock','err'); } it.qty++; }
       else cart.push({id:p.id,name:p.name,price:p.price,cardPrice:p.cardPrice||p.price,qty:1,code:p.code,imageData:p.imageData||'',taxMode:p.taxMode||'inherit'});
       renderCart(); beep(); toast(`${p.name} agregado`);
     };
@@ -4991,7 +5228,7 @@ function parseMoney(value) {
       for(const i of cart){
         if(i.isCustom) continue;
         const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id);
-        if(!p||p.qty<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); }
+        if(!p||(p.stock??p.qty??0)<i.qty){ beep('err'); return toast(`Stock insuficiente: ${i.name}`,'err'); }
       }
 
       const rec = parseMoney($('#cashReceived').value);
@@ -5066,7 +5303,7 @@ function parseMoney(value) {
 	        tendered,
 	        change,
 	        balance,
-	        payments: received > 0 ? [{ id: uid('pay'), date: today(), when: nowLabel(), amount: received, method, createdBy: authUser().name }] : [],
+	        payments: received > 0 ? [{ id: uid('pay'), date: today(), when: nowLabel(), amount: received, method:layawayInitialMethod, createdBy: authUser().name }] : [],
 	        createdAt: new Date(saleCreatedAtMs).toISOString(),
 	        createdAtMs: saleCreatedAtMs,
 	        updatedAt: new Date(saleCreatedAtMs).toISOString(),
@@ -5100,14 +5337,15 @@ function parseMoney(value) {
 	          notes: ''
 	        });
 	      }
-	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id); if(p) { p.qty-=i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
+	      cart.forEach(i=>{ if(i.isCustom) return; const p=state.products.find(p=>p.id===i.id && p.businessId===currentBusiness()?.id); if(p) { const sold=Number(i.qty||0); p.stock-=sold; p.qty=p.stock; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; } });
 
       let movAmount = (method === 'Apartado') ? received : (method === 'Pendiente' ? 0 : total);
       if(movAmount > 0) {
-	        state.movements.push({id:uid('mov'),businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`Venta ${sale.method}`,user:authUser().name,saleId:sale.id,paymentMethod:sale.method,cashSessionId:sale.cashSessionId,createdAtMs:Date.now(),createdBy:authUser().name});
+		        state.movements.push({id:uid('mov'),operationId:sale.operationId,businessId:currentBusiness().id,date:today(),when:nowLabel(),kind:'ingreso',amount:movAmount,note:`${method === 'Apartado' ? 'Abono inicial de apartado' : `Venta ${sale.method}`}`,user:authUser().name,saleId:sale.id,paymentMethod:layawayInitialMethod,paymentType:method === 'Apartado' ? 'receivable_payment' : 'sale',cashSessionId:sale.cashSessionId,createdAtMs:Date.now(),createdBy:authUser().name});
       }
 
-      addAudit('sale_created', { saleId: sale.id, total: sale.total, method: sale.method, status: sale.status });
+	      state.operationLedger.push({ operationId:sale.operationId, type:method === 'Apartado' ? 'layaway_created' : 'sale_created', businessId:sale.businessId, entityId:sale.id, createdAt:sale.createdAt });
+	      addAudit(method === 'Apartado' ? 'layaway_created' : 'sale_created', { saleId: sale.id, total: sale.total, method: sale.method, paymentMethod:layawayInitialMethod, status: sale.status, operationId:sale.operationId, entityType:method === 'Apartado' ? 'layaway' : 'sale', entityId:sale.id });
       const committed = await commitCriticalMutation(previousState, 'sale_created', (next) =>
         next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId));
       if(!committed.ok) { renderApp('sell'); return; }
@@ -5502,7 +5740,9 @@ function parseMoney(value) {
 	    const gate = writeGateStatus();
 	    if (!gate.allowed) return { allowed: false, reason: gate.reason || 'write_gate_blocked', gate, business };
 	    if (!can('cash')) return { allowed: false, reason: 'cash_permission_denied', gate, business };
-	    if (!isOwnerUser()) return { allowed: false, reason: WORKER_TENANT_ACCESS_ENABLED ? 'cash_role_denied' : 'worker_module_paused', gate, business };
+	    if (!isOwnerUser() && window.click360CanModularAction?.('cashSessions', 'close') !== true) {
+	      return { allowed: false, reason: WORKER_TENANT_ACCESS_ENABLED ? 'cash_role_denied' : 'worker_module_paused', gate, business };
+	    }
 	    return { allowed: true, reason: 'ok', gate, business };
 	  }
 	  function recordCashCloseIssue(stage, error, details = {}) {
@@ -6096,7 +6336,49 @@ function parseMoney(value) {
      }
   }
 
+  // "Trabajadores adicionales": read-only seat status (included/used/available)
+  // plus a request-only CTA -- there is no self-serve purchase flow yet, so
+  // requesting logs an owner-scoped request that AIIA/a trusted operator
+  // fulfills manually via scripts/worker-boundary-admin.mjs. Hidden entirely
+  // when the tenant has no modular entitlement (Workers not enabled here).
+  async function renderWorkerSeatStatus() {
+    const card = $('#workerSeatCard');
+    const box = $('#workerSeatStatus');
+    if (!card || !box) return;
+    if (typeof window.click360GetWorkerSeatStatus !== 'function' || !window.click360User?.isOwner) { card.style.display = 'none'; return; }
+    const businessUnitId = currentBusiness()?.id || '';
+    let seatStatus = null;
+    try { seatStatus = businessUnitId ? await window.click360GetWorkerSeatStatus(businessUnitId) : null; }
+    catch (error) { console.warn('No se pudo cargar el estado de cupos de trabajador:', error.message); }
+    if (!seatStatus) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    box.innerHTML = `
+      <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px;">
+        <div><small class="fieldHint">Incluidos</small><div style="font-size:20px; font-weight:bold;">${seatStatus.baseSeatCap}</div></div>
+        <div><small class="fieldHint">Adicionales</small><div style="font-size:20px; font-weight:bold;">${seatStatus.addOnSeats}</div></div>
+        <div><small class="fieldHint">En uso</small><div style="font-size:20px; font-weight:bold;">${seatStatus.used}</div></div>
+        <div><small class="fieldHint">Disponibles</small><div style="font-size:20px; font-weight:bold; color:${seatStatus.available > 0 ? 'var(--green)' : 'var(--red, #e05252)'};">${seatStatus.available}</div></div>
+      </div>
+      ${seatStatus.atCapacity ? '<p class="cloudStatus">Has usado todos tus cupos de trabajador. Solicita cupos adicionales para invitar a más personas.</p>' : ''}
+      <button type="button" class="btn silver block" id="requestMoreSeatsBtn">Solicitar cupos adicionales</button>
+      <p class="fieldHint" style="margin-top:6px;">La compra automática de cupos aún no está disponible; tu solicitud se revisa y activa manualmente.</p>
+    `;
+    const requestBtn = $('#requestMoreSeatsBtn');
+    if (requestBtn) requestBtn.onclick = async () => {
+      requestBtn.disabled = true;
+      try {
+        await window.click360RequestAdditionalSeats(businessUnitId);
+        toast('Solicitud enviada. Te contactaremos para activar los cupos adicionales.');
+      } catch (error) {
+        toast(error.message || 'No se pudo enviar la solicitud.');
+      } finally {
+        requestBtn.disabled = false;
+      }
+    };
+  }
+
   async function bindWorkers() {
+    renderWorkerSeatStatus().catch(() => {});
     const list = $('#workersList');
     if (!window.click360User || window.click360User.role !== 'owner') {
       list.innerHTML = '<p class="empty">Solo el dueño puede administrar trabajadores.</p>';
@@ -6104,6 +6386,22 @@ function parseMoney(value) {
       if (form) form.style.display = 'none';
       return;
     }
+
+    // Phase 3.3: re-check the real per-tenant flag (not just the static,
+    // project-only WORKER_TENANT_ACCESS_ENABLED) and reconcile the DOM --
+    // production tenants explicitly enabled via worker-boundary-admin.mjs
+    // must see the registration form even though the static flag defaults
+    // closed there.
+    const tenantAccessEnabled = WORKER_TENANT_ACCESS_ENABLED
+      || (await window.click360CurrentOwnerWorkersEnabled?.(window.click360User.uid).catch(() => false));
+    const pausedNotice = $('#workerRegistrationPausedNotice');
+    const registrationCard = $('#workerRegistrationCard');
+    const registrationHint = $('#workerRegistrationHint');
+    const addWorkerForm = $('#addWorkerForm');
+    if (pausedNotice) pausedNotice.style.display = tenantAccessEnabled ? 'none' : '';
+    if (registrationCard) tenantAccessEnabled ? registrationCard.removeAttribute('aria-disabled') : registrationCard.setAttribute('aria-disabled', 'true');
+    if (registrationHint) registrationHint.style.display = tenantAccessEnabled ? 'none' : '';
+    if (addWorkerForm) addWorkerForm.style.display = tenantAccessEnabled ? 'flex' : 'none';
 
     let displayedWorkers = [];
     const loadWorkers = async () => {
@@ -6118,8 +6416,9 @@ function parseMoney(value) {
       }
 
       list.innerHTML = workers.map(w => {
-        const active = ['active', 'accepted'].includes(w.status) && w.status !== 'revoked';
-        const statusLabel = active ? 'Activo' : w.status === 'pending' ? 'Invitacion pendiente' : w.status === 'revoked' ? 'Revocado' : 'Bloqueado';
+	        const accepted = ['active', 'accepted'].includes(w.status) && w.status !== 'revoked';
+	        const active = tenantAccessEnabled && accepted;
+	        const statusLabel = accepted && !tenantAccessEnabled ? 'Acceso operativo pausado' : active ? 'Activo' : w.status === 'pending' ? 'Invitacion pendiente' : w.status === 'revoked' ? 'Revocado' : 'Bloqueado';
         const avatarHtml = `<div style="width:32px; height:32px; border-radius:50%; background:#222; border:1px solid #444; display:flex; justify-content:center; align-items:center; font-weight:bold; color:var(--gold); font-size:12px;">${escapeHtml(String(w.name || 'W').charAt(0).toUpperCase())}</div>`;
         return `
           <div class="movement" style="align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid var(--line);">
@@ -6155,11 +6454,11 @@ function parseMoney(value) {
           const hash = decodeActionId(button.dataset.workerDetails);
           const worker = displayedWorkers.find((item) => item.inviteHash === hash);
           if (!worker) return toast('No se encontro la ficha del trabajador.', 'err');
-          const modules = [['inventory','Inventario'],['sales','Ventas'],['cash','Caja'],['customers','Clientes'],['reports','Reportes'],['reminders','Recordatorios'],['settings','Ajustes'],['suppliers','Proveedores'],['workers','Trabajadores']];
-          const actions = ['view','create','edit','delete','approve','export','manage'];
+          const modules = [['members','Miembros'],['products','Inventario'],['sales','Ventas'],['layaways','Apartados'],['cashSessions','Caja'],['movements','Movimientos'],['auditEvents','Auditoría'],['settings','Ajustes']];
+          const actions = ['read','create','update','delete','payment','close','manage'];
 	          const workerStatus = worker.status === 'pending' ? 'Pendiente' : worker.status === 'active' ? 'Activo' : worker.status === 'revoked' ? 'Revocado' : 'Bloqueado';
-	          const actionLabels = { view: 'Ver', create: 'Crear', edit: 'Editar', delete: 'Eliminar', approve: 'Aprobar', export: 'Exportar', manage: 'Administrar' };
-	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="worker" ${worker.role === 'worker' ? 'selected' : ''}>Operador</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Caja y ventas</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
+	          const actionLabels = { read:'Ver', create:'Crear', update:'Editar', delete:'Eliminar', payment:'Registrar abono', close:'Cerrar caja', manage:'Administrar' };
+	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="admin" ${worker.role === 'admin' ? 'selected' : ''}>Administrador</option><option value="supervisor" ${worker.role === 'supervisor' ? 'selected' : ''}>Supervisor</option><option value="seller" ${['worker','seller'].includes(worker.role) ? 'selected' : ''}>Vendedor</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Cajero</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
           $('#saveWorkerPermissions').onclick = async () => {
             const permissions = {};
             $$('[data-permission-module]').forEach((input) => {
@@ -6167,7 +6466,7 @@ function parseMoney(value) {
               permissions[input.dataset.permissionModule][input.dataset.permissionAction] = input.checked;
             });
             try {
-              await window.click360UpdateWorkerPermissions(worker.uid || '', worker.inviteHash, $('#workerEditRole').value, permissions);
+              await window.click360UpdateWorkerPermissions(worker.uid || '', worker.inviteHash, $('#workerEditRole').value, permissions, worker.businessUnitId || currentBusiness()?.id || '');
               addAudit('worker_permissions_updated', { workerUid: worker.uid || '', inviteHash: worker.inviteHash, role: $('#workerEditRole').value });
               closeModal();
               await loadWorkers();
@@ -6211,7 +6510,7 @@ function parseMoney(value) {
     };
 
     await loadWorkers();
-	    if (!WORKER_TENANT_ACCESS_ENABLED) return;
+	    if (!tenantAccessEnabled) return;
 
     $('#addWorkerForm').onsubmit = async (e) => {
       e.preventDefault();
@@ -6237,12 +6536,13 @@ function parseMoney(value) {
       try {
          // 1. Write the cloud invitation before presenting it as active.
 	         if (!window.click360InviteWorkerEmail) throw new Error('La invitación en nube no está disponible.');
-	         const inviteMeta = await window.click360InviteWorkerEmail(email, name, { role });
+	         const inviteMeta = await window.click360InviteWorkerEmail(email, name, { role, businessUnitId:currentBusiness()?.id || '' });
 
          // 2. Add to local storage settings list
          state.settings ||= {};
          state.settings.workers ||= [];
 	         state.settings.workers.push({ email, name, status: 'pending', role, inviteHash: inviteMeta?.inviteHash || '', permissions: inviteMeta?.permissions || {}, ownerId: window.click360User.uid, createdAt: new Date().toISOString() });
+	         addAudit('worker_invited', { inviteHash:inviteMeta?.inviteHash || '', role, entityType:'worker_invitation', entityId:inviteMeta?.inviteHash || '' });
 	         if (!save()) {
 	           await window.click360CancelInviteEmail(email, inviteMeta?.inviteHash || '').catch(() => {});
 	           throw new Error('No se pudo guardar la invitación localmente; la invitación en nube fue cancelada.');
@@ -8566,7 +8866,182 @@ function parseMoney(value) {
       + Math.max(0, paper.rows - 1) * rowAdvanceMm;
     return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
   }
-  async function buildUniversalLabelPrintNode(product, sourceDocument) {
+  function legacyPaperProfileToUniversal(paper = {}) {
+    return {
+      id:paper.id || paper.paperType || 'custom',
+      mediaType:paper.mediaType || 'roll-1',
+      widthMm:Number(paper.labelWidthMm ?? paper.widthMm ?? 60),
+      heightMm:Number(paper.labelHeightMm ?? paper.heightMm ?? 40),
+      mediaWidthMm:Number(paper.mediaWidthMm ?? 0),
+      mediaHeightMm:Number(paper.mediaHeightMm ?? 0),
+      columns:Math.max(1, Number(paper.columns ?? 1)),
+      rows:Math.max(1, Number(paper.rows ?? 1)),
+      gapXmm:Number(paper.gapHorizontalMm ?? paper.gapXmm ?? 0),
+      gapYmm:Number(paper.gapVerticalMm ?? paper.gapYmm ?? 0),
+      marginTopMm:Number(paper.marginTopMm ?? 0),
+      marginRightMm:Number(paper.marginRightMm ?? 0),
+      marginBottomMm:Number(paper.marginBottomMm ?? 0),
+      marginLeftMm:Number(paper.marginLeftMm ?? 0),
+      pitchMm:Number(paper.pitchMm ?? 0),
+      xOffsetMm:Number(paper.xOffsetMm ?? 0),
+      yOffsetMm:Number(paper.yOffsetMm ?? 0),
+      scaleX:Number(paper.scaleX ?? 1),
+      scaleY:Number(paper.scaleY ?? 1),
+      dpi:Number(paper.nominalDpi ?? paper.dpi ?? 203),
+      orientation:paper.orientation || 'portrait'
+    };
+  }
+  function resolveLabelPrintProfile(businessId, template = {}, profileId = '') {
+    const profiles = labelProfilesForBiz(businessId);
+    const deviceState = loadPrintDeviceState(businessId);
+    const smartPrint = window.CLICK360_SMART_PRINT;
+    const candidates = [profileId, template?.universalProfileId, deviceState?.universalProfileId, deviceState?.selectedProfileId].filter(Boolean);
+    for (const id of candidates) {
+      const raw = profiles.find((profile) => profile.id === id);
+      if (!raw) continue;
+      if (raw.universalPaper) return smartPrint?.applyUniversalDeviceCalibration(raw, deviceState) || raw;
+      const normalized = smartPrint?.normalizePrintProfile(raw, businessId) || raw;
+      if (normalized?.paper) return { ...normalized, universalPaper:legacyPaperProfileToUniversal(normalized.paper), name:normalized.name || raw.name };
+    }
+    const documentModel = template?.id || template?.layout || template?.universalDocument ? universalDocumentFromTemplate(template) : null;
+    if (documentModel?.paper && smartPrint?.validatePaperProfile(window.CLICK360_UNIVERSAL_LABEL_CANVAS?.toPrintPaper(documentModel))?.valid) {
+      return {
+        id:'template-paper',
+        name:`${template?.name || 'Plantilla'} · ${documentModel.paper.columns} col · ${documentModel.paper.widthMm}×${documentModel.paper.heightMm} mm`,
+        universalPaper:documentModel.paper,
+        status:'provisional'
+      };
+    }
+    return null;
+  }
+  function mergeUniversalPaperIntoDocument(sourceDocument, universalPaper) {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const normalized = canvasApi?.normalizeDocument(sourceDocument);
+    if (!normalized || !universalPaper) return normalized || sourceDocument;
+    return canvasApi.normalizeDocument({ ...normalized, paper:{ ...normalized.paper, ...universalPaper } });
+  }
+  function labelPriceText(product = {}, priceFormat = 'full') {
+    const cash = fmt(product.price || 0);
+    if (!product.cardPrice || Number(product.cardPrice) === Number(product.price)) return cash;
+    const card = fmt(product.cardPrice);
+    if (priceFormat === 'abbr') return `Ef. ${cash} · Tj. ${card}`;
+    if (priceFormat === 'noLabel') return `${cash} · ${card}`;
+    if (priceFormat === 'cash') return cash;
+    return `Efectivo ${cash} · Tarjeta ${card}`;
+  }
+  async function prepareLabelPrintJob({ product, template = null, templateId = '', paperProfileId = '', quantity = 1, startSlot = 1, useStock = false, businessId = currentBusiness()?.id, usedSlots = [], sourceDocument = null } = {}) {
+    const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    if (!canvasApi) throw Object.assign(new Error('El motor de etiquetas no está disponible. Recarga CLICK 360.'), { code:'label-engine-unavailable' });
+    if (!product?.id) throw Object.assign(new Error('Producto no encontrado.'), { code:'label-product-missing' });
+    if (product.businessId && businessId && product.businessId !== businessId) throw Object.assign(new Error('El producto no pertenece al negocio activo.'), { code:'label-product-business-mismatch' });
+    const templates = labelTemplatesForBiz(businessId);
+    const resolvedTemplate = template || templates.find((item) => item.id === templateId) || templates.find((item) => item.isDefault) || null;
+    if (!resolvedTemplate && !sourceDocument) throw Object.assign(new Error('Plantilla no encontrada. Guarda un diseño primero.'), { code:'label-template-missing' });
+    const profile = resolveLabelPrintProfile(businessId, resolvedTemplate || {}, paperProfileId);
+    if (!profile?.universalPaper) throw Object.assign(new Error('Selecciona o configura un perfil de papel antes de imprimir.'), { code:'label-profile-missing' });
+    const quantityResult = resolveLabelCopyResult(quantity, product.qty, useStock);
+    if (!quantityResult.valid || quantityResult.count < 1) throw Object.assign(new Error(quantityResult.error || 'La cantidad debe ser un número entero válido.'), { code:'label-quantity-invalid' });
+    let documentModel = sourceDocument ? canvasApi.normalizeDocument(sourceDocument) : universalDocumentFromTemplate(resolvedTemplate);
+    documentModel = mergeUniversalPaperIntoDocument(documentModel, profile.universalPaper);
+    documentModel = canvasApi.normalizeDocument({ ...documentModel, quantity:quantityResult.count, startSlot:Math.max(1, Number(startSlot) || 1) });
+    const groups = [{ product, copies:quantityResult.count }];
+    const plan = canvasApi.buildPrintPlan(groups, documentModel, { startSlot:documentModel.startSlot, usedSlots });
+    if (!plan.valid || !plan.count || !plan.pages?.length) throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.'), { code:'label-plan-invalid' });
+    const paperValidation = window.CLICK360_SMART_PRINT?.validatePaperProfile(canvasApi.toPrintPaper(documentModel)) || { valid:true };
+    if (!paperValidation.valid) throw Object.assign(new Error(paperValidation.errors?.[0] || 'El perfil de papel no es válido.'), { code:'label-paper-invalid' });
+    return {
+      product,
+      template:resolvedTemplate,
+      profile,
+      document:documentModel,
+      plan,
+      groups,
+      quantity:quantityResult,
+      media:universalMediaSize(documentModel),
+      renderData:{ price:labelPriceText(product, resolvedTemplate?.priceFormat || 'full') },
+      fingerprint:canvasApi.planFingerprint(plan)
+    };
+  }
+  async function waitForLabelPrintNodeReady(node, timeoutMs = 8000) {
+    if (!node?.childElementCount) throw Object.assign(new Error('El plan de impresión no contiene contenido renderizable.'), { code:'label-render-empty' });
+    const waits = [...node.querySelectorAll('img')].map(async (image) => {
+      if (!image.complete) await new Promise((resolve, reject) => {
+        image.addEventListener('load', resolve, { once:true });
+        image.addEventListener('error', () => reject(Object.assign(new Error('No se pudo cargar la etiqueta.'), { code:'label-image-error' })), { once:true });
+      });
+      if (!image.naturalWidth || !image.naturalHeight) throw Object.assign(new Error('La imagen de la etiqueta está vacía.'), { code:'label-image-empty' });
+      if (typeof image.decode === 'function') await image.decode().catch(() => {});
+    });
+    if (document.fonts?.ready) waits.push(document.fonts.ready);
+    const ready = Promise.all(waits).then(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('La vista previa no quedó lista. Intenta de nuevo.'), { code:'label-render-timeout' })), timeoutMs));
+    await Promise.race([ready, timeout]);
+  }
+  async function executeCanonicalLabelPrint(preparedJob, providerId = 'system') {
+    const job = await buildUniversalLabelPrintNode(preparedJob.product, preparedJob.document, preparedJob.renderData);
+    await waitForLabelPrintNodeReady(job.node);
+    const result = await handoffPrint({ node:job.node.cloneNode(true), media:'label', mediaWidthMm:job.media.widthMm, mediaHeightMm:job.media.heightMm, widthMm:job.document.paper.widthMm, heightMm:job.document.paper.heightMm, copiesHandled:true, printPlan:job.plan, filename:`CLICK360_etiquetas_${slug(preparedJob.product.name || preparedJob.product.code)}_${today()}.pdf` }, providerId);
+    return { ...job, result, fingerprint:preparedJob.fingerprint };
+  }
+  function showQuickLabelPrintConfirm({ product, templates, template, quantity = 1, startSlot = 1 } = {}) {
+    return new Promise((resolve) => {
+      const optionHtml = templates.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === template?.id ? 'selected' : ''}>${escapeHtml(item.name)}${item.isDefault ? ' · Predeterminada' : ''}</option>`).join('');
+      showModal(`<div class="modalHeader"><div><h2>Imprimir etiqueta</h2><p class="fieldHint">Confirma la plantilla, cantidad y casilla. Imprimir y PDF usan el mismo documento.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+        <div class="formGrid quickPrintForm">
+          <div class="field full"><label>Producto</label><input readonly value="${escapeHtml(product?.name || 'Producto')} (${escapeHtml(product?.code || '')})"></div>
+          <div class="field full"><label>Plantilla</label><select id="quickLabelTemplate">${optionHtml}</select></div>
+          <div class="field"><label>Cantidad</label><input id="quickLabelQuantity" type="number" min="1" max="500" step="1" inputmode="numeric" value="${Math.max(1, Number(quantity) || 1)}"></div>
+          <div class="field"><label>Empezar en casilla</label><input id="quickLabelStartSlot" type="number" min="1" max="120" step="1" inputmode="numeric" value="${Math.max(1, Number(startSlot) || 1)}"></div>
+          <div class="field full"><small id="quickLabelPaperSummary" class="fieldHint"></small></div>
+        </div>
+        <div class="labelPrimaryActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn" id="quickLabelPdf">${icon('file-down')} Guardar PDF</button><button type="button" class="btn primary" id="quickLabelPrint">${icon('printer')} Imprimir</button></div>`);
+      const summary = () => {
+        const selected = templates.find((item) => item.id === $('#quickLabelTemplate')?.value) || template;
+        const profile = resolveLabelPrintProfile(currentBusiness()?.id, selected || {}, '');
+        const paper = profile?.universalPaper;
+        $('#quickLabelPaperSummary').textContent = paper ? `${profile.name || 'Perfil'} · ${paper.widthMm} × ${paper.heightMm} mm · ${paper.columns} columna${paper.columns === 1 ? '' : 's'}` : 'Esta plantilla necesita un perfil de papel antes de imprimir.';
+      };
+      const finish = (action = '') => {
+        const result = action ? {
+          confirmed:true,
+          action,
+          templateId:$('#quickLabelTemplate')?.value || template?.id || '',
+          quantity:Math.max(1, Number($('#quickLabelQuantity')?.value || 1)),
+          startSlot:Math.max(1, Number($('#quickLabelStartSlot')?.value || 1))
+        } : { confirmed:false };
+        closeModal();
+        resolve(result);
+      };
+      $('#quickLabelTemplate')?.addEventListener('change', summary);
+      $('#quickLabelPrint').onclick = () => finish('print');
+      $('#quickLabelPdf').onclick = () => finish('pdf');
+      $$('[data-close]').forEach((button) => { button.onclick = () => finish(); });
+      summary();
+    });
+  }
+  async function runQuickLabelPrintFlow({ product, templateId = '', quantity = 1, startSlot = 1 } = {}) {
+    const businessId = currentBusiness()?.id;
+    if (!businessId) return toast('Selecciona un negocio activo primero.', 'err');
+    if (!product?.id) return toast('Producto no encontrado.', 'err');
+    try {
+      const templates = labelTemplatesForBiz(businessId);
+      const template = templates.find((item) => item.id === templateId) || templates.find((item) => item.isDefault) || templates[0] || null;
+      if (!template) {
+        toast('Configura y guarda una plantilla primero. Usa el botón QR dorado.', 'ok');
+        return openLabelModal(product);
+      }
+      const confirmation = await showQuickLabelPrintConfirm({ product, templates, template, quantity, startSlot });
+      if (!confirmation.confirmed) return null;
+      const selectedTemplate = templates.find((item) => item.id === confirmation.templateId) || template;
+      const prepared = await prepareLabelPrintJob({ product, template:selectedTemplate, quantity:confirmation.quantity, startSlot:confirmation.startSlot, businessId });
+      return executeCanonicalLabelPrint(prepared, confirmation.action === 'pdf' ? 'pdf' : 'system');
+    } catch (error) {
+      console.warn('Quick label print failed:', error);
+      toast(error.message || 'No se pudo imprimir.', 'err');
+      return null;
+    }
+  }
+  async function buildUniversalLabelPrintNode(product, sourceDocument, renderData = {}) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     const documentModel = canvasApi.normalizeDocument(sourceDocument);
     const documentSnapshot = canvasApi.normalizeDocument(documentModel);
@@ -8589,7 +9064,7 @@ function parseMoney(value) {
           const labelCanvas = document.createElement('canvas');
           await canvasApi.renderLabelToCanvas(labelCanvas, documentSnapshot, {
             product: cell.item.product,
-            price: fmt(cell.item.product?.price || 0),
+            price: renderData.price || fmt(cell.item.product?.price || 0),
             sku: cell.item.product?.code || '',
             qrPayload: productPayload(cell.item.product)
           });
@@ -8737,7 +9212,18 @@ function parseMoney(value) {
     normalize:(input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.normalizeDocument(input),
     buildPlan:(product, input) => window.CLICK360_UNIVERSAL_LABEL_CANVAS?.buildPrintPlan([{ product, copies:input?.quantity || 1 }], input, { startSlot:input?.startSlot || 1 }),
     render:(product, input) => buildUniversalLabelPrintNode(product, input),
-    open:(product) => openLabelModal(product)
+    open:(product) => openLabelModal(product),
+    prepare:prepareLabelPrintJob,
+    execute:executeCanonicalLabelPrint,
+    quick:runQuickLabelPrintFlow
+  };
+  window.click360PrepareLabelPrintJob = prepareLabelPrintJob;
+  window.click360ExecuteCanonicalLabelPrint = executeCanonicalLabelPrint;
+  window.click360ReceiptTest = {
+    buildHtml:buildReceiptHtml,
+    buildPaperHtml:buildReceiptPaperHtml,
+    buildJob:receiptPrintJob,
+    flowSegments:receiptFlowSegments
   };
   function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
   function printPaperFromOptions(options = {}) {
@@ -9228,16 +9714,25 @@ function parseMoney(value) {
   }
 
   window.cancelSale = async function(saleId) {
-	  saleId = decodeActionId(saleId);
+		  saleId = decodeActionId(saleId);
     if (authUser().role !== 'owner') {
       return toast('Solo el propietario puede anular ventas', 'err');
     }
-    if(!confirm('\u00bfSeguro que deseas anular esta venta? Esto no se puede deshacer y devolver\u00e1 el stock.')) return;
     const businessId = currentBusiness()?.id;
     const sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(sale.status === 'cancelled') return toast('Esta venta ya fue anulada.', 'err');
     if(isBusinessDateClosed(sale.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular la venta.', 'err');
+    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
+    if (linkedLayaway && window.CLICK360_V16_DOMAIN?.layawayStatus(linkedLayaway) === 'picked_up') {
+      return toast('Un apartado entregado no se puede cancelar. Registra una devolución controlada.', 'err');
+    }
+    const linkedMovements = state.movements.filter(m => m.businessId === businessId && m.saleId === sale.id && m.status !== 'cancelled');
+    const closure = window.CLICK360_V16_DOMAIN?.linkedMovementClosureDecision(linkedMovements, (date) => isBusinessDateClosed(date, businessId));
+    if (closure && !closure.allowed) return toast(`No se puede cancelar: existe un cobro en caja cerrada (${closure.blocked[0]?.date || 'fecha protegida'}).`, 'err');
+    const operationId = `cancel:${sale.id}`;
+    if (window.CLICK360_V16_DOMAIN?.operationAlreadyApplied(state, operationId)) return toast('Esta cancelación ya fue registrada.');
+    if(!confirm('\u00bfSeguro que deseas anular esta venta? Esto no se puede deshacer y devolver\u00e1 el stock.')) return;
     const reason = prompt('Motivo de anulación:');
     if(!reason || !reason.trim()) return toast('Debes indicar el motivo de anulación', 'err');
     const previousState = cloneState(state);
@@ -9245,7 +9740,7 @@ function parseMoney(value) {
     // Devolver stock
 	    saleItems(sale).forEach(i => {
 	       const p = state.products.find(prod=>prod.id === i.id && prod.businessId === businessId);
-	       if(p) { p.qty += i.qty; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; }
+	       if(p) { const restored=Number(i.qty||0); p.stock+=restored; p.qty=p.stock; p.updatedAtMs = Date.now(); p.updatedAt = new Date().toISOString(); p.updatedBy = authUser().name; }
 	    });
 
 	    sale.status = 'cancelled';
@@ -9255,15 +9750,13 @@ function parseMoney(value) {
 	    sale.cancelReason = reason.trim();
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
-	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
-	    if (linkedLayaway) {
+		    if (linkedLayaway) {
 	      linkedLayaway.status = 'cancelled';
 	      linkedLayaway.cancelledAt = new Date().toISOString();
 	      linkedLayaway.cancelReason = reason.trim();
 	    }
 
     // Anular todos los movimientos ligados a la venta, incluyendo abonos.
-    const linkedMovements = state.movements.filter(m => m.businessId === businessId && m.saleId === sale.id && m.status !== 'cancelled');
     linkedMovements.forEach(mov => {
        mov.status = 'cancelled';
        mov.cancelledBy = authUser().name || 'Usuario';
@@ -9275,7 +9768,7 @@ function parseMoney(value) {
 
     state.movements.push({
        id:uid('mov'),
-	       operationId:`cancel:${sale.id}`,
+		       operationId,
 	       businessId,
        date:today(),
        when:nowLabel(),
@@ -9293,12 +9786,24 @@ function parseMoney(value) {
        createdAtMs:Date.now()
     });
 
-    addAudit('sale_cancelled', { saleId: sale.id, total: sale.total, reason: reason.trim(), linkedMovements: linkedMovements.length });
+	    state.operationLedger.push({ operationId, type:'sale_cancelled', businessId, entityId:sale.id, createdAt:new Date().toISOString() });
+	    addAudit(linkedLayaway ? 'layaway_cancelled' : 'sale_cancelled', { saleId: sale.id, layawayId:linkedLayaway?.id || '', total: sale.total, reason: reason.trim(), linkedMovements: linkedMovements.length, operationId, entityType:linkedLayaway ? 'layaway' : 'sale', entityId:linkedLayaway?.id || sale.id });
     const committed = await commitCriticalMutation(previousState, 'sale_cancelled', (next) =>
       next.sales.some((item) => item.id === sale.id && item.businessId === businessId && item.status === 'cancelled'));
     renderApp('reports');
     if (committed.ok) toast(committed.pending ? 'Anulación guardada; sincronización pendiente.' : 'Venta anulada y stock devuelto');
   };
+
+  function requestLayawayPayment(sale) {
+    return new Promise((resolve) => {
+      showModal(`<div class="modalHeader"><div><h2>Registrar abono</h2><p class="fieldHint">Saldo pendiente: ${fmt(sale.balance || 0)}</p></div><button class="closeBtn" data-close>×</button></div><div class="formGrid"><div class="field"><label>Monto</label><input id="layawayPaymentAmount" inputmode="decimal" autocomplete="off"></div><div class="field"><label>Método</label><select id="layawayPaymentMethod"><option value="Efectivo">Efectivo</option><option value="Tarjeta">Tarjeta</option><option value="Transferencia">Transferencia</option></select></div></div><div class="modalActions"><button class="btn silver" id="cancelLayawayPayment">Cancelar</button><button class="btn primary" id="confirmLayawayPayment">Registrar abono</button></div>`);
+      const finish = (value) => { closeModal(); resolve(value); };
+      $('#cancelLayawayPayment').onclick = () => finish(null);
+      $('[data-close]').onclick = () => finish(null);
+      $('#confirmLayawayPayment').onclick = () => finish({ amount:parseMoney($('#layawayPaymentAmount').value), method:$('#layawayPaymentMethod').value, operationId:uid('laypay') });
+      $('#layawayPaymentAmount').focus();
+    });
+  }
 
   window.payLayaway = async function(saleId) {
 	  saleId = decodeActionId(saleId);
@@ -9309,13 +9814,15 @@ function parseMoney(value) {
     if(!sale) return toast('Venta no encontrada', 'err');
     if(!['layaway','pending_payment'].includes(sale.status)) return toast('Esta cuenta no tiene saldo pendiente', 'err');
 
-    const amountStr = prompt(`Saldo pendiente: ${fmt(sale.balance)}\nIngrese el monto a abonar:`);
-    if(!amountStr) return;
-    const amount = parseMoney(amountStr);
-    if(!Number.isFinite(amount) || amount <= 0) return toast('Monto inválido', 'err');
-    if(amount > sale.balance) return toast('El abono no puede superar el saldo pendiente', 'err');
-	    const previousState = cloneState(state);
-	    const paymentId = uid('pay');
+	  const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
+	  const request = await requestLayawayPayment(sale);
+	  if (!request) return;
+	  const decision = window.CLICK360_V16_DOMAIN?.layawayPaymentDecision(linkedLayaway || sale, request.amount, request.method);
+	  if (!decision?.allowed) return toast(decision?.reason === 'amount_exceeds_balance' ? 'El abono no puede superar el saldo pendiente.' : 'No se pudo validar el abono.', 'err');
+	  const { amount, method } = decision;
+	  const paymentId = request.operationId;
+	  if (window.CLICK360_V16_DOMAIN?.operationAlreadyApplied(state, paymentId)) return toast('Este abono ya fue registrado.');
+		    const previousState = cloneState(state);
 
 	    sale.received = (sale.received || 0) + amount;
 	    sale.balance -= amount;
@@ -9326,13 +9833,12 @@ function parseMoney(value) {
 	      date: today(),
 	      when: nowLabel(),
 	      amount,
-	      method: 'Efectivo',
+		      method,
 	      createdBy: authUser().name
 	    });
 	    sale.updatedAt = new Date().toISOString();
 	    sale.updatedAtMs = Date.now();
-	    const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
-	    if (linkedLayaway) {
+		    if (linkedLayaway) {
 	      linkedLayaway.paid = sale.received;
 	      linkedLayaway.balance = sale.balance;
 	      linkedLayaway.payments = sale.payments.map((payment) => ({ ...payment }));
@@ -9349,17 +9855,18 @@ function parseMoney(value) {
       date: today(),
       when: nowLabel(),
       kind: 'ingreso',
-      amount: amount,
+	      amount,
       note: `Abono a ticket ${saleId}`,
       user: authUser().name,
       saleId: sale.id,
-      paymentMethod: 'Efectivo',
+	      paymentMethod: method,
       paymentType: 'receivable_payment',
 	      cashSessionId: currentOpenCashSession(businessId)?.id || '',
 	      createdAtMs: Date.now(),
       createdBy: authUser().name
     });
-    addAudit('sale_payment_received', { saleId: sale.id, amount, balance: sale.balance });
+	    state.operationLedger.push({ operationId:paymentId, type:'layaway_payment', businessId, entityId:linkedLayaway?.id || sale.id, createdAt:new Date().toISOString() });
+	    addAudit('layaway_payment_added', { saleId: sale.id, layawayId:linkedLayaway?.id || '', amount, method, balance: sale.balance, operationId:paymentId, entityType:'layaway', entityId:linkedLayaway?.id || sale.id });
     const committed = await commitCriticalMutation(previousState, 'sale_payment_received', (next) =>
       next.sales.some((item) => item.id === sale.id && item.businessId === businessId
         && item.payments?.some((payment) => payment.id === paymentId)));
@@ -9403,17 +9910,11 @@ function parseMoney(value) {
 
     const waBtn = $('#whatsappReminderBtn');
     if (waBtn) {
-       waBtn.onclick = () => {
-	         const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(s.customerPhone || '') || '';
-	         const bizName = business.name;
-         const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
-	         const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-	         window.open(url, '_blank', 'noopener,noreferrer');
-       };
+       waBtn.onclick = () => { sendLayawayWhatsAppReminder(s, business.name); };
     }
 
-		    $('#printReceiptBtn').onclick = () => printReceiptWithFallback(s, business, receiptTemplate, 'system');
-		    $('#downloadPdfBtn').onclick = () => handoffPrint(receiptJob(), 'pdf');
+		    $('#printReceiptBtn').onclick = async () => { await printReceiptWithFallback(s, business, receiptTemplate, 'system'); };
+		    $('#downloadPdfBtn').onclick = async () => { await printReceiptWithFallback(s, business, receiptTemplate, 'pdf'); };
 
     $('#downloadImgBtn').onclick = () => {
       downloadHtmlAsPng(receiptHtml, `Recibo_${s.id.slice(-6).toUpperCase()}.png`);
@@ -9524,15 +10025,36 @@ function parseMoney(value) {
     window.showSaleCompleteModal(id);
   };
 
+	  // Single source of truth for the Apartados/layaway WhatsApp reminder,
+	  // used both from the Apartados list (sendWhatsAppReminder) and the
+	  // post-sale confirmation modal (#whatsappReminderBtn below) -- previously
+	  // two near-identical copies. Reads only from the sale/layaway record
+	  // itself (customer, customerPhone, total, received, balance, dueDate),
+	  // never from a separate CRM/customer lookup, so this works identically
+	  // whether the customer came from a prior sale or was created directly by
+	  // this Apartado. If the phone can't be confidently normalized to a real
+	  // WhatsApp number, this shows a clear toast instead of opening a dead
+	  // link that silently drops the message.
+	  function buildLayawayWhatsAppMessage(sale, businessName) {
+	    return `Hola ${sale.customer}, te saludamos de ${businessName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(sale.total)}, con un abono de ${fmt(sale.received)} y un saldo pendiente de ${fmt(sale.balance)}. La fecha límite de pago y retiro es el ${sale.dueDate || ''}. Muchas gracias.`;
+	  }
+	  function sendLayawayWhatsAppReminder(sale, businessName) {
+	    const text = buildLayawayWhatsAppMessage(sale, businessName);
+	    const link = window.CLICK360_V16_DOMAIN?.buildWhatsAppReminderLink?.(sale.customerPhone || '', text);
+	    if (!link?.valid) {
+	      toast(link?.reason === 'phone_missing'
+	        ? 'Este cliente no tiene un teléfono registrado. Corrígelo en el detalle del Apartado antes de enviar el recordatorio.'
+	        : 'El teléfono registrado no parece completo (falta el código de país o un dígito). Corrígelo antes de enviar el recordatorio por WhatsApp.', 'err');
+	      return false;
+	    }
+	    window.open(link.url, '_blank', 'noopener,noreferrer');
+	    return true;
+	  }
 	  window.sendWhatsAppReminder = function(id) {
 		  id = decodeActionId(id);
 	    const s = salesForBiz().find(x => x.id === id);
     if (!s) return;
-	    const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(s.customerPhone || '') || '';
-    const bizName = currentBusiness().name;
-    const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
-	    const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
+	    sendLayawayWhatsAppReminder(s, currentBusiness().name);
   };
 
   window.viewDailyReport = function(id) {
@@ -9919,7 +10441,7 @@ function parseMoney(value) {
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
-	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','invoices','crm','reminders','access','legal','printing','tables','kitchen','bar','finance','help'].includes(h)) renderApp(h); });
+	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','activity','invoices','crm','reminders','access','legal','printing','tables','kitchen','bar','logistics','finance','help'].includes(h)) renderApp(h); });
   if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
   renderLogin();
 })();

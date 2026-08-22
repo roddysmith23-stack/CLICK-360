@@ -266,17 +266,95 @@
     if (!digits) return '';
     if (digits.startsWith('00')) digits = digits.slice(2);
     if (digits.startsWith('0')) digits = countryCode + digits.slice(1);
+    // A cashier who types the bare 9-digit subscriber number (no leading 0,
+    // no country code -- e.g. "987654321" instead of "0987654321") used to
+    // pass through unchanged, producing a WhatsApp link with an incomplete
+    // number. WhatsApp then can't resolve it to an exact contact and falls
+    // back to a "choose a contact" / invalid-number screen, which drops the
+    // prefilled message text -- this is the actual root cause of "WhatsApp
+    // opens but the message is gone" for Apartados reminders. Detect that
+    // shape (exactly 9 digits, doesn't already carry the country code) and
+    // prepend it, same as the leading-0 case above.
+    if (digits.length === 9 && !digits.startsWith(countryCode)) digits = countryCode + digits;
     return digits;
   }
 
+  // Conservative E.164-shaped check: correct-looking length and, when a
+  // country code is expected, that it's actually present. This exists to
+  // catch the specific "phone is missing/incomplete" failure mode before a
+  // WhatsApp link is ever built, not to fully validate arbitrary
+  // international numbers.
+  function isValidWhatsAppPhone(normalizedDigits, countryCode = '593') {
+    const digits = String(normalizedDigits || '');
+    if (!/^\d+$/.test(digits)) return false;
+    if (digits.length < 11 || digits.length > 15) return false;
+    if (countryCode && !digits.startsWith(countryCode)) return false;
+    return true;
+  }
+
+  // Single source of truth for building a WhatsApp deep link with a
+  // prefilled message. Returns { valid:false, reason } instead of a broken
+  // URL when the phone can't be confidently normalized, so callers can show
+  // a clear "fix the phone number" message instead of opening a dead link.
+  function buildWhatsAppReminderLink(rawPhone, text, countryCode = '593') {
+    const normalized = normalizePhone(rawPhone, countryCode);
+    if (!normalized) return { valid:false, reason:'phone_missing', normalized:'' };
+    if (!isValidWhatsAppPhone(normalized, countryCode)) return { valid:false, reason:'phone_invalid', normalized };
+    return { valid:true, reason:'ok', normalized, url:`https://wa.me/${normalized}?text=${encodeURIComponent(String(text || ''))}` };
+  }
+
   function layawayStatus(layaway = {}, nowMs = Date.now()) {
-    if (['cancelled', 'refunded', 'disputed', 'picked_up'].includes(layaway.status)) return layaway.status;
+    if (['cancelled', 'refunded', 'disputed', 'picked_up', 'ready_for_pickup'].includes(layaway.status)) return layaway.status;
     const total = Math.max(0, Number(layaway.total) || 0);
     const paid = Math.max(0, Number(layaway.paid ?? layaway.received) || 0);
     if (paid >= total && total > 0) return layaway.pickedUpAt ? 'picked_up' : 'paid';
     const dueAt = timestampMs(layaway.pickupDueAt || layaway.dueAt || layaway.dueDate);
     if (dueAt && nowMs > dueAt) return 'expired';
     return paid > 0 ? 'partially_paid' : 'active';
+  }
+
+  function layawayPaymentDecision(layaway = {}, amountValue = 0, methodValue = 'Efectivo') {
+    const status = layawayStatus(layaway);
+    const balance = roundMoney(Math.max(0, Number(layaway.balance ?? (Number(layaway.total || 0) - Number(layaway.paid || 0))) || 0));
+    const amount = roundMoney(amountValue);
+    const method = String(methodValue || '').trim();
+    if (['cancelled', 'refunded', 'picked_up'].includes(status)) return { allowed:false, reason:`layaway_${status}`, balance, amount, method };
+    if (!Number.isFinite(amount) || amount <= 0) return { allowed:false, reason:'invalid_amount', balance, amount, method };
+    if (amount > balance) return { allowed:false, reason:'amount_exceeds_balance', balance, amount, method };
+    if (!['Efectivo', 'Tarjeta', 'Transferencia'].includes(method)) return { allowed:false, reason:'invalid_payment_method', balance, amount, method };
+    return { allowed:true, reason:'ok', balance, amount, method, nextBalance:roundMoney(balance - amount) };
+  }
+
+  function layawayTransitionDecision(layaway = {}, nextStatus = '') {
+    const current = layawayStatus(layaway);
+    const balance = roundMoney(Math.max(0, Number(layaway.balance ?? (Number(layaway.total || 0) - Number(layaway.paid || 0))) || 0));
+    const transitions = {
+      paid: new Set(['ready_for_pickup', 'picked_up']),
+      ready_for_pickup: new Set(['picked_up'])
+    };
+    if (balance > 0) return { allowed:false, reason:'balance_pending', current, nextStatus, balance };
+    if (!transitions[current]?.has(nextStatus)) return { allowed:false, reason:'invalid_transition', current, nextStatus, balance };
+    return { allowed:true, reason:'ok', current, nextStatus, balance };
+  }
+
+  function linkedMovementClosureDecision(movements = [], isClosed = () => false) {
+    const blocked = (Array.isArray(movements) ? movements : [])
+      .filter((movement) => movement?.status !== 'cancelled' && isClosed(movement?.date, movement))
+      .map((movement) => ({ id:String(movement.id || ''), date:String(movement.date || ''), cashSessionId:String(movement.cashSessionId || '') }));
+    return { allowed:blocked.length === 0, reason:blocked.length ? 'linked_closed_cash_session' : 'ok', blocked };
+  }
+
+  function operationAlreadyApplied(state = {}, operationId = '') {
+    const id = String(operationId || '');
+    if (!id) return false;
+    return (Array.isArray(state.operationLedger) && state.operationLedger.some((entry) => entry?.operationId === id))
+      || (Array.isArray(state.movements) && state.movements.some((entry) => entry?.operationId === id))
+      || (Array.isArray(state.auditLogs) && state.auditLogs.some((entry) => entry?.details?.operationId === id));
+  }
+
+  function cashAmountForPayment(amountValue, methodValue = '') {
+    const method = String(methodValue || '').trim();
+    return method === 'Efectivo' ? roundMoney(Math.max(0, Number(amountValue) || 0)) : 0;
   }
 
   function formatBusinessDate(value, locale = 'es-EC', timeZone = 'America/Guayaquil', includeTime = true) {
@@ -325,7 +403,14 @@
     calculateCart,
     taxLegend,
     normalizePhone,
+    isValidWhatsAppPhone,
+    buildWhatsAppReminderLink,
     layawayStatus,
+    layawayPaymentDecision,
+    layawayTransitionDecision,
+    linkedMovementClosureDecision,
+    operationAlreadyApplied,
+    cashAmountForPayment,
     formatBusinessDate,
     sha256,
     randomToken

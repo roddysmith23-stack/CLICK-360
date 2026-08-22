@@ -1,0 +1,24 @@
+{
+  "hosting": {
+    "site": "click360-staging-7620168025",
+    "public": "dist",
+    "ignore": [
+      "firebase.staging.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|css)",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
+      },
+      {
+        "source": "**",
+        "headers": [{ "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" }]
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  }
+}

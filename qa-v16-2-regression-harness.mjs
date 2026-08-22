@@ -32,7 +32,7 @@ assert(firebase.includes("setPendingUser(user, data, 'worker_module_upgrade')"),
 
 assert(app.includes("toast('Guardando el cambio de forma segura...', 'ok')"));
 assert(!app.includes('Cambio guardado en la nube. El modo sin conexion no esta disponible'), 'online-only mode never announces success before commit');
-assert(firebase.includes("pushLocalToFirestore('online_only_change').then"));
+assert(firebase.includes("onlineCommit('online_only_change').then") && firebase.includes('MODULAR_MODE ? pushModularState : pushLocalToFirestore'));
 assert(app.includes("window.addEventListener('click360-online-only-commit'"));
 assert(app.includes('onlineOnlyCommitCheckpoints.get(key)') && app.includes('checkpoint.previousState'), 'failed cloud-only writes restore only their correlated confirmed state');
 assert(app.includes('function localStorageReady(') && app.includes("mode: navigator.onLine ? 'online_only_safe' : 'unavailable'"));
@@ -109,8 +109,8 @@ for (const source of [app, firebase, html, worker]) {
   assert(!source.includes('mvp-launch-v16-1-2-r1'));
 }
 assert(!styles.includes('mvp-launch-v16-2-p0-r1'), 'CSS image assets must not retain the previous P0 cache version');
-assert(styles.includes('assets/logo.png?v=commercial-1-0-5-r20') && styles.includes('assets/banner-click360-home.png?v=commercial-1-0-5-r20'));
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r20'"));
+assert(styles.includes('assets/logo.png?v=commercial-1-0-5-stability-ops-r1') && styles.includes('assets/banner-click360-home.png?v=commercial-1-0-5-stability-ops-r1'));
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-stability-ops-r1'"));
 assert(html.includes('<link rel="canonical" href="https://click-360.web.app/"'));
 assert(robots.includes('https://click-360.web.app/sitemap.xml'));
 assert(sitemap.includes('<loc>https://click-360.web.app/</loc>'));

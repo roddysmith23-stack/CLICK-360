@@ -8,8 +8,8 @@ const styles = fs.readFileSync('styles.css', 'utf8');
 const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
-const RELEASE = '1.0.5';
-const ASSET = 'commercial-1-0-5-r20';
+const RELEASE = '1.0.5-stability.1';
+const ASSET = 'commercial-1-0-5-stability-ops-r1';
 
 function addFinanceEntry(state, kind, businessId, entry) {
   assert(['payments', 'loans', 'envelopes', 'goals'].includes(kind), 'finance kind is supported');

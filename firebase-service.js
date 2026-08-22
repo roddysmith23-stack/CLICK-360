@@ -12,7 +12,8 @@
   }
 
   // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'commercial-1-0-5-r20-recovery1';
+			  const APP_ASSET_VERSION = 'commercial-1-0-5-stability-ops-r1';
+	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
   try {
@@ -40,6 +41,9 @@
   let BUSINESS_ID = null;
   let STATE_DOC = null;
   let ACTIVE_CONTEXT = null;
+  let MODULAR_GATEWAY = null;
+  let MODULAR_BASELINE = null;
+  let MODULAR_MODE = false;
   let AUTH_EPOCH = 0;
 	  const tenantGuard = window.CLICK360_P0_TENANT_GUARD.createSyncGate();
 
@@ -154,7 +158,7 @@
 	  function defaultWorkerPermissions(role = 'worker') {
 	    const cashier = role === 'cashier';
 	    const inventory = role === 'inventory';
-	    return {
+	    const legacy = {
 	      inventory: { view: !cashier, create: !cashier, edit: !cashier, delete: role === 'worker', export: false, manage: false },
 	      sales: { view: !inventory, create: !inventory, edit: role === 'worker', delete: false, approve: false, export: false, manage: false },
 	      cash: { view: !inventory, create: !inventory, edit: !inventory, delete: false, approve: false, export: false, manage: false },
@@ -164,6 +168,13 @@
 	      settings: { view: false, edit: false, manage: false },
 	      suppliers: { view: role === 'worker', create: false, edit: false, delete: false, manage: false },
 	      workers: { view: false, create: false, edit: false, delete: false, manage: false }
+	    };
+	    const modular = window.CLICK360_WORKER_DATA_BOUNDARY?.normalizePermissionMap?.(role) || {};
+	    return {
+	      ...legacy,
+	      ...modular,
+	      sales: { ...(modular.sales || {}), ...legacy.sales },
+	      settings: { ...(modular.settings || {}), ...legacy.settings }
 	    };
 	  }
 	  function resolveEffectiveReadOnly(accessState = {}) {
@@ -201,6 +212,11 @@
 			    if (!AUTH_APPROVED) return { allowed: false, reason: 'auth_not_ready' };
 			    if (isEffectiveReadOnly()) return { allowed: false, reason: 'read_only' };
 			    if (legacyMigrationRequired()) return { allowed: false, reason: 'legacy_migration_required' };
+			    if (MODULAR_MODE) {
+			      if (!tenantGuard.canWrite(ACTIVE_CONTEXT)) return { allowed:false, reason:'tenant_guard_not_ready' };
+			      if (!navigator.onLine) return { allowed:false, reason:'offline_online_only' };
+			      return { allowed:true, reason:'modular_server_confirmed_boundary' };
+			    }
 			    const syncState = getSyncState({ cleanup: true, reason: 'write_gate' });
 			    if (syncState.status === 'real_conflict') return { allowed: false, reason: 'sync_conflict', syncState };
 			    const pendingGate = pendingRemoteSyncGateStatus(syncState);
@@ -423,7 +439,7 @@
 	      && window.click360User.uid === ACTIVE_CONTEXT.authUid
 	      && window.click360User.ownerId === ACTIVE_CONTEXT.ownerId
 	      && BUSINESS_ID === ACTIVE_CONTEXT.businessId
-	      && !!STATE_DOC;
+	      && (MODULAR_MODE ? !!MODULAR_GATEWAY : !!STATE_DOC);
 	  }
 	  function legacyMigrationRequired() {
 	    return tenantGuard.snapshot().mode === window.CLICK360_P0_TENANT_GUARD.MODES.LEGACY_MIGRATION_REQUIRED;
@@ -585,14 +601,20 @@
 			  };
 		  const TELEMETRY_EVENTS = new Set([
 		    'login', 'bootstrap', 'cache_failure', 'online_only', 'sync', 'plan_request',
-		    'invitation', 'cash_open', 'cash_close', 'template_save_failure'
+		    'invitation', 'cash_open', 'cash_close', 'template_save_failure',
+		    // Phase 3.2 Workers rollout: failed invitations, failed worker login,
+		    // permission denials, stock errors, cross-tenant denials, and seat
+		    // exhaustion, so the pilot can be observed without reading raw logs.
+		    'worker_invite_failed', 'worker_login_failed', 'worker_permission_denied',
+		    'worker_stock_error', 'worker_cross_tenant_denied', 'worker_seat_exhausted', 'seat_request'
 		  ]);
 		  const TELEMETRY_ONCE = new Set();
-		  async function recordTelemetry(eventType, details = {}) {
+		  async function recordTelemetry(eventType, details = {}, contextOverride = null) {
 		    const user = auth.currentUser;
-		    const context = ACTIVE_CONTEXT;
+		    const context = contextOverride || ACTIVE_CONTEXT;
 		    if (!user || !TELEMETRY_EVENTS.has(eventType)) return false;
 		    const businessId = context?.businessId || user.uid;
+		    const ownerId = context?.ownerId || businessId;
 		    const tenantKey = context?.tenantKey || tenantKeyFor(user.uid, user.uid);
 		    if (businessId === 'demo-click360' || tenantKey.includes('demo-click360')) return false;
 		    const eventRef = db.collection('telemetryEvents').doc();
@@ -604,9 +626,10 @@
 		      eventId: eventRef.id,
 		      eventType,
 		      uidHash: String(uidHash || '').slice(0, 16),
+		      ownerId,
 		      businessId,
 		      tenantKey,
-		      appVersion: '1.0.5',
+		      appVersion: FIRESTORE_SCHEMA_VERSION,
 		      requestId: String(details.requestId || window.crypto?.randomUUID?.() || eventRef.id).slice(0, 64),
 		      mode: String(details.mode || window.click360AccessState?.mode || syncStatus.status || '').slice(0, 40),
 		      errorCode: String(details.errorCode || '').replace(/[^a-z0-9_./-]/gi, '').slice(0, 80),
@@ -737,6 +760,7 @@
 	      workerLimit: Number(data.workerLimit || 2),
 	      permissions: data.permissions && typeof data.permissions === 'object' ? data.permissions : undefined,
 	      invitationHash: data.invitationHash || '',
+	      businessUnitId: data.businessUnitId || '',
 	      cachedAtMs: Date.now()
 	    };
 	    safeStorageSet(approvedIdentityStorageKey(user.uid), JSON.stringify(safe));
@@ -752,17 +776,116 @@
 	    if (!safeStorageGet(currentKey)) safeStorageSet(currentKey, JSON.stringify(cached));
 	    return cached;
 	  }
-	  function applyApprovedIdentity(user, data, source = "remote", expectedEpoch = AUTH_EPOCH) {
+	  async function applyWorkerBoundaryIdentity(user, data, source = "remote", expectedEpoch = AUTH_EPOCH) {
+	    const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	    const projectId = window.CLICK360_FIREBASE_CONFIG?.projectId || '';
+	    const ownerId = String(data.ownerId || '');
+	    // Phase 3.2 gradual rollout: staging/demo stay always-enabled; in
+	    // production a tenant is enabled only by an explicit, admin-managed
+	    // featureFlags/workers doc (never client-writable). This read only
+	    // happens when the project-level gate alone doesn't already allow it,
+	    // so staging behavior and cost are unchanged.
+	    let workersFlag = null;
+	    if (!boundary?.enabledForProject?.(projectId) && ownerId) {
+	      try {
+	        const flagSnapshot = await db.collection('businesses').doc(ownerId).collection('featureFlags').doc('workers').get({ source:'server' });
+	        workersFlag = flagSnapshot.exists ? flagSnapshot.data() : null;
+	      } catch (_error) {
+	        workersFlag = null;
+	      }
+	    }
+	    if (!boundary?.workersEnabledForTenant?.(projectId, workersFlag)) {
+	      setPendingUser(user, data, 'worker_module_upgrade');
+	      return false;
+	    }
+	    const businessUnitId = String(data.businessUnitId || data.activeBusinessId || '');
+	    if (!ownerId || !businessUnitId || ownerId === user.uid || ownerId === 'demo-click360') {
+	      setPendingUser(user, data, 'worker_boundary_not_assigned');
+	      return false;
+	    }
+	    const rawRole = String(data.role || 'worker');
+	    const role = boundary.normalizedRole(rawRole);
+	    const permissions = data.permissions && typeof data.permissions === 'object'
+	      ? data.permissions : defaultWorkerPermissions(data.role);
+	    let gateway;
+	    let modularState;
+	    try {
+	      gateway = boundary.createFirestoreGateway({
+	        db, firebase, user, ownerUid:ownerId, businessId:businessUnitId,
+	        role, permissions, projectId
+	      });
+	      modularState = await gateway.pull();
+	    } catch (error) {
+	      console.warn('Frontera modular de trabajador no disponible:', error.code || error.message);
+	      const telemetryContext = {
+	        ownerId, businessId:businessUnitId,
+	        tenantKey:boundary.identity(ownerId, businessUnitId).tenantKey
+	      };
+	      const isMembershipMismatch = /membres/i.test(error?.message || '');
+	      recordTelemetry(isMembershipMismatch ? 'worker_cross_tenant_denied' : 'worker_login_failed', {
+	        errorCode:error?.code || 'worker_boundary_not_ready'
+	      }, telemetryContext).catch(() => {});
+	      setPendingUser(user, data, 'worker_boundary_not_ready');
+	      return false;
+	    }
+	    if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
+	    window.click360User = {
+	      uid:user.uid,
+	      email:user.email || data.email || '',
+	      role:rawRole,
+	      name:data.name || user.displayName || (user.email ? user.email.split('@')[0] : 'Trabajador'),
+	      photoURL:data.photoURL || user.photoURL || '',
+	      status:'active',
+	      approved:true,
+	      businessLimit:1,
+	      workerLimit:0,
+	      ownerId,
+	      businessUnitId,
+	      isOwner:false,
+	      permissions,
+	      invitationHash:data.invitationHash || '',
+	      source,
+	      access:publishAccessState({ mode:'member', plan:'base', readOnly:false, source:'approvedUsers' })
+	    };
+	    ACTIVE_CONTEXT = Object.freeze({
+	      authUid:user.uid,
+	      ownerUid:ownerId,
+	      ownerId,
+	      businessId:businessUnitId,
+	      tenantKey:boundary.identity(ownerId, businessUnitId).tenantKey,
+	      schemaVersion:10,
+	      dataBoundaryVersion:boundary.SCHEMA_VERSION,
+	      mode:'modular'
+	    });
+	    BUSINESS_ID = businessUnitId;
+	    STATE_DOC = null;
+	    MODULAR_GATEWAY = gateway;
+	    MODULAR_BASELINE = JSON.parse(JSON.stringify(modularState));
+	    MODULAR_MODE = true;
+	    tenantGuard.begin(ACTIVE_CONTEXT);
+	    window.click360SetTenantContext(ACTIVE_CONTEXT, { deferLocalLoad:true });
+	    modularState.identity = {
+	      ownerUid:ownerId, ownerId, businessId:businessUnitId,
+	      tenantKey:ACTIVE_CONTEXT.tenantKey, schemaVersion:10
+	    };
+	    window.click360ApplyTenantState(modularState, ACTIVE_CONTEXT);
+	    tenantGuard.allow(ACTIVE_CONTEXT);
+	    PULL_COMPLETE = true;
+	    INITIAL_TENANT_SEED_REQUIRED = false;
+	    cacheApprovedIdentity(user, window.click360User);
+	    return true;
+	  }
+
+	  async function applyApprovedIdentity(user, data, source = "remote", expectedEpoch = AUTH_EPOCH) {
 	    if (!isCurrentAuthEpoch(user, expectedEpoch)) return false;
 	    const ownerId = data.ownerId || user.uid;
-	    const allowedRoles = ['owner', 'worker', 'cashier', 'inventory'];
+	    const allowedRoles = ['owner', 'worker', 'seller', 'cashier', 'inventory', 'supervisor', 'admin'];
 	    const role = allowedRoles.includes(data.role)
 	      ? data.role
 	      : ((data.isOwner === true || ownerId === user.uid) ? 'owner' : null);
 	    if (!role || (role === 'owner' && ownerId !== user.uid) || (role !== 'owner' && ownerId === user.uid)) return false;
 	    if (role !== 'owner') {
-	      setPendingUser(user, data, 'worker_module_upgrade');
-	      return false;
+	      return applyWorkerBoundaryIdentity(user, data, source, expectedEpoch);
 	    }
 	    // CLICK 360 stores one protected snapshot at the owner's canonical root.
 	    // A different approvedUsers.businessId would not be authorized by the
@@ -1133,7 +1256,7 @@
 	          policies: settings.policies && typeof settings.policies === 'object' ? settings.policies : {},
 	          legal: settings.legal && typeof settings.legal === 'object' ? settings.legal : {},
               legacyDataBusinessId: String(settings.legacyDataBusinessId || ''),
-	          appVersion: '1.0.5'
+	          appVersion: '1.0.5-stability.1'
 	        },
 	        updatedAtMs: Number(state.updatedAtMs || Date.now()),
 	        updatedAt: state.updatedAt || new Date().toISOString()
@@ -1322,7 +1445,8 @@
 		    const approved = db.collection('approvedUsers').doc(user.uid);
 		    const normalizedEmail = String(user.email || '').trim().toLowerCase();
 		    const trustedNowMs = await trustedAuthServerNowMs(user);
-		    await db.runTransaction(async (transaction) => {
+		    try {
+	    await db.runTransaction(async (transaction) => {
 	      const snapshot = await transaction.get(invite);
 	      if (!snapshot.exists) throw new Error('La invitacion no existe o fue eliminada.');
 	      const data = snapshot.data() || {};
@@ -1332,7 +1456,7 @@
 	      if (data.status !== 'pending') throw new Error('La invitacion ya fue utilizada, revocada o expiro.');
 		      const createdAtMs = data.createdAt?.toMillis?.() || 0;
 		      if (!createdAtMs || (trustedNowMs && trustedNowMs >= createdAtMs + Number(data.expiresAfterDays || 7) * 24 * 60 * 60 * 1000)) throw new Error('La invitacion expiro. Solicita una nueva.');
-	      const role = ['worker', 'cashier', 'inventory'].includes(data.role) ? data.role : 'worker';
+	      const role = ['worker', 'seller', 'cashier', 'inventory', 'supervisor', 'admin'].includes(data.role) ? data.role : 'worker';
 	      const permissions = data.permissions && typeof data.permissions === 'object' ? data.permissions : defaultWorkerPermissions(role);
 	      const memberData = {
 	        uid: user.uid,
@@ -1345,10 +1469,56 @@
 	        businessId: ownerId,
 	        tenantKey: tenantKeyFor(ownerId, ownerId),
 	        invitationHash: computedHash,
+	        businessUnitId: String(data.businessUnitId || ''),
 	        acceptedAt: firebase.firestore.FieldValue.serverTimestamp(),
 	        lastAccessAt: firebase.firestore.FieldValue.serverTimestamp()
 	      };
+	      // P0 commercial rule: this business includes at most 2 active workers
+	      // (excluding the owner) unless additional paid seats were purchased.
+	      // The entitlement doc is NOT read here on purpose: a first-time acceptor
+	      // is neither the owner nor an active member yet, so firestore.rules'
+	      // read rule for entitlement/seats would reject that read immediately
+	      // (reads are checked against currently-committed state, before this
+	      // transaction's writes exist). FieldValue.increment(1) needs no prior
+	      // read; the write-time rule (seatConsumedForSelf) independently
+	      // re-verifies capacity and the real member-activation transition at
+	      // commit, when the full transaction IS visible to the rules engine.
+	      const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	      let seatRef = null;
+	      if (data.businessUnitId) {
+	        const boundaryIdentity = boundary?.identity?.(ownerId, data.businessUnitId);
+	        if (!boundaryIdentity) throw new Error('La invitación no tiene una frontera modular válida.');
+	        seatRef = db.collection('businesses').doc(ownerId).collection('businessUnits')
+	          .doc(data.businessUnitId).collection('entitlement').doc('seats');
+	      }
 	      transaction.set(member, memberData);
+	      if (data.businessUnitId) {
+	        const boundaryIdentity = boundary.identity(ownerId, data.businessUnitId);
+	        const unitMember = db.collection('businesses').doc(ownerId).collection('businessUnits')
+	          .doc(data.businessUnitId).collection('members').doc(user.uid);
+	        transaction.set(unitMember, {
+	          id:user.uid,
+	          uid:user.uid,
+	          email:normalizedEmail,
+	          name:memberData.name,
+	          role,
+	          permissions,
+	          status:'active',
+	          ...boundaryIdentity,
+	          module:'members',
+	          recordVersion:1,
+	          createdBy:user.uid,
+	          updatedBy:user.uid,
+	          createdAt:firebase.firestore.FieldValue.serverTimestamp(),
+	          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+	        });
+	        transaction.update(seatRef, {
+	          activeMembers:firebase.firestore.FieldValue.increment(1),
+	          lastActionUid:user.uid,
+	          updatedBy:user.uid,
+	          updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+	        });
+	      }
 	      transaction.set(approved, {
 	        uid: user.uid,
 	        email: normalizedEmail,
@@ -1360,6 +1530,7 @@
 	        businessId: ownerId,
 	        tenantKey: tenantKeyFor(ownerId, ownerId),
 	        invitationHash: computedHash,
+	        businessUnitId: String(data.businessUnitId || ''),
 	        status: 'active',
 	        approved: true,
 	        isOwner: false,
@@ -1371,6 +1542,15 @@
 	      });
 	      transaction.update(invite, { status: 'accepted', acceptedBy: user.uid, acceptedAt: firebase.firestore.FieldValue.serverTimestamp(), consumed: true });
 	    });
+	    } catch (transactionError) {
+	      const acceptTelemetryContext = { ownerId, businessId:ownerId, tenantKey:tenantKeyFor(ownerId, ownerId) };
+	      if (transactionError?.code === 'permission-denied') {
+	        recordTelemetry('worker_seat_exhausted', { errorCode:'permission-denied' }, acceptTelemetryContext).catch(() => {});
+	        throw new Error('No hay cupos de trabajador disponibles para este negocio. Pide al dueño que compre un cupo adicional o libere uno.');
+	      }
+	      recordTelemetry('worker_login_failed', { errorCode:String(transactionError?.code || 'accept_failed').slice(0, 80) }, acceptTelemetryContext).catch(() => {});
+	      throw transactionError;
+	    }
 		    clearInvitationIntent({ cleanUrl: true });
 		    clearPublicAuthIntent();
 			    recordTelemetryOnce(`invite-accept:${ownerId}:${computedHash}:${user.uid}`, 'invitation', { mode: 'accepted' });
@@ -1422,7 +1602,7 @@
           setPendingUser(user, data, 'tenant_configuration_invalid');
           return false;
         }
-        return applyApprovedIdentity(user, data, 'approvedUsers', expectedEpoch);
+        return await applyApprovedIdentity(user, data, 'approvedUsers', expectedEpoch);
 	      }
 
 	      APPROVED_LOOKUP_STATUS = data ? 'record_found' : 'not_found';
@@ -1433,7 +1613,7 @@
 	      const cached = getCachedApprovedIdentity(user);
 	      if (cached && (!navigator.onLine || error.code === 'unavailable')) {
 	        APPROVED_LOOKUP_STATUS = 'offline_cache';
-        const applied = applyApprovedIdentity(user, cached, 'offline_cache', expectedEpoch);
+	        const applied = await applyApprovedIdentity(user, cached, 'offline_cache', expectedEpoch);
         if (applied) setSyncStatus('offline', 'Trabajando sin internet con la última aprobación guardada.');
         return applied;
 	      }
@@ -1696,7 +1876,7 @@
       status: 'pending',
       notes: String(selection.notes || '').slice(0, 500),
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-	      appVersion: '1.0.5'
+	      appVersion: FIRESTORE_SCHEMA_VERSION
 	    });
 	    recordTelemetry('plan_request', { requestId: requestRef.id, mode: plan }).catch(() => {});
 	    return { requestId: requestRef.id, requestCode, plan, period, price, currency: 'USD' };
@@ -1721,10 +1901,48 @@
         locale: String(acceptance.locale || navigator.language || 'es-EC').slice(0, 20),
         source: String(acceptance.source || 'app').slice(0, 40),
         acceptedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        appVersion: '1.0.5'
+	        appVersion: FIRESTORE_SCHEMA_VERSION
       });
     });
     return { acceptanceId, termsVersion };
+  };
+
+  function safeAuditDelta(value = {}) {
+    const source = value && typeof value === 'object' ? value : {};
+    const result = {};
+    if (source.status != null) result.status = String(source.status).slice(0, 40);
+    if (Number.isFinite(Number(source.amount))) result.amount = Number(source.amount);
+    if (Number.isFinite(Number(source.stock))) result.stock = Number(source.stock);
+    if (source.role != null) result.role = String(source.role).slice(0, 40);
+    return result;
+  }
+  window.click360AppendAuditEvent = async function(event = {}) {
+    const user = auth.currentUser;
+    const context = ACTIVE_CONTEXT;
+    if (!user || !context || context.businessId === 'demo-click360') throw new Error('Sesion de auditoria no verificada.');
+    const eventId = String(event.id || db.collection('_').doc().id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80);
+	    if (MODULAR_MODE) return { eventId, pending:true };
+    const details = event.details && typeof event.details === 'object' ? event.details : {};
+    const payload = {
+      eventId,
+      businessId: context.businessId,
+      tenantKey: context.tenantKey,
+      actorUid: user.uid,
+      actorRole: String(event.actorRole || window.click360User?.role || 'owner').slice(0, 40),
+      actorName: String(event.createdBy || user.displayName || 'Usuario').slice(0, 120),
+      action: String(event.action || '').replace(/[^a-z0-9_:-]/gi, '').slice(0, 80),
+      entityType: String(event.entityType || details.entityType || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 40),
+      entityId: String(event.entityId || details.entityId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 100),
+      correlationId: String(event.correlationId || details.correlationId || details.operationId || eventId).replace(/[^a-zA-Z0-9_:-]/g, '').slice(0, 100),
+      amount: Number.isFinite(Number(details.amount ?? details.total)) ? Number(details.amount ?? details.total) : 0,
+      status: String(details.status || '').slice(0, 40),
+      before: safeAuditDelta(details.before),
+      after: safeAuditDelta(details.after),
+      appVersion: FIRESTORE_SCHEMA_VERSION,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    };
+    await db.collection('businesses').doc(context.businessId).collection('auditEvents').doc(eventId).set(payload);
+    return { eventId };
   };
 
   window.click360DebugAuth = function() {
@@ -1735,13 +1953,50 @@
       syncStatus: syncStatus.status
     };
   };
+	  window.click360IsModularBoundarySession = () => MODULAR_MODE && !!MODULAR_GATEWAY;
+	  window.click360CanModularAction = (moduleName, action) => MODULAR_MODE && MODULAR_GATEWAY?.may?.(moduleName, action) === true;
+	  // Phase 3.2 gradual rollout: same gate as applyWorkerBoundaryIdentity,
+	  // reused by every owner-initiated Workers action below. The owner is
+	  // always allowed to read their own featureFlags/workers doc.
+	  async function currentOwnerWorkersEnabled(ownerId) {
+	    const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	    const projectId = window.CLICK360_FIREBASE_CONFIG?.projectId || '';
+	    if (boundary?.enabledForProject?.(projectId)) return true;
+	    if (!ownerId) return false;
+	    try {
+	      const flagSnapshot = await db.collection('businesses').doc(ownerId).collection('featureFlags').doc('workers').get({ source:'server' });
+	      return boundary?.workersEnabledForTenant?.(projectId, flagSnapshot.exists ? flagSnapshot.data() : null) === true;
+	    } catch (_error) {
+	      return false;
+	    }
+	  }
+	  // Exposed so app.js's workersView()/bindWorkers() can dynamically
+	  // re-check tenant-level (not just project-level) rollout status at
+	  // render time, instead of relying solely on the static, project-only
+	  // WORKER_TENANT_ACCESS_ENABLED computed once at boot (see Phase 3.3
+	  // staging-only-dependency audit).
+	  window.click360CurrentOwnerWorkersEnabled = currentOwnerWorkersEnabled;
+	  window.click360ListBusinessUnitAuditEvents = async function(businessUnitId) {
+	    if (!window.click360User?.isOwner) return [];
+	    const ownerId = window.click360User.uid;
+	    if (!(await currentOwnerWorkersEnabled(ownerId))) return [];
+	    const safeBusinessId = String(businessUnitId || '').trim();
+	    if (!safeBusinessId || safeBusinessId === 'demo-click360') return [];
+	    const snapshot = await db.collection('businesses').doc(ownerId).collection('businessUnits')
+	      .doc(safeBusinessId).collection('auditEvents').limit(200).get({ source:'server' });
+	    return snapshot.docs.map((entry) => entry.data());
+	  };
 	  window.click360InviteWorkerEmail = async function(email, name, options = {}) {
 	    if (!window.click360User || window.click360User.role !== 'owner' || auth.currentUser?.uid !== ACTIVE_CONTEXT?.authUid) throw new Error('No tienes permisos.');
 	    const ownerId = window.click360User.uid;
 	    const normalizedEmail = String(email || '').trim().toLowerCase();
 	    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) throw new Error('Correo de trabajador invalido.');
-	    const role = ['worker', 'cashier', 'inventory'].includes(options.role) ? options.role : 'worker';
+	    const role = ['worker', 'seller', 'cashier', 'inventory', 'supervisor', 'admin'].includes(options.role) ? options.role : 'worker';
 	    const permissions = options.permissions && typeof options.permissions === 'object' ? options.permissions : defaultWorkerPermissions(role);
+	    const businessUnitId = String(options.businessUnitId || '').trim();
+	    if ((await currentOwnerWorkersEnabled(ownerId)) && !businessUnitId) {
+	      throw new Error('Selecciona el negocio modular antes de crear la invitación.');
+	    }
 	    const inviteToken = window.CLICK360_V16_DOMAIN?.randomToken();
 	    const inviteHash = await window.CLICK360_V16_DOMAIN?.sha256(inviteToken);
 	    if (!inviteToken || !inviteHash) throw new Error('No se pudo generar una invitacion segura.');
@@ -1756,13 +2011,14 @@
 	      permissions,
 	      ownerId,
 	      businessId: ownerId,
+	      ...(businessUnitId ? { businessUnitId } : {}),
 	      tenantKey: tenantKeyFor(ownerId, ownerId),
 	      status: 'pending',
 	      expiresAfterDays: 7,
 	      singleUse: true,
 	      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
 	      createdBy: ownerId,
-	      appVersion: '1.0.5'
+		      appVersion: FIRESTORE_SCHEMA_VERSION
 	    });
 	    batch.set(secret, {
 	      inviteHash,
@@ -1771,9 +2027,14 @@
 	      ownerId,
 	      createdAt: firebase.firestore.FieldValue.serverTimestamp()
 		    });
-		    await batch.commit();
+		    try {
+		      await batch.commit();
+		    } catch (inviteError) {
+		      recordTelemetry('worker_invite_failed', { errorCode:String(inviteError?.code || 'invite_failed').slice(0, 80) }).catch(() => {});
+		      throw inviteError;
+		    }
 		    recordTelemetry('invitation', { requestId: inviteHash, mode: 'created' }).catch(() => {});
-		    return { inviteToken, inviteHash, ownerId, role, permissions, expiresAfterDays: 7 };
+		    return { inviteToken, inviteHash, ownerId, businessUnitId, role, permissions, expiresAfterDays: 7 };
 	  };
 
 	  window.click360GetInviteLink = async function(inviteHash) {
@@ -1816,15 +2077,24 @@
 	    return true;
 	  };
 
-	  window.click360UpdateWorkerPermissions = async function(workerUid, inviteHash, role, permissions) {
+	  window.click360UpdateWorkerPermissions = async function(workerUid, inviteHash, role, permissions, businessUnitId = '') {
 	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
 	    const ownerId = window.click360User.uid;
-	    const nextRole = ['worker', 'cashier', 'inventory'].includes(role) ? role : 'worker';
+	    const nextRole = ['worker', 'seller', 'cashier', 'inventory', 'supervisor', 'admin'].includes(role) ? role : 'worker';
 	    const batch = db.batch();
 	    batch.set(invitationRef(ownerId, inviteHash), { role: nextRole, permissions, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: ownerId }, { merge: true });
 	    if (workerUid) {
 	      batch.set(memberRef(ownerId, workerUid), { role: nextRole, permissions, updatedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedBy: ownerId }, { merge: true });
 	      batch.set(db.collection('approvedUsers').doc(workerUid), { role: nextRole, permissions, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+	      if (businessUnitId && (await currentOwnerWorkersEnabled(ownerId))) {
+	        const unitMember = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(businessUnitId).collection('members').doc(workerUid);
+	        const current = await unitMember.get({ source:'server' });
+	        if (!current.exists) throw new Error('La membresía modular no existe.');
+	        batch.update(unitMember, {
+	          role:nextRole, permissions, recordVersion:Number(current.data()?.recordVersion || 1) + 1,
+	          updatedAt:firebase.firestore.FieldValue.serverTimestamp(), updatedBy:ownerId
+	        });
+	      }
 	    }
 	    await batch.commit();
 	    return true;
@@ -1839,9 +2109,15 @@
 	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
 	    const ownerId = window.click360User.uid;
 	    let hash = inviteHash;
+	    let inviteData = null;
 	    if (!hash && email) {
 	      const found = await db.collection('businesses').doc(ownerId).collection('invitations').where('email', '==', String(email).toLowerCase()).limit(1).get();
 	      hash = found.docs[0]?.id || '';
+	      inviteData = found.docs[0]?.data?.() || null;
+	    }
+	    if (hash && !inviteData) {
+	      const inviteSnapshot = await invitationRef(ownerId, hash).get({ source:'server' });
+	      inviteData = inviteSnapshot.exists ? inviteSnapshot.data() : null;
 	    }
 	    const batch = db.batch();
 	    let writes = 0;
@@ -1853,10 +2129,99 @@
 	      batch.set(memberRef(ownerId, workerUid), { status: 'revoked', revokedAt: firebase.firestore.FieldValue.serverTimestamp(), revokedBy: ownerId }, { merge: true });
 	      batch.set(db.collection('approvedUsers').doc(workerUid), { status: 'revoked', approved: false, revokedAt: firebase.firestore.FieldValue.serverTimestamp(), revokedBy: ownerId }, { merge: true });
 	      writes += 2;
+	      if (inviteData?.businessUnitId && (await currentOwnerWorkersEnabled(ownerId))) {
+	        const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	        const unitRoot = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(inviteData.businessUnitId);
+	        const unitMember = unitRoot.collection('members').doc(workerUid);
+	        const current = await unitMember.get({ source:'server' });
+	        if (current.exists && current.data()?.status !== 'revoked') {
+	          batch.update(unitMember, {
+	            status:'revoked', recordVersion:Number(current.data()?.recordVersion || 1) + 1,
+	            updatedAt:firebase.firestore.FieldValue.serverTimestamp(), updatedBy:ownerId,
+	            revokedAt:firebase.firestore.FieldValue.serverTimestamp(), revokedBy:ownerId
+	          });
+	          writes += 1;
+	          // P0 commercial rule: revoking a worker frees its seat. This is the
+	          // only client path that decrements the counter, and Firestore
+	          // rules independently re-verify that this exact worker's doc
+	          // transitioned active -> revoked in this same batch before
+	          // accepting the decrement (see seatReleased in firestore.rules).
+	          const seatRef = unitRoot.collection('entitlement').doc('seats');
+	          const seatSnapshot = await seatRef.get({ source:'server' });
+	          if (seatSnapshot.exists) {
+	            const seatPlan = boundary.planSeatRelease(seatSnapshot.data(), boundary.identity(ownerId, inviteData.businessUnitId), workerUid);
+	            batch.update(seatRef, {
+	              activeMembers:seatPlan.activeMembers, lastActionUid:seatPlan.lastActionUid,
+	              updatedBy:ownerId, updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+	            });
+	            writes += 1;
+	          }
+	        }
+	      }
 	    }
 	    if (!writes) throw new Error('No se encontro una invitacion ni una cuenta para revocar.');
 	    await batch.commit();
 	    return true;
+	  };
+
+	  // P0 commercial rule: every business includes 2 free worker seats; this
+	  // lets the owner change the purchased add-on seat quota for one modular
+	  // business. No price is enforced or computed here by design -- that stays
+	  // a separate business/billing decision made before calling this function;
+	  // this only ever changes the quota number itself.
+	  window.click360SetWorkerSeatAddOn = async function(businessUnitId, addOnSeats) {
+	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
+	    const ownerId = window.click360User.uid;
+	    if (!(await currentOwnerWorkersEnabled(ownerId))) throw new Error('La frontera modular no esta habilitada para este proyecto.');
+	    const safeBusinessId = String(businessUnitId || '').trim();
+	    const nextAddOnSeats = Number(addOnSeats);
+	    if (!safeBusinessId) throw new Error('Selecciona el negocio modular.');
+	    if (!Number.isInteger(nextAddOnSeats) || nextAddOnSeats < 0) throw new Error('El numero de cupos adicionales no es valido.');
+	    const seatRef = db.collection('businesses').doc(ownerId).collection('businessUnits').doc(safeBusinessId).collection('entitlement').doc('seats');
+	    await seatRef.update({ addOnSeats:nextAddOnSeats, updatedBy:ownerId, updatedAt:firebase.firestore.FieldValue.serverTimestamp() });
+	    return true;
+	  };
+
+	  // Read-only seat status for the owner's "Trabajadores adicionales" screen:
+	  // included seats, seats in use, seats available, and whether the owner is
+	  // already at capacity. Returns null if the tenant has no entitlement doc
+	  // yet (Workers not migrated/enabled for this business).
+	  window.click360GetWorkerSeatStatus = async function(businessUnitId) {
+	    if (!window.click360User?.isOwner) return null;
+	    const ownerId = window.click360User.uid;
+	    const safeBusinessId = String(businessUnitId || '').trim();
+	    if (!safeBusinessId) return null;
+	    const seatSnapshot = await db.collection('businesses').doc(ownerId).collection('businessUnits')
+	      .doc(safeBusinessId).collection('entitlement').doc('seats').get({ source:'server' }).catch(() => null);
+	    if (!seatSnapshot || !seatSnapshot.exists) return null;
+	    const data = seatSnapshot.data() || {};
+	    const boundary = window.CLICK360_WORKER_DATA_BOUNDARY;
+	    const capacity = boundary?.seatCapacity?.(data) ?? (Number(data.baseSeatCap || 0) + Number(data.addOnSeats || 0));
+	    const used = Number(data.activeMembers || 0);
+	    return {
+	      baseSeatCap:Number(data.baseSeatCap || 0), addOnSeats:Number(data.addOnSeats || 0),
+	      capacity, used, available:Math.max(0, capacity - used), atCapacity:used >= capacity
+	    };
+	  };
+
+	  // Owner-initiated request for additional seats. Does NOT change the seat
+	  // count itself (no billing automation exists yet) -- it only logs an
+	  // immutable, owner-scoped request that AIIA (or a trusted operator)
+	  // reviews and fulfills manually via:
+	  //   node scripts/worker-boundary-admin.mjs --action set-addon-seats ...
+	  window.click360RequestAdditionalSeats = async function(businessUnitId, note = '') {
+	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
+	    const ownerId = window.click360User.uid;
+	    const safeBusinessId = String(businessUnitId || '').trim();
+	    if (!safeBusinessId) throw new Error('Selecciona el negocio modular.');
+	    const requestRef = db.collection('businesses').doc(ownerId).collection('seatRequests').doc();
+	    await requestRef.set({
+	      ownerUid:ownerId, businessId:safeBusinessId, requestedBy:ownerId,
+	      note:String(note || '').slice(0, 300), status:'pending',
+	      requestedAt:firebase.firestore.FieldValue.serverTimestamp()
+	    });
+	    recordTelemetry('seat_request', { requestId:requestRef.id, businessId:safeBusinessId }).catch(() => {});
+	    return { requestId:requestRef.id };
 	  };
 
 	  function syncError(code, message, details = {}) {
@@ -2316,7 +2681,7 @@
 	      gate.innerHTML = `
 	        <div class="c360-gate-shell">
 	          <section class="c360-gate-hero" aria-label="CLICK 360">
-		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>1.0.5</small></div>
+		            <div class="c360-gate-brand"><span>CLICK</span> 360 <small>1.0.5-stability.1</small></div>
 	            <h1>Todo tu negocio en una sola aplicación</h1>
 	            <p>Controla inventario, ventas, caja, clientes y productos desde tu celular, de forma sencilla.</p>
 	            <p class="c360-gate-promise">Menos papeles. Menos confusión. Más control.</p>
@@ -2618,9 +2983,51 @@
     };
   }
 
+	  async function pullModularState() {
+	    if (!MODULAR_MODE || !MODULAR_GATEWAY || !ACTIVE_CONTEXT || !navigator.onLine) return false;
+	    const next = await MODULAR_GATEWAY.pull();
+	    next.identity = activeIdentity();
+	    window.click360ApplyTenantState(next, ACTIVE_CONTEXT);
+	    MODULAR_BASELINE = JSON.parse(JSON.stringify(next));
+	    LOCAL_WRITE_PENDING_UNTIL = 0;
+	    setSyncStatus('synced', 'Datos modulares verificados por negocio.', { reason:'modular_pull' });
+	    return true;
+	  }
+
+	  async function pushModularState(reason = 'local_change') {
+	    if (!MODULAR_MODE || !MODULAR_GATEWAY || !ACTIVE_CONTEXT || !AUTH_APPROVED || !PULL_COMPLETE) return false;
+	    if (!navigator.onLine) {
+	      setSyncStatus('offline', 'Cambio modular pendiente de conexión.', { reason });
+	      return false;
+	    }
+	    const next = window.click360GetTenantState?.();
+	    if (!next || !MODULAR_BASELINE) return false;
+	    try {
+	      setSyncStatus('syncing', 'Confirmando cambio modular...', { reason });
+	      await MODULAR_GATEWAY.commit(MODULAR_BASELINE, next);
+	      await pullModularState();
+	      return true;
+		    } catch (error) {
+		      console.warn('Cambio modular rechazado:', error.code || error.message);
+		      const stockChanged = (MODULAR_BASELINE?.products || []).some((before) => {
+		        const after = (next.products || []).find((candidate) => candidate.id === before.id);
+		        return after && Number(after.stock) !== Number(before.stock);
+		      });
+		      recordTelemetry(stockChanged ? 'worker_stock_error' : 'worker_permission_denied', {
+		        errorCode:String(error.code || 'permission_denied').slice(0, 80)
+		      }).catch(() => {});
+		      setSyncStatus('error', 'El cambio no fue autorizado para este rol. La nube no fue modificada.', {
+		        reason:'modular_write_rejected', errorCode:String(error.code || 'permission_denied')
+		      });
+		      await pullModularState().catch(() => false);
+		      return false;
+		    }
+	  }
+
 	  const debouncedSync = debounce((tenantKey, authUid, expectedEpoch, reason = 'local_change') => {
 	    if (expectedEpoch !== AUTH_EPOCH || ACTIVE_CONTEXT?.tenantKey !== tenantKey || ACTIVE_CONTEXT?.authUid !== authUid) return;
-	    pushLocalToFirestore(String(reason || 'local_change')).catch(() => {});
+	    const sync = MODULAR_MODE ? pushModularState : pushLocalToFirestore;
+	    sync(String(reason || 'local_change')).catch(() => {});
 	  }, 1200);
 
 			  window.addEventListener('click360-local-state-saved', (event) => {
@@ -2645,7 +3052,8 @@
               operationId: String(event.detail?.operationId || ''),
               updatedAtMs: Number(event.detail?.updatedAtMs || 0)
             };
-		        pushLocalToFirestore('online_only_change').then((success) => {
+		        const onlineCommit = MODULAR_MODE ? pushModularState : pushLocalToFirestore;
+		        onlineCommit('online_only_change').then((success) => {
 		          window.dispatchEvent(new CustomEvent('click360-online-only-commit', { detail: { ...detail, success } }));
 		        }).catch(() => {
 		          window.dispatchEvent(new CustomEvent('click360-online-only-commit', { detail: { ...detail, success: false } }));
@@ -2658,15 +3066,15 @@
 
   // Sync when user returns to the app (tab/app switch)
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && AUTH_APPROVED && PULL_COMPLETE && STATE_DOC) {
-      pullRemoteOnce({ force: false, reload: true }).catch(() => {});
+	    if (document.visibilityState === "visible" && AUTH_APPROVED && PULL_COMPLETE && (STATE_DOC || MODULAR_MODE)) {
+	      (MODULAR_MODE ? pullModularState() : pullRemoteOnce({ force: false, reload: true })).catch(() => {});
     } else if (document.visibilityState === "hidden" && AUTH_APPROVED && PULL_COMPLETE) {
-      pushLocalToFirestore("visibility_hidden").catch(() => {});
+	      (MODULAR_MODE ? pushModularState("visibility_hidden") : pushLocalToFirestore("visibility_hidden")).catch(() => {});
     }
   });
 
-	  window.click360SyncNow = () => pushLocalToFirestore("manual");
-	  window.click360RefreshNow = () => pullRemoteOnce({ force: true, reload: true });
+	  window.click360SyncNow = () => MODULAR_MODE ? pushModularState("manual") : pushLocalToFirestore("manual");
+	  window.click360RefreshNow = () => MODULAR_MODE ? pullModularState() : pullRemoteOnce({ force: true, reload: true });
 	  window.click360ClearLocalRecoveryState = async function() {
 	    const before = getSyncState({ cleanup: false, reason: 'manual_local_recovery_before' });
 	    maybeClearStaleSyncGuard({ reason: 'manual_local_recovery', force: true });
@@ -2719,6 +3127,9 @@
 	    window.click360AccessState = null;
 	    BUSINESS_ID = null;
 	    STATE_DOC = null;
+	    MODULAR_GATEWAY = null;
+	    MODULAR_BASELINE = null;
+	    MODULAR_MODE = false;
 	    ACTIVE_CONTEXT = null;
 	    LAST_REMOTE_REVISION = 0;
 	    SYNC_CONFLICT_PENDING = false;
@@ -2818,6 +3229,22 @@
 
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
 		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+	    if (MODULAR_MODE && MODULAR_GATEWAY) {
+	      await window.click360PrepareTenantStorage?.(ACTIVE_CONTEXT);
+	      if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+	      AUTH_APPROVED = true;
+	      PULL_COMPLETE = true;
+	      tenantGuard.allow(ACTIVE_CONTEXT);
+	      const userRole = window.click360User?.role || 'worker';
+	      const userName = window.click360User?.name || window.click360User?.email || 'Trabajador';
+	      window.click360SetSession?.({ username:userName, role:userRole });
+	      if (!unlockApp()) return false;
+	      clearPublicAuthIntent();
+	      setSyncStatus('synced', 'Datos modulares verificados por negocio.', { reason:'worker_boundary_ready' });
+	      recordTelemetryOnce(`bootstrap:${expectedEpoch}:${ACTIVE_CONTEXT.tenantKey}`, 'bootstrap', { mode:'worker_boundary_ready' });
+	      listenUserApproval(user, expectedEpoch);
+	      return true;
+	    }
 	    await window.click360PrepareTenantStorage?.(ACTIVE_CONTEXT);
 	    await pullRemoteOnce({ force: false, reload: false });
 	    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
@@ -3003,6 +3430,17 @@
 	      if (window.click360User?.status === 'worker_module_upgrade') {
 	        clearInvitationIntent({ cleanUrl: true });
 	        loginGateMessage('El acceso de trabajadores está temporalmente pausado mientras terminamos la protección independiente de cada módulo. El negocio del propietario permanece intacto.', 'AUTH_APPROVED_USERS_REJECTED', ACCESS_UI_STATES.PENDING, { accountStatus: window.click360User.status });
+	        return;
+	      }
+	      if (['worker_boundary_not_assigned', 'worker_boundary_not_ready'].includes(window.click360User?.status)) {
+	        clearInvitationIntent({ cleanUrl: true });
+	        loginGateMessage(
+	          window.click360User.status === 'worker_boundary_not_assigned'
+	            ? 'La invitación todavía no está asociada a un negocio modular verificado.'
+	            : 'El negocio todavía no completó el corte modular seguro. El snapshot legacy permanece intacto.',
+	          'AUTH_APPROVED_USERS_REJECTED', ACCESS_UI_STATES.PENDING,
+	          { accountStatus:window.click360User.status }
+	        );
 	        return;
 	      }
 
