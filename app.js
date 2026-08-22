@@ -365,7 +365,7 @@
     _printDialogState = state;
     // Disable/enable primary print buttons while printing is active
     if (typeof document !== 'undefined') {
-      ['printOne', 'savePdfBtn', 'ulcPrint', 'ulcSystemPrint', 'printReceiptBtn', 'downloadPdfBtn', 'receiptDesignerPdf', 'receiptDesignerPdfInline', 'printerTest'].forEach(id => {
+      ['printOne', 'savePdfBtn', 'ulcPrint', 'ulcSystemPrint', 'printReceiptBtn', 'downloadPdfBtn', 'receiptDesignerPdf', 'receiptDesignerPdfInline', 'printerTest', 'routePrintBtn'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.disabled = (state !== 'idle' && state !== 'finished');
       });
@@ -1793,15 +1793,15 @@ function parseMoney(value) {
     if (role === 'owner') return true;
 	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','seller','cashier','inventory','supervisor','admin'].includes(role);
     const permissions = window.click360User?.permissions || {};
-    const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers' }[section];
-	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:'settings', reminders:'settings', workers:'members', printing:'settings' }[section];
+    const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers', debtors: 'layaways' }[section];
+	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:'settings', reminders:'settings', workers:'members', printing:'settings', debtors:'layaways' }[section];
 	    if (routeModule && Object.keys(permissions).length) {
 	      return permissions[routeModule]?.view === true || permissions[boundaryModule]?.read === true;
 	    }
-    if (role === 'worker') return ['inventory','sell','cash','settings'].includes(section);
-	    if (role === 'seller') return ['sell','cash'].includes(section);
-	    if (role === 'supervisor') return ['inventory','sell','cash','settings','reports'].includes(section);
-    if (role === 'cashier') return ['sell','cash'].includes(section);
+    if (role === 'worker') return ['inventory','sell','cash','settings','debtors'].includes(section);
+	    if (role === 'seller') return ['sell','cash','debtors'].includes(section);
+	    if (role === 'supervisor') return ['inventory','sell','cash','settings','reports','debtors'].includes(section);
+    if (role === 'cashier') return ['sell','cash','debtors'].includes(section);
     if (role === 'inventory') return section === 'inventory';
     return false;
   }
@@ -2537,11 +2537,18 @@ function parseMoney(value) {
     const statusLabel = (status) => ({ active:'Activo', partially_paid:'Abonado', paid:'Pagado', ready_for_pickup:'Listo para retiro', picked_up:'Entregado', expired:'Vencido', cancelled:'Cancelado', pending_payment:'Pendiente' }[status] || status);
     return `<div class="pageHead"><div><h1>Apartados</h1><p>Consulta, abona, entrega y conserva el historial.</p></div><div class="toolbar"><button class="btn primary" data-route="sell">${icon('shopping-cart')} Nuevo apartado</button></div></div>
       <section class="grid cashGrid"><div class="card kpi"><small>Saldo pendiente</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Apartados activos</small><strong>${active.length}</strong></div></section>
-      <section class="card sectionCard layawayFilterCard"><div class="field"><label>Estado</label><select id="layawayStatusFilter"><option value="active">Activos primero</option><option value="all">Todos</option><option value="paid">Pagados</option><option value="ready_for_pickup">Listos para retiro</option><option value="picked_up">Entregados</option><option value="cancelled">Cancelados</option></select></div></section>
+      <section class="card sectionCard layawayFilterCard">
+        <div class="field"><label>Buscar</label><input id="layawaySearch" type="search" placeholder="Nombre, teléfono o # de apartado" autocomplete="off"></div>
+        <div class="field"><label>Estado</label><select id="layawayStatusFilter"><option value="active">Activos primero</option><option value="all">Todos</option><option value="paid">Pagados</option><option value="ready_for_pickup">Listos para retiro</option><option value="picked_up">Entregados</option><option value="cancelled">Cancelados</option></select></div>
+      </section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial de apartados</h3><div id="layawayList">${records.map(({ sale, layaway, status }) => {
         const items = (layaway.itemsSnapshot || saleItems(sale) || []).map((item) => `${escapeHtml(item.name || item.code || 'Producto')} × ${Number(item.qty || 1)}`).join(', ');
         const canPay = Number(sale.balance || 0) > 0 && !['cancelled', 'picked_up', 'refunded'].includes(status);
-        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}"><div class="layawaySummary"><span><b>${escapeHtml(sale.customer || layaway.customerSnapshot?.name || 'Cliente')}</b><small>#${escapeHtml(String(sale.id || '').slice(-6).toUpperCase())} · ${escapeHtml(sale.when || layaway.createdAt || '')}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.payLayaway('${actionId(sale.id)}')">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.cancelSale('${actionId(sale.id)}')">Cancelar</button>` : ''}</div></article>`;
+        const customerName = sale.customer || layaway.customerSnapshot?.name || 'Cliente';
+        const shortId = String(sale.id || '').slice(-6).toUpperCase();
+        const dueDate = sale.dueDate || layaway.pickupDueAt || '';
+        const searchKey = [customerName, sale.customerPhone || layaway.customerSnapshot?.phone || '', shortId, sale.id || ''].join(' ').toLowerCase();
+        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}" data-layaway-search="${escapeHtml(searchKey)}"><div class="layawaySummary"><span><b>${escapeHtml(customerName)}</b><small>#${escapeHtml(shortId)} · ${escapeHtml(sale.when || layaway.createdAt || '')}${dueDate ? ` · Límite: ${escapeHtml(dueDate)}` : ''}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.payLayaway('${actionId(sale.id)}')">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.cancelSale('${actionId(sale.id)}')">Cancelar</button>` : ''}</div></article>`;
       }).join('') || '<p class="empty">Aún no hay apartados.</p>'}</div></section>`;
   }
 
@@ -3742,12 +3749,14 @@ function parseMoney(value) {
 	      closeModal(); renderApp('logistics'); toast('Ruta liquidada');
 	    };
 	    $('#routePrintBtn').onclick = () => {
-	      const html = `<h1>${escapeHtml(route.name)}</h1><p>${escapeHtml(route.zone || '')} · ${escapeHtml(route.date || '')}</p><h2>Hoja de carga</h2>${(sheet?.items || []).map((item) => `<p>${escapeHtml(item.name)} · ${item.qty} · ${fmt(item.total)}</p>`).join('') || '<p>Sin carga</p>'}<h2>Liquidación</h2><p>Venta: ${fmt(summary.sold)}</p><p>Cobrado: ${fmt(summary.collected)}</p><p>Retornos: ${fmt(summary.returned)}</p>`;
-	      const popup = window.open('', '_blank');
-	      if (!popup) return toast('Permite ventanas emergentes para imprimir.', 'err');
-	      popup.document.write(`<!doctype html><title>Ruta</title><body>${html}</body>`);
-	      popup.document.close();
-	      popup.print();
+	      // Used to be a standalone window.open() + a print() call on that
+	      // popup window, entirely bypassing handoffPrint -- no anti-double
+	      // print guard, no button disabling, no shared error handling, and
+	      // silently blocked by popup blockers with only a generic toast.
+	      // Routed through the same handoffPrint() path as every other print
+	      // button so this route sheet gets the same protections for free.
+	      const html = `<section class="printReceipt"><h1>${escapeHtml(route.name)}</h1><p>${escapeHtml(route.zone || '')} · ${escapeHtml(route.date || '')}</p><h2>Hoja de carga</h2>${(sheet?.items || []).map((item) => `<p>${escapeHtml(item.name)} · ${item.qty} · ${fmt(item.total)}</p>`).join('') || '<p>Sin carga</p>'}<h2>Liquidación</h2><p>Venta: ${fmt(summary.sold)}</p><p>Cobrado: ${fmt(summary.collected)}</p><p>Retornos: ${fmt(summary.returned)}</p></section>`;
+	      handoffPrint({ html, media:'receipt-80' }, 'system');
 	    };
 	    refreshIcons();
 	  }
@@ -4834,13 +4843,24 @@ function parseMoney(value) {
 	  }
   function bindDebtors() {
     const select = $('#layawayStatusFilter');
+    const search = $('#layawaySearch');
     const apply = () => {
       const value = select?.value || 'active';
+      const query = (search?.value || '').trim().toLowerCase();
       $$('.layawayRow').forEach((row) => {
+        // A search always looks across every status: the point is finding
+        // ONE specific Apartado the worker already knows the customer/phone
+        // for, regardless of whether it's active, paid, or delivered -- the
+        // status dropdown only applies when browsing without a search term.
+        if (query.length > 0) {
+          row.hidden = !(row.dataset.layawaySearch || '').includes(query);
+          return;
+        }
         row.hidden = value === 'active' ? row.dataset.layawayActive !== 'true' : value !== 'all' && row.dataset.layawayStatus !== value;
       });
     };
     select?.addEventListener('change', apply);
+    search?.addEventListener('input', apply);
     apply();
   }
   function bindInventory(){
@@ -5158,9 +5178,9 @@ function parseMoney(value) {
 	      const rec = parseMoney($('#cashReceived').value);
 	      const layawayInitialMethod = method === 'Apartado' ? ($('#layawayInitialMethod')?.value || 'Efectivo') : method;
         if(Number.isFinite(rec) && rec >= total) {
-           $('#cashChange').value = fmt(rec - total);
+           if ($('#cashChange')) $('#cashChange').value = fmt(rec - total);
         } else {
-           $('#cashChange').value = '$0.00';
+           if ($('#cashChange')) $('#cashChange').value = '$0.00';
         }
       } else if(method === 'Apartado') {
         recF.style.display = 'grid'; chgF.style.display = 'grid';
@@ -5168,9 +5188,9 @@ function parseMoney(value) {
         $('#changeField label').textContent = 'Saldo Pendiente';
         const rec = parseMoney($('#cashReceived').value);
         if(Number.isFinite(rec)) {
-           $('#cashChange').value = fmt(Math.max(0, total - rec));
+           if ($('#cashChange')) $('#cashChange').value = fmt(Math.max(0, total - rec));
         } else {
-           $('#cashChange').value = fmt(total);
+           if ($('#cashChange')) $('#cashChange').value = fmt(total);
         }
       } else {
         recF.style.display = 'none'; chgF.style.display = 'none';
@@ -10376,13 +10396,7 @@ function parseMoney(value) {
 
     const waBtn = $('#whatsappReminderBtn');
     if (waBtn) {
-       waBtn.onclick = () => {
-	         const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(s.customerPhone || '') || '';
-	         const bizName = business.name;
-         const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
-	         const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-	         window.open(url, '_blank', 'noopener,noreferrer');
-       };
+       waBtn.onclick = () => { sendLayawayWhatsAppReminder(s, business.name); };
     }
 
 		    $('#printReceiptBtn').onclick = async () => { await printReceiptWithFallback(s, business, receiptTemplate, 'system'); };
@@ -10497,15 +10511,36 @@ function parseMoney(value) {
     window.showSaleCompleteModal(id);
   };
 
+	  // Single source of truth for the Apartados/layaway WhatsApp reminder,
+	  // used both from the Apartados list (sendWhatsAppReminder) and the
+	  // post-sale confirmation modal (#whatsappReminderBtn below) -- previously
+	  // two near-identical copies. Reads only from the sale/layaway record
+	  // itself (customer, customerPhone, total, received, balance, dueDate),
+	  // never from a separate CRM/customer lookup, so this works identically
+	  // whether the customer came from a prior sale or was created directly by
+	  // this Apartado. If the phone can't be confidently normalized to a real
+	  // WhatsApp number, this shows a clear toast instead of opening a dead
+	  // link that silently drops the message.
+	  function buildLayawayWhatsAppMessage(sale, businessName) {
+	    return `Hola ${sale.customer}, te saludamos de ${businessName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(sale.total)}, con un abono de ${fmt(sale.received)} y un saldo pendiente de ${fmt(sale.balance)}. La fecha límite de pago y retiro es el ${sale.dueDate || ''}. Muchas gracias.`;
+	  }
+	  function sendLayawayWhatsAppReminder(sale, businessName) {
+	    const text = buildLayawayWhatsAppMessage(sale, businessName);
+	    const link = window.CLICK360_V16_DOMAIN?.buildWhatsAppReminderLink?.(sale.customerPhone || '', text);
+	    if (!link?.valid) {
+	      toast(link?.reason === 'phone_missing'
+	        ? 'Este cliente no tiene un teléfono registrado. Corrígelo en el detalle del Apartado antes de enviar el recordatorio.'
+	        : 'El teléfono registrado no parece completo (falta el código de país o un dígito). Corrígelo antes de enviar el recordatorio por WhatsApp.', 'err');
+	      return false;
+	    }
+	    window.open(link.url, '_blank', 'noopener,noreferrer');
+	    return true;
+	  }
 	  window.sendWhatsAppReminder = function(id) {
 		  id = decodeActionId(id);
 	    const s = salesForBiz().find(x => x.id === id);
     if (!s) return;
-	    const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(s.customerPhone || '') || '';
-    const bizName = currentBusiness().name;
-    const text = `Hola ${s.customer}, te saludamos de ${bizName}. Queremos recordarte que tienes un saldo pendiente por un total de ${fmt(s.total)}, con un abono de ${fmt(s.received)} y un saldo pendiente de ${fmt(s.balance)}. La fecha límite de pago y retiro es el ${s.dueDate || ''}. Muchas gracias.`;
-	    const url = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-    window.open(url, '_blank', 'noopener,noreferrer');
+	    sendLayawayWhatsAppReminder(s, currentBusiness().name);
   };
 
   window.viewDailyReport = function(id) {
