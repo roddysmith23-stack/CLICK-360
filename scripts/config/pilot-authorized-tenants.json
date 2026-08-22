@@ -1,4 +1,12 @@
 {
   "_comment": "Phase 3.3 explicit per-tenant production authorization allowlist. Every operation that targets click-360 (migration, repair, admin flag/seat changes, activation, rollback) must find its exact ownerUid+businessId pair here first, IN ADDITION TO its own --confirm string -- this is a second, independent gate so a single mistaken --confirm can never touch an unauthorized tenant, and a batch/loop can never silently reach production (there is no wildcard entry format). Adding an entry is a deliberate, reviewed, committed code change -- not a CLI flag -- made only after a human (Mr. Smith) has explicitly selected and approved that specific customer for the pilot. This file starts empty and MUST stay empty until that approval happens.",
-  "click-360": []
+  "click-360": [
+    {
+      "ownerUid": "iESlWpF92JXaGDoYTQ28ThWs93y1",
+      "businessId": "industrias-omega",
+      "authorizedBy": "Roddy Smith",
+      "authorizedAt": "2026-08-22T18:45:00.000Z",
+      "notes": "Canary tenant for Workers rollout. Named explicitly by the owner in-conversation. Simple retail (ropa), no existing workers, healthy P0 identity, low footprint (1 product, 4 sales)."
+    }
+  ]
 }
