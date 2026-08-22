@@ -266,7 +266,41 @@
     if (!digits) return '';
     if (digits.startsWith('00')) digits = digits.slice(2);
     if (digits.startsWith('0')) digits = countryCode + digits.slice(1);
+    // A cashier who types the bare 9-digit subscriber number (no leading 0,
+    // no country code -- e.g. "987654321" instead of "0987654321") used to
+    // pass through unchanged, producing a WhatsApp link with an incomplete
+    // number. WhatsApp then can't resolve it to an exact contact and falls
+    // back to a "choose a contact" / invalid-number screen, which drops the
+    // prefilled message text -- this is the actual root cause of "WhatsApp
+    // opens but the message is gone" for Apartados reminders. Detect that
+    // shape (exactly 9 digits, doesn't already carry the country code) and
+    // prepend it, same as the leading-0 case above.
+    if (digits.length === 9 && !digits.startsWith(countryCode)) digits = countryCode + digits;
     return digits;
+  }
+
+  // Conservative E.164-shaped check: correct-looking length and, when a
+  // country code is expected, that it's actually present. This exists to
+  // catch the specific "phone is missing/incomplete" failure mode before a
+  // WhatsApp link is ever built, not to fully validate arbitrary
+  // international numbers.
+  function isValidWhatsAppPhone(normalizedDigits, countryCode = '593') {
+    const digits = String(normalizedDigits || '');
+    if (!/^\d+$/.test(digits)) return false;
+    if (digits.length < 11 || digits.length > 15) return false;
+    if (countryCode && !digits.startsWith(countryCode)) return false;
+    return true;
+  }
+
+  // Single source of truth for building a WhatsApp deep link with a
+  // prefilled message. Returns { valid:false, reason } instead of a broken
+  // URL when the phone can't be confidently normalized, so callers can show
+  // a clear "fix the phone number" message instead of opening a dead link.
+  function buildWhatsAppReminderLink(rawPhone, text, countryCode = '593') {
+    const normalized = normalizePhone(rawPhone, countryCode);
+    if (!normalized) return { valid:false, reason:'phone_missing', normalized:'' };
+    if (!isValidWhatsAppPhone(normalized, countryCode)) return { valid:false, reason:'phone_invalid', normalized };
+    return { valid:true, reason:'ok', normalized, url:`https://wa.me/${normalized}?text=${encodeURIComponent(String(text || ''))}` };
   }
 
   function layawayStatus(layaway = {}, nowMs = Date.now()) {
@@ -369,6 +403,8 @@
     calculateCart,
     taxLegend,
     normalizePhone,
+    isValidWhatsAppPhone,
+    buildWhatsAppReminderLink,
     layawayStatus,
     layawayPaymentDecision,
     layawayTransitionDecision,
