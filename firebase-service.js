@@ -12,7 +12,7 @@
   }
 
   // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'commercial-1-0-5-r35-commercial-mvp';
+		  const APP_ASSET_VERSION = 'commercial-1-0-5-r36-commercial-completion';
 	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
   const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
   const CLICK360_CACHE_PREFIX = 'click360-';
