@@ -580,6 +580,7 @@ input,select,textarea,button{max-width:100%}
 .labelGuideSteps b{display:grid;place-items:center;width:28px;height:28px;border:1px solid var(--line);border-radius:50%;color:var(--text)}
 .labelGuideSteps li.active b{background:var(--gold2);border-color:var(--gold2);color:#111}
 .labelEditorModal[data-label-mode="simple"] .expertOnly{display:none!important}
+.labelEditorModal[data-label-mode="expert"] .simpleOnly{display:none!important}
 .labelSheetPreviewPanel{display:grid;gap:10px;border:1px solid var(--line);border-radius:8px;padding:12px;background:#0c0c0c}
 .labelSheetPreviewPanel p{margin:4px 0 0}
 .labelSheetPreview{--label-columns:1;display:grid;grid-template-columns:repeat(var(--label-columns),minmax(12px,1fr));gap:4px;max-height:240px;overflow:auto;padding:10px;background:#f3f1ea;border-radius:6px}
