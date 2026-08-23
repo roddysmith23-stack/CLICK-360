@@ -13,10 +13,25 @@ const styles = fs.readFileSync('styles.css', 'utf8');
 
 assert(html.includes('const appHasRendered = ()'), 'the boot script must expose a single appHasRendered() decision function');
 assert(html.includes("SAFE_TERMINAL_GATE_STATES = new Set(["), 'the boot script must distinguish "gate legitimately showing something" states from a genuine stall');
-assert(/SAFE_TERMINAL_GATE_STATES[\s\S]{0,300}'unauthenticated'/.test(html), "'unauthenticated' must stay a safe terminal state -- a healthy first-time visitor also has an empty #app the whole time they're on the login screen");
-assert(!/SAFE_TERMINAL_GATE_STATES[\s\S]{0,400}'ready'/.test(html), "'ready' must NOT be a safe terminal state -- READY means the app should be visibly rendering into #app; if it still isn't, that's the exact SHARY-shaped stall this exists to catch");
+// Precisely bounded to the Set([...]) literal itself, not a loose
+// character window -- a loose window previously produced a false failure
+// when unrelated code (fadeOutSplash's splash.classList.add('ready')) later
+// happened to land within an arbitrary distance of the declaration.
+const safeStatesStart = html.indexOf('SAFE_TERMINAL_GATE_STATES = new Set([');
+const safeStatesEnd = html.indexOf(']);', safeStatesStart);
+assert(safeStatesStart !== -1 && safeStatesEnd !== -1, 'could not locate the SAFE_TERMINAL_GATE_STATES literal to check its contents');
+const safeStatesLiteral = html.slice(safeStatesStart, safeStatesEnd);
+assert(safeStatesLiteral.includes("'unauthenticated'"), "'unauthenticated' must stay a safe terminal state -- a healthy first-time visitor also has an empty #app the whole time they're on the login screen");
+assert(!safeStatesLiteral.includes("'ready'"), "'ready' must NOT be a safe terminal state -- READY means the app should be visibly rendering into #app; if it still isn't, that's the exact SHARY-shaped stall this exists to catch");
 assert(html.includes('const showBootRecovery = ()'), 'a dedicated boot-recovery renderer must exist');
 assert(html.includes("if (appHasRendered()) finish(); else showBootRecovery();"), 'the hard-fallback timer must branch on appHasRendered(), not unconditionally hide the splash');
+// P0-2: a real staging observation (Auth/Firestore taking longer than the
+// 12s hard-fallback on a genuinely slow-but-working connection) showed the
+// recovery screen could latch permanently even after the app went on to
+// boot successfully seconds later. The recovery screen must keep watching
+// and quietly step aside if that happens -- never a second dead end.
+assert(html.includes('const graceTimer = setInterval'), 'showBootRecovery() must keep watching for a real render after showing the recovery screen -- a slow-but-working boot must not be stranded on a permanent "no pudo iniciar"');
+assert(/graceTimer[\s\S]{0,300}appHasRendered\(\)/.test(html), 'the post-recovery grace watcher must reuse the same appHasRendered() decision, not a narrower check');
 assert(html.includes('id="click360BootRetry"'), 'recovery screen must offer a Retry action');
 assert(html.includes('id="click360BootUpdate"'), 'recovery screen must offer an Update-app action');
 assert(html.includes('registration.unregister()'), 'the update action must unregister stale service worker registrations');

@@ -107,6 +107,13 @@
         const uiState = String(window.click360AccessUiState?.state || '').toLowerCase();
         return SAFE_TERMINAL_GATE_STATES.has(uiState);
       };
+      const fadeOutSplash = (splash) => {
+        const delay = Math.max(0, minimumIntroMs - (Date.now() - startedAt));
+        setTimeout(() => {
+          splash.classList.add('ready');
+          setTimeout(() => splash.remove(), 920);
+        }, delay);
+      };
       const finish = () => {
         if (completed) return;
         completed = true;
@@ -114,11 +121,7 @@
         if (hardFallbackTimer) clearTimeout(hardFallbackTimer);
         const splash = document.getElementById('click360Splash');
         if (!splash) return;
-        const delay = Math.max(0, minimumIntroMs - (Date.now() - startedAt));
-        setTimeout(() => {
-          splash.classList.add('ready');
-          setTimeout(() => splash.remove(), 920);
-        }, delay);
+        fadeOutSplash(splash);
       };
       const finishWhenAppRendered = () => {
         if (appHasRendered()) finish();
@@ -171,6 +174,24 @@
           }
           location.reload();
         });
+        // The recovery screen is a floor, not a dead end: if the boot was
+        // merely SLOW (a real, if unusually long, network round-trip to
+        // Auth/Firestore) rather than genuinely stuck, and it goes on to
+        // finish successfully after the hard-fallback already fired, don't
+        // strand the user staring at "no pudo iniciar" while the app is
+        // actually fine underneath. Keep watching for up to a further 60s;
+        // if the real content shows up, quietly swap back to it.
+        let graceElapsedMs = 0;
+        const graceTimer = setInterval(() => {
+          graceElapsedMs += 500;
+          if (appHasRendered()) {
+            clearInterval(graceTimer);
+            splash.classList.remove('click360BootRecovery');
+            fadeOutSplash(splash);
+            return;
+          }
+          if (graceElapsedMs >= 60000) clearInterval(graceTimer);
+        }, 500);
       };
       window.click360MarkSplashReady = finish;
       window.addEventListener('click360:ready', finish, { once: true });
