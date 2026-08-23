@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = '1.0.5';
-  const ASSET_VERSION = 'commercial-1-0-5-r36-p0-2-reliability-fix';
+  const ASSET_VERSION = 'commercial-1-0-5-r36-p0-2b-boot-grace-fix';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
