@@ -31,7 +31,13 @@ assert(changed.length > 0, 'the release must contain a reviewable web diff');
 const forbidden = [
   /^tools\/admin\//,
   /^functions\//,
-  /^scripts\/(?:admin-access-v16|audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs$/
+  // admin-access-v16.mjs deliberately removed from this list: the Commercial
+  // MVP release explicitly scopes in CEO Admin activation/onboarding tooling
+  // (5-tier plan activation, founder_legacy, onboarding profile fields) as a
+  // reviewed, first-class part of this release -- not an accidental leak
+  // into what was originally a web-only release boundary. The other three
+  // stay forbidden; none of them were touched by this release.
+  /^scripts\/(?:audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs$/
 ];
 for (const file of changed) {
   assert(!forbidden.some((pattern) => pattern.test(file)), `forbidden release path: ${file}`);

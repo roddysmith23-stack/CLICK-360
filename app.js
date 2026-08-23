@@ -3554,12 +3554,19 @@ function parseMoney(value) {
 	    const tenderedInput = $('#tableCheckoutTendered');
 	    const updateTendered = () => { tenderedInput.disabled = methodInput.value !== 'Efectivo'; if (tenderedInput.disabled) tenderedInput.value = numericInputValue(total); };
 	    methodInput.onchange = updateTendered; updateTendered();
-	    $('#tableCheckoutForm').onsubmit = (event) => {
+	    $('#tableCheckoutForm').onsubmit = async (event) => {
 	      event.preventDefault();
+	      const submitBtn = event.target.querySelector('button[type="submit"]');
+	      if (submitBtn?.disabled) return;
 	      const method = methodInput.value;
 	      const tendered = method === 'Efectivo' ? Number(tenderedInput.value || 0) : total;
 	      if (!Number.isFinite(tendered) || tendered < total) return toast('El efectivo recibido no cubre el total.', 'err');
-	      finalizeTableCharge(table, order, { method, tendered, customer:$('#tableCheckoutCustomer').value.trim(), customerCedula:$('#tableCheckoutCedula').value.trim(), customerPhone:$('#tableCheckoutPhone').value.trim(), print:$('#tableCheckoutPrint').checked });
+	      if (submitBtn) submitBtn.disabled = true;
+	      try {
+	        await finalizeTableCharge(table, order, { method, tendered, customer:$('#tableCheckoutCustomer').value.trim(), customerCedula:$('#tableCheckoutCedula').value.trim(), customerPhone:$('#tableCheckoutPhone').value.trim(), print:$('#tableCheckoutPrint').checked });
+	      } finally {
+	        if (submitBtn) submitBtn.disabled = false;
+	      }
 	    };
 	  }
 	  async function finalizeTableCharge(table, order, checkout = {}) {
@@ -5421,6 +5428,16 @@ function parseMoney(value) {
     $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>String(p.name || '').toLowerCase().includes(q)||String(p.code || '').toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${escapeHtml(p.code)}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
     $('#openCamera').onclick=()=>startScanner(addProduct);
     $('#chargeBtn').onclick=async()=>{
+      const chargeBtn = $('#chargeBtn');
+      if(chargeBtn.disabled) return;
+      chargeBtn.disabled = true;
+      try {
+        await chargeCart(chargeBtn);
+      } finally {
+        chargeBtn.disabled = false;
+      }
+    };
+    async function chargeCart(chargeBtn){
       if(!cart.length){ beep('err'); return toast('El carrito está vacío','err'); }
       const disc=parseMoney($('#discount').value);
       if(!Number.isFinite(disc)||disc<0){ beep('err'); return toast('Descuento inválido','err'); }
@@ -6283,6 +6300,9 @@ function parseMoney(value) {
 	        if (!confirm('¿Deseas reabrir la caja de hoy?\nEl cierre anterior NO se borrará; quedará guardado como historial y se registrará la reapertura.')) return;
 	        const reason = prompt('Escribe el motivo de reapertura de caja:');
 	        if (!reason || reason.trim().length < 4) return toast('Motivo requerido para reabrir caja', 'err');
+	        if (btnReopenCash.disabled) return;
+	        btnReopenCash.disabled = true;
+	        try {
 	        const bid = currentBusiness()?.id;
 	        if (bid) {
 	          const previousState = cloneState(state);
@@ -6321,6 +6341,9 @@ function parseMoney(value) {
 	          renderApp('cash');
 	          if (committed.ok) toast(committed.pending ? 'Reapertura guardada; sincronización pendiente.' : 'Caja reabierta con auditoría');
 	        }
+	        } finally {
+	          btnReopenCash.disabled = false;
+	        }
 	      };
 	    }
 
@@ -6334,6 +6357,9 @@ function parseMoney(value) {
           startBtn.onclick = async () => {
              const amt = parseMoney(inputEl.value);
              if (!Number.isFinite(amt) || amt < 0) return toast('Monto de apertura inválido', 'err');
+             if (startBtn.disabled) return;
+             startBtn.disabled = true;
+             try {
 	             const previousState = cloneState(state);
 	             const cashSessionId = uid('cash');
 	             const operationId = uid('cashopen');
@@ -6374,6 +6400,9 @@ function parseMoney(value) {
 	             window.click360RecordTelemetry?.('cash_open', { mode: authUser().role || 'owner' }).catch?.(() => {});
 	             renderApp('cash');
 	             toast(committed.pending ? 'Apertura guardada; sincronización pendiente.' : 'Jornada iniciada exitosamente');
+             } finally {
+               startBtn.disabled = false;
+             }
           };
        }
        return;
@@ -6880,6 +6909,10 @@ function parseMoney(value) {
 
 		    $('#saveBiz').onclick=async ()=>{
 		       if (!isOwnerUser()) return toast('Solo el dueño puede cambiar datos del negocio.', 'err');
+		       const saveBizBtn = $('#saveBiz');
+		       if (saveBizBtn.disabled) return;
+		       saveBizBtn.disabled = true;
+		       try {
 		       const b=currentBusiness();
 		       const previousState = cloneState(state);
 		       const businessId = b?.id || '';
@@ -6918,6 +6951,9 @@ function parseMoney(value) {
 		           && business.settings?.ruc === expectedRuc));
 		       renderApp('settings');
 		       if (committed.ok) toast(committed.pending ? 'Perfil del negocio guardado; sincronización pendiente.' : 'Perfil del negocio guardado');
+		       } finally {
+		         saveBizBtn.disabled = false;
+		       }
 	    };
 	    $('#createBiz').onclick=()=>{
 	      if (!isOwnerUser()) return toast('Solo el dueño puede crear negocios.', 'err');
