@@ -2252,6 +2252,182 @@
 	    return { requestId: requestRef.id };
 	  };
 
+	  // r36: CEO Admin Web. The real security boundary is firestore.rules'
+	  // isPlatformAdmin() (a single hardcoded, human-verified email) -- every
+	  // read/write below will simply be denied server-side for anyone else,
+	  // regardless of what this client-side code does or doesn't check. This
+	  // constant only gates whether the UI renders the admin nav entry.
+	  const CEO_ADMIN_EMAIL = 'roddysmithceo@gmail.com';
+	  window.click360IsPlatformAdmin = function() {
+	    const email = String(window.click360User?.email || window.click360Auth?.currentUser?.email || '').trim().toLowerCase();
+	    return email === CEO_ADMIN_EMAIL;
+	  };
+
+	  // Reads only -- no getUserByEmail()/getUser() exists in the browser
+	  // Auth SDK (Admin-only capability), so this can only ever find a
+	  // customer who has already signed in with Google at least once
+	  // (i.e. already has an accountAccess document). A brand-new lead with
+	  // no account yet is reported as such, matching the CLI's identical
+	  // precondition (see scripts/onboard-new-customer.mjs).
+	  window.click360CeoAdminSearchCustomer = async function(email) {
+	    const safeEmail = String(email || '').trim().toLowerCase();
+	    if (!safeEmail) throw new Error('Ingresa un correo.');
+	    const snap = await db.collection('accountAccess').where('email', '==', safeEmail).limit(1).get();
+	    if (snap.empty) return { found: false, email: safeEmail };
+	    const accessDoc = snap.docs[0];
+	    const uid = accessDoc.id;
+	    const [stateSnap, flagSnap, businessUnitSnap, seatReqSnap, capReqSnap, auditSnap] = await Promise.all([
+	      db.collection('businesses').doc(uid).collection('state').doc('main').get().catch(() => null),
+	      db.collection('businesses').doc(uid).collection('featureFlags').doc('workers').get().catch(() => null),
+	      db.collection('businesses').doc(uid).collection('businessUnits').doc('biz_main').get().catch(() => null),
+	      db.collection('businesses').doc(uid).collection('seatRequests').limit(20).get().catch(() => null),
+	      db.collection('businesses').doc(uid).collection('capacityRequests').limit(20).get().catch(() => null),
+	      db.collection('adminAuditLogs').where('uid', '==', uid).limit(30).get().catch(() => null)
+	    ]);
+	    const stateData = stateSnap?.exists ? stateSnap.data() : null;
+	    const businesses = stateData?.payload?.data?.businesses || [];
+	    const products = stateData?.payload?.data?.products || [];
+	    const storageBytesApprox = products.reduce((sum, product) => sum + (typeof product.imageData === 'string' ? product.imageData.length : 0), 0);
+	    const sortByTimestampFieldDesc = (docs, field) => docs
+	      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+	      .sort((a, b) => (b[field]?.toMillis?.() || 0) - (a[field]?.toMillis?.() || 0));
+	    return {
+	      found: true,
+	      uid,
+	      accountAccess: { id: uid, ...accessDoc.data() },
+	      businesses: businesses.map((business) => ({ id: business.id, name: business.name, type: business.type })),
+	      usage: { productsActive: products.length, storageBytesApprox },
+	      featureFlags: flagSnap?.exists ? flagSnap.data() : null,
+	      businessUnit: businessUnitSnap?.exists ? businessUnitSnap.data() : null,
+	      seatRequests: seatReqSnap ? sortByTimestampFieldDesc(seatReqSnap.docs, 'requestedAt').slice(0, 10) : [],
+	      capacityRequests: capReqSnap ? sortByTimestampFieldDesc(capReqSnap.docs, 'requestedAt').slice(0, 10) : [],
+	      auditLog: auditSnap ? sortByTimestampFieldDesc(auditSnap.docs, 'createdAt').slice(0, 10) : []
+	    };
+	  };
+
+	  function assertCeoAdmin() {
+	    if (!window.click360IsPlatformAdmin()) throw new Error('No autorizado.');
+	  }
+
+	  // Builds the exact fields activation would write, WITHOUT writing
+	  // anything -- the preview the panel must show before any commit.
+	  window.click360CeoAdminPreviewActivation = async function({ uid, plan, period, businessType = '', addOns = [] }) {
+	    assertCeoAdmin();
+	    const ref = db.collection('accountAccess').doc(uid);
+	    const snap = await ref.get();
+	    if (!snap.exists) throw new Error('Esta cuenta todavia no existe (el cliente debe iniciar sesion con Google al menos una vez).');
+	    const existing = snap.data();
+	    const targetUser = { uid, email: existing.email, name: existing.name, photoURL: existing.photoURL };
+	    const proposed = window.CLICK360_V16_DOMAIN.activationFields({
+	      existing, targetUser, actorEmail: window.click360User?.email || CEO_ADMIN_EMAIL, plan, period, businessType, addOnsRequested: addOns
+	    });
+	    return { proposed, beforeRevision: Number(existing.revision || 0), existing };
+	  };
+
+	  // Backup -> transaction (hash-equivalent guard via strict revision
+	  // equality, re-checked inside the transaction against a fresh read,
+	  // which Firestore's own snapshot isolation makes atomic) -> audit log
+	  // -> post-write verification. Mirrors admin-access-v16.mjs's pipeline.
+	  window.click360CeoAdminApplyActivation = async function({ uid, plan, period, businessType = '', addOns = [], expectedRevision }) {
+	    assertCeoAdmin();
+	    const actorEmail = window.click360User?.email || CEO_ADMIN_EMAIL;
+	    const ref = db.collection('accountAccess').doc(uid);
+	    const beforeSnap = await ref.get();
+	    if (!beforeSnap.exists) throw new Error('Esta cuenta ya no existe.');
+	    const beforeData = beforeSnap.data();
+	    if (Number(beforeData.revision || 0) !== Number(expectedRevision)) {
+	      throw new Error('La cuenta cambio desde la vista previa. Vuelve a buscar al cliente e intenta de nuevo.');
+	    }
+	    const backupRef = db.collection('adminBackups').doc();
+	    await backupRef.set({
+	      action: 'ceo_admin_web_activation', targetPath: ref.path, uid, actorEmail,
+	      beforeRevision: beforeData.revision || 0, beforeAccess: beforeData,
+	      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+	    });
+	    const auditRef = db.collection('adminAuditLogs').doc();
+	    const proposed = await db.runTransaction(async (tx) => {
+	      const freshSnap = await tx.get(ref);
+	      if (!freshSnap.exists) throw new Error('Esta cuenta ya no existe.');
+	      const freshData = freshSnap.data();
+	      if (Number(freshData.revision || 0) !== Number(expectedRevision)) {
+	        throw new Error('La cuenta cambio justo antes de guardar. Vuelve a buscar al cliente e intenta de nuevo.');
+	      }
+	      const targetUser = { uid, email: freshData.email, name: freshData.name, photoURL: freshData.photoURL };
+	      const fields = window.CLICK360_V16_DOMAIN.activationFields({
+	        existing: freshData, targetUser, actorEmail, plan, period, businessType, addOnsRequested: addOns
+	      });
+	      tx.set(ref, {
+	        ...fields,
+	        activatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+	        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+	      }, { merge: true });
+	      tx.set(auditRef, {
+	        action: 'ceo_admin_web_activation', targetPath: ref.path, uid, actorEmail,
+	        backupPath: backupRef.path, beforeRevision: freshData.revision || 0, afterRevision: fields.revision,
+	        plan: fields.plan, status: fields.status,
+	        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+	      });
+	      return fields;
+	    });
+	    const afterSnap = await ref.get();
+	    const afterData = afterSnap.data();
+	    if (afterData.revision !== proposed.revision || afterData.plan !== proposed.plan) {
+	      throw new Error('La activacion no se pudo verificar despues de guardar. Revisa adminAuditLogs.');
+	    }
+	    return { after: afterData, backupPath: backupRef.path, auditPath: auditRef.path };
+	  };
+
+	  window.click360CeoAdminSuspend = async function(uid) {
+	    assertCeoAdmin();
+	    const actorEmail = window.click360User?.email || CEO_ADMIN_EMAIL;
+	    const ref = db.collection('accountAccess').doc(uid);
+	    const beforeSnap = await ref.get();
+	    if (!beforeSnap.exists) throw new Error('Esta cuenta ya no existe.');
+	    const beforeData = beforeSnap.data();
+	    const backupRef = db.collection('adminBackups').doc();
+	    await backupRef.set({
+	      action: 'ceo_admin_web_suspend', targetPath: ref.path, uid, actorEmail,
+	      beforeRevision: beforeData.revision || 0, beforeAccess: beforeData,
+	      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+	    });
+	    const auditRef = db.collection('adminAuditLogs').doc();
+	    const nextRevision = Number(beforeData.revision || 0) + 1;
+	    await db.runTransaction(async (tx) => {
+	      const freshSnap = await tx.get(ref);
+	      const freshData = freshSnap.data();
+	      if (Number(freshData.revision || 0) !== Number(beforeData.revision || 0)) throw new Error('La cuenta cambio; vuelve a intentar.');
+	      tx.update(ref, {
+	        status: 'suspended', revision: nextRevision, plan: freshData.plan, planCode: freshData.planCode,
+	        uid, businessId: uid, suspendedAt: firebase.firestore.FieldValue.serverTimestamp(), suspendedBy: actorEmail
+	      });
+	      tx.set(auditRef, {
+	        action: 'ceo_admin_web_suspend', targetPath: ref.path, uid, actorEmail,
+	        backupPath: backupRef.path, beforeRevision: beforeData.revision || 0, afterRevision: nextRevision,
+	        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+	      });
+	    });
+	    return { status: 'suspended', revision: nextRevision };
+	  };
+
+	  window.click360CeoAdminToggleWorkers = async function(uid, enabled) {
+	    assertCeoAdmin();
+	    const actorEmail = window.click360User?.email || CEO_ADMIN_EMAIL;
+	    const flagRef = db.collection('businesses').doc(uid).collection('featureFlags').doc('workers');
+	    await flagRef.update({
+	      enabled: !!enabled,
+	      enabledAt: enabled ? firebase.firestore.FieldValue.serverTimestamp() : null,
+	      enabledBy: enabled ? actorEmail : null,
+	      updatedBy: actorEmail,
+	      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+	    });
+	    const auditRef = db.collection('adminAuditLogs').doc();
+	    await auditRef.set({
+	      action: enabled ? 'ceo_admin_web_workers_enabled' : 'ceo_admin_web_workers_disabled',
+	      targetPath: flagRef.path, uid, actorEmail, createdAt: firebase.firestore.FieldValue.serverTimestamp()
+	    });
+	    return { enabled: !!enabled };
+	  };
+
 	  function syncError(code, message, details = {}) {
 	    const error = new Error(message);
 	    error.code = code;

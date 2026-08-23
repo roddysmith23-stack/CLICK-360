@@ -2150,7 +2150,7 @@ function parseMoney(value) {
 	      stopScanner(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
+	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView,ceoAdmin:ceoAdminView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2889,6 +2889,210 @@ function parseMoney(value) {
 	      <article><h2>Responsabilidades</h2><p>Los comprobantes y reportes son registros operativos. No sustituyen documentos tributarios oficiales, asesoria contable ni asesoramiento legal. Antes de una accion destructiva se recomienda generar y verificar un respaldo.</p></article>
 	    </section>`;
 	  }
+  let ceoAdminLastSearchEmail = '';
+  let ceoAdminSearchResult = null;
+  let ceoAdminSearchError = '';
+  const CEO_ADMIN_BUSINESS_TYPES = { retail: 'Retail / comercio', restaurant: 'Restaurante', distribution: 'Distribucion', services: 'Servicios', other: 'Otro' };
+  function ceoAdminUsageBar(label, used, limit) {
+    const domain = window.CLICK360_V16_DOMAIN;
+    const quota = domain?.evaluateQuota ? domain.evaluateQuota(used, limit) : null;
+    if (!quota) return '';
+    return quotaMeterHtml(label, quota, label.toLowerCase().includes('almacen') ? formatBytesApprox : (n) => String(n));
+  }
+  function ceoAdminResultHtml() {
+    if (ceoAdminSearchError) return `<section class="card sectionCard" style="margin-top:14px;border-color:rgba(255,92,98,.5);"><p class="cloudStatus">${escapeHtml(ceoAdminSearchError)}</p></section>`;
+    const result = ceoAdminSearchResult;
+    if (!result) return '';
+    if (!result.found) {
+      return `<section class="card sectionCard" style="margin-top:14px;"><h3>No encontrado</h3><p class="cloudStatus">${escapeHtml(result.email)} todavia no tiene cuenta en CLICK 360. Pide al cliente que abra la app e inicie sesion con Google al menos una vez (quedara en periodo de prueba automaticamente); luego vuelve a buscarlo aqui para activarle un plan.</p></section>`;
+    }
+    const access = result.accountAccess;
+    const domain = window.CLICK360_V16_DOMAIN;
+    const catalog = domain?.PLAN_CATALOG || {};
+    const currentPlanCode = domain?.normalizePlan?.(access.plan) || 'base';
+    const planEntry = catalog[currentPlanCode] || {};
+    const businessNames = (result.businesses || []).map((b) => b.name || b.id).filter(Boolean).join(', ') || '(sin negocios configurados)';
+    const businessType = result.accountAccess?.onboardingProfile?.businessType;
+    const addOnsRequested = result.accountAccess?.onboardingProfile?.addOnsRequested || [];
+    const workersOn = result.featureFlags?.enabled === true;
+    const businessUnitStatus = result.businessUnit?.status || null;
+    const isSuspended = access.status === 'suspended';
+    const statusLabels = { trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', suspended: 'Suspendido', founder_legacy: 'Founder', lifetime: 'Vitalicio' };
+    const statusLabel = statusLabels[access.status] || access.status || '-';
+    const limits = planEntry.limits || {};
+    return `<section class="card sectionCard" style="margin-top:14px;">
+        <h3>${escapeHtml(businessNames)}</h3>
+        <p class="fieldHint">UID: ${escapeHtml(result.uid)} &middot; ${escapeHtml(access.email || '')}</p>
+        <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top:8px;">
+          <div><small class="fieldHint">Estado</small><div><b>${escapeHtml(statusLabel)}</b></div></div>
+          <div><small class="fieldHint">Plan</small><div><b>${escapeHtml(planEntry.name || currentPlanCode)}</b></div></div>
+          <div><small class="fieldHint">Tipo de negocio</small><div>${escapeHtml(CEO_ADMIN_BUSINESS_TYPES[businessType] || 'No configurado')}</div></div>
+          <div><small class="fieldHint">Periodo</small><div>${escapeHtml(access.activationPeriod || '-')}</div></div>
+          <div><small class="fieldHint">Revision</small><div>${escapeHtml(String(access.revision ?? '-'))}</div></div>
+        </div>
+      </section>
+      <section class="card sectionCard">
+        <h3>Uso</h3>
+        ${ceoAdminUsageBar('Productos activos', result.usage?.productsActive || 0, limits.productsActive)}
+        ${ceoAdminUsageBar('Almacenamiento de imagenes', result.usage?.storageBytesApprox || 0, limits.storageBytes)}
+        <p class="fieldHint">Negocios en la cuenta: ${(result.businesses || []).length} / ${limits.businesses ?? '-'}</p>
+      </section>
+      <section class="card sectionCard">
+        <h3>Workers</h3>
+        <p class="cloudStatus">${businessUnitStatus === 'CUTOVER_VERIFIED'
+          ? `Migracion modular completa. Workers actualmente <b>${workersOn ? 'ACTIVADOS' : 'DESACTIVADOS'}</b>.`
+          : 'Este cliente todavia no tiene la migracion modular completa (CUTOVER_VERIFIED) -- activar Workers requiere correr primero scripts/worker-boundary-activate-tenant.mjs desde la CLI.'}</p>
+        ${businessUnitStatus === 'CUTOVER_VERIFIED' ? `<button class="btn ${workersOn ? 'silver' : 'primary'} block" id="ceoAdminToggleWorkersBtn" data-enable="${workersOn ? 'false' : 'true'}">${workersOn ? 'Desactivar Workers' : 'Activar Workers'}</button>` : ''}
+      </section>
+      ${addOnsRequested.length || (result.seatRequests || []).length || (result.capacityRequests || []).length ? `<section class="card sectionCard">
+        <h3>Add-ons y solicitudes</h3>
+        ${addOnsRequested.length ? `<p class="fieldHint">Add-ons registrados en el alta: ${addOnsRequested.map(escapeHtml).join(', ')}</p>` : ''}
+        ${(result.seatRequests || []).map((r) => `<div class="movement"><span><b>Cupo de Worker</b><br><small>${escapeHtml(r.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(r.status || 'pending')}</span></div>`).join('')}
+        ${(result.capacityRequests || []).map((r) => `<div class="movement"><span><b>${escapeHtml(r.kind === 'storage' ? 'Almacenamiento' : 'Productos')}</b><br><small>${escapeHtml(r.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(r.status || 'pending')}</span></div>`).join('')}
+      </section>` : ''}
+      <section class="card sectionCard">
+        <h3>Cambiar plan</h3>
+        <div id="ceoAdminActivationArea">${ceoAdminActivationFormHtml(currentPlanCode)}</div>
+      </section>
+      <section class="card sectionCard">
+        <h3>Cuenta</h3>
+        <button class="btn ${isSuspended ? 'primary' : 'danger'} block" id="ceoAdminSuspendBtn">${isSuspended ? 'Reactivar (elige un plan arriba y aplica)' : 'Suspender cuenta'}</button>
+        ${isSuspended ? '<p class="fieldHint">Para reactivar, selecciona un plan arriba y aplica -- eso cambia el estado de "suspended" a activo automaticamente.</p>' : '<p class="fieldHint">Suspender no borra ningun dato. El cliente queda en modo lectura hasta reactivar.</p>'}
+      </section>
+      ${(result.auditLog || []).length ? `<section class="card sectionCard"><h3>Actividad reciente (audit log)</h3>${(result.auditLog || []).map((entry) => `<div class="movement"><span><b>${escapeHtml(entry.action || '-')}</b><br><small>${escapeHtml(entry.actorEmail || '')}</small></span><span class="badge">${entry.createdAt?.toDate ? escapeHtml(entry.createdAt.toDate().toLocaleString('es-EC')) : ''}</span></div>`).join('')}</section>` : ''}`;
+  }
+  function ceoAdminActivationFormHtml(currentPlanCode) {
+    const domain = window.CLICK360_V16_DOMAIN;
+    const catalog = domain?.PLAN_CATALOG || {};
+    const planOptions = ['base', 'pro', 'business', 'enterprise', 'founder_legacy']
+      .map((code) => `<option value="${code}" ${code === currentPlanCode ? 'selected' : ''}>${escapeHtml(catalog[code]?.name || code)}</option>`).join('');
+    return `<form id="ceoAdminActivationForm" class="formGrid">
+      <div class="field"><label>Plan</label><select id="ceoAdminPlanSelect">${planOptions}</select></div>
+      <div class="field"><label>Periodo</label><select id="ceoAdminPeriodSelect"><option value="month">Mensual</option><option value="year" selected>Anual (recomendado)</option></select></div>
+      <div class="field"><label>Tipo de negocio (opcional)</label><select id="ceoAdminBusinessType"><option value="">No cambiar</option>${Object.entries(CEO_ADMIN_BUSINESS_TYPES).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('')}</select></div>
+      <div class="field full"><label>Add-ons (opcional, separados por coma)</label><input id="ceoAdminAddOns" placeholder="Ej. almacenamiento extra"></div>
+      <button class="btn primary block" type="submit">Ver preview</button>
+    </form>`;
+  }
+  function ceoAdminPreviewHtml(preview, uid, plan, period, businessType, addOns) {
+    const p = preview.proposed;
+    return `<div class="card sectionCard" style="border-color:rgba(244,196,49,.5);">
+      <h4>Este cliente recibira:</h4>
+      <p class="fieldHint">Plan <b>${escapeHtml(p.plan)}</b> &middot; estado <b>${escapeHtml(p.status)}</b> &middot; periodo ${escapeHtml(p.activationPeriod)}</p>
+      <p class="fieldHint">Negocios permitidos: ${escapeHtml(String(p.businessLimit))} &middot; Cupos de Workers maximos: ${escapeHtml(String(p.workerLimit))}</p>
+      ${p.onboardingProfile?.addOnsRequested?.length ? `<p class="fieldHint">Add-ons: ${p.onboardingProfile.addOnsRequested.map(escapeHtml).join(', ')}</p>` : ''}
+      <p class="fieldHint">Productos activos y almacenamiento se rigen por PLAN_CATALOG (ver Mi plan del cliente).</p>
+      <button class="btn primary block" id="ceoAdminConfirmActivationBtn" data-uid="${escapeHtml(uid)}" data-plan="${escapeHtml(plan)}" data-period="${escapeHtml(period)}" data-business-type="${escapeHtml(businessType)}" data-addons="${escapeHtml(addOns)}" data-before-revision="${preview.beforeRevision}">Confirmar y aplicar</button>
+      <button class="btn silver block" id="ceoAdminCancelActivationBtn">Cancelar</button>
+    </div>`;
+  }
+  function ceoAdminView() {
+    if (!window.click360IsPlatformAdmin?.()) {
+      return `<div class="pageHead"><div><h1>CEO Admin</h1></div></div><section class="card sectionCard"><p class="empty">No autorizado.</p></section>`;
+    }
+    return `<div class="pageHead"><div><h1>CEO Admin</h1><p>Buscar y administrar clientes. Cada cambio queda respaldado y auditado.</p></div></div>
+      <section class="card sectionCard">
+        <div class="field"><label>Correo del cliente</label><input id="ceoAdminSearchEmail" type="email" placeholder="cliente@gmail.com" value="${escapeHtml(ceoAdminLastSearchEmail)}"></div>
+        <button class="btn primary block" id="ceoAdminSearchBtn">Buscar cliente</button>
+      </section>
+      ${ceoAdminResultHtml()}`;
+  }
+  function bindCeoAdmin() {
+    if (!window.click360IsPlatformAdmin?.()) return;
+    $('#ceoAdminSearchBtn').onclick = async () => {
+      const email = $('#ceoAdminSearchEmail').value.trim();
+      if (!email) return toast('Ingresa un correo.', 'err');
+      const btn = $('#ceoAdminSearchBtn');
+      btn.disabled = true;
+      try {
+        ceoAdminLastSearchEmail = email;
+        ceoAdminSearchError = '';
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(email);
+      } catch (error) {
+        ceoAdminSearchError = error.message || 'No se pudo buscar el cliente.';
+        ceoAdminSearchResult = null;
+      } finally {
+        btn.disabled = false;
+        renderApp('ceoAdmin');
+      }
+    };
+    $('#ceoAdminActivationForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const plan = $('#ceoAdminPlanSelect').value;
+      const period = plan === 'founder_legacy' ? 'historical' : $('#ceoAdminPeriodSelect').value;
+      const businessType = $('#ceoAdminBusinessType').value;
+      const addOns = $('#ceoAdminAddOns').value;
+      const submitBtn = event.target.querySelector('button[type=submit]');
+      submitBtn.disabled = true;
+      try {
+        const preview = await window.click360CeoAdminPreviewActivation({
+          uid: ceoAdminSearchResult.uid, plan, period, businessType,
+          addOns: addOns.split(',').map((s) => s.trim()).filter(Boolean)
+        });
+        $('#ceoAdminActivationArea').innerHTML = ceoAdminPreviewHtml(preview, ceoAdminSearchResult.uid, plan, period, businessType, addOns);
+        bindCeoAdminPreviewButtons();
+      } catch (error) {
+        toast(error.message || 'No se pudo generar la vista previa.', 'err');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+    $('#ceoAdminSuspendBtn')?.addEventListener('click', async () => {
+      if (!confirm('Confirmas suspender esta cuenta? El cliente quedara en modo lectura; nada se borra.')) return;
+      const btn = $('#ceoAdminSuspendBtn');
+      btn.disabled = true;
+      try {
+        await window.click360CeoAdminSuspend(ceoAdminSearchResult.uid);
+        toast('Cuenta suspendida');
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(ceoAdminLastSearchEmail);
+        renderApp('ceoAdmin');
+      } catch (error) {
+        toast(error.message || 'No se pudo suspender.', 'err');
+        btn.disabled = false;
+      }
+    });
+    $('#ceoAdminToggleWorkersBtn')?.addEventListener('click', async (event) => {
+      const enable = event.currentTarget.dataset.enable === 'true';
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      try {
+        await window.click360CeoAdminToggleWorkers(ceoAdminSearchResult.uid, enable);
+        toast(enable ? 'Workers activados' : 'Workers desactivados');
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(ceoAdminLastSearchEmail);
+        renderApp('ceoAdmin');
+      } catch (error) {
+        toast(error.message || 'No se pudo cambiar Workers.', 'err');
+        btn.disabled = false;
+      }
+    });
+  }
+  function bindCeoAdminPreviewButtons() {
+    $('#ceoAdminCancelActivationBtn')?.addEventListener('click', () => {
+      $('#ceoAdminActivationArea').innerHTML = ceoAdminActivationFormHtml(window.CLICK360_V16_DOMAIN?.normalizePlan?.(ceoAdminSearchResult?.accountAccess?.plan) || 'base');
+      bindCeoAdmin();
+    });
+    $('#ceoAdminConfirmActivationBtn')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      try {
+        const { uid, plan, period, beforeRevision } = btn.dataset;
+        const businessType = btn.dataset.businessType;
+        const addOns = btn.dataset.addons;
+        await window.click360CeoAdminApplyActivation({
+          uid, plan, period, businessType,
+          addOns: addOns.split(',').map((s) => s.trim()).filter(Boolean),
+          expectedRevision: Number(beforeRevision)
+        });
+        toast('Plan actualizado y auditado');
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(ceoAdminLastSearchEmail);
+        renderApp('ceoAdmin');
+      } catch (error) {
+        toast(error.message || 'No se pudo aplicar el cambio.', 'err');
+        btn.disabled = false;
+      }
+    });
+  }
+
 	  function crmCustomers() {
 	    const businessId = currentBusiness()?.id;
       const legacyBusinessId = state.settings?.legacyDataBusinessId;
@@ -4055,6 +4259,7 @@ function parseMoney(value) {
 	  }
 
 			function moreView(){
+			    const ceoAdminTool = window.click360IsPlatformAdmin?.() ? `<button class="card bigRow" data-more="ceoAdmin"><span>${icon('shield-check')} CEO Admin</span>${icon('chevron-right')}</button>` : '';
 			    const ownerTools = isOwnerUser() ? `
 			      <button class="card bigRow" data-more="debtors"><span>${icon('hand-coins')} Apartados</span>${icon('chevron-right')}</button>
 			      <button class="card bigRow" data-more="activity"><span>${icon('history')} Actividad</span>${icon('chevron-right')}</button>
@@ -4063,6 +4268,7 @@ function parseMoney(value) {
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
 		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
 			    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
+			      ${ceoAdminTool}
 			      ${ownerTools}
 			      <button class="card bigRow" data-more="printing"><span>${icon('printer')} Centro de impresión</span>${icon('chevron-right')}</button>
 			      <button class="card bigRow" data-more="access"><span>${icon('badge-dollar-sign')} Mi plan y acceso</span>${icon('chevron-right')}</button>
@@ -4994,6 +5200,7 @@ function parseMoney(value) {
     if(r==='finance') bindFinance();
     if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();
+	    if(r==='ceoAdmin') bindCeoAdmin();
 	    if(r==='printing') bindPrinting();
 	  }
   function bindDebtors() {
