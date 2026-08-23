@@ -59,6 +59,9 @@ assert(/quota\?\.productsActive\?\.blocked.*return toast\(quotaBlockMessage/.tes
 assert(app.includes('function tenantAccountPlan()') && app.includes('function tenantUsageSnapshot()') && app.includes('function tenantQuotaStatus()'), 'the three quota primitives must exist');
 assert(app.includes('function resolvedPlanFeatures('), 'Mi plan must resolve "Todo X"-style catalog shorthand into a real included/not-included feature list, not show marketing shorthand to the customer');
 assert(app.includes("data-request-plan=\"${code}\" data-request-period=\"custom\""), 'the Enterprise plan card must request a quote (period=custom) instead of fabricating a self-serve price');
+// r36 Section 4: Founder accounts see their permanent-license card, not the purchasable plan grid or the WhatsApp purchase CTA.
+assert(/isFounder \? `<section class="card sectionCard"[^`]*Tu licencia Founder/.test(app), 'a Founder account must be shown a dedicated permanent-license card');
+assert(/\$\{!isFounder \? `<a href="\$\{escapeHtml\(purchaseWhatsAppUrl\(\)\)\}"/.test(app), 'the WhatsApp purchase CTA must be hidden for Founder accounts (no upsell)');
 
 // ── Structural: capacity-request path matches field-for-field, client -> rules ──
 const service = fs.readFileSync('firebase-service.js', 'utf8');
