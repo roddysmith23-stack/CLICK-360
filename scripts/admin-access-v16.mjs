@@ -107,11 +107,13 @@ if (command === 'inspect') {
 
 const plan = String(args.plan || 'base').toLowerCase();
 const period = String(args.period || 'historical').toLowerCase();
+const businessType = String(args['business-type'] || '');
+const addOnsRequested = String(args.addons || '').split(',').map((item) => item.trim()).filter(Boolean);
 const expectedConfirmation = command === 'activate'
   ? activationConfirmation(uid, plan, period)
   : suspendConfirmation(uid);
 inspection.proposed = command === 'activate'
-  ? activationFields({ existing: account || {}, authUser, actorEmail, plan, period })
+  ? activationFields({ existing: account || {}, authUser, actorEmail, plan, period, businessType, addOnsRequested })
   : { status: 'suspended', revision: Math.max(0, Number(account?.revision || 0)) + 1, suspendedBy: actorEmail };
 inspection.requiredConfirmation = expectedConfirmation;
 
@@ -157,7 +159,7 @@ await db.runTransaction(async (transaction) => {
   let patch;
   if (command === 'activate') {
     patch = {
-      ...activationFields({ existing: currentAccount || {}, authUser, actorEmail, plan, period }),
+      ...activationFields({ existing: currentAccount || {}, authUser, actorEmail, plan, period, businessType, addOnsRequested }),
       activatedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       lastSeenAt: currentAccount?.lastSeenAt || FieldValue.serverTimestamp(),

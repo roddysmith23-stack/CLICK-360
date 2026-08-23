@@ -25,9 +25,36 @@ assert.equal(fields.source, 'historical_buyer_recovery');
 assert.equal(fields.revision, 4);
 assert.equal(fields.businessId, authUser.uid);
 assert.equal(fields.businessLimit, 1);
-assert.equal(fields.workerLimit, 2);
+// Basic's worker ceiling was raised 2->5 (commercial MVP: add-on revenue
+// available even on the entry tier) -- see PLAN_CATALOG.base in v16-domain.js.
+assert.equal(fields.workerLimit, 5);
 assert.throws(() => activationFields({ existing: {}, authUser, actorEmail: 'roddysmithceo@gmail.com', plan: 'pro', period: 'lifetime' }));
+assert.throws(() => activationFields({ existing: {}, authUser, actorEmail: 'roddysmithceo@gmail.com', plan: 'business', period: 'lifetime' }));
+assert.throws(() => activationFields({ existing: {}, authUser, actorEmail: 'roddysmithceo@gmail.com', plan: 'unknown_tier', period: 'month' }));
+
+const businessFields = activationFields({ existing: {}, authUser, actorEmail: 'roddysmithceo@gmail.com', plan: 'business', period: 'year' });
+assert.equal(businessFields.status, 'paid_business');
+assert.equal(businessFields.businessLimit, 10);
+assert.equal(businessFields.workerLimit, 25);
+
+const enterpriseFields = activationFields({ existing: {}, authUser, actorEmail: 'roddysmithceo@gmail.com', plan: 'enterprise', period: 'year' });
+assert.equal(enterpriseFields.status, 'paid_enterprise');
+assert.equal(enterpriseFields.businessLimit, 25);
+
+const founderFields = activationFields({ existing: { revision: 7 }, authUser, actorEmail: 'roddysmithceo@gmail.com', plan: 'founder_legacy', period: 'historical' });
+assert.equal(founderFields.status, 'founder_legacy');
+assert.equal(founderFields.plan, 'founder_legacy');
+assert.equal(founderFields.planCode, 'founder_legacy');
+assert.equal(founderFields.lifetime, false);
+assert.equal(founderFields.source, 'founder_legacy_grant');
+assert.equal(founderFields.businessLimit, 10);
+assert.equal(founderFields.workerLimit, 25);
+assert.equal(founderFields.revision, 8);
+// founder_legacy is a permanent grant -- it has no billing period concept.
+assert.throws(() => activationFields({ existing: {}, authUser, actorEmail: 'roddysmithceo@gmail.com', plan: 'founder_legacy', period: 'year' }));
+
 assert.equal(activationConfirmation(authUser.uid, 'base', 'historical'), 'ACTIVATE:uid-shary:BASE:HISTORICAL');
+assert.equal(activationConfirmation(authUser.uid, 'founder_legacy', 'historical'), 'ACTIVATE:uid-shary:FOUNDER_LEGACY:HISTORICAL');
 assert.equal(suspendConfirmation(authUser.uid), 'SUSPEND:uid-shary');
 assert.equal(firestoreHash({ b: 2, a: 1 }), firestoreHash({ a: 1, b: 2 }));
 

@@ -61,8 +61,51 @@ assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: false, lo
 assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, localPersisted: true, online: true }).mode, 'local_and_cloud');
 assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, indexedPersisted: true, online: true }).mode, 'local_and_cloud');
 assert.equal(domain.initialTenantBootstrapDecision({ snapshotPrepared: true, onlineOnlySafe: true, online: true }).mode, 'cloud_only');
-assert.deepEqual(domain.planLimits('base'), { businesses: 1, workers: 2 });
+// Commercial MVP: workerLimit now reflects workerSeatsMax (the paid-add-on
+// ceiling), not workerSeatsIncluded (still 2, unchanged) -- Basic can now buy
+// add-on seats up to 5 rather than being hard-capped at the 2 free seats.
+assert.deepEqual(domain.planLimits('base'), { businesses: 1, workers: 5 });
 assert.deepEqual(domain.planLimits('pro'), { businesses: 5, workers: 10 });
+assert.deepEqual(domain.planLimits('business'), { businesses: 10, workers: 25 });
+assert.equal(domain.planLimits('enterprise').workers, 9999, 'enterprise workerSeatsMax is null (unlimited) -> projected as a large ceiling for the legacy workerLimit gate');
+
+// Commercial MVP: canonical plan catalog / entitlements / quota evaluation
+assert.equal(domain.PLAN_CATALOG.base.name, 'Basic', 'internal code stays "base"; only the display name changes to Basic');
+assert.equal(domain.PLAN_CATALOG.base.prices.month, 40, 'Basic keeps the pre-existing Base price -- no silent change for already-billed customers');
+assert.equal(domain.PLAN_CATALOG.pro.prices.month, 59.99);
+assert.equal(domain.PLAN_CATALOG.business.prices.month, 99.99);
+assert.equal(domain.PLAN_CATALOG.business.prices.year, 999);
+assert.equal(domain.PLAN_CATALOG.enterprise.prices.custom, true, 'Enterprise has no fixed price -- cotizacion');
+assert.equal(domain.PLAN_CATALOG.founder_legacy.prices.historical, true, 'Founder legacy has no billing price');
+assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.productsActive, 2000, 'Founder quota derived from real data-scale measurement, well above SHARY\'s current usage');
+assert.equal(domain.planEntitlements('unknown_code').code, 'base', 'unknown plan codes fall back to base, never throw');
+assert.equal(domain.planEntitlements('BUSINESS').code, 'business', 'plan code lookup is case-insensitive');
+
+assert.deepEqual(
+  { level: domain.evaluateQuota(50, 150).level, blocked: domain.evaluateQuota(50, 150).blocked },
+  { level: 'ok', blocked: false }
+);
+assert.equal(domain.evaluateQuota(105, 150).level, 'notice', '70% threshold');
+assert.equal(domain.evaluateQuota(128, 150).level, 'warning', '85% threshold');
+assert.equal(domain.evaluateQuota(143, 150).level, 'critical', '95% threshold');
+assert.equal(domain.evaluateQuota(150, 150).level, 'blocked');
+assert.equal(domain.evaluateQuota(150, 150).blocked, true, 'at 100% new-resource creation blocks');
+assert.equal(domain.evaluateQuota(999999, 150).blocked, true, 'over quota still blocks (never silently allows past 100%)');
+assert.equal(domain.evaluateQuota(50, null).level, 'unlimited', 'null limit (Enterprise workerSeatsMax) never blocks');
+assert.equal(domain.evaluateQuota(50, null).blocked, false);
+assert.equal(domain.evaluateQuota(50, 0).blocked, false, 'a limit of 0 is treated as unlimited, not "always blocked" -- 0 means "not configured"');
+
+// founder_legacy must be a real, permanent, non-readonly access mode with its
+// own plan code -- distinct from the internal-only 'founder' status, and
+// must NEVER silently fall through to the deny-by-default branch.
+const founderLegacyAccess = domain.evaluateEntitlement({ status: 'founder_legacy' }, startedAt);
+assert.equal(founderLegacyAccess.allowed, true);
+assert.equal(founderLegacyAccess.readOnly, false);
+assert.equal(founderLegacyAccess.mode, 'founder_legacy');
+assert.equal(founderLegacyAccess.plan, 'founder_legacy');
+assert.equal(domain.evaluateEntitlement({ status: 'active', plan: 'business' }, startedAt).plan, 'business');
+assert.equal(domain.evaluateEntitlement({ status: 'paid_business' }, startedAt).plan, 'business');
+assert.equal(domain.evaluateEntitlement({ status: 'paid_enterprise' }, startedAt).plan, 'enterprise');
 
 const included = domain.calculateCart([{ id: 'a', qty: 1, price: 112, taxMode: 'included' }], 0, { enabled: true, rate: 12, priceMode: 'included' });
 assert.equal(included.subtotal, 100);

@@ -22,7 +22,11 @@ jobs:
           base="$BASE_SHA"
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then base="HEAD~1"; fi
           changed="$(git diff --name-only "$base" "$GITHUB_SHA")"
-          if printf '%s\n' "$changed" | grep -Eq '^(tools/admin/|scripts/(admin-access-v16|audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs)'; then
+          # admin-access-v16.mjs intentionally excluded: the Commercial MVP
+          # release scopes in CEO Admin activation/onboarding tooling as a
+          # reviewed, first-class part of this release. See the matching
+          # change in qa-1-0-5-web-release-harness.cjs for the same reasoning.
+          if printf '%s\n' "$changed" | grep -Eq '^(tools/admin/|scripts/(audit-firestore-legacy|migrate-legacy-v9-to-v10|normalize-approved-owner-access)\.mjs)'; then
             echo 'admin=true' >> "$GITHUB_OUTPUT"
           else
             echo 'admin=false' >> "$GITHUB_OUTPUT"

@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r34-workers';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r35-commercial-mvp';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -1585,6 +1585,73 @@ function parseMoney(value) {
     const policy = businessPolicies(business);
     return [policy.layaway, policy.pickup, policy.returns, policy.damages, policy.additional].filter(Boolean).join('\n');
   }
+  // Commercial MVP: real usage snapshot for the OWNER's account (not a single
+  // business unit -- plan quotas are account-wide, matching how businessLimit/
+  // workerLimit already work). storageBytes is an approximation (base64
+  // string length, ~0.75x real decoded bytes) -- documented as such wherever
+  // shown, never presented as an exact byte count.
+  function tenantAccountPlan() {
+    return window.CLICK360_V16_DOMAIN?.normalizePlan(accessInfo()?.plan) || 'base';
+  }
+  function tenantUsageSnapshot() {
+    const products = Array.isArray(state.products) ? state.products : [];
+    const storageBytes = products.reduce((sum, product) => sum + (typeof product.imageData === 'string' ? product.imageData.length : 0), 0);
+    const workers = Array.isArray(state.settings?.workers) ? state.settings.workers.length : 0;
+    return {
+      productsActive: products.length,
+      storageBytes,
+      workerSeatsUsed: workers,
+      businessesUsed: Array.isArray(state.businesses) ? state.businesses.length : 0
+    };
+  }
+  // { productsActive, storageBytes, workerSeats, businesses } -> each an
+  // evaluateQuota() result. UI reads .level for notice/warning/critical
+  // styling; creation flows read .blocked to gate NEW-resource creation only.
+  function tenantQuotaStatus() {
+    const domain = window.CLICK360_V16_DOMAIN;
+    if (!domain) return null;
+    const entitlements = domain.planEntitlements(tenantAccountPlan());
+    const usage = tenantUsageSnapshot();
+    return {
+      plan: entitlements,
+      usage,
+      productsActive: domain.evaluateQuota(usage.productsActive, entitlements.limits.productsActive),
+      storageBytes: domain.evaluateQuota(usage.storageBytes, entitlements.limits.storageBytes),
+      workerSeats: domain.evaluateQuota(usage.workerSeatsUsed, entitlements.limits.workerSeatsMax),
+      businesses: domain.evaluateQuota(usage.businessesUsed, entitlements.limits.businesses)
+    };
+  }
+  function quotaBlockMessage(quota, resourceLabel) {
+    if (!quota || !quota.blocked) return '';
+    return `Tu plan ${resourceLabel} alcanzo el limite (${quota.used}/${quota.limit}). Puedes seguir vendiendo y usando lo existente; para crear mas, mejora tu plan o solicita mas capacidad desde "Mi plan".`;
+  }
+  function formatBytesApprox(bytes) {
+    const number = Math.max(0, Number(bytes) || 0);
+    if (number < 1024 * 1024) return `${(number / 1024).toFixed(0)} KB`;
+    return `${(number / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  function quotaMeterHtml(label, quota, formatValue = (n) => String(n)) {
+    if (!quota) return '';
+    const unlimited = quota.limit == null;
+    return `<div class="quotaMeter level-${escapeHtml(quota.level)}">
+      <div class="quotaMeterHead"><b>${escapeHtml(label)}</b><small>${escapeHtml(formatValue(quota.used))} / ${unlimited ? 'Ilimitado' : escapeHtml(formatValue(quota.limit))}</small></div>
+      ${unlimited ? '' : `<progress max="100" value="${Math.min(100, quota.percent)}"></progress>`}
+      ${quota.blocked ? `<p class="quotaMeterNote">${escapeHtml(quotaBlockMessage(quota, label.toLowerCase()))}</p>` : ''}
+    </div>`;
+  }
+  // "Todo Basic"/"Todo Pro"-style entries in PLAN_CATALOG[code].features are
+  // marketing shorthand for "everything the tier below already has" -- this
+  // walks the inheritance chain and resolves each tier's real, concrete
+  // feature list so "Mi plan" can show an honest included/not-included diff.
+  const PLAN_TIER_PARENT = { pro: 'base', business: 'pro', enterprise: 'business', founder_legacy: 'business' };
+  function resolvedPlanFeatures(code, catalog, seen = new Set()) {
+    if (!catalog[code] || seen.has(code)) return [];
+    seen.add(code);
+    const parent = PLAN_TIER_PARENT[code];
+    const inherited = parent ? resolvedPlanFeatures(parent, catalog, seen) : [];
+    const own = (catalog[code].features || []).filter((feature) => !/^Todo /i.test(feature));
+    return [...new Set([...inherited, ...own])];
+  }
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
@@ -2138,7 +2205,7 @@ function parseMoney(value) {
           <img src="${HOME_BANNER_SRC}" alt="Banner CLICK 360 para negocios" onerror="this.closest('.homeBannerFrame').style.display='none'">
         </div>
         <p class="homeBannerPhrase">${todayPhrase}</p>
-        <a href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" rel="noopener noreferrer" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
+        <a href="${supportWhatsAppUrl('Hola CLICK 360, necesito informaci\u00f3n')}" target="_blank" rel="noopener noreferrer" class="btn" style="border:1px solid #25D366;color:#25D366;background:transparent;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;">\uD83D\uDCAC Contactar Soporte CLICK 360</a>
       </section>
       <section class="split" style="margin-top:14px">
 	        <div class="card sectionCard"><h3>\u00DAltimas ventas</h3>${sales.slice(-3).reverse().map(s=>`<div class="movement"><span>${saleItems(s).map(i=>escapeHtml(i.name)).join(', ') || 'Venta sin detalle'}</span><b class="pos">${fmt(s.total)}</b></div>`).join('') || '<p class="empty">A\u00fan no hay ventas hoy.</p>'}</div>
@@ -2663,9 +2730,16 @@ function parseMoney(value) {
     ['activityDate', 'activityActor', 'activityModule', 'activityAction'].forEach((id) => $('#' + id)?.addEventListener('change', filter));
   }
 
+			  // Single source of truth for the CLICK 360 support WhatsApp number --
+			  // every support/purchase/capacity-request button must build its link
+			  // through this helper, never re-hardcode the number.
+			  const CLICK360_SUPPORT_WHATSAPP = '593969399562';
+			  function supportWhatsAppUrl(message) {
+			    return `https://wa.me/${CLICK360_SUPPORT_WHATSAPP}?text=${encodeURIComponent(message)}`;
+			  }
 			  function purchaseWhatsAppUrl() {
 	    const plan = accessInfo().plan || 'base';
-	    return `https://wa.me/593969399562?text=${encodeURIComponent(`Hola CLICK 360, quiero activar mi plan ${plan}. Negocio: ${currentBusiness()?.name || ''}. Correo: ${authUser()?.email || ''}.`)}`;
+	    return supportWhatsAppUrl(`Hola CLICK 360, quiero activar mi plan ${plan}. Negocio: ${currentBusiness()?.name || ''}. Correo: ${authUser()?.email || ''}.`);
 		  }
 		  function trialCountdown() {
 		    return window.CLICK360_V16_DOMAIN?.trialRemaining?.(accessInfo(), Date.now())
@@ -2693,43 +2767,111 @@ function parseMoney(value) {
 	    if (access.readOnly) return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(255,92,98,.6);"><b style="color:#ff8d92;">Tu prueba termino: tus datos estan protegidos en modo lectura.</b><a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn primary block" style="margin-top:10px;">Activar plan por WhatsApp</a></section>`;
 		    return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b style="color:#37d57e;">Plan CLICK 360 activo</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Plan ${escapeHtml((access.plan || 'base').toUpperCase())} con acceso completo.</p></section>`;
 	  }
+	  const PLAN_UPGRADE_LADDER = { base: 'pro', pro: 'business', business: 'enterprise' };
 	  function accessView() {
 	    const access = accessInfo();
-	    const catalog = window.CLICK360_V16_DOMAIN?.PLAN_CATALOG || {};
+	    const domain = window.CLICK360_V16_DOMAIN;
+	    const catalog = domain?.PLAN_CATALOG || {};
 	    const requests = state.settings?.activationRequests || [];
-	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', trial_expired: 'Modo lectura', paid_base: 'Plan Base', paid_pro: 'Plan Pro', lifetime: 'Acceso de por vida', member: 'Trabajador' };
+	    const capacityRequests = state.settings?.capacityRequests || [];
+	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', trial_expired: 'Modo lectura', paid_base: 'Plan Basic', paid_pro: 'Plan Pro', paid_business: 'Plan Business', paid_enterprise: 'Plan Enterprise', founder_legacy: 'Fundador (Founder)', lifetime: 'Acceso de por vida', member: 'Trabajador' };
+	    const currentPlanCode = domain?.normalizePlan?.(access.plan) || 'base';
+	    const isFounder = access.mode === 'founder' || currentPlanCode === 'founder_legacy';
+	    const quota = tenantQuotaStatus();
+	    const currentPlanEntry = catalog[currentPlanCode] || {};
 	    const periodOptions = (code) => `<option value="month">1 mes</option><option value="quarter">3 meses</option><option value="semester">6 meses</option><option value="year">1 año</option>${code === 'base' ? '<option value="lifetime">De por vida</option>' : ''}`;
-	    const basePrices = catalog.base?.prices || {};
-	    const planPriceSummary = (code) => code === 'base' ? `<div class="planPriceSummary neuroPrice" aria-label="Precios Plan Base">
-	      <div class="neuPlanTier">
-	        <div class="neuTierLabel muted">Mensual</div>
-	        <div class="neuTierPrice"><s class="neuStrike">${fmt(basePrices.month || 40)}/mes</s></div>
-	        <div class="neuTierNote muted">Precio regular</div>
-	      </div>
-	      <div class="neuPlanTier neuStar">
-	        <div class="neuBadge">⭐ AHORRA 50%</div>
-	        <div class="neuTierLabel">Anual — Más elegido</div>
-	        <div class="neuTierPrice"><b class="neuBig">${fmt((basePrices.year || 240)/12)}<small>/mes</small></b></div>
-	        <div class="neuTierNote">${fmt(basePrices.year || 240)} al año · un solo pago</div>
-	      </div>
-	      <div class="neuPlanTier">
-	        <div class="neuTierLabel muted">Vitalicio</div>
-	        <div class="neuTierPrice"><b>${fmt(basePrices.lifetime || 600)}</b></div>
-	        <div class="neuTierNote muted">Pago único · para siempre</div>
-	      </div>
-	      <p class="neuCopy">🚀 El 87% de nuestros clientes elige el plan anual</p>
-	    </div>` : '';
-	    return `<div class="pageHead"><div><h1>Mi plan</h1><p>Acceso, funciones y activacion.</p></div></div>
+	    const planPriceSummary = (code) => {
+	      const prices = catalog[code]?.prices || {};
+	      if (prices.custom) return `<p class="cloudStatus">Precio segun necesidad: numero de negocios, catalogo de productos y cupos de Workers.</p>`;
+	      if (!prices.year) return '';
+	      return `<div class="planPriceSummary neuroPrice" aria-label="Precios ${escapeHtml(catalog[code]?.name || code)}">
+	        <div class="neuPlanTier"><div class="neuTierLabel muted">Mensual</div><div class="neuTierPrice"><s class="neuStrike">${fmt(prices.month || 0)}/mes</s></div><div class="neuTierNote muted">Precio regular</div></div>
+	        <div class="neuPlanTier neuStar"><div class="neuBadge">⭐ RECOMENDADO</div><div class="neuTierLabel">Anual</div><div class="neuTierPrice"><b class="neuBig">${fmt(prices.year / 12)}<small>/mes</small></b></div><div class="neuTierNote">${fmt(prices.year)} al año · un solo pago</div></div>
+	        ${prices.lifetime ? `<div class="neuPlanTier"><div class="neuTierLabel muted">Vitalicio</div><div class="neuTierPrice"><b>${fmt(prices.lifetime)}</b></div><div class="neuTierNote muted">Pago único · para siempre</div></div>` : ''}
+	      </div>`;
+	    };
+	    const includedFeatures = resolvedPlanFeatures(currentPlanCode, catalog);
+	    const nextCode = PLAN_UPGRADE_LADDER[currentPlanCode];
+	    const notIncludedFeatures = nextCode ? resolvedPlanFeatures(nextCode, catalog).filter((feature) => !includedFeatures.includes(feature)) : [];
+	    const renewalHtml = access.expiresAtMs ? `<div><small class="fieldHint">Proxima renovacion</small><div>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate?.(access.expiresAtMs, 'es-EC', businessTimeZone(), true) || new Date(access.expiresAtMs).toLocaleDateString('es-EC'))}</div></div>` : '';
+	    return `<div class="pageHead"><div><h1>Mi plan y acceso</h1><p>Tu plan, tus cupos y como ampliarlos.</p></div></div>
 	      ${accessBannerHtml()}
-	      <section class="card sectionCard"><h3>${escapeHtml(labels[access.mode] || `Plan ${(access.plan || 'base').toUpperCase()}`)}</h3>
-	        <p class="cloudStatus">${access.mode === 'trial_active' ? 'Dispones de todas las funciones Base durante siete dias.' : access.readOnly ? 'Puedes consultar tu informacion; la edicion se habilita al activar un plan.' : 'Tu acceso esta activo.'}</p>
+	      <section class="card sectionCard">
+	        <h3>${escapeHtml(labels[access.mode] || currentPlanEntry.name || `Plan ${currentPlanCode.toUpperCase()}`)}</h3>
+	        <p class="cloudStatus">${isFounder ? 'Licencia fundador: acceso permanente a las funciones ya adquiridas, sin mensualidad por ellas.' : access.mode === 'trial_active' ? 'Dispones de todas las funciones Basic durante siete dias.' : access.readOnly ? 'Puedes consultar tu informacion; la edicion se habilita al activar un plan.' : 'Tu acceso esta activo.'}</p>
+	        <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top:10px;">
+	          <div><small class="fieldHint">Plan</small><div><b>${escapeHtml(currentPlanEntry.name || currentPlanCode)}</b></div></div>
+	          ${renewalHtml}
+	        </div>
+	      </section>
+	      <section class="card sectionCard">
+	        <h3>Uso y cupos</h3>
+	        ${quota ? `
+	          ${quotaMeterHtml('Productos activos', quota.productsActive)}
+	          ${quotaMeterHtml('Almacenamiento de imagenes', quota.storageBytes, formatBytesApprox)}
+	          ${quotaMeterHtml('Cupos de Workers', quota.workerSeats)}
+	          ${quotaMeterHtml('Negocios en tu cuenta', quota.businesses)}
+	          <p class="fieldHint">El almacenamiento mostrado es un estimado. Llegar al limite nunca bloquea vender, cobrar, imprimir ni consultar lo existente: solo pausa la creacion de recursos nuevos hasta ampliar el plan.</p>
+	        ` : '<p class="empty">No se pudo calcular el uso todavia.</p>'}
+	        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+	          <button type="button" class="btn silver" id="requestCapacityBtn">Solicitar más capacidad</button>
+	          <button type="button" class="btn silver" id="goToWorkersBtn">Solicitar Worker adicional</button>
+	        </div>
+	      </section>
+	      <section class="card sectionCard">
+	        <h3>Funciones de tu plan</h3>
+	        <div class="planFeatureCols">
+	          <div><b>Incluidas</b><ul>${includedFeatures.map((feature) => `<li>${escapeHtml(feature)}</li>`).join('') || '<li>-</li>'}</ul></div>
+	          ${notIncludedFeatures.length ? `<div><b>No incluidas en tu plan</b><ul class="notIncluded">${notIncludedFeatures.map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul></div>` : ''}
+	        </div>
 	      </section>
 	      <section class="planGrid" style="margin-top:14px;">
-	        ${['base','pro'].map((code) => { const item = catalog[code] || {}; return `<article class="card planCard"><div><span class="badge gold">${escapeHtml(code.toUpperCase())}</span><h3>${escapeHtml(item.name || code)}</h3><strong>${fmt(item.prices?.month || 0)} <small>/ mes</small></strong>${planPriceSummary(code)}</div><ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul><label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${code === 'pro' ? 'primary' : 'silver'} block" data-request-plan="${code}">Solicitar ${escapeHtml(item.name || code)}</button></article>`; }).join('')}
+	        ${['base','pro','business','enterprise'].map((code) => {
+	          const item = catalog[code] || {};
+	          const isCurrent = code === currentPlanCode;
+	          const isQuote = !!item.prices?.custom;
+	          return `<article class="card planCard"${isCurrent ? ' style="border-color:rgba(55,213,126,.5);"' : ''}>
+	            <div>
+	              <span class="badge gold">${escapeHtml(code.toUpperCase())}</span>${isCurrent ? ' <span class="badge">Tu plan actual</span>' : ''}
+	              <h3>${escapeHtml(item.name || code)}</h3>
+	              ${isQuote ? '<strong>Cotización</strong>' : `<strong>${fmt(item.prices?.month || 0)} <small>/ mes</small></strong>`}
+	              ${planPriceSummary(code)}
+	            </div>
+	            <ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul>
+	            ${isQuote
+	              ? `<button class="btn primary block" data-request-plan="${code}" data-request-period="custom">Solicitar cotización</button>`
+	              : `<label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${isCurrent ? 'silver' : 'primary'} block" data-request-plan="${code}">${isCurrent ? 'Cambiar periodo' : `Solicitar ${escapeHtml(item.name || code)}`}</button>`}
+	          </article>`;
+	        }).join('')}
 	      </section>
-	      <section class="card printerOfferCard"><div><span class="badge gold">Equipo opcional</span><h3>Impresora térmica de etiquetas</h3><p>Lista para etiquetas QR y comprobantes; incluye envío y un rollo de papel adhesivo de cortesía.</p></div><strong>${fmt(65)}</strong><a class="btn primary" target="_blank" rel="noopener noreferrer" href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, quiero información sobre la impresora térmica de etiquetas de $65.')}">Consultar por WhatsApp</a></section>
-	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
-	      ${access.mode !== 'founder' ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="margin-top:14px;border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}`;
+	      <section class="card printerOfferCard"><div><span class="badge gold">Equipo opcional</span><h3>Impresora térmica de etiquetas</h3><p>Lista para etiquetas QR y comprobantes; incluye envío y un rollo de papel adhesivo de cortesía.</p></div><strong>${fmt(65)}</strong><a class="btn primary" target="_blank" rel="noopener noreferrer" href="${supportWhatsAppUrl('Hola CLICK 360, quiero información sobre la impresora térmica de etiquetas de $65.')}">Consultar por WhatsApp</a></section>
+	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de plan</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
+	      ${capacityRequests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de capacidad</h3>${capacityRequests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(request.kind === 'storage' ? 'Almacenamiento' : 'Productos')}</b><br><small>${escapeHtml(request.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
+	      ${!isFounder ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="margin-top:14px;border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}`;
+	  }
+	  function openCapacityRequestModal() {
+	    showModal(`<div class="modalHeader"><h2>Solicitar más capacidad</h2><button class="closeBtn" data-close>×</button></div><form id="capacityRequestForm" class="formGrid"><div class="field"><label>Qué necesitas ampliar</label><select id="capacityKind"><option value="products">Más productos</option><option value="storage">Más almacenamiento de imágenes</option></select></div><div class="field full"><label>Detalle (opcional)</label><textarea id="capacityNote" placeholder="Ej. Necesito espacio para 300 productos más"></textarea></div><button class="btn primary block" type="submit">Enviar solicitud</button></form>`);
+	    $('#capacityRequestForm').onsubmit = async (event) => {
+	      event.preventDefault();
+	      const kind = $('#capacityKind').value;
+	      const note = $('#capacityNote').value.trim();
+	      const submitBtn = $('#capacityRequestForm button[type=submit]');
+	      submitBtn.disabled = true;
+	      try {
+	        if (typeof window.click360RequestCapacity !== 'function') throw new Error('La solicitud en nube no está disponible.');
+	        const request = await window.click360RequestCapacity(kind, note);
+	        state.settings.capacityRequests ||= [];
+	        state.settings.capacityRequests.push({ ...request, kind, note, status: 'pending', createdAt: new Date().toISOString() });
+	        if (!save()) throw new Error('La solicitud se creó en nube, pero no pudo guardarse en este dispositivo.');
+	        window.open(supportWhatsAppUrl(`Hola CLICK 360, solicito más ${kind === 'storage' ? 'almacenamiento' : 'productos'} para mi plan. Negocio: ${currentBusiness()?.name || ''}. Correo: ${authUser()?.email || ''}. Detalle: ${note || 'sin detalle'}.`), '_blank', 'noopener,noreferrer');
+	        closeModal();
+	        renderApp('access');
+	        toast('Solicitud de capacidad enviada');
+	      } catch (error) {
+	        toast(error.message || 'No se pudo enviar la solicitud.', 'err');
+	        submitBtn.disabled = false;
+	      }
+	    };
 	  }
 	  function legalView() {
 	    const version = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
@@ -2927,10 +3069,12 @@ function parseMoney(value) {
 	    });
 	  }
 	  function bindAccess() {
+	    $('#requestCapacityBtn')?.addEventListener('click', () => openCapacityRequestModal());
+	    $('#goToWorkersBtn')?.addEventListener('click', () => renderApp('workers'));
 	    $$('[data-request-plan]').forEach((button) => {
 	      button.onclick = async () => {
 	        const plan = button.dataset.requestPlan;
-	        const period = $(`[data-plan-period="${plan}"]`)?.value || 'month';
+	        const period = button.dataset.requestPeriod || $(`[data-plan-period="${plan}"]`)?.value || 'month';
 	        button.disabled = true;
 	        button.textContent = 'Creando solicitud...';
 	        try {
@@ -2941,7 +3085,7 @@ function parseMoney(value) {
 	          if (!save()) throw new Error('La solicitud se creo en nube, pero no pudo guardarse en este dispositivo.');
 	          const planName = window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.[plan]?.name || plan;
 	          const message = `Hola, quiero activar CLICK 360.\nNegocio: ${currentBusiness()?.name || ''}\nCorreo: ${authUser()?.email || ''}\nPlan: ${planName}\nPeriodo: ${period}\nCodigo: ${request.requestCode}`;
-	          window.open(`https://wa.me/593969399562?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+	          window.open(supportWhatsAppUrl(message), '_blank', 'noopener,noreferrer');
 	          renderApp('access');
 	          toast('Solicitud de activacion creada');
 		        } catch (error) {
@@ -2961,7 +3105,7 @@ function parseMoney(value) {
 		          });
 		          save();
 		          const message = `Hola, quiero activar CLICK 360.\nNegocio: ${currentBusiness()?.name || ''}\nCorreo: ${authUser()?.email || ''}\nPlan: ${planName}\nPeriodo: ${period}\nCodigo: ${fallbackCode}`;
-		          window.open(`https://wa.me/593969399562?text=${encodeURIComponent(message)}`, '_blank', 'noopener,noreferrer');
+		          window.open(supportWhatsAppUrl(message), '_blank', 'noopener,noreferrer');
 		          renderApp('access');
 		          toast('Solicitud preparada por WhatsApp. No se mostrará error técnico al cliente.');
 		          button.disabled = false;
@@ -3410,12 +3554,19 @@ function parseMoney(value) {
 	    const tenderedInput = $('#tableCheckoutTendered');
 	    const updateTendered = () => { tenderedInput.disabled = methodInput.value !== 'Efectivo'; if (tenderedInput.disabled) tenderedInput.value = numericInputValue(total); };
 	    methodInput.onchange = updateTendered; updateTendered();
-	    $('#tableCheckoutForm').onsubmit = (event) => {
+	    $('#tableCheckoutForm').onsubmit = async (event) => {
 	      event.preventDefault();
+	      const submitBtn = event.target.querySelector('button[type="submit"]');
+	      if (submitBtn?.disabled) return;
 	      const method = methodInput.value;
 	      const tendered = method === 'Efectivo' ? Number(tenderedInput.value || 0) : total;
 	      if (!Number.isFinite(tendered) || tendered < total) return toast('El efectivo recibido no cubre el total.', 'err');
-	      finalizeTableCharge(table, order, { method, tendered, customer:$('#tableCheckoutCustomer').value.trim(), customerCedula:$('#tableCheckoutCedula').value.trim(), customerPhone:$('#tableCheckoutPhone').value.trim(), print:$('#tableCheckoutPrint').checked });
+	      if (submitBtn) submitBtn.disabled = true;
+	      try {
+	        await finalizeTableCharge(table, order, { method, tendered, customer:$('#tableCheckoutCustomer').value.trim(), customerCedula:$('#tableCheckoutCedula').value.trim(), customerPhone:$('#tableCheckoutPhone').value.trim(), print:$('#tableCheckoutPrint').checked });
+	      } finally {
+	        if (submitBtn) submitBtn.disabled = false;
+	      }
 	    };
 	  }
 	  async function finalizeTableCharge(table, order, checkout = {}) {
@@ -3870,7 +4021,7 @@ function parseMoney(value) {
 	      <div class="helpSuggestions" aria-label="Búsquedas sugeridas">${['crear producto','cerrar caja','imprimir 1 etiqueta','organizar mesas','instalar app','sin internet'].map((query) => `<button type="button" data-help-query="${escapeHtml(query)}">${escapeHtml(query)}</button>`).join('')}</div>
 	      <div class="helpCategories">${categories.map((category) => `<button type="button" data-help-category="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div>
 	      <section id="helpResults" class="helpResults">${helpTopicCards(HELP_TOPICS)}</section>
-	      <a class="btn whatsapp block helpSupport" href="https://wa.me/593969399562?text=${encodeURIComponent('Hola CLICK 360, necesito ayuda')}" target="_blank" rel="noopener noreferrer">${icon('message-circle')} Contactar soporte por WhatsApp</a>`;
+	      <a class="btn whatsapp block helpSupport" href="${supportWhatsAppUrl('Hola CLICK 360, necesito ayuda')}" target="_blank" rel="noopener noreferrer">${icon('message-circle')} Contactar soporte por WhatsApp</a>`;
 	  }
 	  function helpTopicCards(topics) {
 	    return topics.length ? topics.map((topic) => `<details class="card helpTopic"><summary><span><small>${escapeHtml(topic.category)}</small>${escapeHtml(topic.title)}</span>${icon('chevron-down')}</summary><ol>${(topic.steps || [topic.body]).filter(Boolean).map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol></details>`).join('') : '<div class="card empty">No encontramos una guía con esas palabras. Prueba “cerrar caja”, “etiqueta” o “sin internet”.</div>';
@@ -4803,7 +4954,7 @@ function parseMoney(value) {
 
       <section class="card sectionCard" style="margin-top:14px; text-align:center;">
         <h3>Soporte y Legales</h3>
-        <button type="button" class="btn" style="border:1px solid #25D366; color:#25D366; background:transparent; width:100%; margin-bottom:12px;" onclick="window.open('https://wa.me/593969399562?text=Hola,%20necesito%20soporte%20con%20CLICK%20360', '_blank', 'noopener,noreferrer')">📱 Contactar Soporte (WhatsApp)</button>
+        <button type="button" class="btn" style="border:1px solid #25D366; color:#25D366; background:transparent; width:100%; margin-bottom:12px;" onclick="window.open('${supportWhatsAppUrl('Hola, necesito soporte con CLICK 360')}', '_blank', 'noopener,noreferrer')">📱 Contactar Soporte (WhatsApp)</button>
         <p style="font-size:11px; color:#888; line-height:1.4;">Al usar el sistema, aceptas los <a href="#" id="showTerms" style="color:var(--gold); text-decoration:underline;">Términos y Condiciones</a>.</p>
       </section>`;
   }
@@ -5064,6 +5215,24 @@ function parseMoney(value) {
       if(!Number.isFinite(price)||price<0) return toast('Precio inválido','err');
       if(!Number.isFinite(cardPrice)||cardPrice<0) return toast('Precio con tarjeta inválido','err');
       if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
+      // Commercial MVP: quota blocks NEW-resource creation only -- never
+      // editing an existing product, never selling, never viewing.
+      {
+        const previousImageBytes = typeof p.imageData === 'string' ? p.imageData.length : 0;
+        const nextImageBytes = typeof imageData === 'string' ? imageData.length : 0;
+        const addingOrGrowingImage = nextImageBytes > previousImageBytes;
+        if (!product) {
+          const quota = tenantQuotaStatus();
+          if (quota?.productsActive?.blocked) { beep('err'); return toast(quotaBlockMessage(quota.productsActive, 'de productos'), 'err'); }
+        }
+        if (addingOrGrowingImage) {
+          const domain = window.CLICK360_V16_DOMAIN;
+          const entitlements = domain?.planEntitlements(tenantAccountPlan());
+          const projected = tenantUsageSnapshot().storageBytes - previousImageBytes + nextImageBytes;
+          const storageQuota = domain?.evaluateQuota(projected, entitlements?.limits?.storageBytes);
+          if (storageQuota?.blocked) { beep('err'); return toast('Tu plan de almacenamiento de imagenes alcanzo el limite. Puedes guardar el producto sin imagen, o mejorar tu plan / solicitar mas capacidad desde "Mi plan".', 'err'); }
+        }
+      }
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
 	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
@@ -5259,6 +5428,16 @@ function parseMoney(value) {
     $('#sellSearch').oninput=()=>{ const q=$('#sellSearch').value.toLowerCase(); const list=productsForBiz().filter(p=>String(p.name || '').toLowerCase().includes(q)||String(p.code || '').toLowerCase().includes(q)).slice(0,8); $('#quickProducts').innerHTML=list.map(p=>`<button class="card bigRow quickProduct" data-quick="${escapeHtml(p.code)}">${imageThumb(p)}<span>${escapeHtml(p.name)}<br><small>${escapeHtml(p.code)} · ${p.qty} disp.</small></span><b>${fmt(p.price)}</b></button>`).join(''); $$('[data-quick]').forEach(b=>b.onclick=()=>addProduct(b.dataset.quick)); };
     $('#openCamera').onclick=()=>startScanner(addProduct);
     $('#chargeBtn').onclick=async()=>{
+      const chargeBtn = $('#chargeBtn');
+      if(chargeBtn.disabled) return;
+      chargeBtn.disabled = true;
+      try {
+        await chargeCart(chargeBtn);
+      } finally {
+        chargeBtn.disabled = false;
+      }
+    };
+    async function chargeCart(chargeBtn){
       if(!cart.length){ beep('err'); return toast('El carrito está vacío','err'); }
       const disc=parseMoney($('#discount').value);
       if(!Number.isFinite(disc)||disc<0){ beep('err'); return toast('Descuento inválido','err'); }
@@ -6121,6 +6300,9 @@ function parseMoney(value) {
 	        if (!confirm('¿Deseas reabrir la caja de hoy?\nEl cierre anterior NO se borrará; quedará guardado como historial y se registrará la reapertura.')) return;
 	        const reason = prompt('Escribe el motivo de reapertura de caja:');
 	        if (!reason || reason.trim().length < 4) return toast('Motivo requerido para reabrir caja', 'err');
+	        if (btnReopenCash.disabled) return;
+	        btnReopenCash.disabled = true;
+	        try {
 	        const bid = currentBusiness()?.id;
 	        if (bid) {
 	          const previousState = cloneState(state);
@@ -6159,6 +6341,9 @@ function parseMoney(value) {
 	          renderApp('cash');
 	          if (committed.ok) toast(committed.pending ? 'Reapertura guardada; sincronización pendiente.' : 'Caja reabierta con auditoría');
 	        }
+	        } finally {
+	          btnReopenCash.disabled = false;
+	        }
 	      };
 	    }
 
@@ -6172,6 +6357,9 @@ function parseMoney(value) {
           startBtn.onclick = async () => {
              const amt = parseMoney(inputEl.value);
              if (!Number.isFinite(amt) || amt < 0) return toast('Monto de apertura inválido', 'err');
+             if (startBtn.disabled) return;
+             startBtn.disabled = true;
+             try {
 	             const previousState = cloneState(state);
 	             const cashSessionId = uid('cash');
 	             const operationId = uid('cashopen');
@@ -6212,6 +6400,9 @@ function parseMoney(value) {
 	             window.click360RecordTelemetry?.('cash_open', { mode: authUser().role || 'owner' }).catch?.(() => {});
 	             renderApp('cash');
 	             toast(committed.pending ? 'Apertura guardada; sincronización pendiente.' : 'Jornada iniciada exitosamente');
+             } finally {
+               startBtn.disabled = false;
+             }
           };
        }
        return;
@@ -6718,6 +6909,10 @@ function parseMoney(value) {
 
 		    $('#saveBiz').onclick=async ()=>{
 		       if (!isOwnerUser()) return toast('Solo el dueño puede cambiar datos del negocio.', 'err');
+		       const saveBizBtn = $('#saveBiz');
+		       if (saveBizBtn.disabled) return;
+		       saveBizBtn.disabled = true;
+		       try {
 		       const b=currentBusiness();
 		       const previousState = cloneState(state);
 		       const businessId = b?.id || '';
@@ -6756,6 +6951,9 @@ function parseMoney(value) {
 		           && business.settings?.ruc === expectedRuc));
 		       renderApp('settings');
 		       if (committed.ok) toast(committed.pending ? 'Perfil del negocio guardado; sincronización pendiente.' : 'Perfil del negocio guardado');
+		       } finally {
+		         saveBizBtn.disabled = false;
+		       }
 	    };
 	    $('#createBiz').onclick=()=>{
 	      if (!isOwnerUser()) return toast('Solo el dueño puede crear negocios.', 'err');

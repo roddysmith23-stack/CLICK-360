@@ -114,8 +114,9 @@ service cloud.firestore {
         && (data.status == "trial" || data.status == "trial_active"
           || data.status == "expired" || data.status == "trial_expired"
           || data.status == "active" || data.status == "paid_base"
-          || data.status == "paid_pro" || data.status == "founder"
-          || data.status == "lifetime");
+          || data.status == "paid_pro" || data.status == "paid_business"
+          || data.status == "paid_enterprise" || data.status == "founder"
+          || data.status == "founder_legacy" || data.status == "lifetime");
     }
 
     function activeAccountOwnerUser() {
@@ -128,13 +129,20 @@ service cloud.firestore {
             && request.time < data.trialStartedAt + duration.value(7, "d"))
           || ((data.status == "founder" || data.status == "lifetime")
             && (data.plan == "base" || data.plan == "pro" || data.plan == "founder" || data.plan == "lifetime"))
+          // Real commercial tier for historical customers (SHARY, Lia):
+          // permanent, no expiresAt check, no billing -- distinct from the
+          // internal-only "founder" status above. See v16-domain.js
+          // evaluateEntitlement()'s matching founder_legacy branch.
+          || (data.status == "founder_legacy" && data.plan == "founder_legacy")
           || (data.status == "active"
             && data.lifetime == true
             && data.plan == "pro"
             && data.planCode == "pro_lifetime"
             && data.billingStatus == "lifetime")
-          || ((data.status == "active" || data.status == "paid_base" || data.status == "paid_pro")
-            && (data.plan == "normal" || data.plan == "base" || data.plan == "pro")
+          || ((data.status == "active" || data.status == "paid_base" || data.status == "paid_pro"
+              || data.status == "paid_business" || data.status == "paid_enterprise")
+            && (data.plan == "normal" || data.plan == "base" || data.plan == "pro"
+              || data.plan == "business" || data.plan == "enterprise")
             && (!data.keys().hasAny(["planCode"]) || data.planCode != "pro_lifetime")
             && (!data.keys().hasAny(["expiresAt"])
               || (data.expiresAt is timestamp && request.time < data.expiresAt)))
@@ -751,6 +759,20 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Commercial MVP: owner-initiated request for more products/storage
+    // capacity, mirroring seatRequests exactly -- an immutable, auditable
+    // record for AIIA, never mutated by the client, no billing automation.
+    match /businesses/{ownerUid}/capacityRequests/{requestId} {
+      allow read: if request.auth.uid == ownerUid;
+      allow create: if request.auth.uid == ownerUid
+        && request.resource.data.ownerUid == ownerUid
+        && request.resource.data.requestedBy == request.auth.uid
+        && (request.resource.data.kind == "products" || request.resource.data.kind == "storage")
+        && request.resource.data.requestedAt == request.time
+        && request.resource.data.status == "pending";
+      allow update, delete: if false;
+    }
+
     // Phase 3.3 activation evidence trail (worker-boundary-activate-tenant.mjs).
     // Admin-SDK-only, like adminBackups -- written before any mutation and
     // updated once at the end, never by a client.
@@ -951,9 +973,11 @@ service cloud.firestore {
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.businessId == request.auth.uid
         && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
-        && (request.resource.data.plan == "base" || request.resource.data.plan == "pro")
+        && (request.resource.data.plan == "base" || request.resource.data.plan == "pro"
+          || request.resource.data.plan == "business" || request.resource.data.plan == "enterprise")
         && (request.resource.data.period == "month" || request.resource.data.period == "quarter"
           || request.resource.data.period == "semester" || request.resource.data.period == "year"
+          || request.resource.data.period == "custom"
           || (request.resource.data.plan == "base" && request.resource.data.period == "lifetime"))
         && request.resource.data.price is number
         && request.resource.data.price >= 0
