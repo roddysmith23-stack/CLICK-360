@@ -70,8 +70,14 @@ assert(/request\.resource\.data\.kind == "products" \|\| request\.resource\.data
 assert(/data\.status == "founder_legacy" && data\.plan == "founder_legacy"/.test(rules), 'firestore.rules write gate must recognize founder_legacy accounts');
 
 // ── Structural: admin activation tooling supports every sellable tier + founder_legacy ──
+// r36: activationFields() now lives in v16-domain.js (single canonical
+// implementation shared by CLI and CEO Admin Web); click360-v16-admin-core.mjs
+// is a thin re-export wrapper, so the plan-code/period checks live in the
+// domain source itself, not in admin-core.mjs.
+const domainSource = fs.readFileSync('v16-domain.js', 'utf8');
+tiers.forEach((code) => assert(domainSource.includes(`'${code}'`), `activationFields() must recognize the ${code} plan code`));
+assert(/founder_legacy has no billing period/.test(domainSource), 'founder_legacy activation must reject a billing period instead of silently accepting one');
 const adminCore = fs.readFileSync('scripts/lib/click360-v16-admin-core.mjs', 'utf8');
-tiers.forEach((code) => assert(adminCore.includes(`'${code}'`), `admin activation tooling must recognize the ${code} plan code`));
-assert(/founder_legacy has no billing period/.test(adminCore), 'founder_legacy activation must reject a billing period instead of silently accepting one');
+assert(/domain\.activationFields\(/.test(adminCore), 'click360-v16-admin-core.mjs must delegate to the canonical v16-domain.js activationFields(), not maintain its own copy');
 
 console.log('PASS Commercial MVP: 5-tier plan catalog, quota-blocks-creation-only contract, founder_legacy entitlement, capacityRequests wiring, admin activation coverage (structural + domain regression)');

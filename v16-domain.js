@@ -260,6 +260,97 @@
     return { businesses: limits.businesses, workers: limits.workerSeatsMax == null ? 9999 : limits.workerSeatsMax };
   }
 
+  function lowerTrim(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function baseAccountFields(existing, targetUser) {
+    return {
+      uid: targetUser.uid,
+      businessId: targetUser.uid,
+      email: lowerTrim(targetUser.email),
+      name: String(existing?.name || targetUser.name || targetUser.displayName || '').slice(0, 120),
+      photoURL: String(existing?.photoURL || targetUser.photoURL || '').slice(0, 100000)
+    };
+  }
+
+  // Canonical activation-field builder for CLICK 360's plan/entitlement
+  // model -- the SINGLE implementation shared by the CLI (admin-access-v16.mjs,
+  // via click360-v16-admin-core.mjs re-exporting this), the onboarding
+  // wrapper (onboard-new-customer.mjs), and the CEO Admin Web panel
+  // (app.js, called directly as window.CLICK360_V16_DOMAIN.activationFields).
+  // No environment-specific duplication: limits come from planLimits() ->
+  // PLAN_CATALOG, so a catalog change here is reflected everywhere at once.
+  // `targetUser` is the plain {uid, email, name, photoURL} of the ACCOUNT
+  // being activated (from a Firebase Auth user record on the CLI side, or
+  // from the searched accountAccess document's own fields on the Web side --
+  // the browser has no getUserByEmail()/getUser() capability, so the Web
+  // panel can only ever act on a uid that already has an accountAccess
+  // document, i.e. a customer who has signed in with Google at least once).
+  function activationFields({ existing = {}, targetUser, actorEmail, plan = 'base', period = 'historical', businessType = '', addOnsRequested = [] }) {
+    const normalizedPlan = String(plan || '').toLowerCase();
+    const normalizedPeriod = String(period || '').toLowerCase();
+    if (!['base', 'pro', 'business', 'enterprise', 'founder_legacy'].includes(normalizedPlan)) {
+      throw new Error('Plan must be base, pro, business, enterprise, or founder_legacy.');
+    }
+    // Business type only presets the customer's own UX (see app.js onboarding
+    // form); it never grants or restricts rights -- the plan alone does that.
+    // Recorded here purely as a sales/onboarding record for AIIA.
+    const normalizedBusinessType = String(businessType || '').trim().slice(0, 40);
+    const normalizedAddOns = Array.isArray(addOnsRequested) ? addOnsRequested.map((item) => String(item).trim()).filter(Boolean).slice(0, 20) : [];
+    const onboardingProfile = (normalizedBusinessType || normalizedAddOns.length)
+      ? { businessType: normalizedBusinessType || null, addOnsRequested: normalizedAddOns, recordedAt: new Date().toISOString(), recordedBy: lowerTrim(actorEmail) }
+      : (existing.onboardingProfile || null);
+    // founder_legacy: permanent historical functional license (SHARY, Lia) --
+    // no billing period, never expires, never sold to new customers (see
+    // PLAN_CATALOG.founder_legacy.notSoldToNewCustomers). Both mirrored
+    // branches (evaluateEntitlement() above, firestore.rules) key on
+    // status=="founder_legacy" && plan=="founder_legacy".
+    if (normalizedPlan === 'founder_legacy') {
+      if (normalizedPeriod !== 'historical') throw new Error('founder_legacy has no billing period; use period=historical.');
+      const limits = planLimits('founder_legacy');
+      return {
+        ...baseAccountFields(existing, targetUser),
+        status: 'founder_legacy',
+        plan: 'founder_legacy',
+        planCode: 'founder_legacy',
+        lifetime: false,
+        activationPeriod: 'historical',
+        source: 'founder_legacy_grant',
+        entitlementVersion: 16,
+        revision: Math.max(0, Number(existing.revision || 0)) + 1,
+        businessLimit: limits.businesses,
+        workerLimit: limits.workers,
+        activatedBy: lowerTrim(actorEmail),
+        onboardingProfile
+      };
+    }
+    // r36 commercial reset: month/year are the only periods offered to NEW
+    // customers (see PLAN_CATALOG comment). quarter/semester/lifetime remain
+    // valid here ONLY for administrative/historical-compatibility
+    // reactivation of an account that was already sold on one of those
+    // periods -- never presented as a choice in any purchase UI.
+    if (!['historical', 'month', 'quarter', 'semester', 'year', 'lifetime'].includes(normalizedPeriod)) throw new Error('Invalid activation period.');
+    if (normalizedPlan !== 'base' && normalizedPeriod === 'lifetime') throw new Error('Lifetime billing is only available on the Basic plan.');
+    const limits = planLimits(normalizedPlan);
+    const lifetime = normalizedPeriod === 'lifetime';
+    return {
+      ...baseAccountFields(existing, targetUser),
+      status: lifetime ? 'lifetime' : `paid_${normalizedPlan}`,
+      plan: normalizedPlan,
+      planCode: normalizedPlan,
+      lifetime,
+      activationPeriod: normalizedPeriod,
+      source: normalizedPeriod === 'historical' ? 'historical_buyer_recovery' : 'admin_activation',
+      entitlementVersion: 16,
+      revision: Math.max(0, Number(existing.revision || 0)) + 1,
+      businessLimit: limits.businesses,
+      workerLimit: limits.workers,
+      activatedBy: lowerTrim(actorEmail),
+      onboardingProfile
+    };
+  }
+
   function initialTenantBootstrapDecision({
     snapshotPrepared = false,
     localPersisted = false,
@@ -504,6 +595,7 @@
     offlineRecoveryDecision,
     trialRemaining,
     planLimits,
+    activationFields,
     initialTenantBootstrapDecision,
     publicIntentAllowsTrialCreation,
     calculatorOperation,
