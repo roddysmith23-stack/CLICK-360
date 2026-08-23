@@ -1625,6 +1625,33 @@ function parseMoney(value) {
     if (!quota || !quota.blocked) return '';
     return `Tu plan ${resourceLabel} alcanzo el limite (${quota.used}/${quota.limit}). Puedes seguir vendiendo y usando lo existente; para crear mas, mejora tu plan o solicita mas capacidad desde "Mi plan".`;
   }
+  function formatBytesApprox(bytes) {
+    const number = Math.max(0, Number(bytes) || 0);
+    if (number < 1024 * 1024) return `${(number / 1024).toFixed(0)} KB`;
+    return `${(number / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  function quotaMeterHtml(label, quota, formatValue = (n) => String(n)) {
+    if (!quota) return '';
+    const unlimited = quota.limit == null;
+    return `<div class="quotaMeter level-${escapeHtml(quota.level)}">
+      <div class="quotaMeterHead"><b>${escapeHtml(label)}</b><small>${escapeHtml(formatValue(quota.used))} / ${unlimited ? 'Ilimitado' : escapeHtml(formatValue(quota.limit))}</small></div>
+      ${unlimited ? '' : `<progress max="100" value="${Math.min(100, quota.percent)}"></progress>`}
+      ${quota.blocked ? `<p class="quotaMeterNote">${escapeHtml(quotaBlockMessage(quota, label.toLowerCase()))}</p>` : ''}
+    </div>`;
+  }
+  // "Todo Basic"/"Todo Pro"-style entries in PLAN_CATALOG[code].features are
+  // marketing shorthand for "everything the tier below already has" -- this
+  // walks the inheritance chain and resolves each tier's real, concrete
+  // feature list so "Mi plan" can show an honest included/not-included diff.
+  const PLAN_TIER_PARENT = { pro: 'base', business: 'pro', enterprise: 'business', founder_legacy: 'business' };
+  function resolvedPlanFeatures(code, catalog, seen = new Set()) {
+    if (!catalog[code] || seen.has(code)) return [];
+    seen.add(code);
+    const parent = PLAN_TIER_PARENT[code];
+    const inherited = parent ? resolvedPlanFeatures(parent, catalog, seen) : [];
+    const own = (catalog[code].features || []).filter((feature) => !/^Todo /i.test(feature));
+    return [...new Set([...inherited, ...own])];
+  }
   function productsForBiz(bid=currentBusiness()?.id){ return state.products.filter(p=>p.businessId===bid); }
   function salesForBiz(bid=currentBusiness()?.id){ return state.sales.filter(s=>s.businessId===bid); }
   function movementsForBiz(bid=currentBusiness()?.id){ return state.movements.filter(m=>m.businessId===bid); }
@@ -2740,43 +2767,111 @@ function parseMoney(value) {
 	    if (access.readOnly) return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(255,92,98,.6);"><b style="color:#ff8d92;">Tu prueba termino: tus datos estan protegidos en modo lectura.</b><a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn primary block" style="margin-top:10px;">Activar plan por WhatsApp</a></section>`;
 		    return `<section class="card sectionCard" style="margin:0 0 14px;border-color:rgba(55,213,126,.35);"><b style="color:#37d57e;">Plan CLICK 360 activo</b><p style="margin:6px 0 0;color:var(--muted);font-size:13px;">Plan ${escapeHtml((access.plan || 'base').toUpperCase())} con acceso completo.</p></section>`;
 	  }
+	  const PLAN_UPGRADE_LADDER = { base: 'pro', pro: 'business', business: 'enterprise' };
 	  function accessView() {
 	    const access = accessInfo();
-	    const catalog = window.CLICK360_V16_DOMAIN?.PLAN_CATALOG || {};
+	    const domain = window.CLICK360_V16_DOMAIN;
+	    const catalog = domain?.PLAN_CATALOG || {};
 	    const requests = state.settings?.activationRequests || [];
-	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', trial_expired: 'Modo lectura', paid_base: 'Plan Base', paid_pro: 'Plan Pro', lifetime: 'Acceso de por vida', member: 'Trabajador' };
+	    const capacityRequests = state.settings?.capacityRequests || [];
+	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', trial_expired: 'Modo lectura', paid_base: 'Plan Basic', paid_pro: 'Plan Pro', paid_business: 'Plan Business', paid_enterprise: 'Plan Enterprise', founder_legacy: 'Fundador (Founder)', lifetime: 'Acceso de por vida', member: 'Trabajador' };
+	    const currentPlanCode = domain?.normalizePlan?.(access.plan) || 'base';
+	    const isFounder = access.mode === 'founder' || currentPlanCode === 'founder_legacy';
+	    const quota = tenantQuotaStatus();
+	    const currentPlanEntry = catalog[currentPlanCode] || {};
 	    const periodOptions = (code) => `<option value="month">1 mes</option><option value="quarter">3 meses</option><option value="semester">6 meses</option><option value="year">1 año</option>${code === 'base' ? '<option value="lifetime">De por vida</option>' : ''}`;
-	    const basePrices = catalog.base?.prices || {};
-	    const planPriceSummary = (code) => code === 'base' ? `<div class="planPriceSummary neuroPrice" aria-label="Precios Plan Base">
-	      <div class="neuPlanTier">
-	        <div class="neuTierLabel muted">Mensual</div>
-	        <div class="neuTierPrice"><s class="neuStrike">${fmt(basePrices.month || 40)}/mes</s></div>
-	        <div class="neuTierNote muted">Precio regular</div>
-	      </div>
-	      <div class="neuPlanTier neuStar">
-	        <div class="neuBadge">⭐ AHORRA 50%</div>
-	        <div class="neuTierLabel">Anual — Más elegido</div>
-	        <div class="neuTierPrice"><b class="neuBig">${fmt((basePrices.year || 240)/12)}<small>/mes</small></b></div>
-	        <div class="neuTierNote">${fmt(basePrices.year || 240)} al año · un solo pago</div>
-	      </div>
-	      <div class="neuPlanTier">
-	        <div class="neuTierLabel muted">Vitalicio</div>
-	        <div class="neuTierPrice"><b>${fmt(basePrices.lifetime || 600)}</b></div>
-	        <div class="neuTierNote muted">Pago único · para siempre</div>
-	      </div>
-	      <p class="neuCopy">🚀 El 87% de nuestros clientes elige el plan anual</p>
-	    </div>` : '';
-	    return `<div class="pageHead"><div><h1>Mi plan</h1><p>Acceso, funciones y activacion.</p></div></div>
+	    const planPriceSummary = (code) => {
+	      const prices = catalog[code]?.prices || {};
+	      if (prices.custom) return `<p class="cloudStatus">Precio segun necesidad: numero de negocios, catalogo de productos y cupos de Workers.</p>`;
+	      if (!prices.year) return '';
+	      return `<div class="planPriceSummary neuroPrice" aria-label="Precios ${escapeHtml(catalog[code]?.name || code)}">
+	        <div class="neuPlanTier"><div class="neuTierLabel muted">Mensual</div><div class="neuTierPrice"><s class="neuStrike">${fmt(prices.month || 0)}/mes</s></div><div class="neuTierNote muted">Precio regular</div></div>
+	        <div class="neuPlanTier neuStar"><div class="neuBadge">⭐ RECOMENDADO</div><div class="neuTierLabel">Anual</div><div class="neuTierPrice"><b class="neuBig">${fmt(prices.year / 12)}<small>/mes</small></b></div><div class="neuTierNote">${fmt(prices.year)} al año · un solo pago</div></div>
+	        ${prices.lifetime ? `<div class="neuPlanTier"><div class="neuTierLabel muted">Vitalicio</div><div class="neuTierPrice"><b>${fmt(prices.lifetime)}</b></div><div class="neuTierNote muted">Pago único · para siempre</div></div>` : ''}
+	      </div>`;
+	    };
+	    const includedFeatures = resolvedPlanFeatures(currentPlanCode, catalog);
+	    const nextCode = PLAN_UPGRADE_LADDER[currentPlanCode];
+	    const notIncludedFeatures = nextCode ? resolvedPlanFeatures(nextCode, catalog).filter((feature) => !includedFeatures.includes(feature)) : [];
+	    const renewalHtml = access.expiresAtMs ? `<div><small class="fieldHint">Proxima renovacion</small><div>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate?.(access.expiresAtMs, 'es-EC', businessTimeZone(), true) || new Date(access.expiresAtMs).toLocaleDateString('es-EC'))}</div></div>` : '';
+	    return `<div class="pageHead"><div><h1>Mi plan y acceso</h1><p>Tu plan, tus cupos y como ampliarlos.</p></div></div>
 	      ${accessBannerHtml()}
-	      <section class="card sectionCard"><h3>${escapeHtml(labels[access.mode] || `Plan ${(access.plan || 'base').toUpperCase()}`)}</h3>
-	        <p class="cloudStatus">${access.mode === 'trial_active' ? 'Dispones de todas las funciones Base durante siete dias.' : access.readOnly ? 'Puedes consultar tu informacion; la edicion se habilita al activar un plan.' : 'Tu acceso esta activo.'}</p>
+	      <section class="card sectionCard">
+	        <h3>${escapeHtml(labels[access.mode] || currentPlanEntry.name || `Plan ${currentPlanCode.toUpperCase()}`)}</h3>
+	        <p class="cloudStatus">${isFounder ? 'Licencia fundador: acceso permanente a las funciones ya adquiridas, sin mensualidad por ellas.' : access.mode === 'trial_active' ? 'Dispones de todas las funciones Basic durante siete dias.' : access.readOnly ? 'Puedes consultar tu informacion; la edicion se habilita al activar un plan.' : 'Tu acceso esta activo.'}</p>
+	        <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top:10px;">
+	          <div><small class="fieldHint">Plan</small><div><b>${escapeHtml(currentPlanEntry.name || currentPlanCode)}</b></div></div>
+	          ${renewalHtml}
+	        </div>
+	      </section>
+	      <section class="card sectionCard">
+	        <h3>Uso y cupos</h3>
+	        ${quota ? `
+	          ${quotaMeterHtml('Productos activos', quota.productsActive)}
+	          ${quotaMeterHtml('Almacenamiento de imagenes', quota.storageBytes, formatBytesApprox)}
+	          ${quotaMeterHtml('Cupos de Workers', quota.workerSeats)}
+	          ${quotaMeterHtml('Negocios en tu cuenta', quota.businesses)}
+	          <p class="fieldHint">El almacenamiento mostrado es un estimado. Llegar al limite nunca bloquea vender, cobrar, imprimir ni consultar lo existente: solo pausa la creacion de recursos nuevos hasta ampliar el plan.</p>
+	        ` : '<p class="empty">No se pudo calcular el uso todavia.</p>'}
+	        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+	          <button type="button" class="btn silver" id="requestCapacityBtn">Solicitar más capacidad</button>
+	          <button type="button" class="btn silver" id="goToWorkersBtn">Solicitar Worker adicional</button>
+	        </div>
+	      </section>
+	      <section class="card sectionCard">
+	        <h3>Funciones de tu plan</h3>
+	        <div class="planFeatureCols">
+	          <div><b>Incluidas</b><ul>${includedFeatures.map((feature) => `<li>${escapeHtml(feature)}</li>`).join('') || '<li>-</li>'}</ul></div>
+	          ${notIncludedFeatures.length ? `<div><b>No incluidas en tu plan</b><ul class="notIncluded">${notIncludedFeatures.map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul></div>` : ''}
+	        </div>
 	      </section>
 	      <section class="planGrid" style="margin-top:14px;">
-	        ${['base','pro'].map((code) => { const item = catalog[code] || {}; return `<article class="card planCard"><div><span class="badge gold">${escapeHtml(code.toUpperCase())}</span><h3>${escapeHtml(item.name || code)}</h3><strong>${fmt(item.prices?.month || 0)} <small>/ mes</small></strong>${planPriceSummary(code)}</div><ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul><label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${code === 'pro' ? 'primary' : 'silver'} block" data-request-plan="${code}">Solicitar ${escapeHtml(item.name || code)}</button></article>`; }).join('')}
+	        ${['base','pro','business','enterprise'].map((code) => {
+	          const item = catalog[code] || {};
+	          const isCurrent = code === currentPlanCode;
+	          const isQuote = !!item.prices?.custom;
+	          return `<article class="card planCard"${isCurrent ? ' style="border-color:rgba(55,213,126,.5);"' : ''}>
+	            <div>
+	              <span class="badge gold">${escapeHtml(code.toUpperCase())}</span>${isCurrent ? ' <span class="badge">Tu plan actual</span>' : ''}
+	              <h3>${escapeHtml(item.name || code)}</h3>
+	              ${isQuote ? '<strong>Cotización</strong>' : `<strong>${fmt(item.prices?.month || 0)} <small>/ mes</small></strong>`}
+	              ${planPriceSummary(code)}
+	            </div>
+	            <ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul>
+	            ${isQuote
+	              ? `<button class="btn primary block" data-request-plan="${code}" data-request-period="custom">Solicitar cotización</button>`
+	              : `<label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${isCurrent ? 'silver' : 'primary'} block" data-request-plan="${code}">${isCurrent ? 'Cambiar periodo' : `Solicitar ${escapeHtml(item.name || code)}`}</button>`}
+	          </article>`;
+	        }).join('')}
 	      </section>
 	      <section class="card printerOfferCard"><div><span class="badge gold">Equipo opcional</span><h3>Impresora térmica de etiquetas</h3><p>Lista para etiquetas QR y comprobantes; incluye envío y un rollo de papel adhesivo de cortesía.</p></div><strong>${fmt(65)}</strong><a class="btn primary" target="_blank" rel="noopener noreferrer" href="${supportWhatsAppUrl('Hola CLICK 360, quiero información sobre la impresora térmica de etiquetas de $65.')}">Consultar por WhatsApp</a></section>
-	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
-	      ${access.mode !== 'founder' ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="margin-top:14px;border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}`;
+	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de plan</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
+	      ${capacityRequests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de capacidad</h3>${capacityRequests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(request.kind === 'storage' ? 'Almacenamiento' : 'Productos')}</b><br><small>${escapeHtml(request.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
+	      ${!isFounder ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="margin-top:14px;border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}`;
+	  }
+	  function openCapacityRequestModal() {
+	    showModal(`<div class="modalHeader"><h2>Solicitar más capacidad</h2><button class="closeBtn" data-close>×</button></div><form id="capacityRequestForm" class="formGrid"><div class="field"><label>Qué necesitas ampliar</label><select id="capacityKind"><option value="products">Más productos</option><option value="storage">Más almacenamiento de imágenes</option></select></div><div class="field full"><label>Detalle (opcional)</label><textarea id="capacityNote" placeholder="Ej. Necesito espacio para 300 productos más"></textarea></div><button class="btn primary block" type="submit">Enviar solicitud</button></form>`);
+	    $('#capacityRequestForm').onsubmit = async (event) => {
+	      event.preventDefault();
+	      const kind = $('#capacityKind').value;
+	      const note = $('#capacityNote').value.trim();
+	      const submitBtn = $('#capacityRequestForm button[type=submit]');
+	      submitBtn.disabled = true;
+	      try {
+	        if (typeof window.click360RequestCapacity !== 'function') throw new Error('La solicitud en nube no está disponible.');
+	        const request = await window.click360RequestCapacity(kind, note);
+	        state.settings.capacityRequests ||= [];
+	        state.settings.capacityRequests.push({ ...request, kind, note, status: 'pending', createdAt: new Date().toISOString() });
+	        if (!save()) throw new Error('La solicitud se creó en nube, pero no pudo guardarse en este dispositivo.');
+	        window.open(supportWhatsAppUrl(`Hola CLICK 360, solicito más ${kind === 'storage' ? 'almacenamiento' : 'productos'} para mi plan. Negocio: ${currentBusiness()?.name || ''}. Correo: ${authUser()?.email || ''}. Detalle: ${note || 'sin detalle'}.`), '_blank', 'noopener,noreferrer');
+	        closeModal();
+	        renderApp('access');
+	        toast('Solicitud de capacidad enviada');
+	      } catch (error) {
+	        toast(error.message || 'No se pudo enviar la solicitud.', 'err');
+	        submitBtn.disabled = false;
+	      }
+	    };
 	  }
 	  function legalView() {
 	    const version = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
@@ -2974,10 +3069,12 @@ function parseMoney(value) {
 	    });
 	  }
 	  function bindAccess() {
+	    $('#requestCapacityBtn')?.addEventListener('click', () => openCapacityRequestModal());
+	    $('#goToWorkersBtn')?.addEventListener('click', () => renderApp('workers'));
 	    $$('[data-request-plan]').forEach((button) => {
 	      button.onclick = async () => {
 	        const plan = button.dataset.requestPlan;
-	        const period = $(`[data-plan-period="${plan}"]`)?.value || 'month';
+	        const period = button.dataset.requestPeriod || $(`[data-plan-period="${plan}"]`)?.value || 'month';
 	        button.disabled = true;
 	        button.textContent = 'Creando solicitud...';
 	        try {
