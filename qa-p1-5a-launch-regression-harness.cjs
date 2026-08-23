@@ -9,7 +9,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
 const RELEASE = '1.0.5';
-const ASSET = 'commercial-1-0-5-r36-p0-shary-boot-fix';
+const ASSET = 'commercial-1-0-5-r36-p0-2-reliability-fix';
 
 function normalizeP15AState(input) {
   const state = structuredClone(input);
