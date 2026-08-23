@@ -83,6 +83,30 @@
       let completed = false;
       let pollTimer = null;
       let hardFallbackTimer = null;
+      // States in which the Firebase service layer has already shown the
+      // user a specific, actionable message (login buttons, "pending
+      // approval", "blocked", an explicit error, etc.) via the auth gate --
+      // these are NOT a stall, even though #app itself has no children (the
+      // gate renders as a sibling of #app, appended directly to <body>, so a
+      // perfectly healthy unauthenticated visitor also has an empty #app).
+      // Deliberately excludes READY/ONLINE_ONLY_SAFE: those mean the app
+      // SHOULD be visibly rendering into #app right now -- if it still isn't
+      // by the hard-fallback deadline, that is exactly the stuck case this
+      // exists to catch (e.g. the main application script failed to load or
+      // parse while the Firebase service layer itself came up fine and
+      // unlocked the gate).
+      // LOADING/AUTHENTICATED_RESOLVING are excluded for the same reason:
+      // still in flight past the deadline is itself worth surfacing.
+      const SAFE_TERMINAL_GATE_STATES = new Set([
+        'unauthenticated', 'pending', 'blocked', 'recoverable_error',
+        'invalid_invitation', 'authenticated_no_access', 'identity_reconciliation_required'
+      ]);
+      const appHasRendered = () => {
+        const app = document.getElementById('app');
+        if (app && app.children.length) return true;
+        const uiState = String(window.click360AccessUiState?.state || '').toLowerCase();
+        return SAFE_TERMINAL_GATE_STATES.has(uiState);
+      };
       const finish = () => {
         if (completed) return;
         completed = true;
@@ -97,13 +121,63 @@
         }, delay);
       };
       const finishWhenAppRendered = () => {
-        const app = document.getElementById('app');
-        if (app && app.children.length) finish();
+        if (appHasRendered()) finish();
+      };
+      // r36 P0 fix: previously the splash was removed unconditionally at the
+      // hard-fallback timeout even if #app never rendered anything, leaving a
+      // fully black screen with no visible way to recover (SHARY incident).
+      // Now, if #app is STILL empty when the hard fallback fires, replace the
+      // splash with an explicit recovery screen instead of silently
+      // uncovering nothing. This is independent of whatever caused the boot
+      // to stall -- it is a floor, not a diagnosis.
+      const showBootRecovery = () => {
+        if (completed) return;
+        completed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        const splash = document.getElementById('click360Splash');
+        if (!splash) return;
+        let errorCode = '';
+        try { errorCode = window.CLICK360_LAST_RUNTIME_ERROR?.reportId || ''; } catch (e) {}
+        const waMessage = encodeURIComponent(
+          'Necesito ayuda con CLICK 360, no pudo iniciar.' + (errorCode ? ' Codigo: ' + errorCode + '.' : '')
+        );
+        splash.innerHTML =
+          '<strong>CLICK 360 no pudo iniciar</strong>' +
+          '<p class="click360BootRecoveryMsg">Tu informacion sigue protegida en la nube. Prueba estas opciones:</p>' +
+          (errorCode ? '<small class="click360BootRecoveryCode">Codigo: ' + errorCode + '</small>' : '') +
+          '<div class="click360BootRecoveryActions">' +
+          '<button type="button" id="click360BootRetry" class="click360BootRecoveryBtn">Reintentar</button>' +
+          '<button type="button" id="click360BootUpdate" class="click360BootRecoveryBtn primary">Actualizar aplicacion</button>' +
+          '<a href="https://wa.me/593969399562?text=' + waMessage + '" target="_blank" rel="noopener noreferrer" class="click360BootRecoveryBtn">Reportar problema</a>' +
+          '</div>';
+        splash.classList.add('click360BootRecovery');
+        document.getElementById('click360BootRetry')?.addEventListener('click', () => { location.reload(); });
+        document.getElementById('click360BootUpdate')?.addEventListener('click', async () => {
+          const btn = document.getElementById('click360BootUpdate');
+          if (btn) { btn.disabled = true; btn.textContent = 'Actualizando...'; }
+          try {
+            if ('serviceWorker' in navigator) {
+              const registrations = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(registrations.map((registration) => registration.unregister()));
+            }
+            if ('caches' in window) {
+              const keys = await caches.keys();
+              await Promise.all(keys.filter((key) => key.startsWith('click360-')).map((key) => caches.delete(key)));
+            }
+          } catch (e) {
+            // Best-effort: even if unregister/cache-clear partially fails, the
+            // reload below still forces a fresh network fetch of index.html
+            // (no-cache header) and every ?v=-suffixed asset it references.
+          }
+          location.reload();
+        });
       };
       window.click360MarkSplashReady = finish;
       window.addEventListener('click360:ready', finish, { once: true });
       pollTimer = setInterval(finishWhenAppRendered, 350);
-      hardFallbackTimer = setTimeout(finish, maximumIntroMs);
+      hardFallbackTimer = setTimeout(() => {
+        if (appHasRendered()) finish(); else showBootRecovery();
+      }, maximumIntroMs);
       document.addEventListener('DOMContentLoaded', () => {
         setTimeout(finishWhenAppRendered, minimumIntroMs);
       }, { once: true });

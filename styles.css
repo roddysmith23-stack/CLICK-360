@@ -1090,6 +1090,14 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .click360SplashProgress i{display:block;height:100%;width:42%;border-radius:inherit;background:linear-gradient(90deg,#8e6b13,#f7d95d,#fff3a8);animation:c360SplashLoad 1.05s ease-in-out infinite}
 @keyframes c360SplashZoom{0%{transform:scale(.72);opacity:0}52%{transform:scale(1.08);opacity:1}100%{transform:scale(1);opacity:1}}@keyframes c360SplashOut{to{opacity:0;visibility:hidden}}
 @keyframes c360SplashLoad{0%{transform:translateX(-110%)}55%{width:58%}100%{transform:translateX(245%)}}
+.click360Splash.click360BootRecovery{pointer-events:auto;gap:14px;padding:24px;box-sizing:border-box}
+.click360Splash.click360BootRecovery strong{font-size:clamp(20px,5vw,30px)}
+.click360BootRecoveryMsg{max-width:min(420px,86vw);margin:0;color:#d6d1c2;font-size:14px;line-height:1.5}
+.click360BootRecoveryCode{color:#8b887f;font-size:12px;letter-spacing:.02em}
+.click360BootRecoveryActions{display:grid;gap:10px;width:min(320px,86vw);margin-top:6px}
+.click360BootRecoveryBtn{pointer-events:auto;min-height:50px;border-radius:8px;border:1px solid rgba(255,255,255,.22);background:#141414;color:#fff;font-weight:850;font-size:14px;display:flex;align-items:center;justify-content:center;text-decoration:none;cursor:pointer}
+.click360BootRecoveryBtn.primary{background:linear-gradient(135deg,#f0c84d,#d6aa2c);color:#10100c;border-color:#bb8d1f}
+.click360BootRecoveryBtn:disabled{opacity:.6;cursor:not-allowed}
 .sidebarBrand{display:grid!important;grid-template-columns:52px minmax(0,1fr);align-items:center;text-align:left;gap:10px;width:100%;min-width:0;padding:4px}.sidebarBrand .logoText{display:grid!important;min-width:0;line-height:1.03}.sidebarBrand .logoText b,.sidebarBrand .logoText span{white-space:nowrap}.versionBadge{display:inline-flex;align-items:center;justify-content:center;max-width:100%;width:max-content;min-height:22px;margin-top:5px;padding:2px 7px;border:1px solid rgba(244,196,49,.78);border-radius:6px;color:var(--gold2);font-size:12px;line-height:1.15;overflow:hidden;text-overflow:ellipsis}.brandSlogan{display:block;max-width:100%;font-size:12px;line-height:1.2;color:#ddd;white-space:normal}.profileAvatar,.profileAvatar img{border-radius:50%!important}.profileAvatar img{display:block;width:100%;height:100%;object-fit:cover}
 .bottomNav{grid-template-columns:repeat(auto-fit,minmax(68px,1fr));overflow-x:auto;scrollbar-width:none}.bottomNav::-webkit-scrollbar{display:none}.navBtn{min-width:0}.navBtn span:last-child{max-width:100%;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere;word-break:normal}
 @media(max-width:899px){.bottomNav{display:flex;gap:5px;justify-content:flex-start}.bottomNav .navBtn{flex:0 0 76px}.bottomNav .navIcon{margin-inline:auto}.topbar .logoText{min-width:0}.businessSwitchButton span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
