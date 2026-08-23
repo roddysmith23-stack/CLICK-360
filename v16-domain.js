@@ -5,20 +5,91 @@
   const TERMS_VERSION = '2026-07-14';
   const TRIAL_DAYS = 7;
   const DAY_MS = 24 * 60 * 60 * 1000;
+  // Phase "Commercial MVP" catalog. basic/pro prices are UNCHANGED from the
+  // pre-existing base/pro tiers (2026-08-01, the only prior explicit source
+  // found -- see the commercial-MVP audit) so no already-quoted customer's
+  // price silently moves; business/enterprise are new tiers with no prior
+  // source, priced per the explicit fallback given for this release.
+  // Quota numbers (products/storageBytes) are derived from a live measurement
+  // of production tenants against Firestore's 1 MiB document limit: a legacy
+  // (non-modular) tenant with zero images is safe to ~800 products in a
+  // single state/main document; with embedded images that collapses to
+  // ~100-150 products, which is why storageBytes is tracked as an
+  // INDEPENDENT quota from productsActive rather than folded into it.
   const PLAN_CATALOG = Object.freeze({
+    // Internal code stays 'base' (unchanged since 2026-07-13, deeply threaded
+    // through normalizePlan()/evaluateEntitlement()/firestore.rules literal
+    // comparisons) -- only the customer-facing display name changes to
+    // "Basic". Renaming the code itself would risk breaking every existing
+    // `plan === 'base'` check across app.js/firebase-service.js/rules for a
+    // release that must not touch already-billed real customers.
     base: Object.freeze({
-      name: 'Base',
+      name: 'Basic',
       prices: Object.freeze({ month: 40, quarter: 114, semester: 180, year: 240, lifetime: 600 }),
-      limits: Object.freeze({ businesses: 1, workers: 2 }),
-      features: Object.freeze(['Inventario', 'Ventas', 'Caja', 'Etiquetas QR', 'Reportes', 'Clientes', 'Sincronizacion'])
+      limits: Object.freeze({ businesses: 1, workerSeatsIncluded: 2, workerSeatsMax: 5, productsActive: 150, storageBytes: 3 * 1024 * 1024 }),
+      features: Object.freeze(['Inventario', 'Ventas', 'Caja', 'Apartados', 'WhatsApp', 'Etiquetas QR', 'Reportes', 'Clientes', 'Sincronizacion'])
     }),
     pro: Object.freeze({
       name: 'Pro',
       prices: Object.freeze({ month: 59.99, quarter: 169, semester: 299, year: 499 }),
-      limits: Object.freeze({ businesses: 5, workers: 10 }),
-      features: Object.freeze(['Todo Base', 'CRM ampliado', 'WhatsApp', 'Cobranzas', 'Recordatorios avanzados', 'Apartados avanzados', 'Proveedores', 'Exportaciones'])
+      limits: Object.freeze({ businesses: 5, workerSeatsIncluded: 2, workerSeatsMax: 10, productsActive: 500, storageBytes: 8 * 1024 * 1024 }),
+      features: Object.freeze(['Todo Basic', 'CRM ampliado', 'Cobranzas', 'Recordatorios avanzados', 'Apartados avanzados', 'Proveedores', 'Exportaciones'])
+    }),
+    business: Object.freeze({
+      name: 'Business',
+      prices: Object.freeze({ month: 99.99, quarter: 291, semester: 540, year: 999 }),
+      limits: Object.freeze({ businesses: 10, workerSeatsIncluded: 2, workerSeatsMax: 25, productsActive: 800, storageBytes: 15 * 1024 * 1024 }),
+      features: Object.freeze(['Todo Pro', 'Multi-sucursal de cuentas (hasta 10 negocios)', 'Hasta 25 asientos de Workers', 'Soporte prioritario'])
+    }),
+    enterprise: Object.freeze({
+      name: 'Enterprise',
+      prices: Object.freeze({ custom: true }),
+      limits: Object.freeze({ businesses: 25, workerSeatsIncluded: 2, workerSeatsMax: null, productsActive: 2000, storageBytes: 30 * 1024 * 1024 }),
+      features: Object.freeze(['Todo Business', 'Cuotas negociadas', 'Arquitectura modular recomendada para catalogo grande', 'Cotizacion personalizada']),
+      quote: true
+    }),
+    founder_legacy: Object.freeze({
+      name: 'Founder',
+      // No self-serve price: historical functional license, no monthly billing
+      // for functions already granted. See v16-domain.js normalizePlan() and
+      // evaluateEntitlement() -- status 'founder' already bypasses billing;
+      // this catalog entry exists so founder tenants have real, generous,
+      // technically-grounded quotas instead of silently inheriting Basic's.
+      prices: Object.freeze({ historical: true }),
+      limits: Object.freeze({ businesses: 10, workerSeatsIncluded: 2, workerSeatsMax: 25, productsActive: 2000, storageBytes: 20 * 1024 * 1024 }),
+      features: Object.freeze(['Todo Business', 'Licencia funcional historica permanente', 'Sin mensualidad por funciones ya adquiridas', 'Cuotas de infraestructura amplias con margen de crecimiento']),
+      historical: true
     })
   });
+
+  // 70/85/95% => informational/warning/critical notice; 100% => block only
+  // NEW-resource creation (never selling, charging, reading, or exporting
+  // existing data). See evaluateQuota().
+  const QUOTA_THRESHOLDS = Object.freeze({ notice: 0.70, warning: 0.85, critical: 0.95 });
+
+  function planEntitlements(planCode) {
+    const normalized = String(planCode || '').trim().toLowerCase();
+    const entry = PLAN_CATALOG[normalized] || PLAN_CATALOG.base;
+    return { code: Object.prototype.hasOwnProperty.call(PLAN_CATALOG, normalized) ? normalized : 'base', ...entry, limits: { ...entry.limits } };
+  }
+
+  // used/limit -> { ratio, percent, level, blocked }. limit of null/0/undefined
+  // means "unlimited" (Enterprise workerSeatsMax) -- never blocks.
+  function evaluateQuota(used, limit) {
+    const usedNumber = Math.max(0, Number(used) || 0);
+    const limitNumber = Number(limit);
+    if (!Number.isFinite(limitNumber) || limitNumber <= 0) {
+      return { used: usedNumber, limit: null, ratio: 0, percent: 0, level: 'unlimited', blocked: false };
+    }
+    const ratio = usedNumber / limitNumber;
+    const percent = Math.min(999, Math.round(ratio * 100));
+    let level = 'ok';
+    if (ratio >= 1) level = 'blocked';
+    else if (ratio >= QUOTA_THRESHOLDS.critical) level = 'critical';
+    else if (ratio >= QUOTA_THRESHOLDS.warning) level = 'warning';
+    else if (ratio >= QUOTA_THRESHOLDS.notice) level = 'notice';
+    return { used: usedNumber, limit: limitNumber, ratio, percent, level, blocked: ratio >= 1 };
+  }
 
   function roundMoney(value) {
     const number = Number(value);
@@ -27,8 +98,16 @@
 
   function normalizePlan(value) {
     const plan = String(value || '').trim().toLowerCase();
-    if (['normal', 'base', 'paid_base'].includes(plan)) return 'base';
+    if (['normal', 'base', 'basic', 'paid_base'].includes(plan)) return 'base';
     if (['pro', 'paid_pro', 'pro_lifetime'].includes(plan)) return 'pro';
+    if (['business', 'paid_business'].includes(plan)) return 'business';
+    if (['enterprise', 'paid_enterprise'].includes(plan)) return 'enterprise';
+    // Distinct from the generic 'founder' status (platform/internal access,
+    // evaluateEntitlement() below) -- founder_legacy is a real commercial
+    // tier for historical customers (SHARY, Lia) with its own quotas, not
+    // internal/unlimited access. Kept separate so PLAN_CATALOG.founder_legacy
+    // is reachable via normalizePlan() for entitlement/quota lookups.
+    if (['founder_legacy'].includes(plan)) return 'founder_legacy';
     if (['founder', 'founder_unlimited'].includes(plan)) return 'founder';
     if (plan === 'lifetime') return 'lifetime';
     return 'base';
@@ -69,6 +148,13 @@
     if (['founder'].includes(rawStatus) || plan === 'founder') {
       return { allowed: true, readOnly: false, mode: 'founder', plan: 'founder', serverNowMs: serverNow, trialEndsAtMs, expiresAtMs: 0 };
     }
+    // Real commercial tier for historical customers (SHARY, Lia): permanent,
+    // never expires, no billing -- but NOT the internal/unlimited 'founder'
+    // mode above. Generous, technically-bounded quotas via
+    // PLAN_CATALOG.founder_legacy, not unlimited infrastructure.
+    if (['founder_legacy'].includes(rawStatus) || plan === 'founder_legacy') {
+      return { allowed: true, readOnly: false, mode: 'founder_legacy', plan: 'founder_legacy', serverNowMs: serverNow, trialEndsAtMs, expiresAtMs: 0 };
+    }
     if (lifetime) {
       return { allowed: true, readOnly: false, mode: 'lifetime', plan: plan === 'pro' ? 'pro' : 'base', serverNowMs: serverNow, trialEndsAtMs, expiresAtMs: 0 };
     }
@@ -79,8 +165,9 @@
     if (['expired', 'trial_expired'].includes(rawStatus)) {
       return { allowed: true, readOnly: true, mode: 'trial_expired', plan: 'base', serverNowMs: serverNow, trialEndsAtMs, expiresAtMs };
     }
-    if (['active', 'paid_base', 'paid_pro'].includes(rawStatus)) {
-      const paidPlan = rawStatus === 'paid_pro' ? 'pro' : rawStatus === 'paid_base' ? 'base' : plan;
+    if (['active', 'paid_base', 'paid_pro', 'paid_business', 'paid_enterprise'].includes(rawStatus)) {
+      const statusPlanMap = { paid_base: 'base', paid_pro: 'pro', paid_business: 'business', paid_enterprise: 'enterprise' };
+      const paidPlan = statusPlanMap[rawStatus] || plan;
       const readOnly = !!expiresAtMs && !!serverNow && serverNow >= expiresAtMs;
       return { allowed: true, readOnly, mode: readOnly ? 'subscription_expired' : `paid_${paidPlan}`, plan: paidPlan, serverNowMs: serverNow, trialEndsAtMs, expiresAtMs };
     }
@@ -147,10 +234,17 @@
     return { totalMs, days, hours, endsAtMs, expired: !endsAtMs || !nowMs || totalMs <= 0 };
   }
 
+  // Legacy-shaped projection ({businesses, workers}) for the two pre-existing
+  // enforced ceilings in app.js (businessLimit at the multi-business switcher,
+  // workerLimit at the legacy settings.workers list -- distinct from the
+  // modular Worker Data Boundary seat system, which enforces its own
+  // entitlement independently via firestore.rules). Use planEntitlements()
+  // for the full quota set (productsActive, storageBytes, workerSeatsIncluded).
   function planLimits(plan) {
     const normalized = normalizePlan(plan);
     if (normalized === 'founder' || normalized === 'lifetime') return { businesses: 10, workers: 25 };
-    return { ...PLAN_CATALOG[normalized].limits };
+    const limits = planEntitlements(normalized).limits;
+    return { businesses: limits.businesses, workers: limits.workerSeatsMax == null ? 9999 : limits.workerSeatsMax };
   }
 
   function initialTenantBootstrapDecision({
@@ -383,6 +477,9 @@
     TERMS_VERSION,
     TRIAL_DAYS,
     PLAN_CATALOG,
+    QUOTA_THRESHOLDS,
+    planEntitlements,
+    evaluateQuota,
     roundMoney,
     normalizePlan,
     normalizeEpochMs,
