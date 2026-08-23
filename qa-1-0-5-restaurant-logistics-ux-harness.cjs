@@ -16,7 +16,12 @@ assert.match(app, /function logisticsView\(\)/, 'logistics view is implemented i
 assert.match(app, /function bindLogistics\(\)/, 'logistics interactions are bound');
 assert.match(app, /id="routeSaleProduct"/, 'route sales can select a loaded product');
 assert.match(app, /id="routeSaleQty"/, 'route sales can record product quantity');
-assert.match(app, /Carga insuficiente para vender/, 'route sales validate loaded stock before selling products');
+// r36: route sale validation now goes through CLICK360_P2_LOGISTICS.createRouteSale()
+// (route_inventory_exceeded), not an ad-hoc inline check -- message text changed
+// accordingly. See qa-p2-logistics-routes-settlement-harness.cjs for the underlying
+// domain-level validation (loadedQuantity - soldQuantity) and
+// qa-logistics-dispatch-settlement-harness.cjs for the app.js wiring.
+assert.match(app, /No hay suficiente carga disponible en la ruta para esa cantidad\./, 'route sales validate loaded stock before selling products (via the domain module)');
 assert.match(app, /Producto directo/, 'restaurant tables support direct items not registered in inventory');
 assert.match(app, /nonInventory:true/, 'direct restaurant items are marked as non-inventory');
 assert.match(app, /if \(item\.nonInventory\) continue;/, 'direct items do not require inventory stock validation');

@@ -3,7 +3,7 @@
 
   const ROUTE_STATUS = Object.freeze(['draft', 'planned', 'dispatched', 'in_progress', 'settlement_pending', 'closed', 'cancelled']);
   const LOAD_SHEET_STATUS = Object.freeze(['draft', 'confirmed', 'dispatched', 'closed', 'cancelled']);
-  const SETTLEMENT_STATUS = Object.freeze(['draft', 'pending_approval', 'approved', 'closed', 'reopened', 'cancelled']);
+  const SETTLEMENT_STATUS = Object.freeze(['draft', 'pending_approval', 'approved', 'rejected', 'closed', 'reopened', 'cancelled']);
   const PAYMENT_TYPES = Object.freeze(['cash', 'credit', 'transfer']);
   const RETURN_CONDITIONS = Object.freeze(['sellable', 'damaged']);
   const PERMISSIONS = Object.freeze([
@@ -305,6 +305,22 @@
     });
     return { settlement:withAudit({ ...settlement, status:'closed', closedAt:iso(now), stockRestoredAt:settlement.stockRestoredAt || iso(now) }, 'route_settlement_closed', actor, now, { sellableReturnCount:settlement.stockRestoredAt ? 0 : sellable.length }), route:withAudit({ ...route, status:'closed' }, 'route_closed', actor, now, { settlementId:settlement.id }), products:nextProducts };
   }
+  // r36: explicit reject/observe path -- a settlement still pending_approval
+  // can be sent back with a required reason instead of only ever being
+  // approved. The route returns to 'in_progress' so the route seller can
+  // correct whatever was flagged and call createSettlement() again; the
+  // rejected settlement itself is never deleted, only superseded, so the
+  // observation stays in the audit trail permanently.
+  function rejectSettlement({ settlement, route, reason, actor, now = Date.now() } = {}) {
+    assertPermission(actor, 'settlements.approve');
+    assertBusinessScope(route, settlement.businessId);
+    if (settlement.status !== 'pending_approval') throw new Error('settlement_not_rejectable');
+    if (!text(reason)) throw new Error('reject_reason_required');
+    return {
+      settlement: withAudit({ ...settlement, status:'rejected', rejectedAt:iso(now), rejectReason:text(reason) }, 'route_settlement_rejected', actor, now, { reason:text(reason) }),
+      route: withAudit({ ...route, status:'in_progress' }, 'route_settlement_rejected', actor, now, { settlementId:settlement.id })
+    };
+  }
   function reopenSettlement({ settlement, route, reason, actor, now = Date.now() } = {}) {
     assertPermission(actor, 'settlements.reopen');
     assertBusinessScope(route, settlement.businessId);
@@ -337,7 +353,7 @@
     normalizeLoadSheet, normalizeRouteSale, normalizeCollection, normalizeReturn, normalizeExpense, normalizeVariance,
     createVehicle, createRoute, assignRoute, createLoadSheet, addLoadItem, confirmLoadSheet, dispatchLoadSheet,
     loadedQuantity, soldQuantity, returnedQuantity, createRouteSale, collectionTotal, remainingCredit, recordCollection,
-    recordReturn, recordExpense, recordVariance, settlementCalculation, createSettlement, approveSettlement, closeSettlement, reopenSettlement,
+    recordReturn, recordExpense, recordVariance, settlementCalculation, createSettlement, approveSettlement, rejectSettlement, closeSettlement, reopenSettlement,
     printDocument, logisticsReport
   });
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -4022,103 +4022,293 @@ function parseMoney(value) {
 	      closeModal(); renderApp('logistics'); toast('Ruta creada');
 	    };
 	  }
-	  function openRouteWorkspace(routeId) {
-	    const route = logisticsForBiz('routes').find((item) => item.id === routeId);
-	    if (!route) return toast('Ruta no encontrada.', 'err');
-	    const summary = logisticsSummary(route);
-	    const sheet = logisticsForBiz('loadSheets').find((item) => item.routeId === route.id && !['closed','cancelled'].includes(item.status));
-	    const productOptions = productsForBiz().map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${Number(product.qty || 0)} disp.</option>`).join('');
-	    showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p class="fieldHint">${escapeHtml(route.zone || 'Ruta')} · ${escapeHtml(route.date || today())}</p></div><button class="closeBtn" data-close>×</button></div>
-	      <section class="kpiGrid routeKpis"><article class="card kpi"><span>Venta ruta</span><strong>${fmt(summary.sold)}</strong></article><article class="card kpi"><span>Cobrado</span><strong>${fmt(summary.collected)}</strong></article><article class="card kpi"><span>Retornos</span><strong>${fmt(summary.returned)}</strong></article></section>
-	      <section class="card sectionCard"><h3>Hoja de carga</h3><div class="logisticsList">${sheet?.items?.length ? sheet.items.map((item) => `<div class="logisticsRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><strong>${fmt(item.total)}</strong></div>`).join('') : '<p class="empty">Sin productos cargados.</p>'}</div>
-	        <form id="routeLoadForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="routeLoadProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeLoadQty" type="number" min="1" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Agregar carga</button></form></section>
-	      <section class="card sectionCard"><h3>Venta, cobranza y retorno</h3>
-	        <form id="routeSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="routeCustomer" maxlength="80" placeholder="Cliente de ruta"></div><div class="field"><label>Producto vendido</label><select id="routeSaleProduct" ${productOptions ? '' : 'disabled'}><option value="">Venta manual</option>${productOptions}</select></div><div class="field"><label>Cant.</label><input id="routeSaleQty" type="number" min="1" value="1"></div><div class="field"><label>Total venta</label><input id="routeSaleTotal" type="number" min="0" step="0.01" value="0" placeholder="Se calcula si eliges producto"></div><div class="field"><label>Tipo</label><select id="routePaymentType"><option value="cash">Contado</option><option value="credit">Crédito</option><option value="transfer">Transferencia</option></select></div><button class="btn primary" type="submit">Registrar venta</button></form>
-	        <form id="routeCollectionForm" class="formGrid"><div class="field"><label>Cobranza</label><input id="routeCollectionAmount" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Método</label><select id="routeCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><button class="btn silver" type="submit">Registrar cobro</button></form>
-	        <form id="routeReturnForm" class="formGrid"><div class="field"><label>Producto devuelto</label><select id="routeReturnProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeReturnQty" type="number" min="1" value="1"></div><div class="field"><label>Estado</label><select id="routeReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Registrar retorno</button></form></section>
-	      <div class="tableCheckoutActions"><button class="btn" id="routePrintBtn" type="button">${icon('printer')} Imprimir hoja</button><button class="btn primary" id="routeCloseBtn" type="button">Liquidar ruta</button></div>`);
-	    $('#routeLoadForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const productId = decodeActionId($('#routeLoadProduct').value);
-	      const product = productsForBiz().find((item) => item.id === productId);
-	      const qty = Math.max(1, Math.trunc(Number($('#routeLoadQty').value || 1)));
-	      if (!product || qty > Number(product.stock ?? product.qty ?? 0)) return toast('Inventario insuficiente para cargar ruta.', 'err');
-	      let currentSheet = sheet || { id:uid('loadsheet'), businessId:currentBusiness().id, routeId:route.id, status:'draft', items:[], createdAt:new Date().toISOString() };
-	      if (!sheet) state.logistics.loadSheets.push(currentSheet);
-	      const existing = currentSheet.items.find((item) => item.productId === product.id);
-	      if (existing) { existing.qty += qty; existing.total = Number(existing.qty || 0) * Number(existing.price || 0); }
-	      else currentSheet.items.push({ id:uid('loaditem'), productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), total:qty * Number(product.price || 0), createdAt:new Date().toISOString() });
-	      currentSheet.updatedAtMs = Date.now();
-	      addAudit('logistics_load_item_added', { routeId:route.id, productId:product.id, qty });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeSaleForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const productId = decodeActionId($('#routeSaleProduct')?.value || '');
-	      const product = productsForBiz().find((item) => item.id === productId);
-	      const qty = Math.max(1, Math.trunc(Number($('#routeSaleQty')?.value || 1)));
-	      let total = Math.max(0, Number($('#routeSaleTotal').value || 0));
-	      const items = [];
-	      if (product) {
-	        const loadedQty = (sheet?.items || []).filter((item) => item.productId === product.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
-	        const soldQty = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id).flatMap((sale) => sale.items || []).filter((item) => item.productId === product.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
-	        const availableQty = Math.max(0, loadedQty - soldQty);
-	        if (qty > availableQty) return toast(`Carga insuficiente para vender. Disponible en ruta: ${availableQty}.`, 'err');
-	        const unitPrice = Number(product.price || 0);
-	        total = total > 0 ? total : qty * unitPrice;
-	        items.push({ id:uid('routesaleitem'), productId:product.id, code:product.code, name:product.name, qty, price:qty ? total / qty : unitPrice, total, createdAt:new Date().toISOString() });
-	      }
-	      if (!total) return toast(product ? 'El producto necesita precio o total manual.' : 'Ingresa el total de la venta de ruta.', 'err');
-	      const paymentType = $('#routePaymentType').value;
-	      const sale = { id:uid('routesale'), businessId:currentBusiness().id, routeId:route.id, customerName:$('#routeCustomer').value.trim() || 'Cliente de ruta', items, subtotal:total, discount:0, total, paymentType, paidAmount:paymentType === 'credit' ? 0 : total, balance:paymentType === 'credit' ? total : 0, status:paymentType === 'credit' ? 'credit' : 'paid', createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name };
-	      state.logistics.routeSales.push(sale);
-	      addAudit('logistics_route_sale_created', { routeId:route.id, saleId:sale.id, total, productId:product?.id || '' });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeCollectionForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const amount = Math.max(0, Number($('#routeCollectionAmount').value || 0));
-	      if (!amount) return toast('Ingresa el valor cobrado.', 'err');
-	      state.logistics.collections.push({ id:uid('collection'), businessId:currentBusiness().id, routeId:route.id, amount, method:$('#routeCollectionMethod').value, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
-	      addAudit('logistics_collection_created', { routeId:route.id, amount });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeReturnForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const productId = decodeActionId($('#routeReturnProduct').value);
-	      const product = productsForBiz().find((item) => item.id === productId);
-	      const qty = Math.max(1, Math.trunc(Number($('#routeReturnQty').value || 1)));
-	      if (!product) return toast('Producto no encontrado.', 'err');
-	      state.logistics.returns.push({ id:uid('return'), businessId:currentBusiness().id, routeId:route.id, productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), condition:$('#routeReturnCondition').value, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
-	      addAudit('logistics_return_created', { routeId:route.id, productId:product.id, qty });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeCloseBtn').onclick = () => {
-	      const next = logisticsSummary(route);
-	      const settlement = { id:uid('settlement'), businessId:currentBusiness().id, routeId:route.id, status:'closed', totalSales:next.sold, totalCollections:next.collected, totalReturns:next.returned, totalExpenses:next.spent, expectedCash:next.expected, closedAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name };
-	      state.logistics.routeSettlements.push(settlement);
-	      route.status = 'closed';
-	      route.closedAt = new Date().toISOString();
-	      addAudit('logistics_route_closed', { routeId:route.id, settlementId:settlement.id, expectedCash:settlement.expectedCash });
-	      if (!save()) return;
-	      closeModal(); renderApp('logistics'); toast('Ruta liquidada');
-	    };
-	    $('#routePrintBtn').onclick = () => {
-	      // Used to be a standalone window.open() + a print() call on that
-	      // popup window, entirely bypassing handoffPrint -- no anti-double
-	      // print guard, no button disabling, no shared error handling, and
-	      // silently blocked by popup blockers with only a generic toast.
-	      // Routed through the same handoffPrint() path as every other print
-	      // button so this route sheet gets the same protections for free.
-	      const html = `<section class="printReceipt"><h1>${escapeHtml(route.name)}</h1><p>${escapeHtml(route.zone || '')} · ${escapeHtml(route.date || '')}</p><h2>Hoja de carga</h2>${(sheet?.items || []).map((item) => `<p>${escapeHtml(item.name)} · ${item.qty} · ${fmt(item.total)}</p>`).join('') || '<p>Sin carga</p>'}<h2>Liquidación</h2><p>Venta: ${fmt(summary.sold)}</p><p>Cobrado: ${fmt(summary.collected)}</p><p>Retornos: ${fmt(summary.returned)}</p></section>`;
-	      handoffPrint({ html, media:'receipt-80' }, 'system');
-	    };
-	    refreshIcons();
-	  }
+  function applyLogisticsProductQty(nextProducts) {
+    (nextProducts || []).forEach((next) => {
+      const real = state.products.find((product) => product.id === next.id);
+      if (real && Number(real.qty ?? real.stock ?? 0) !== Number(next.qty)) {
+        real.stock = Number(next.qty);
+        real.qty = Number(next.qty);
+        real.updatedAtMs = Date.now();
+        real.updatedAt = new Date().toISOString();
+      }
+    });
+  }
+  function logisticsProductsSnapshot() {
+    return productsForBiz().map((product) => ({ ...product, qty: Number(product.qty ?? product.stock ?? 0) }));
+  }
+  function latestRouteSettlement(routeId) {
+    return logisticsForBiz('routeSettlements').filter((entry) => entry.routeId === routeId)
+      .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))[0] || null;
+  }
+  const SETTLEMENT_STATUS_LABELS = { pending_approval: 'Pendiente de aprobación', approved: 'Aprobada, falta cerrar', rejected: 'Observada / rechazada', closed: 'Cerrada', reopened: 'Reabierta' };
+  const LOAD_SHEET_STATUS_LABELS = { draft: 'Borrador (no despachada)', confirmed: 'Confirmada', dispatched: 'Despachada' };
+  function openRouteWorkspace(routeId) {
+    const route = logisticsForBiz('routes').find((item) => item.id === routeId);
+    if (!route) return toast('Ruta no encontrada.', 'err');
+    const summary = logisticsSummary(route);
+    const sheet = logisticsForBiz('loadSheets').find((item) => item.routeId === route.id && item.status !== 'cancelled');
+    const settlement = latestRouteSettlement(route.id);
+    const dispatched = ['dispatched', 'in_progress', 'settlement_pending'].includes(route.status);
+    const productOptions = productsForBiz().map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${Number(product.stock ?? product.qty ?? 0)} disp.</option>`).join('');
+    const L = window.CLICK360_P2_LOGISTICS;
+    showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p class="fieldHint">${escapeHtml(route.zone || 'Ruta')} · ${escapeHtml(route.date || today())} · <span class="badge gold">${escapeHtml(route.status)}</span></p></div><button class="closeBtn" data-close>×</button></div>
+      <section class="kpiGrid routeKpis"><article class="card kpi"><span>Venta ruta</span><strong>${fmt(summary.sold)}</strong></article><article class="card kpi"><span>Cobrado</span><strong>${fmt(summary.collected)}</strong></article><article class="card kpi"><span>Retornos</span><strong>${fmt(summary.returned)}</strong></article></section>
+      <section class="card sectionCard"><h3>Hoja de carga <span class="badge">${escapeHtml(LOAD_SHEET_STATUS_LABELS[sheet?.status] || 'Sin carga')}</span></h3>
+        <div class="logisticsList">${sheet?.items?.length ? sheet.items.map((item) => `<div class="logisticsRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><strong>${fmt(item.total)}</strong></div>`).join('') : '<p class="empty">Sin productos cargados.</p>'}</div>
+        ${(!sheet || sheet.status === 'draft') ? `
+          <form id="routeLoadForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="routeLoadProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeLoadQty" type="number" min="1" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Agregar carga</button></form>
+          ${sheet?.items?.length ? `<button type="button" class="btn primary block" id="routeDispatchBtn" style="margin-top:10px;">${icon('truck')} Despachar ruta (descuenta inventario)</button><p class="fieldHint">Al despachar, la cantidad cargada se descuenta del inventario del negocio -- ya no está disponible para venta en tienda mientras está en la ruta.</p>` : ''}
+        ` : `<p class="cloudStatus">Ruta despachada el ${escapeHtml(sheet.dispatchedAt ? new Date(sheet.dispatchedAt).toLocaleString('es-EC') : '')}. El inventario ya fue descontado y la carga queda bloqueada.</p>`}
+      </section>
+      <section class="card sectionCard"><h3>Venta, cobranza y retorno</h3>
+        ${!dispatched ? '<p class="cloudStatus">Despacha la ruta primero para poder registrar ventas, cobros o retornos.</p>' : `
+        <form id="routeSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="routeCustomer" maxlength="80" placeholder="Cliente de ruta"></div><div class="field"><label>Producto vendido</label><select id="routeSaleProduct" ${productOptions ? '' : 'disabled'}><option value="">Venta manual</option>${productOptions}</select></div><div class="field"><label>Cant.</label><input id="routeSaleQty" type="number" min="1" value="1"></div><div class="field"><label>Total venta</label><input id="routeSaleTotal" type="number" min="0" step="0.01" value="0" placeholder="Se calcula si eliges producto"></div><div class="field"><label>Tipo</label><select id="routePaymentType"><option value="cash">Contado</option><option value="credit">Crédito</option><option value="transfer">Transferencia</option></select></div><button class="btn primary" type="submit">Registrar venta</button></form>
+        <form id="routeCollectionForm" class="formGrid">${(() => { const creditSales = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0); return creditSales.length ? `<div class="field full"><label>Venta a crédito</label><select id="routeCollectionSale">${creditSales.map((sale) => `<option value="${actionId(sale.id)}">${escapeHtml(sale.customerName || 'Cliente de ruta')} · Saldo ${fmt(sale.balance)}</option>`).join('')}</select></div>` : '<p class="fieldHint full">No hay ventas a crédito pendientes de cobro en esta ruta.</p>'; })()}<div class="field"><label>Cobranza</label><input id="routeCollectionAmount" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Método</label><select id="routeCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><button class="btn silver" type="submit" ${logisticsForBiz('routeSales').some((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0) ? '' : 'disabled'}>Registrar cobro</button></form>
+        <form id="routeReturnForm" class="formGrid"><div class="field"><label>Producto devuelto</label><select id="routeReturnProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeReturnQty" type="number" min="1" value="1"></div><div class="field"><label>Estado</label><select id="routeReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Registrar retorno</button></form>
+        <p class="fieldHint">Los retornos vendibles regresan al inventario recién al cerrar la liquidación (evita contarlos dos veces mientras la ruta sigue abierta).</p>`}
+      </section>
+      <section class="card sectionCard"><h3>Liquidación</h3>${routeSettlementSectionHtml(route, sheet, settlement)}</section>
+      <div class="tableCheckoutActions"><button class="btn" id="routePrintBtn" type="button">${icon('printer')} Imprimir hoja</button></div>`);
+    $('#routeLoadForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const productId = decodeActionId($('#routeLoadProduct').value);
+      const product = productsForBiz().find((item) => item.id === productId);
+      const qty = Math.max(1, Math.trunc(Number($('#routeLoadQty').value || 1)));
+      if (!product) return toast('Selecciona un producto.', 'err');
+      let currentSheet = sheet || { id:uid('loadsheet'), businessId:currentBusiness().id, routeId:route.id, status:'draft', items:[], createdAt:new Date().toISOString(), createdAtMs:Date.now(), auditTrail:[] };
+      let nextSheet;
+      try {
+        nextSheet = L.addLoadItem({ sheet:currentSheet, product:{ ...product, qty:Number(product.stock ?? product.qty ?? 0) }, qty, actor:logisticsActor() });
+      } catch (error) {
+        return toast(error.message === 'insufficient_inventory' ? 'Inventario insuficiente para cargar ruta.' : (error.message || 'No se pudo agregar la carga.'), 'err');
+      }
+      if (!sheet) state.logistics.loadSheets.push(nextSheet);
+      else Object.assign(sheet, nextSheet);
+      addAudit('logistics_load_item_added', { routeId:route.id, productId:product.id, qty });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeDispatchBtn')?.addEventListener('click', async () => {
+      const btn = $('#routeDispatchBtn');
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        const previousState = cloneState(state);
+        const products = logisticsProductsSnapshot();
+        let confirmedSheet;
+        try {
+          confirmedSheet = L.confirmLoadSheet({ sheet, products, actor:logisticsActor() });
+        } catch (error) {
+          return toast(error.message?.startsWith('insufficient_inventory') ? 'El inventario cambió desde que se cargó; revisa las cantidades.' : (error.message || 'No se pudo confirmar la carga.'), 'err');
+        }
+        let dispatchResult;
+        try {
+          dispatchResult = L.dispatchLoadSheet({ sheet:confirmedSheet, route, products, actor:logisticsActor() });
+        } catch (error) {
+          return toast(error.message?.startsWith('insufficient_inventory') ? 'El inventario cambió desde que se cargó; revisa las cantidades.' : (error.message || 'No se pudo despachar la ruta.'), 'err');
+        }
+        Object.assign(sheet, dispatchResult.sheet);
+        Object.assign(route, dispatchResult.route);
+        applyLogisticsProductQty(dispatchResult.products);
+        addAudit('logistics_route_dispatched', { routeId:route.id, loadSheetId:sheet.id, noop:dispatchResult.noop === true });
+        const committed = await commitCriticalMutation(previousState, 'logistics_route_dispatched', (next) =>
+          next.logistics?.loadSheets?.some((item) => item.id === sheet.id && item.status === 'dispatched'));
+        if (!committed.ok) { renderApp('logistics'); return; }
+        closeModal(); openRouteWorkspace(route.id);
+        toast(committed.pending ? 'Ruta despachada; sincronización pendiente.' : 'Ruta despachada e inventario descontado.');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+    $('#routeSaleForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const productId = decodeActionId($('#routeSaleProduct')?.value || '');
+      const product = productsForBiz().find((item) => item.id === productId);
+      const qty = Math.max(1, Math.trunc(Number($('#routeSaleQty')?.value || 1)));
+      let total = Math.max(0, Number($('#routeSaleTotal').value || 0));
+      const items = [];
+      if (product) { total = total > 0 ? total : qty * Number(product.price || 0); items.push({ productId:product.id, code:product.code, name:product.name, qty, price:qty ? total / qty : Number(product.price || 0) }); }
+      if (!total) return toast(product ? 'El producto necesita precio o total manual.' : 'Ingresa el total de la venta de ruta.', 'err');
+      const paymentType = $('#routePaymentType').value;
+      let sale;
+      try {
+        sale = L.createRouteSale({
+          input:{ businessId:currentBusiness().id, customerName:$('#routeCustomer').value.trim() || 'Cliente de ruta', items, paymentType },
+          route, sheet, products:logisticsProductsSnapshot(), routeSales:logisticsForBiz('routeSales'), actor:logisticsActor()
+        });
+      } catch (error) {
+        const map = { route_inventory_exceeded:'No hay suficiente carga disponible en la ruta para esa cantidad.', route_sale_empty:'Ingresa un producto o un total.', route_not_dispatched:'Despacha la ruta antes de vender.' };
+        const code = String(error.message || '').split(':')[0];
+        return toast(map[code] || error.message || 'No se pudo registrar la venta.', 'err');
+      }
+      state.logistics.routeSales.push(sale);
+      addAudit('logistics_route_sale_created', { routeId:route.id, saleId:sale.id, total, productId:product?.id || '' });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeCollectionForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const amount = Math.max(0, Number($('#routeCollectionAmount').value || 0));
+      if (!amount) return toast('Ingresa el valor cobrado.', 'err');
+      const saleId = decodeActionId($('#routeCollectionSale')?.value || '');
+      const sale = logisticsForBiz('routeSales').find((item) => item.id === saleId);
+      if (!sale) return toast('Selecciona la venta a crédito que estás cobrando.', 'err');
+      let result;
+      try {
+        result = L.recordCollection({
+          input:{ businessId:currentBusiness().id, amount, method:$('#routeCollectionMethod').value, idempotencyKey:uid('collection') },
+          route, sale, collections:logisticsForBiz('collections'), actor:logisticsActor()
+        });
+      } catch (error) {
+        const map = { collection_amount_invalid:'El cobro no puede superar el saldo pendiente de esa venta.', collection_not_available:'Esta venta ya no tiene saldo pendiente.', route_sale_scope_denied:'La venta no pertenece a esta ruta.' };
+        const code = String(error.message || '').split(':')[0];
+        return toast(map[code] || error.message || 'No se pudo registrar el cobro.', 'err');
+      }
+      if (result.noop) { closeModal(); return openRouteWorkspace(route.id); }
+      state.logistics.collections.push(result.collection);
+      addAudit('logistics_collection_created', { routeId:route.id, saleId:sale.id, amount });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeReturnForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const productId = decodeActionId($('#routeReturnProduct').value);
+      const product = productsForBiz().find((item) => item.id === productId);
+      const qty = Math.max(1, Math.trunc(Number($('#routeReturnQty').value || 1)));
+      if (!product) return toast('Producto no encontrado.', 'err');
+      let entry;
+      try {
+        entry = L.recordReturn({
+          input:{ businessId:currentBusiness().id, productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), condition:$('#routeReturnCondition').value },
+          route, sheet, routeSales:logisticsForBiz('routeSales'), returns:logisticsForBiz('returns'), actor:logisticsActor()
+        });
+      } catch (error) {
+        return toast(error.message === 'return_quantity_invalid' ? 'La cantidad supera lo cargado/no vendido/no devuelto todavía en esta ruta.' : (error.message || 'No se pudo registrar el retorno.'), 'err');
+      }
+      state.logistics.returns.push(entry);
+      addAudit('logistics_return_created', { routeId:route.id, productId:product.id, qty, condition:entry.condition });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeSettlementForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const receivedCash = Math.max(0, Number($('#routeReceivedCash').value || 0));
+      let result;
+      try {
+        result = L.createSettlement({
+          input:{ businessId:currentBusiness().id, receivedCash }, route, sheet,
+          routeSales:logisticsForBiz('routeSales'), collections:logisticsForBiz('collections'), returns:logisticsForBiz('returns'),
+          expenses:logisticsForBiz('routeExpenses'), shortages:[], overages:[], actor:logisticsActor()
+        });
+      } catch (error) {
+        return toast(error.message || 'No se pudo crear la liquidación.', 'err');
+      }
+      state.logistics.routeSettlements.push(result.settlement);
+      Object.assign(route, result.route);
+      addAudit('logistics_settlement_created', { routeId:route.id, settlementId:result.settlement.id, expectedCash:result.settlement.calculation.expectedCash, difference:result.settlement.difference });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación enviada para aprobación');
+    });
+    $('#settlementApproveBtn')?.addEventListener('click', () => {
+      let next;
+      try { next = L.approveSettlement({ settlement, actor:logisticsActor() }); }
+      catch (error) { return toast(error.message || 'No se pudo aprobar.', 'err'); }
+      Object.assign(settlement, next);
+      addAudit('logistics_settlement_approved', { routeId:route.id, settlementId:settlement.id });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación aprobada');
+    });
+    $('#settlementRejectBtn')?.addEventListener('click', () => {
+      const reason = prompt('Motivo del rechazo / observación:');
+      if (!reason || !reason.trim()) return toast('Se requiere un motivo.', 'err');
+      let result;
+      try { result = L.rejectSettlement({ settlement, route, reason:reason.trim(), actor:logisticsActor() }); }
+      catch (error) { return toast(error.message || 'No se pudo rechazar.', 'err'); }
+      Object.assign(settlement, result.settlement);
+      Object.assign(route, result.route);
+      addAudit('logistics_settlement_rejected', { routeId:route.id, settlementId:settlement.id, reason:reason.trim() });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación observada; la ruta vuelve a estar en curso');
+    });
+    $('#settlementCloseBtn')?.addEventListener('click', async () => {
+      const btn = $('#settlementCloseBtn');
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        const previousState = cloneState(state);
+        let result;
+        try {
+          result = L.closeSettlement({ settlement, route, products:logisticsProductsSnapshot(), returns:logisticsForBiz('returns'), actor:logisticsActor() });
+        } catch (error) {
+          return toast(error.message || 'No se pudo cerrar la liquidación.', 'err');
+        }
+        Object.assign(settlement, result.settlement);
+        Object.assign(route, result.route);
+        applyLogisticsProductQty(result.products);
+        addAudit('logistics_settlement_closed', { routeId:route.id, settlementId:settlement.id });
+        const committed = await commitCriticalMutation(previousState, 'logistics_settlement_closed', (next) =>
+          next.logistics?.routeSettlements?.some((item) => item.id === settlement.id && item.status === 'closed'));
+        if (!committed.ok) { renderApp('logistics'); return; }
+        closeModal(); renderApp('logistics');
+        toast(committed.pending ? 'Ruta liquidada; sincronización pendiente.' : 'Ruta liquidada y cerrada');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+    $('#settlementReopenBtn')?.addEventListener('click', () => {
+      if (!isOwnerUser()) return toast('Solo el dueño puede reabrir una liquidación.', 'err');
+      const reason = prompt('Motivo de la reapertura:');
+      if (!reason || !reason.trim()) return toast('Se requiere un motivo.', 'err');
+      let result;
+      try { result = L.reopenSettlement({ settlement, route, reason:reason.trim(), actor:logisticsActor() }); }
+      catch (error) { return toast(error.message || 'No se pudo reabrir.', 'err'); }
+      Object.assign(settlement, result.settlement);
+      Object.assign(route, result.route);
+      addAudit('logistics_settlement_reopened', { routeId:route.id, settlementId:settlement.id, reason:reason.trim() });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación reabierta');
+    });
+    $('#routePrintBtn').onclick = () => {
+      const html = window.CLICK360_P2_LOGISTICS?.printDocument({ kind:'load_sheet', businessName:currentBusiness().name, route, sheet })
+        || `<section class="printReceipt"><h1>${escapeHtml(route.name)}</h1></section>`;
+      handoffPrint({ html, media:'receipt-80' }, 'system');
+    };
+    refreshIcons();
+  }
+  function routeSettlementSectionHtml(route, sheet, settlement) {
+    const dispatched = ['dispatched', 'in_progress', 'settlement_pending'].includes(route.status);
+    if (!settlement || ['rejected', 'closed', 'reopened'].includes(settlement.status)) {
+      if (settlement?.status === 'rejected') {
+        return `<p class="cloudStatus" style="color:#ff8d92;">Liquidación anterior observada: "${escapeHtml(settlement.rejectReason || '')}".</p>${dispatched ? routeSettlementFormHtml() : '<p class="cloudStatus">Despacha la ruta antes de liquidar.</p>'}`;
+      }
+      if (settlement?.status === 'closed' && route.status === 'closed') {
+        return `<p class="cloudStatus">Ruta liquidada y cerrada el ${escapeHtml(settlement.closedAt ? new Date(settlement.closedAt).toLocaleString('es-EC') : '')}.</p>
+          <p class="fieldHint">Esperado: ${fmt(settlement.calculation.expectedCash)} · Recibido: ${fmt(settlement.receivedCash)} · Diferencia: ${fmt(settlement.difference)}</p>
+          <button type="button" class="btn silver block" id="settlementReopenBtn">${icon('rotate-ccw')} Reabrir liquidación (solo dueño)</button>`;
+      }
+      if (settlement?.status === 'reopened') {
+        return `<p class="cloudStatus">Liquidación reabierta: "${escapeHtml(settlement.reopenReason || '')}". Aprueba de nuevo para volver a cerrarla.</p>
+          <div class="tableCheckoutActions"><button type="button" class="btn primary" id="settlementApproveBtn">${icon('check')} Aprobar</button><button type="button" class="btn danger" id="settlementRejectBtn">${icon('x')} Rechazar / observar</button></div>`;
+      }
+      return dispatched ? routeSettlementFormHtml() : '<p class="cloudStatus">Despacha la ruta antes de poder liquidarla.</p>';
+    }
+    if (settlement.status === 'pending_approval') {
+      return `<p class="fieldHint">Esperado: ${fmt(settlement.calculation.expectedCash)} · Recibido: ${fmt(settlement.receivedCash)} · Diferencia: <b style="color:${Math.abs(settlement.difference) > 0.01 ? '#ff8d92' : '#37d57e'}">${fmt(settlement.difference)}</b></p>
+        <div class="tableCheckoutActions"><button type="button" class="btn primary" id="settlementApproveBtn">${icon('check')} Aprobar</button><button type="button" class="btn danger" id="settlementRejectBtn">${icon('x')} Rechazar / observar</button></div>`;
+    }
+    if (settlement.status === 'approved') {
+      return `<p class="cloudStatus">Liquidación aprobada. Esperado: ${fmt(settlement.calculation.expectedCash)} · Recibido: ${fmt(settlement.receivedCash)} · Diferencia: ${fmt(settlement.difference)}</p>
+        <button type="button" class="btn primary block" id="settlementCloseBtn">${icon('lock')} Cerrar liquidación</button>`;
+    }
+    return '<p class="empty">Estado de liquidación desconocido.</p>';
+  }
+  function routeSettlementFormHtml() {
+    return `<form id="routeSettlementForm" class="formGrid"><div class="field"><label>Efectivo contado al regreso</label><input id="routeReceivedCash" type="number" min="0" step="0.01" value="0" required></div><button class="btn primary block" type="submit">${icon('calculator')} Cerrar ruta y enviar a liquidar</button></form><p class="fieldHint">Esto envía la liquidación a aprobación; el inventario vendible que se devolvió se restaura recién al aprobar y cerrar.</p>`;
+  }
 	  function bindLogistics() {
 	    $('#newVehicleBtn')?.addEventListener('click', openVehicleModal);
 	    $('#newRouteBtn')?.addEventListener('click', openRouteModal);
