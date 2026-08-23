@@ -2899,8 +2899,9 @@
 	            </div>
 		            <div id="c360-public-plans" class="c360-public-plans" hidden>
 	              <article><b>Prueba gratis</b><strong>7 días</strong><span>Todas las funciones Base, sin borrar tus datos al terminar.</span><button type="button" data-public-flow="trial">Empezar prueba</button></article>
-	              <article><b>Base</b><strong>$40 / mes</strong><span>Inventario, ventas, caja, clientes, reportes y etiquetas QR.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Base" target="_blank" rel="noopener noreferrer">Elegir Base</a></article>
-		              <article><b>Pro</b><strong>$59,99 / mes</strong><span>Todo Base, más CRM, recordatorios, proveedores y herramientas avanzadas.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Pro" target="_blank" rel="noopener noreferrer">Elegir Pro</a></article>
+	              <article><b>Base</b><strong>$${(window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.base?.prices?.month ?? 39.99).toFixed(2)} / mes</strong><span>Inventario, ventas, caja, clientes, reportes y etiquetas QR.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Base" target="_blank" rel="noopener noreferrer">Elegir Base</a></article>
+		              <article><b>Pro</b><strong>$${(window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.pro?.prices?.month ?? 59.99).toFixed(2)} / mes</strong><span>Todo Base, más CRM, recordatorios, proveedores y herramientas avanzadas.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Pro" target="_blank" rel="noopener noreferrer">Elegir Pro</a></article>
+		              <article><b>Business</b><strong>$${(window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.business?.prices?.month ?? 99.99).toFixed(2)} / mes</strong><span>Todo Pro, más restaurante, logística de rutas y capacidad ampliada.</span><a href="https://wa.me/593969399562?text=Hola%2C%20quiero%20activar%20CLICK%20360%20Business" target="_blank" rel="noopener noreferrer">Elegir Business</a></article>
 		            </div>
 		            <button id="c360-retry-access" class="c360-change-button" style="display:none;">Reintentar</button>
 		          </section>

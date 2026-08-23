@@ -66,6 +66,12 @@ assert(/\$\{!isFounder \? `<a href="\$\{escapeHtml\(purchaseWhatsAppUrl\(\)\)\}"
 // ── Structural: capacity-request path matches field-for-field, client -> rules ──
 const service = fs.readFileSync('firebase-service.js', 'utf8');
 assert(service.includes('window.click360RequestCapacity = async function(kind, note = \'\')'), 'click360RequestCapacity must exist with the (kind, note) signature');
+// r36: the pre-login public plan teaser was found hardcoding its own separate
+// prices ($40 for Base) that had drifted from PLAN_CATALOG's real $39.99 --
+// exactly the duplicated-price-source bug Section 1 exists to prevent. It
+// must read the canonical catalog live, never a second hardcoded number.
+assert(!/\$40 \/ mes/.test(service), 'the public plan teaser must not hardcode a stale Base price');
+['base', 'pro', 'business'].forEach((code) => assert(service.includes(`window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.${code}?.prices?.month`), `the public plan teaser must read the ${code} price live from PLAN_CATALOG, not a hardcoded literal`));
 assert(/\['products', 'storage'\]\.includes\(safeKind\)/.test(service), 'click360RequestCapacity must validate kind against the exact same whitelist as firestore.rules');
 const rules = fs.readFileSync('firestore.rules', 'utf8');
 assert(/match \/businesses\/\{ownerUid\}\/capacityRequests\/\{requestId\}/.test(rules), 'firestore.rules must define the capacityRequests contract');
