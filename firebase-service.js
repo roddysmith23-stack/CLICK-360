@@ -2231,6 +2231,27 @@
 	    return { requestId:requestRef.id };
 	  };
 
+	  // Commercial MVP: owner-initiated request for more products/storage
+	  // capacity, mirroring click360RequestAdditionalSeats' pattern exactly --
+	  // does not change any quota itself (no billing automation exists), just
+	  // logs an immutable, owner-scoped, auditable record for AIIA to review
+	  // and fulfill manually.
+	  window.click360RequestCapacity = async function(kind, note = '') {
+	    if (!window.click360User || window.click360User.isOwner !== true) throw new Error('No tienes permisos.');
+	    const ownerId = window.click360User.uid;
+	    const safeKind = String(kind || '').trim();
+	    if (!['products', 'storage'].includes(safeKind)) throw new Error('Tipo de capacidad invalido.');
+	    const requestRef = db.collection('businesses').doc(ownerId).collection('capacityRequests').doc();
+	    await requestRef.set({
+	      ownerUid: ownerId, kind: safeKind, requestedBy: ownerId,
+	      plan: window.CLICK360_V16_DOMAIN?.normalizePlan?.(window.click360AccessState?.plan) || '',
+	      note: String(note || '').slice(0, 300), status: 'pending',
+	      requestedAt: firebase.firestore.FieldValue.serverTimestamp()
+	    });
+	    recordTelemetry('capacity_request', { requestId: requestRef.id, kind: safeKind }).catch(() => {});
+	    return { requestId: requestRef.id };
+	  };
+
 	  function syncError(code, message, details = {}) {
 	    const error = new Error(message);
 	    error.code = code;
