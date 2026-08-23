@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="es-EC">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Reparar CLICK 360</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; background:#050505; color:#f6f6f3; font-family:Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; display:flex; align-items:center; justify-content:center; padding:24px; }
+  main { width:min(480px, 100%); }
+  h1 { font-size:22px; margin:0 0 6px; }
+  p.lead { color:#aaa8a1; font-size:14px; line-height:1.5; margin:0 0 20px; }
+  .card { background:#111112; border:1px solid #2b2b30; border-radius:10px; padding:16px; margin-bottom:14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:#aaa8a1; margin:0 0 10px; }
+  .row { display:flex; justify-content:space-between; gap:10px; font-size:13px; padding:5px 0; border-bottom:1px solid #1c1c1e; }
+  .row:last-child { border-bottom:0; }
+  .row span:first-child { color:#8b887f; }
+  .row span:last-child { text-align:right; overflow-wrap:anywhere; }
+  button { width:100%; min-height:52px; border-radius:8px; border:1px solid #2b2b30; background:#181819; color:#f6f6f3; font-weight:800; font-size:15px; cursor:pointer; margin-top:6px; }
+  button.primary { background:linear-gradient(135deg,#f0c84d,#d6aa2c); color:#10100c; border-color:#bb8d1f; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+  #log { font-size:12px; color:#8b887f; margin-top:10px; white-space:pre-wrap; line-height:1.5; }
+  a.back { display:block; text-align:center; margin-top:18px; color:#aaa8a1; font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Reparar CLICK 360</h1>
+  <p class="lead">Esta página funciona de forma independiente: no depende de la app principal, de tu sesión ni de tus datos. Úsala si CLICK 360 no abre o queda en pantalla negra.</p>
+
+  <div class="card">
+    <h2>Estado de este dispositivo</h2>
+    <div id="status">
+      <div class="row"><span>Versión de esta página</span><span id="stVersion">-</span></div>
+      <div class="row"><span>Service Worker</span><span id="stSw">Comprobando...</span></div>
+      <div class="row"><span>Cachés de CLICK 360</span><span id="stCache">Comprobando...</span></div>
+      <div class="row"><span>Conexión</span><span id="stOnline">-</span></div>
+    </div>
+  </div>
+
+  <button class="primary" id="repairBtn">Reparar CLICK 360</button>
+  <button id="openBtn">Abrir CLICK 360 normalmente</button>
+  <div id="log" role="status" aria-live="polite"></div>
+
+  <a class="back" href="/">Volver al inicio</a>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  // Self-contained on purpose: no dependency on app.js, Firebase Auth, or
+  // tenant state. If any of those are the reason CLICK 360 isn't opening,
+  // this page must still work.
+  var REPAIR_PAGE_VERSION = 'commercial-1-0-5-r36-p0-2b-boot-grace-fix';
+  var log = document.getElementById('log');
+  function writeLog(line) { log.textContent += (log.textContent ? '\n' : '') + line; }
+
+  document.getElementById('stVersion').textContent = REPAIR_PAGE_VERSION;
+  document.getElementById('stOnline').textContent = navigator.onLine ? 'Conectado' : 'Sin conexión';
+  window.addEventListener('online', function () { document.getElementById('stOnline').textContent = 'Conectado'; });
+  window.addEventListener('offline', function () { document.getElementById('stOnline').textContent = 'Sin conexión'; });
+
+  function describeRegistration(reg) {
+    if (!reg) return 'Sin registrar';
+    var state = (reg.active && 'activo') || (reg.waiting && 'en espera') || (reg.installing && 'instalando') || 'desconocido';
+    return state + (reg.active && reg.active.scriptURL ? ' (' + reg.active.scriptURL.split('/').pop() + ')' : '');
+  }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      document.getElementById('stSw').textContent = regs.length
+        ? regs.map(describeRegistration).join(', ')
+        : 'Sin registrar';
+    }).catch(function () { document.getElementById('stSw').textContent = 'No disponible'; });
+  } else {
+    document.getElementById('stSw').textContent = 'No soportado en este navegador';
+  }
+
+  if ('caches' in window) {
+    caches.keys().then(function (keys) {
+      var c360 = keys.filter(function (k) { return k.indexOf('click360-') === 0; });
+      document.getElementById('stCache').textContent = c360.length ? (c360.length + ' encontrada(s)') : 'Ninguna';
+    }).catch(function () { document.getElementById('stCache').textContent = 'No disponible'; });
+  } else {
+    document.getElementById('stCache').textContent = 'No soportado en este navegador';
+  }
+
+  document.getElementById('openBtn').addEventListener('click', function () {
+    window.location.href = '/';
+  });
+
+  document.getElementById('repairBtn').addEventListener('click', function () {
+    var btn = document.getElementById('repairBtn');
+    btn.disabled = true;
+    btn.textContent = 'Reparando...';
+    writeLog('Iniciando reparación...');
+
+    var steps = [];
+
+    steps.push(function () {
+      if (!('serviceWorker' in navigator)) return Promise.resolve();
+      return navigator.serviceWorker.getRegistrations().then(function (regs) {
+        writeLog('Service workers encontrados: ' + regs.length);
+        // The app owns this entire origin -- there is only ever one real
+        // registration here. Unregister every one found, never a partial
+        // guess by name, so a stray/orphaned registration can't survive.
+        return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
+      }).then(function () { writeLog('Service worker(s) eliminado(s).'); });
+    });
+
+    steps.push(function () {
+      if (!('caches' in window)) return Promise.resolve();
+      return caches.keys().then(function (keys) {
+        var c360Keys = keys.filter(function (k) { return k.indexOf('click360-') === 0; });
+        writeLog('Cachés de CLICK 360 a eliminar: ' + c360Keys.length);
+        return Promise.all(c360Keys.map(function (k) { return caches.delete(k); }));
+      }).then(function () { writeLog('Cachés eliminadas. Tus datos de negocio están en la nube, no en estas cachés.'); });
+    });
+
+    steps.reduce(function (chain, step) { return chain.then(step); }, Promise.resolve())
+      .then(function () {
+        writeLog('Reparación completa. Abriendo CLICK 360...');
+        setTimeout(function () {
+          window.location.href = '/?repaired=' + Date.now();
+        }, 700);
+      })
+      .catch(function (error) {
+        writeLog('Ocurrió un problema durante la reparación: ' + (error && error.message || error));
+        btn.disabled = false;
+        btn.textContent = 'Reintentar reparación';
+      });
+  });
+})();
+</script>
+</body>
+</html>

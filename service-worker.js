@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r36-p0-shary-boot-fix';
+const CACHE = 'click360-commercial-1-0-5-r36-p0-2b-boot-grace-fix';
 const ASSETS = [
   './',
   './index.html',
@@ -66,16 +66,27 @@ self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);
 
+  // P0-2 (SHARY laptop black screen, Track A): /repair.html is the
+  // independent rescue path -- it must never depend on this worker (or on
+  // whatever bundle/state this worker happens to be serving). Let it fall
+  // through to a completely normal, uncontrolled network request.
+  if (url.pathname.endsWith('/repair.html')) return;
+
   if (request.mode === 'navigate') {
     event.respondWith(
       fetch(request).then(response => {
         if (!response || !response.ok) return response;
         const copy = response.clone();
+        // Cache under the ACTUAL requested URL, not a hardcoded './index.html'.
+        // The previous hardcoded key meant navigating to ANY page other than
+        // '/' (this worker previously only ever saw '/') would silently
+        // overwrite the cached app shell with that other page's content --
+        // latent until /repair.html gave the app a second real navigable URL.
         return caches.open(CACHE)
-          .then(cache => cache.put('./index.html', copy))
+          .then(cache => cache.put(request, copy))
           .catch(() => {})
           .then(() => response);
-      }).catch(() => caches.match('./index.html'))
+      }).catch(() => caches.match(request).then((match) => match || caches.match('./index.html')))
     );
     return;
   }

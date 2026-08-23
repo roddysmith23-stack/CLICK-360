@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = '1.0.5';
-  const ASSET_VERSION = 'commercial-1-0-5-r36-p0-shary-boot-fix';
+  const ASSET_VERSION = 'commercial-1-0-5-r36-p0-2b-boot-grace-fix';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
@@ -164,17 +164,33 @@
     root.CLICK360_LAST_RUNTIME_ERROR = report;
     return report;
   }
+  // P0-2 (SHARY, Section 11): the diagnostic code already existed
+  // (reportId), but the support message only carried a handful of fields --
+  // not enough to tell "stale bundle" from "sync stuck" from "cash close
+  // blocked" without asking the customer to describe what they saw. Every
+  // field below is either already non-PII by construction (version/route/
+  // browser/mode strings) or was already run through shortHash()/redaction
+  // before being stored on the report (activeBusinessId, sync hashes) --
+  // this never adds a new PII surface, it just surfaces what record()
+  // already collected. Never include: product names, customer names/emails,
+  // sale amounts, or any raw token/id.
   function reportLink(report) {
     const message = [
       'Necesito ayuda con CLICK 360.',
       `Codigo de reporte: ${report.reportId}.`,
       `Version: ${report.appVersion}${report.buildSha ? ` ${report.buildSha}` : ''}.`,
       `Asset: ${report.assetVersion}.`,
+      `SW: ${report.swControllerVersion || 'sin_controller'}.`,
       `Modo: ${report.displayMode}.`,
       `Ruta: ${report.route}.`,
-      `Acceso: ${report.effectiveAccess?.mode || 'unknown'} readOnly=${report.effectiveAccess?.readOnly === true}.`,
+      `Acceso: ${report.effectiveAccess?.mode || 'unknown'} readOnly=${report.effectiveAccess?.readOnly === true} auth=${report.authState}.`,
+      `Negocio: ${report.activeBusinessId || 'n/a'}.`,
+      `Sync: ${report.syncMode || 'n/a'}.`,
+      `Fiabilidad: ${report.reliability?.status || 'n/a'}${report.reliability?.blocking ? ' (bloqueando)' : ''} local=${report.reliability?.localHash || '-'} remoto=${report.reliability?.remoteHash || '-'}.`,
+      report.cashClose?.stage ? `Cierre caja: etapa=${report.cashClose.stage} estado=${report.cashClose.status || '-'} error=${report.cashClose.errorCode || '-'}.` : '',
+      report.cause ? `Causa: ${report.cause}.` : '',
       `Navegador: ${report.browser.name} ${report.browser.version}.`
-    ].join(' ');
+    ].filter(Boolean).join(' ');
     return `https://wa.me/593969399562?text=${encodeURIComponent(message)}`;
   }
   function showFriendlyMessage(report) {
@@ -232,6 +248,15 @@
     } catch {}
     let activeBusinessId = activeContext?.businessId || '';
     try { activeBusinessId ||= root.click360GetTenantState?.()?.activeBusinessId || ''; } catch {}
+    // The exact ?v=... a currently-controlling service worker is running --
+    // distinct from assetVersion (what THIS page's own scripts think the
+    // version is). A mismatch between the two is itself a diagnostic signal
+    // (stale worker still controlling a freshly-loaded page).
+    let swControllerVersion = '';
+    try {
+      const controllerUrl = root.navigator?.serviceWorker?.controller?.scriptURL || '';
+      swControllerVersion = new URL(controllerUrl, root.location?.origin || undefined).searchParams.get('v') || '';
+    } catch {}
     const report = saveReport({
       reportId: createId('err'),
       createdAt: new Date(now).toISOString(),
@@ -250,6 +275,7 @@
       displayMode: displayMode(),
       route: String(root.location?.hash || root.location?.pathname || '').slice(0, 180),
       activeBusinessId: shortHash(activeBusinessId),
+      swControllerVersion: swControllerVersion.slice(0, 80),
       effectiveAccess,
       pageUrl: safePageUrl(),
       online: root.navigator?.onLine !== false,

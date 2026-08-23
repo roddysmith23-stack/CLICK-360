@@ -90,6 +90,26 @@ async function run(name, browserType) {
     state = await scenario(page, 'app-rendered', () => { document.getElementById('app').innerHTML = '<div>rendered</div>'; });
     assert(!state.hasRecoveryClass, `${name}: recovery screen wrongly shown when #app genuinely has rendered content`);
 
+    // Real staging observation: a genuinely slow (not stuck) network can
+    // make Auth/Firestore initialization take longer than the 12s
+    // hard-fallback, so recovery fires -- and then the boot goes on to
+    // finish successfully seconds later. The recovery screen must not
+    // strand the user once that happens; it should quietly step aside.
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(12600);
+    let graceState = await page.evaluate(() => {
+      const splash = document.getElementById('click360Splash');
+      return { hasRecoveryClass: splash?.classList.contains('click360BootRecovery') || false };
+    });
+    assert(graceState.hasRecoveryClass, `${name}: recovery screen did not fire before the slow-recovery scenario could be tested`);
+    await page.evaluate(() => { document.getElementById('app').innerHTML = '<div>arrived late</div>'; });
+    await page.waitForTimeout(1200);
+    graceState = await page.evaluate(() => {
+      const splash = document.getElementById('click360Splash');
+      return { splashInDom: !!splash && document.body.contains(splash), hasRecoveryClass: splash?.classList.contains('click360BootRecovery') || false };
+    });
+    assert(!graceState.hasRecoveryClass, `${name}: recovery screen must stop showing once the app catches up and genuinely renders (slow-but-working network, not stuck)`);
+
     if (pageErrors.length) throw new Error(`${name}: unexpected page errors: ${JSON.stringify(pageErrors)}`);
   } finally {
     await browser.close();

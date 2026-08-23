@@ -7,6 +7,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const output = join(root, 'dist');
 const files = [
   'index.html',
+  'repair.html',
   'styles.css',
   'runtime-guard.js',
   'app.js',

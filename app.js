@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r36-p0-shary-boot-fix';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r36-p0-2b-boot-grace-fix';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -205,6 +205,22 @@
   let deferredInstallPrompt = null;
   let lastAutoSaveHash = '';
   let tenantStateDeferred = false;
+  // P0-2 (SHARY "todo en 0" incident): before this flag exists, cashView()/
+  // homeView() compute their KPIs (isDayStarted, income, saldo...) straight
+  // off `state`, with zero distinction between "state is still the empty
+  // seed() from click360SetTenantContext(..., {deferLocalLoad:true})" and
+  // "state is the real, hydrated snapshot and genuinely has zero movements
+  // today." A tenant with an already-open cash session and real sales would
+  // render as if the day had never started -- hiding the close-day button
+  // entirely -- for as long as `state` was still the seed. This flag is the
+  // single source of truth for "has `state` ever held a real, applied
+  // snapshot (remote-confirmed OR a verified local/offline cache), as
+  // opposed to still being the just-created empty seed." Money-relevant
+  // views MUST check tenantDataHydrated() before trusting `state` for
+  // anything that gates a financial action or displays a total as final.
+  let tenantDataHydrated = false;
+  function tenantDataHydratedState() { return tenantDataHydrated ? 'ready' : 'loading'; }
+  window.click360IsTenantDataHydrated = () => tenantDataHydrated;
   let onboardingPrompted = false;
   let clockTimer = null;
   let modalReturnFocus = null;
@@ -247,11 +263,35 @@
   }
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
   let workingDate = null;
+  // P0-2 (SHARY): this used to read date.getFullYear()/getMonth()/getDate(),
+  // which resolve in whatever timezone the DEVICE's OS clock is configured
+  // to -- not necessarily the business's real timezone. A device with a
+  // misconfigured or UTC clock (not uncommon after a factory reset or on a
+  // fresh install) would compute a different "today" than a correctly
+  // configured one at the exact same real moment, especially in the hours
+  // around Ecuador midnight (UTC-5, no DST) -- e.g. 19:30 Ecuador time is
+  // already 00:30 UTC the next day. That single-field difference is enough
+  // to make the same real sale look like it belongs to "yesterday" on one
+  // device and "today" on another, or to make an already-open cash session
+  // look like it started on the wrong day. Always resolve the date key in
+  // the business's fixed timezone, independent of the device's own clock
+  // timezone setting (only the device's absolute instant matters).
+  const BUSINESS_TIMEZONE = 'America/Guayaquil';
+  const businessDateFormatter = (() => {
+    try { return new Intl.DateTimeFormat('en-CA', { timeZone: BUSINESS_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }); }
+    catch { return null; }
+  })();
   function localDateKey(date = new Date()) {
+    if (businessDateFormatter) {
+      // en-CA formats as YYYY-MM-DD directly -- no manual field reassembly.
+      const formatted = businessDateFormatter.format(date);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(formatted)) return formatted;
+    }
     const pad = (value) => String(value).padStart(2, '0');
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
   }
   function today() { return workingDate || localDateKey(); }
+  window.click360LocalDateKey = localDateKey;
   function safeDateInputValue(value, fallback = today()) {
     const date = String(value || '');
     return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : fallback;
@@ -885,7 +925,14 @@ function parseMoney(value) {
     if (!activeTenantContext?.tenantKey) return;
     try { localStorage.setItem(`CLICK360_TENANT:${activeTenantContext.tenantKey}:CORRUPT`, reason); } catch {}
   }
+  // lastLoadStateWasRealCache: set by loadState() itself, read immediately
+  // after by its callers -- true only when a real, validated cached payload
+  // was found and applied, false whenever it fell back to seed() for any
+  // reason (missing key, corrupt JSON, identity mismatch, invalid shape).
+  // Distinct from tenantDataHydrated, which callers set from this value.
+  let lastLoadStateWasRealCache = false;
   function loadState() {
+    lastLoadStateWasRealCache = false;
     const key = stateStorageKey();
     if (!key) return seed();
     try {
@@ -906,6 +953,7 @@ function parseMoney(value) {
           localStorage.setItem(key, JSON.stringify(loaded));
           localStorage.removeItem(legacyStateStorageKey());
         } catch {}
+        lastLoadStateWasRealCache = true;
         return loaded;
       }
     } catch { markTenantCacheCorrupt('json_parse_failed'); }
@@ -1031,10 +1079,14 @@ function parseMoney(value) {
       state.identity = tenantIdentity();
       lastPersistedState = null;
       lastAutoSaveHash = '';
+      tenantDataHydrated = false;
     } else {
       state = loadState();
       rememberPersistedState();
       lastAutoSaveHash = JSON.stringify(state);
+      // A real, validated local cache was found (lastLoadStateWasRealCache)
+      // -- trust it as a real (if possibly stale) snapshot, not the seed.
+      tenantDataHydrated = lastLoadStateWasRealCache;
     }
     session = loadSession();
     publishStorageState({ mode: 'checking', tenantKey: activeTenantContext.tenantKey, message: 'Comprobando almacenamiento seguro.' });
@@ -1124,6 +1176,7 @@ function parseMoney(value) {
     onboardingPrompted = false;
     window.click360TenantContext = null;
     state = seed();
+    tenantDataHydrated = false;
     lastPersistedState = null;
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
@@ -1142,6 +1195,7 @@ function parseMoney(value) {
     if (!activeTenantContext) return false;
     state = loadState();
     tenantStateDeferred = false;
+    tenantDataHydrated = lastLoadStateWasRealCache;
     rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
     return true;
@@ -1167,6 +1221,7 @@ function parseMoney(value) {
         source: String(record.source || 'indexeddb_cache')
       };
       tenantStateDeferred = false;
+      tenantDataHydrated = true;
       rememberPersistedState();
       lastAutoSaveHash = JSON.stringify(state);
       publishStorageState({ mode: 'indexeddb_cache', indexedDbReady: true, message: 'Copia sin conexion cargada.' });
@@ -1289,6 +1344,7 @@ function parseMoney(value) {
     }
     state = next;
     tenantStateDeferred = false;
+    tenantDataHydrated = true;
     rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
     queueIndexedSnapshot(state, { source: 'remote_applied', pendingRemoteSync: false, localPersisted });
@@ -2170,6 +2226,9 @@ function parseMoney(value) {
   }
 
   function homeView() {
+    if (!tenantDataHydrated) {
+      return `<div class="pageHead homeGreeting"><div><h1>Hola, <span>${escapeHtml(authUser().name || 'Usuario')}</span></h1></div></div>${dataNotReadyCardHtml('Cargando tu inventario, ventas y caja desde la nube...')}`;
+    }
     const b=currentBusiness(), products=productsForBiz(), sales=salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled'), mov=movementsForBiz().filter(m=>m.date===today() && m.status!=='cancelled');
     const apertura=mov.find(m=>m.kind==='apertura')?.amount||0;
     const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
@@ -2343,7 +2402,35 @@ function parseMoney(value) {
       </section>`;
   }
 
+  // P0-2 (SHARY): shown by cashView()/homeView() instead of computing any
+  // money total when tenantDataHydrated() is false -- i.e. `state` is still
+  // the empty seed and has never held a real, applied snapshot. Never shows
+  // $0.00/0 ventas as if they were confirmed; explicitly says syncing is in
+  // progress, with a real retry action (forces a fresh pull, not a reload
+  // that could re-render the same not-yet-hydrated state).
+  function dataNotReadyCardHtml(message = 'Cargando datos del negocio...') {
+    return `<div class="card" style="text-align:center; padding:28px 20px; margin-bottom:16px; border:1px dashed var(--gold);">
+      <h3 style="margin-bottom:8px;">${icon('refresh-cw')} Sincronizando</h3>
+      <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">${escapeHtml(message)}</p>
+      <button class="btn primary" id="dataNotReadyRetryBtn" type="button">Reintentar sincronización</button>
+    </div>`;
+  }
+  function bindDataNotReadyRetry() {
+    $('#dataNotReadyRetryBtn')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Sincronizando...';
+      try {
+        await window.click360RefreshNow?.();
+      } finally {
+        renderApp(route);
+      }
+    });
+  }
   function cashView() {
+    if (!tenantDataHydrated) {
+      return `<div class="pageHead"><div><h1>Caja</h1></div></div>${dataNotReadyCardHtml('No podemos cerrar caja todavía porque los datos siguen sincronizando. Tus ventas y movimientos reales no se han perdido -- se muestran en cuanto termine de sincronizar.')}`;
+    }
     const openSession = currentOpenCashSession();
     const latestSession = latestCashSession();
     const allMov = movementsForBiz().filter(m=>m.date===today());
@@ -2360,8 +2447,17 @@ function parseMoney(value) {
     const out=expenses+compras+retiros;
     const saldo = aperture + income - out;
 
+    const staleSession = staleOpenCashSession();
     let topCard = '';
-    if (!isDayStarted()) {
+    if (staleSession) {
+      topCard = `
+       <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px solid var(--gold);">
+         <h3 style="margin-bottom:8px; color:var(--gold);">⚠️ Caja del ${escapeHtml(staleSession.date)} sin cerrar</h3>
+         <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">Esta caja quedó abierta desde ${escapeHtml(staleSession.date)} y nunca se cerró. Ciérrala antes de iniciar la jornada de hoy -- tus ventas y movimientos de ese día siguen intactos.</p>
+         <button class="btn primary" id="closeStaleCashBtn" type="button">Cerrar caja del ${escapeHtml(staleSession.date)}</button>
+       </div>
+      `;
+    } else if (!isDayStarted()) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px dashed var(--gold);">
          <h3 style="margin-bottom:8px;">🔑 Iniciar Jornada de Hoy</h3>
@@ -5371,6 +5467,7 @@ function parseMoney(value) {
   ].map(([v,l])=>`<option value="${v}" ${selected===v?'selected':''}>${l}</option>`).join(''); }
 
   function bindView(r){
+    bindDataNotReadyRetry();
     if(r==='inventory') bindInventory();
     if(r==='sell') bindSell();
     if(r==='cash') bindCash();
@@ -6442,11 +6539,28 @@ function parseMoney(value) {
 	      </div>`);
 	    toast(`Caja cerrada. Exportación pendiente: ${stage}`, 'err');
 	  }
+	  // P0-2 (SHARY "no puedo cerrar caja"): a cash session left open on a
+	  // PRIOR day (e.g. the owner never closed yesterday's caja) used to be
+	  // permanently invisible and unreachable -- cashCloseBasis() and every
+	  // caller hardcoded date=today(), so there was no path in the UI to
+	  // close it; starting a new day just opened a second, unrelated session
+	  // on top of the orphaned one. cashCloseSessionOverride lets
+	  // openCashCloseDialog() target that specific stale session (see
+	  // staleOpenCashSession()) while leaving the normal today()-based flow
+	  // byte-for-byte unchanged when no override is set.
+	  let cashCloseSessionOverride = null;
+	  function staleOpenCashSession(businessId = currentBusiness()?.id) {
+	    if (!businessId) return null;
+	    return (state.cashSessions || [])
+	      .filter((session) => session.businessId === businessId && session.status === 'open' && session.date !== today())
+	      .sort((a, b) => String(a.date).localeCompare(String(b.date)))[0] || null;
+	  }
 	  function cashCloseBasis() {
 	    const business = currentBusiness();
 	    const businessId = business?.id || '';
-	    const date = today();
-	    const activeSession = currentOpenCashSession(businessId, date);
+	    const overrideSession = cashCloseSessionOverride && cashCloseSessionOverride.businessId === businessId ? cashCloseSessionOverride : null;
+	    const date = overrideSession ? overrideSession.date : today();
+	    const activeSession = overrideSession || currentOpenCashSession(businessId, date);
 	    const allMovements = Array.isArray(state.movements) ? state.movements.filter(m => m.businessId === businessId && m.date === date) : [];
 	    const closeMovements = activeSession && allMovements.some((movement) => movement.cashSessionId === activeSession.id)
 	      ? allMovements.filter((movement) => movement.cashSessionId === activeSession.id)
@@ -6540,14 +6654,16 @@ function parseMoney(value) {
 	    toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
 	  }
 	  function openCashCloseDialog(options = {}) {
+	    cashCloseSessionOverride = options.session || null;
 	    const accessStatus = cashCloseAccessStatus('cash_close_open_modal');
 	    if (!accessStatus.allowed) return showCashCloseAccessBlocked(accessStatus);
 	    const basis = cashCloseBasis();
 	    if (!basis.businessId) return toast('No se encontró el negocio activo.', 'err');
-	    if (isBusinessDateClosed(basis.date, basis.businessId)) return toast('La caja de hoy ya está cerrada.', 'ok');
+	    if (isBusinessDateClosed(basis.date, basis.businessId)) return toast(cashCloseSessionOverride ? 'Esa caja ya está cerrada.' : 'La caja de hoy ya está cerrada.', 'ok');
 	    updateCashCloseDiagnostic('cash_close_open_modal', { business: basis.business, cashSessionId: basis.activeSession?.id || '' });
-	    showModal(`<div class="modalHeader"><h2>Cerrar día</h2><button class="closeBtn" data-close>×</button></div>
+	    showModal(`<div class="modalHeader"><h2>${cashCloseSessionOverride ? `Cerrar caja del ${escapeHtml(basis.date)}` : 'Cerrar día'}</h2><button class="closeBtn" data-close>×</button></div>
 	      <form id="closeDayForm" class="formGrid">
+	        ${cashCloseSessionOverride ? `<p class="fieldHint full">Esta caja quedó abierta desde ${escapeHtml(basis.date)} y nunca se cerró. Ciérrala con los datos reales de ese día antes de continuar.</p>` : ''}
 	        <div class="field full"><label>Caja Inicial (Auto-cuadre)</label><input id="cajaInicial" value="${escapeHtml(options.cajaInicial ?? basis.lastCash)}" inputmode="decimal"></div>
 	        <div class="field full"><label>Efectivo Físico (Contado)</label><input id="efectivoFisico" value="${escapeHtml(options.efectivoFisico ?? 0)}" inputmode="decimal"></div>
 	        <div class="field full"><label>Observaciones</label><input id="cierreObs" value="${escapeHtml(options.observations || '')}"></div>
@@ -6747,6 +6863,12 @@ function parseMoney(value) {
 	        }
 	      };
 	    }
+
+    $('#closeStaleCashBtn')?.addEventListener('click', () => {
+      const stale = staleOpenCashSession();
+      if (!stale) return renderApp('cash');
+      openCashCloseDialog({ session: stale });
+    });
 
     if (!isDayStarted()) {
        const startBtn = $('#startDayBtnCash');
@@ -11529,6 +11651,19 @@ function parseMoney(value) {
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
 	  window.addEventListener('hashchange',()=>{ const h=location.hash.replace('#',''); if(['home','inventory','sell','cash','more','reports','settings','workers','backup','debtors','activity','invoices','crm','reminders','access','legal','printing','tables','kitchen','bar','logistics','finance','help'].includes(h)) renderApp(h); });
-  if('serviceWorker' in navigator) navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`).catch(()=>{});
+  if('serviceWorker' in navigator) {
+    // P0-2 (SHARY laptop black screen, Track A): updateViaCache:'none' stops
+    // the browser from ever satisfying the SW's own update-check fetch from
+    // HTTP cache (belt-and-suspenders on top of the no-cache/no-store header
+    // already set for service-worker.js in firebase.json). Proactively
+    // calling registration.update() right after registering -- instead of
+    // only relying on the browser's own periodic/navigation-triggered check
+    // -- closes the gap where a client left open for a long time, or one
+    // that reopens rarely, could sit on a stale worker for longer than
+    // necessary before ever re-checking.
+    navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`, { updateViaCache: 'none' })
+      .then((registration) => { registration?.update?.().catch(() => {}); })
+      .catch(() => {});
+  }
   renderLogin();
 })();
