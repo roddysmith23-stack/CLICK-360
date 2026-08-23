@@ -99,12 +99,20 @@ function baseAccountFields(existing, authUser) {
   };
 }
 
-export function activationFields({ existing = {}, authUser, actorEmail, plan = 'base', period = 'historical' }) {
+export function activationFields({ existing = {}, authUser, actorEmail, plan = 'base', period = 'historical', businessType = '', addOnsRequested = [] }) {
   const normalizedPlan = String(plan || '').toLowerCase();
   const normalizedPeriod = String(period || '').toLowerCase();
   if (!['base', 'pro', 'business', 'enterprise', 'founder_legacy'].includes(normalizedPlan)) {
     throw new Error('Plan must be base, pro, business, enterprise, or founder_legacy.');
   }
+  // Business type only presets the customer's own UX (see app.js onboarding
+  // form); it never grants or restricts rights -- the plan alone does that.
+  // Recorded here purely as a sales/onboarding record for AIIA.
+  const normalizedBusinessType = String(businessType || '').trim().slice(0, 40);
+  const normalizedAddOns = Array.isArray(addOnsRequested) ? addOnsRequested.map((item) => String(item).trim()).filter(Boolean).slice(0, 20) : [];
+  const onboardingProfile = (normalizedBusinessType || normalizedAddOns.length)
+    ? { businessType: normalizedBusinessType || null, addOnsRequested: normalizedAddOns, recordedAt: new Date().toISOString(), recordedBy: normalizeEmail(actorEmail) }
+    : (existing.onboardingProfile || null);
   // founder_legacy: permanent historical functional license (SHARY, Lia) --
   // no billing period, never expires. See v16-domain.js evaluateEntitlement()
   // and firestore.rules' matching founder_legacy branch, both keyed on
@@ -124,7 +132,8 @@ export function activationFields({ existing = {}, authUser, actorEmail, plan = '
       revision: Math.max(0, Number(existing.revision || 0)) + 1,
       businessLimit: limits.businesses,
       workerLimit: limits.workers,
-      activatedBy: normalizeEmail(actorEmail)
+      activatedBy: normalizeEmail(actorEmail),
+      onboardingProfile
     };
   }
   if (!['historical', 'month', 'quarter', 'semester', 'year', 'lifetime'].includes(normalizedPeriod)) throw new Error('Invalid activation period.');
@@ -143,6 +152,7 @@ export function activationFields({ existing = {}, authUser, actorEmail, plan = '
     revision: Math.max(0, Number(existing.revision || 0)) + 1,
     businessLimit: limits.businesses,
     workerLimit: limits.workers,
-    activatedBy: normalizeEmail(actorEmail)
+    activatedBy: normalizeEmail(actorEmail),
+    onboardingProfile
   };
 }
