@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#050505" />
-  <script src="runtime-guard.js?v=commercial-1-0-5-r36-commercial-completion"></script>
+  <script src="runtime-guard.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="CLICK 360" />
@@ -23,13 +23,13 @@
 	  <meta name="twitter:image" content="https://click-360.web.app/assets/banner-click360-home.png" />
 	  <link rel="canonical" href="https://click-360.web.app/" />
 	  <title>CLICK 360 | Inventario, ventas y caja para tu negocio</title>
-	  <link rel="manifest" href="manifest.webmanifest?v=commercial-1-0-5-r36-commercial-completion" />
-	  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png?v=commercial-1-0-5-r36-commercial-completion" />
-	  <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png?v=commercial-1-0-5-r36-commercial-completion" />
-	  <link rel="shortcut icon" href="assets/favicon.ico?v=commercial-1-0-5-r36-commercial-completion" />
-	  <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=commercial-1-0-5-r36-commercial-completion" />
-	  <link rel="preload" as="image" href="assets/logo.png?v=commercial-1-0-5-r36-commercial-completion" fetchpriority="high" />
-	  <link rel="stylesheet" href="styles.css?v=commercial-1-0-5-r36-commercial-completion" />
+	  <link rel="manifest" href="manifest.webmanifest?v=commercial-1-0-5-r36-p0-shary-boot-fix" />
+	  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png?v=commercial-1-0-5-r36-p0-shary-boot-fix" />
+	  <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png?v=commercial-1-0-5-r36-p0-shary-boot-fix" />
+	  <link rel="shortcut icon" href="assets/favicon.ico?v=commercial-1-0-5-r36-p0-shary-boot-fix" />
+	  <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=commercial-1-0-5-r36-p0-shary-boot-fix" />
+	  <link rel="preload" as="image" href="assets/logo.png?v=commercial-1-0-5-r36-p0-shary-boot-fix" fetchpriority="high" />
+	  <link rel="stylesheet" href="styles.css?v=commercial-1-0-5-r36-p0-shary-boot-fix" />
 	  <script type="application/ld+json">
 	  {
 	    "@context": "https://schema.org",
@@ -68,7 +68,7 @@
 </head>
 <body>
   <div id="click360Splash" class="click360Splash" aria-hidden="true">
-    <img src="assets/logo.png?v=commercial-1-0-5-r36-commercial-completion" alt="" width="194" height="194" decoding="sync" fetchpriority="high">
+    <img src="assets/logo.png?v=commercial-1-0-5-r36-p0-shary-boot-fix" alt="" width="194" height="194" decoding="sync" fetchpriority="high">
     <strong>CLICK 360</strong>
     <small>By AIIA INTELLIGENCE TECHNOLOGIES</small>
     <div class="click360SplashProgress" aria-hidden="true"><i></i></div>
@@ -83,6 +83,30 @@
       let completed = false;
       let pollTimer = null;
       let hardFallbackTimer = null;
+      // States in which the Firebase service layer has already shown the
+      // user a specific, actionable message (login buttons, "pending
+      // approval", "blocked", an explicit error, etc.) via the auth gate --
+      // these are NOT a stall, even though #app itself has no children (the
+      // gate renders as a sibling of #app, appended directly to <body>, so a
+      // perfectly healthy unauthenticated visitor also has an empty #app).
+      // Deliberately excludes READY/ONLINE_ONLY_SAFE: those mean the app
+      // SHOULD be visibly rendering into #app right now -- if it still isn't
+      // by the hard-fallback deadline, that is exactly the stuck case this
+      // exists to catch (e.g. the main application script failed to load or
+      // parse while the Firebase service layer itself came up fine and
+      // unlocked the gate).
+      // LOADING/AUTHENTICATED_RESOLVING are excluded for the same reason:
+      // still in flight past the deadline is itself worth surfacing.
+      const SAFE_TERMINAL_GATE_STATES = new Set([
+        'unauthenticated', 'pending', 'blocked', 'recoverable_error',
+        'invalid_invitation', 'authenticated_no_access', 'identity_reconciliation_required'
+      ]);
+      const appHasRendered = () => {
+        const app = document.getElementById('app');
+        if (app && app.children.length) return true;
+        const uiState = String(window.click360AccessUiState?.state || '').toLowerCase();
+        return SAFE_TERMINAL_GATE_STATES.has(uiState);
+      };
       const finish = () => {
         if (completed) return;
         completed = true;
@@ -97,26 +121,76 @@
         }, delay);
       };
       const finishWhenAppRendered = () => {
-        const app = document.getElementById('app');
-        if (app && app.children.length) finish();
+        if (appHasRendered()) finish();
+      };
+      // r36 P0 fix: previously the splash was removed unconditionally at the
+      // hard-fallback timeout even if #app never rendered anything, leaving a
+      // fully black screen with no visible way to recover (SHARY incident).
+      // Now, if #app is STILL empty when the hard fallback fires, replace the
+      // splash with an explicit recovery screen instead of silently
+      // uncovering nothing. This is independent of whatever caused the boot
+      // to stall -- it is a floor, not a diagnosis.
+      const showBootRecovery = () => {
+        if (completed) return;
+        completed = true;
+        if (pollTimer) clearInterval(pollTimer);
+        const splash = document.getElementById('click360Splash');
+        if (!splash) return;
+        let errorCode = '';
+        try { errorCode = window.CLICK360_LAST_RUNTIME_ERROR?.reportId || ''; } catch (e) {}
+        const waMessage = encodeURIComponent(
+          'Necesito ayuda con CLICK 360, no pudo iniciar.' + (errorCode ? ' Codigo: ' + errorCode + '.' : '')
+        );
+        splash.innerHTML =
+          '<strong>CLICK 360 no pudo iniciar</strong>' +
+          '<p class="click360BootRecoveryMsg">Tu informacion sigue protegida en la nube. Prueba estas opciones:</p>' +
+          (errorCode ? '<small class="click360BootRecoveryCode">Codigo: ' + errorCode + '</small>' : '') +
+          '<div class="click360BootRecoveryActions">' +
+          '<button type="button" id="click360BootRetry" class="click360BootRecoveryBtn">Reintentar</button>' +
+          '<button type="button" id="click360BootUpdate" class="click360BootRecoveryBtn primary">Actualizar aplicacion</button>' +
+          '<a href="https://wa.me/593969399562?text=' + waMessage + '" target="_blank" rel="noopener noreferrer" class="click360BootRecoveryBtn">Reportar problema</a>' +
+          '</div>';
+        splash.classList.add('click360BootRecovery');
+        document.getElementById('click360BootRetry')?.addEventListener('click', () => { location.reload(); });
+        document.getElementById('click360BootUpdate')?.addEventListener('click', async () => {
+          const btn = document.getElementById('click360BootUpdate');
+          if (btn) { btn.disabled = true; btn.textContent = 'Actualizando...'; }
+          try {
+            if ('serviceWorker' in navigator) {
+              const registrations = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(registrations.map((registration) => registration.unregister()));
+            }
+            if ('caches' in window) {
+              const keys = await caches.keys();
+              await Promise.all(keys.filter((key) => key.startsWith('click360-')).map((key) => caches.delete(key)));
+            }
+          } catch (e) {
+            // Best-effort: even if unregister/cache-clear partially fails, the
+            // reload below still forces a fresh network fetch of index.html
+            // (no-cache header) and every ?v=-suffixed asset it references.
+          }
+          location.reload();
+        });
       };
       window.click360MarkSplashReady = finish;
       window.addEventListener('click360:ready', finish, { once: true });
       pollTimer = setInterval(finishWhenAppRendered, 350);
-      hardFallbackTimer = setTimeout(finish, maximumIntroMs);
+      hardFallbackTimer = setTimeout(() => {
+        if (appHasRendered()) finish(); else showBootRecovery();
+      }, maximumIntroMs);
       document.addEventListener('DOMContentLoaded', () => {
         setTimeout(finishWhenAppRendered, minimumIntroMs);
       }, { once: true });
       window.addEventListener('load', finishWhenAppRendered, { once: true });
     })();
   </script>
-  <script src="vendor/qrcode-generator.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-  <script src="vendor/jsbarcode.min.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-  <script src="vendor/jsQR.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-  <script src="vendor/zxing-browser.min.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-	  <script src="vendor/html2pdf.bundle.min.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-	  <script src="vendor/xlsx.full.min.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-	  <script src="vendor/lucide.min.js?v=commercial-1-0-5-r36-commercial-completion"></script>
+  <script src="vendor/qrcode-generator.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+  <script src="vendor/jsbarcode.min.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+  <script src="vendor/jsQR.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+  <script src="vendor/zxing-browser.min.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+	  <script src="vendor/html2pdf.bundle.min.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+	  <script src="vendor/xlsx.full.min.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+	  <script src="vendor/lucide.min.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
 
 <script>
   if ('serviceWorker' in navigator) {
@@ -130,24 +204,24 @@
     });
   }
 </script>
-<script src="vendor/firebase-app-compat.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="vendor/firebase-auth-compat.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="vendor/firebase-firestore-compat.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./firebase-config.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./p0-tenant-guard.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./v16-domain.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./v16-storage.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./access-flow.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./worker-data-boundary.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./firebase-service.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./smart-print-core.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./p2-web-safe-flags.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./p2-restaurant-domain.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./p2-logistics-domain.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./universal-label-canvas.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./universal-label-editor.js?v=commercial-1-0-5-r36-commercial-completion"></script>
-<script src="./printing-service.js?v=commercial-1-0-5-r36-commercial-completion"></script>
+<script src="vendor/firebase-app-compat.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="vendor/firebase-auth-compat.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="vendor/firebase-firestore-compat.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./firebase-config.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./p0-tenant-guard.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./v16-domain.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./v16-storage.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./access-flow.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./worker-data-boundary.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./firebase-service.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./smart-print-core.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./p2-web-safe-flags.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./p2-restaurant-domain.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./p2-logistics-domain.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./universal-label-canvas.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./universal-label-editor.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
+<script src="./printing-service.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
 <!-- Logic -->
-<script src="app.js?v=commercial-1-0-5-r36-commercial-completion"></script>
+<script src="app.js?v=commercial-1-0-5-r36-p0-shary-boot-fix"></script>
 </body>
 </html>

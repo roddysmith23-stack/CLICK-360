@@ -49,8 +49,8 @@ assert.match(firebase, /routeSettlements: Array\.isArray\(state\.logistics\.rout
 assert.match(firebase, /debouncedSync\(ACTIVE_CONTEXT\.tenantKey, ACTIVE_CONTEXT\.authUid, AUTH_EPOCH, event\.detail\?\.syncSource/, 'local sync source survives debounced cloud sync');
 assert.match(flags, /p2RestaurantAdvancedEnabled: true/, 'restaurant frontend module flag is enabled');
 assert.match(flags, /p2LogisticsEnabled: true/, 'logistics frontend module flag is enabled');
-assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r36-commercial-completion/, 'restaurant domain is included in the release HTML');
-assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r36-commercial-completion/, 'logistics domain is included in the release HTML');
+assert.match(html, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r36-p0-shary-boot-fix/, 'restaurant domain is included in the release HTML');
+assert.match(html, /p2-logistics-domain\.js\?v=commercial-1-0-5-r36-p0-shary-boot-fix/, 'logistics domain is included in the release HTML');
 assert.match(worker, /\.\/p2-restaurant-domain\.js/, 'restaurant domain is cached for PWA use');
 assert.match(worker, /\.\/p2-logistics-domain\.js/, 'logistics domain is cached for PWA use');
 assert.match(styles, /\.tableResizeHandle/, 'resize handle has UI styling');

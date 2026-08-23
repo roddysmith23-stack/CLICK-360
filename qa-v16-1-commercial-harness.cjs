@@ -55,9 +55,9 @@ assert(html.includes('<title>CLICK 360 | Inventario, ventas y caja para tu negoc
 assert(html.includes('FAQPage') && html.includes('SoftwareApplication'));
 assert.equal((html.match(/"@type": "Question"/g) || []).length, 9);
 assert(!html.includes('user-scalable=no'));
-assert(html.includes('vendor/lucide.min.js?v=commercial-1-0-5-r36-commercial-completion'));
+assert(html.includes('vendor/lucide.min.js?v=commercial-1-0-5-r36-p0-shary-boot-fix'));
 assert(css.includes('@media(max-width:340px)') && css.includes('@media(max-width:430px)'));
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r36-commercial-completion'"));
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r36-p0-shary-boot-fix'"));
 assert(worker.includes("'./vendor/lucide.min.js'"));
 assert(fs.existsSync('robots.txt') && fs.existsSync('sitemap.xml'));
 
