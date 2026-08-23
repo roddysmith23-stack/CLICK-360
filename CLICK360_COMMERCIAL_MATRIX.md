@@ -2,23 +2,25 @@
 
 Fuente única de verdad: `PLAN_CATALOG` en `v16-domain.js`. Este documento es una lectura humana de esa fuente — si alguna vez hay una diferencia entre este archivo y el código, **el código gana** y este documento debe actualizarse.
 
-Última actualización: 2026-08-23 (release Commercial MVP).
+Última actualización: 2026-08-23 (release r36 — reset de precios comercial explícito del owner, reemplaza los precios de r35).
 
-## 1. Planes y precios
+## 1. Planes y precios (oferta vigente para clientes NUEVOS)
 
-| Plan (código interno) | Nombre visible | Mensual | Trimestral | Semestral | Anual | Vitalicio |
-|---|---|---|---|---|---|---|
-| `base` | **Basic** | $40.00 | $114 | $180 | $240 | $600 (único) |
-| `pro` | **Pro** | $59.99 | $169 | $299 | $499 | No disponible |
-| `business` | **Business** | $99.99 | $291 | $540 | $999 | No disponible |
-| `enterprise` | **Enterprise** | Cotización | Cotización | Cotización | Cotización | Cotización |
-| `founder_legacy` | **Founder** | Sin mensualidad (licencia histórica) | — | — | — | — |
+| Plan (código interno) | Nombre visible | Mensual | Anual (recomendado) |
+|---|---|---|---|
+| `base` | **Basic** | $39.99 | $399 |
+| `pro` | **Pro** | $59.99 | $599 |
+| `business` | **Business** | $99.99 | $999 |
+| `enterprise` | **Enterprise** | Cotización personalizada | Cotización personalizada |
+| `founder_legacy` | **Founder** | **No se vende a clientes nuevos** — solo licencias históricas ya otorgadas | — |
 
-El plan **Anual** debe presentarse siempre como el recomendado (mejor precio por mes). El plan Vitalicio solo existe en Basic.
+La oferta comercial estándar es **Mensual** o **Anual — recomendado**. Los períodos trimestral/semestral y el precio vitalicio de Basic ($600) que existían en r35 **ya no forman parte de la oferta actual** y no se muestran como opciones en "Mi plan y acceso" ni en el alta de nuevo cliente del CEO Admin. Esto no afecta ni convierte ninguna cuenta ya facturada con esos períodos — ver la nota de compatibilidad abajo.
 
 **Enterprise** no tiene precio de autoservicio: el CTA es "Solicitar cotización" (`period: "custom"`), y AIIA/el equipo comercial define el precio caso por caso según número de negocios, catálogo y cupos de Workers.
 
-**Founder** no es un plan que se vende — es una licencia histórica permanente para clientes fundadores (ver sección 4).
+**Founder** no es un plan que se vende — es una licencia histórica permanente para clientes fundadores que ya la compraron For Life/Founder (ver sección 4). No aparece como opción de compra en ningún flujo de alta de cliente nuevo.
+
+**Compatibilidad administrativa con registros históricos**: `scripts/admin-access-v16.mjs` sigue aceptando `--period quarter|semester|lifetime` para reactivar o corregir una cuenta que ya tenía uno de esos períodos — esto es exclusivamente para mantenimiento de cuentas antiguas, nunca se ofrece como opción nueva en ninguna interfaz de venta (Mi Plan, CEO Admin Web, onboarding).
 
 ## 2. Límites por plan
 

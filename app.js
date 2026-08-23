@@ -2779,15 +2779,18 @@ function parseMoney(value) {
 	    const isFounder = access.mode === 'founder' || currentPlanCode === 'founder_legacy';
 	    const quota = tenantQuotaStatus();
 	    const currentPlanEntry = catalog[currentPlanCode] || {};
-	    const periodOptions = (code) => `<option value="month">1 mes</option><option value="quarter">3 meses</option><option value="semester">6 meses</option><option value="year">1 año</option>${code === 'base' ? '<option value="lifetime">De por vida</option>' : ''}`;
+	    // r36 commercial reset: only Monthly and Annual (recommended) are
+	    // offered as primary options going forward. Quarter/semester/lifetime
+	    // still work administratively for historical accounts (see
+	    // admin-access-v16.mjs), but are never shown here as a choice.
+	    const periodOptions = () => `<option value="month">Mensual</option><option value="year">Anual — recomendado</option>`;
 	    const planPriceSummary = (code) => {
 	      const prices = catalog[code]?.prices || {};
 	      if (prices.custom) return `<p class="cloudStatus">Precio segun necesidad: numero de negocios, catalogo de productos y cupos de Workers.</p>`;
 	      if (!prices.year) return '';
 	      return `<div class="planPriceSummary neuroPrice" aria-label="Precios ${escapeHtml(catalog[code]?.name || code)}">
-	        <div class="neuPlanTier"><div class="neuTierLabel muted">Mensual</div><div class="neuTierPrice"><s class="neuStrike">${fmt(prices.month || 0)}/mes</s></div><div class="neuTierNote muted">Precio regular</div></div>
+	        <div class="neuPlanTier"><div class="neuTierLabel muted">Mensual</div><div class="neuTierPrice"><b>${fmt(prices.month || 0)}<small>/mes</small></b></div><div class="neuTierNote muted">Facturado cada mes</div></div>
 	        <div class="neuPlanTier neuStar"><div class="neuBadge">⭐ RECOMENDADO</div><div class="neuTierLabel">Anual</div><div class="neuTierPrice"><b class="neuBig">${fmt(prices.year / 12)}<small>/mes</small></b></div><div class="neuTierNote">${fmt(prices.year)} al año · un solo pago</div></div>
-	        ${prices.lifetime ? `<div class="neuPlanTier"><div class="neuTierLabel muted">Vitalicio</div><div class="neuTierPrice"><b>${fmt(prices.lifetime)}</b></div><div class="neuTierNote muted">Pago único · para siempre</div></div>` : ''}
 	      </div>`;
 	    };
 	    const includedFeatures = resolvedPlanFeatures(currentPlanCode, catalog);
@@ -2825,7 +2828,8 @@ function parseMoney(value) {
 	          ${notIncludedFeatures.length ? `<div><b>No incluidas en tu plan</b><ul class="notIncluded">${notIncludedFeatures.map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul></div>` : ''}
 	        </div>
 	      </section>
-	      <section class="planGrid" style="margin-top:14px;">
+	      ${isFounder ? `<section class="card sectionCard" style="margin-top:14px;border-color:rgba(55,213,126,.35);"><h3>Tu licencia Founder</h3><p class="cloudStatus">Tu acceso histórico es permanente y ya está activo — no necesitas comprar ni renovar ningún plan. Si tu negocio crece y necesitas más capacidad, usa "Solicitar más capacidad" arriba; tu licencia Founder se mantiene intacta.</p></section>`
+	      : `<section class="planGrid" style="margin-top:14px;">
 	        ${['base','pro','business','enterprise'].map((code) => {
 	          const item = catalog[code] || {};
 	          const isCurrent = code === currentPlanCode;
@@ -2840,10 +2844,10 @@ function parseMoney(value) {
 	            <ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul>
 	            ${isQuote
 	              ? `<button class="btn primary block" data-request-plan="${code}" data-request-period="custom">Solicitar cotización</button>`
-	              : `<label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${isCurrent ? 'silver' : 'primary'} block" data-request-plan="${code}">${isCurrent ? 'Cambiar periodo' : `Solicitar ${escapeHtml(item.name || code)}`}</button>`}
+	              : `<label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions()}</select></label><button class="btn ${isCurrent ? 'silver' : 'primary'} block" data-request-plan="${code}">${isCurrent ? 'Cambiar periodo' : `Solicitar ${escapeHtml(item.name || code)}`}</button>`}
 	          </article>`;
 	        }).join('')}
-	      </section>
+	      </section>`}
 	      <section class="card printerOfferCard"><div><span class="badge gold">Equipo opcional</span><h3>Impresora térmica de etiquetas</h3><p>Lista para etiquetas QR y comprobantes; incluye envío y un rollo de papel adhesivo de cortesía.</p></div><strong>${fmt(65)}</strong><a class="btn primary" target="_blank" rel="noopener noreferrer" href="${supportWhatsAppUrl('Hola CLICK 360, quiero información sobre la impresora térmica de etiquetas de $65.')}">Consultar por WhatsApp</a></section>
 	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de plan</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
 	      ${capacityRequests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de capacidad</h3>${capacityRequests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(request.kind === 'storage' ? 'Almacenamiento' : 'Productos')}</b><br><small>${escapeHtml(request.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}

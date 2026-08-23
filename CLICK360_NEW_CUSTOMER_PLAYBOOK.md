@@ -28,7 +28,7 @@ node scripts/onboard-new-customer.mjs \
 ```
 
 - `--plan`: `base` (Basic) | `pro` | `business` | `enterprise` | `founder_legacy`
-- `--period`: `month` | `quarter` | `semester` | `year` | `lifetime` (solo Basic) | `historical` (solo Founder)
+- `--period`: para clientes nuevos usa siempre `month` o `year` (anual recomendado) — es la única oferta vigente (r36). `quarter` | `semester` | `lifetime` siguen aceptados solo por compatibilidad administrativa con cuentas históricas que ya tenían esos períodos; no se ofrecen a clientes nuevos. `historical` es exclusivo de Founder.
 - `--business-type`: `retail` | `restaurant` | `distribution` | `services` | `other` — esto **solo** ajusta la experiencia visual del cliente (qué pantallas ve primero), **nunca** sus derechos. Los derechos los da exclusivamente el plan.
 - `--addons`: texto libre, se guarda como nota para seguimiento comercial (no hay precio de add-on aprobado todavía — ver matriz comercial sección 5).
 
