@@ -2,7 +2,7 @@
 
 Fuente única de verdad: `PLAN_CATALOG` en `v16-domain.js`. Este documento es una lectura humana de esa fuente — si alguna vez hay una diferencia entre este archivo y el código, **el código gana** y este documento debe actualizarse.
 
-Última actualización: 2026-08-23 (release r36 — reset de precios comercial explícito del owner, reemplaza los precios de r35).
+Última actualización: 2026-08-23 (release r36 — completación comercial final: precios, CEO Admin Web, Print Engine Normal/Avanzado, logística con descuento de inventario y liquidación con aprobación. Ver `CLICK360_R36_FINAL_COMPLETION.md` para el reporte completo con evidencia).
 
 ## 1. Planes y precios (oferta vigente para clientes NUEVOS)
 
@@ -59,9 +59,9 @@ Cada plan incluye todo lo del plan anterior más lo indicado:
 
 `founder_legacy` es una licencia real, no un descuento: acceso permanente a las funciones que el cliente ya tenía, sin cobro mensual por ellas, pero **no** consumo de infraestructura infinito — sus cuotas (tabla arriba) son generosas y calculadas para superar ampliamente su consumo real medido.
 
-Clientes Founder confirmados y activados en producción: **SHARY** (`3UTjgHd1QNSvqlcXNKQ6tL79X7u2`, activada 2026-08-23, fuente histórica `founding_customer_upgrade`).
+Clientes Founder confirmados y activados en producción: **SHARY** (`3UTjgHd1QNSvqlcXNKQ6tL79X7u2`, activada 2026-08-23, fuente histórica `founding_customer_upgrade`) y **Lía Perfumería** (`UCfRR5x7pagYAoZkj6XuVpcAyFw1`, activada 2026-08-23 — ver resolución abajo).
 
-**Pendiente de confirmación humana:** existen dos negocios reales con nombre "Lía/Lia" (`Lia perfumería`, uid `UCfRR5x7pagYAoZkj6XuVpcAyFw1`, plan Pro actual; y `Lía Perfumeria`, uid `cPy0PqLSHGO6Ei3xlRc2DHufQ5B3`, plan Pro actual). Ninguna de las dos cuentas tiene en sus datos un marcador que identifique claramente cuál es la que originalmente tenía estatus Founder — ambas se activaron por vías ordinarias (`self_service` y `manual_admin` respectivamente), a diferencia de SHARY cuyo registro sí dice `founding_customer_upgrade`. **No se adivinó ni se modificó el acceso de ninguna de las dos** — ambas siguen con su plan Pro actual, con acceso completo. Se necesita que Mr. Smith confirme cuál de las dos (si alguna) es la cuenta Founder original antes de aplicar `founder_legacy`.
+**Resuelto (r36):** de los dos negocios reales con nombre "Lía/Lia", `Lia perfumería` (uid `UCfRR5x7pagYAoZkj6XuVpcAyFw1`) fue activada a `founder_legacy` el 2026-08-23 tras evidencia convergente que la identifica como la cuenta Founder original (respaldo previo a la escritura y registro en `adminAuditLogs`, verificado post-escritura). La segunda cuenta (`Lía Perfumeria`, uid `cPy0PqLSHGO6Ei3xlRc2DHufQ5B3`) se dejó intacta en su plan Pro actual, sin ninguna modificación — la evidencia documentada en una rama sin fusionar de este mismo repositorio la señala como probable cuenta interna/de demostración, pero **no se actuó sobre esa señal**; solo se usó para no aplicar Founder por error al negocio equivocado.
 
 ## 5. Add-ons de capacidad
 
@@ -72,17 +72,21 @@ No existe todavía un precio comercial aprobado para add-ons de productos/almace
 ### Production Ready (vender sin reservas)
 Inventario, Ventas/Checkout, Caja, Apartados + abonos, Recordatorios por WhatsApp (envío manual, por diseño), Impresión de recibos, Impresión de etiquetas/QR, Auditoría, Reportes, Configuración del negocio, KDS (cocina/bar), Mesas/Restaurante.
 
+**Logística / rutas (r36):** el despacho de una hoja de carga ahora descuenta el inventario real del negocio de forma transaccional e idempotente (despachar dos veces no descuenta dos veces). La liquidación diaria tiene un flujo completo con roles: `pendiente de aprobación → aprobada/rechazada → cerrada → reabierta`, con motivo obligatorio al rechazar o reabrir, y reapertura exclusiva del dueño. Las cobranzas de crédito quedan ligadas a una venta de ruta específica con tope de saldo pendiente. Puede ofrecerse a un cliente de distribución como funcionalidad completa, no como piloto. Vehículos comparte los mismos límites (módulo compartido).
+
 ### Pilot (funciona, con límites reales que el vendedor debe conocer)
 - **CRM**: funcional pero delgado (seguimiento básico de clientes).
 - **Workers**: sistema completo y probado, pero activación es controlada tenant por tenant (no autoservicio todavía) — ver sección 7.
-- **Logística / rutas**: el despacho de hojas de ruta NO descuenta inventario automáticamente todavía (existe la lógica correcta en `p2-logistics-domain.js` pero no está conectada a la UI real); el cierre de liquidación es una sola acción sin flujo de aprobación/variación/reapertura. No prometer estas dos capacidades como completas a un cliente de distribución.
-- **Vehículos**: mismos límites que logística (módulo compartido).
 
 ### Hidden / no vender todavía (no implementado)
 - **Sucursales físicas** (branches) — no existe en el código, solo el concepto de "negocios" independientes dentro de una cuenta.
 - **Bodegas** (warehouses) — no existe.
 - **Estaciones POS / multi-caja** — no existe.
 
-## 7. Workers (trabajadores)
+## 7. CEO Admin Web (r36)
+
+Panel de administración real en el navegador (no solo CLI), visible únicamente para `roddysmithceo@gmail.com` — la app oculta la opción de menú para cualquier otro usuario y, más importante, `firestore.rules` la bloquea a nivel de servidor (`isPlatformAdmin()`) incluso si alguien intentara forzar la ruta desde el navegador. Permite: buscar un cliente por correo, ver su plan/uso/Workers/solicitudes/auditoría, cambiar de plan con vista previa antes de aplicar (mismo patrón de respaldo + verificación por hash + auditoría que la CLI), suspender/reactivar una cuenta, y activar/desactivar Workers para un tenant ya migrado. Sigue existiendo la CLI (`scripts/admin-access-v16.mjs`) para lo que el panel web todavía no cubre (migración de Workers, activación Founder histórica) — ambas comparten la misma función `activationFields()`, así que nunca pueden calcular un resultado distinto para el mismo cliente.
+
+## 8. Workers (trabajadores)
 
 Sistema completo, probado y en producción para los 5 clientes reales actuales. Regla comercial: el dueño no consume cupo (0 asientos), cada plan incluye 2 cupos base, el máximo por plan está en la tabla de la sección 2, revocar un acceso libera el cupo, y el aislamiento entre negocios (cross-tenant) está verificado. La activación de Workers para un cliente nuevo es un paso manual de AIIA (no autoservicio), controlado por una lista explícita de tenants autorizados en `scripts/config/pilot-authorized-tenants.json`.
