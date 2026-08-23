@@ -1,19 +1,18 @@
 import { stableHash } from './click360-data-core.mjs';
 
+// v16-domain.js is a browser IIFE (also runnable in Node via dynamic
+// import() -- it guards its `module` reference with typeof, so it never
+// throws under Node's ESM loader; it just also sets globalThis.
+// CLICK360_V16_DOMAIN as a side effect). Importing it here, once, makes
+// PLAN_CATALOG/planLimits()/activationFields() genuinely single-sourced
+// between the browser (CEO Admin Web) and every Node admin script --
+// no more hand-maintained duplicate price/limit tables to drift out of sync.
+await import(new URL('../../v16-domain.js', import.meta.url));
+const domain = globalThis.CLICK360_V16_DOMAIN;
+if (!domain) throw new Error('v16-domain.js failed to load; CLICK360_V16_DOMAIN is not set.');
+
 export const REQUIRED_PROJECT_ID = 'click-360';
 export const AUTHORIZED_ADMIN_EMAILS = Object.freeze(['roddysmithceo@gmail.com']);
-// Mirrors PLAN_CATALOG[code].limits.{businesses,workerSeatsMax} in
-// v16-domain.js, projected into the legacy {businesses,workers} shape (see
-// that file's planLimits()). Duplicated here (not imported) because
-// v16-domain.js is a browser IIFE, not a Node ESM module -- keep these two
-// in sync by hand whenever PLAN_CATALOG limits change.
-export const PLAN_LIMITS = Object.freeze({
-  base: Object.freeze({ businesses: 1, workers: 5 }),
-  pro: Object.freeze({ businesses: 5, workers: 10 }),
-  business: Object.freeze({ businesses: 10, workers: 25 }),
-  enterprise: Object.freeze({ businesses: 25, workers: 9999 }),
-  founder_legacy: Object.freeze({ businesses: 10, workers: 25 })
-});
 
 export function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -89,70 +88,14 @@ export function suspendConfirmation(uid) {
   return `SUSPEND:${uid}`;
 }
 
-function baseAccountFields(existing, authUser) {
-  return {
-    uid: authUser.uid,
-    businessId: authUser.uid,
-    email: normalizeEmail(authUser.email),
-    name: String(existing.name || authUser.displayName || '').slice(0, 120),
-    photoURL: String(existing.photoURL || authUser.photoURL || '').slice(0, 100000)
-  };
-}
-
+// Thin compatibility wrapper: the real implementation is
+// window.CLICK360_V16_DOMAIN.activationFields in v16-domain.js (see the
+// import at the top of this file), shared verbatim with the browser CEO
+// Admin Web panel. Only the parameter name differs (authUser here, since
+// every existing CLI call site already uses that name) -- domain.
+// activationFields() calls it targetUser since the Web caller has no real
+// Firebase Auth user object, only the plain {uid,email,name,photoURL} of
+// whichever accountAccess document it searched for.
 export function activationFields({ existing = {}, authUser, actorEmail, plan = 'base', period = 'historical', businessType = '', addOnsRequested = [] }) {
-  const normalizedPlan = String(plan || '').toLowerCase();
-  const normalizedPeriod = String(period || '').toLowerCase();
-  if (!['base', 'pro', 'business', 'enterprise', 'founder_legacy'].includes(normalizedPlan)) {
-    throw new Error('Plan must be base, pro, business, enterprise, or founder_legacy.');
-  }
-  // Business type only presets the customer's own UX (see app.js onboarding
-  // form); it never grants or restricts rights -- the plan alone does that.
-  // Recorded here purely as a sales/onboarding record for AIIA.
-  const normalizedBusinessType = String(businessType || '').trim().slice(0, 40);
-  const normalizedAddOns = Array.isArray(addOnsRequested) ? addOnsRequested.map((item) => String(item).trim()).filter(Boolean).slice(0, 20) : [];
-  const onboardingProfile = (normalizedBusinessType || normalizedAddOns.length)
-    ? { businessType: normalizedBusinessType || null, addOnsRequested: normalizedAddOns, recordedAt: new Date().toISOString(), recordedBy: normalizeEmail(actorEmail) }
-    : (existing.onboardingProfile || null);
-  // founder_legacy: permanent historical functional license (SHARY, Lia) --
-  // no billing period, never expires. See v16-domain.js evaluateEntitlement()
-  // and firestore.rules' matching founder_legacy branch, both keyed on
-  // status=="founder_legacy" && plan=="founder_legacy".
-  if (normalizedPlan === 'founder_legacy') {
-    if (normalizedPeriod !== 'historical') throw new Error('founder_legacy has no billing period; use --period historical.');
-    const limits = PLAN_LIMITS.founder_legacy;
-    return {
-      ...baseAccountFields(existing, authUser),
-      status: 'founder_legacy',
-      plan: 'founder_legacy',
-      planCode: 'founder_legacy',
-      lifetime: false,
-      activationPeriod: 'historical',
-      source: 'founder_legacy_grant',
-      entitlementVersion: 16,
-      revision: Math.max(0, Number(existing.revision || 0)) + 1,
-      businessLimit: limits.businesses,
-      workerLimit: limits.workers,
-      activatedBy: normalizeEmail(actorEmail),
-      onboardingProfile
-    };
-  }
-  if (!['historical', 'month', 'quarter', 'semester', 'year', 'lifetime'].includes(normalizedPeriod)) throw new Error('Invalid activation period.');
-  if (normalizedPlan !== 'base' && normalizedPeriod === 'lifetime') throw new Error('Lifetime billing is only available on the Basic plan.');
-  const limits = PLAN_LIMITS[normalizedPlan];
-  const lifetime = normalizedPeriod === 'lifetime';
-  return {
-    ...baseAccountFields(existing, authUser),
-    status: lifetime ? 'lifetime' : `paid_${normalizedPlan}`,
-    plan: normalizedPlan,
-    planCode: normalizedPlan,
-    lifetime,
-    activationPeriod: normalizedPeriod,
-    source: normalizedPeriod === 'historical' ? 'historical_buyer_recovery' : 'admin_activation',
-    entitlementVersion: 16,
-    revision: Math.max(0, Number(existing.revision || 0)) + 1,
-    businessLimit: limits.businesses,
-    workerLimit: limits.workers,
-    activatedBy: normalizeEmail(actorEmail),
-    onboardingProfile
-  };
+  return domain.activationFields({ existing, targetUser: authUser, actorEmail, plan, period, businessType, addOnsRequested });
 }

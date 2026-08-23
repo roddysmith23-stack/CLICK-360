@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r35-commercial-mvp';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r36-commercial-completion';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -2150,7 +2150,7 @@ function parseMoney(value) {
 	      stopScanner(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView};
+	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView,ceoAdmin:ceoAdminView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
@@ -2779,15 +2779,18 @@ function parseMoney(value) {
 	    const isFounder = access.mode === 'founder' || currentPlanCode === 'founder_legacy';
 	    const quota = tenantQuotaStatus();
 	    const currentPlanEntry = catalog[currentPlanCode] || {};
-	    const periodOptions = (code) => `<option value="month">1 mes</option><option value="quarter">3 meses</option><option value="semester">6 meses</option><option value="year">1 año</option>${code === 'base' ? '<option value="lifetime">De por vida</option>' : ''}`;
+	    // r36 commercial reset: only Monthly and Annual (recommended) are
+	    // offered as primary options going forward. Quarter/semester/lifetime
+	    // still work administratively for historical accounts (see
+	    // admin-access-v16.mjs), but are never shown here as a choice.
+	    const periodOptions = () => `<option value="month">Mensual</option><option value="year">Anual — recomendado</option>`;
 	    const planPriceSummary = (code) => {
 	      const prices = catalog[code]?.prices || {};
 	      if (prices.custom) return `<p class="cloudStatus">Precio segun necesidad: numero de negocios, catalogo de productos y cupos de Workers.</p>`;
 	      if (!prices.year) return '';
 	      return `<div class="planPriceSummary neuroPrice" aria-label="Precios ${escapeHtml(catalog[code]?.name || code)}">
-	        <div class="neuPlanTier"><div class="neuTierLabel muted">Mensual</div><div class="neuTierPrice"><s class="neuStrike">${fmt(prices.month || 0)}/mes</s></div><div class="neuTierNote muted">Precio regular</div></div>
+	        <div class="neuPlanTier"><div class="neuTierLabel muted">Mensual</div><div class="neuTierPrice"><b>${fmt(prices.month || 0)}<small>/mes</small></b></div><div class="neuTierNote muted">Facturado cada mes</div></div>
 	        <div class="neuPlanTier neuStar"><div class="neuBadge">⭐ RECOMENDADO</div><div class="neuTierLabel">Anual</div><div class="neuTierPrice"><b class="neuBig">${fmt(prices.year / 12)}<small>/mes</small></b></div><div class="neuTierNote">${fmt(prices.year)} al año · un solo pago</div></div>
-	        ${prices.lifetime ? `<div class="neuPlanTier"><div class="neuTierLabel muted">Vitalicio</div><div class="neuTierPrice"><b>${fmt(prices.lifetime)}</b></div><div class="neuTierNote muted">Pago único · para siempre</div></div>` : ''}
 	      </div>`;
 	    };
 	    const includedFeatures = resolvedPlanFeatures(currentPlanCode, catalog);
@@ -2825,7 +2828,8 @@ function parseMoney(value) {
 	          ${notIncludedFeatures.length ? `<div><b>No incluidas en tu plan</b><ul class="notIncluded">${notIncludedFeatures.map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul></div>` : ''}
 	        </div>
 	      </section>
-	      <section class="planGrid" style="margin-top:14px;">
+	      ${isFounder ? `<section class="card sectionCard" style="margin-top:14px;border-color:rgba(55,213,126,.35);"><h3>Tu licencia Founder</h3><p class="cloudStatus">Tu acceso histórico es permanente y ya está activo — no necesitas comprar ni renovar ningún plan. Si tu negocio crece y necesitas más capacidad, usa "Solicitar más capacidad" arriba; tu licencia Founder se mantiene intacta.</p></section>`
+	      : `<section class="planGrid" style="margin-top:14px;">
 	        ${['base','pro','business','enterprise'].map((code) => {
 	          const item = catalog[code] || {};
 	          const isCurrent = code === currentPlanCode;
@@ -2840,10 +2844,10 @@ function parseMoney(value) {
 	            <ul>${(item.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join('')}</ul>
 	            ${isQuote
 	              ? `<button class="btn primary block" data-request-plan="${code}" data-request-period="custom">Solicitar cotización</button>`
-	              : `<label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions(code)}</select></label><button class="btn ${isCurrent ? 'silver' : 'primary'} block" data-request-plan="${code}">${isCurrent ? 'Cambiar periodo' : `Solicitar ${escapeHtml(item.name || code)}`}</button>`}
+	              : `<label class="field"><span>Periodo</span><select data-plan-period="${code}">${periodOptions()}</select></label><button class="btn ${isCurrent ? 'silver' : 'primary'} block" data-request-plan="${code}">${isCurrent ? 'Cambiar periodo' : `Solicitar ${escapeHtml(item.name || code)}`}</button>`}
 	          </article>`;
 	        }).join('')}
-	      </section>
+	      </section>`}
 	      <section class="card printerOfferCard"><div><span class="badge gold">Equipo opcional</span><h3>Impresora térmica de etiquetas</h3><p>Lista para etiquetas QR y comprobantes; incluye envío y un rollo de papel adhesivo de cortesía.</p></div><strong>${fmt(65)}</strong><a class="btn primary" target="_blank" rel="noopener noreferrer" href="${supportWhatsAppUrl('Hola CLICK 360, quiero información sobre la impresora térmica de etiquetas de $65.')}">Consultar por WhatsApp</a></section>
 	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de plan</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
 	      ${capacityRequests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de capacidad</h3>${capacityRequests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(request.kind === 'storage' ? 'Almacenamiento' : 'Productos')}</b><br><small>${escapeHtml(request.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
@@ -2885,6 +2889,210 @@ function parseMoney(value) {
 	      <article><h2>Responsabilidades</h2><p>Los comprobantes y reportes son registros operativos. No sustituyen documentos tributarios oficiales, asesoria contable ni asesoramiento legal. Antes de una accion destructiva se recomienda generar y verificar un respaldo.</p></article>
 	    </section>`;
 	  }
+  let ceoAdminLastSearchEmail = '';
+  let ceoAdminSearchResult = null;
+  let ceoAdminSearchError = '';
+  const CEO_ADMIN_BUSINESS_TYPES = { retail: 'Retail / comercio', restaurant: 'Restaurante', distribution: 'Distribucion', services: 'Servicios', other: 'Otro' };
+  function ceoAdminUsageBar(label, used, limit) {
+    const domain = window.CLICK360_V16_DOMAIN;
+    const quota = domain?.evaluateQuota ? domain.evaluateQuota(used, limit) : null;
+    if (!quota) return '';
+    return quotaMeterHtml(label, quota, label.toLowerCase().includes('almacen') ? formatBytesApprox : (n) => String(n));
+  }
+  function ceoAdminResultHtml() {
+    if (ceoAdminSearchError) return `<section class="card sectionCard" style="margin-top:14px;border-color:rgba(255,92,98,.5);"><p class="cloudStatus">${escapeHtml(ceoAdminSearchError)}</p></section>`;
+    const result = ceoAdminSearchResult;
+    if (!result) return '';
+    if (!result.found) {
+      return `<section class="card sectionCard" style="margin-top:14px;"><h3>No encontrado</h3><p class="cloudStatus">${escapeHtml(result.email)} todavia no tiene cuenta en CLICK 360. Pide al cliente que abra la app e inicie sesion con Google al menos una vez (quedara en periodo de prueba automaticamente); luego vuelve a buscarlo aqui para activarle un plan.</p></section>`;
+    }
+    const access = result.accountAccess;
+    const domain = window.CLICK360_V16_DOMAIN;
+    const catalog = domain?.PLAN_CATALOG || {};
+    const currentPlanCode = domain?.normalizePlan?.(access.plan) || 'base';
+    const planEntry = catalog[currentPlanCode] || {};
+    const businessNames = (result.businesses || []).map((b) => b.name || b.id).filter(Boolean).join(', ') || '(sin negocios configurados)';
+    const businessType = result.accountAccess?.onboardingProfile?.businessType;
+    const addOnsRequested = result.accountAccess?.onboardingProfile?.addOnsRequested || [];
+    const workersOn = result.featureFlags?.enabled === true;
+    const businessUnitStatus = result.businessUnit?.status || null;
+    const isSuspended = access.status === 'suspended';
+    const statusLabels = { trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', suspended: 'Suspendido', founder_legacy: 'Founder', lifetime: 'Vitalicio' };
+    const statusLabel = statusLabels[access.status] || access.status || '-';
+    const limits = planEntry.limits || {};
+    return `<section class="card sectionCard" style="margin-top:14px;">
+        <h3>${escapeHtml(businessNames)}</h3>
+        <p class="fieldHint">UID: ${escapeHtml(result.uid)} &middot; ${escapeHtml(access.email || '')}</p>
+        <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top:8px;">
+          <div><small class="fieldHint">Estado</small><div><b>${escapeHtml(statusLabel)}</b></div></div>
+          <div><small class="fieldHint">Plan</small><div><b>${escapeHtml(planEntry.name || currentPlanCode)}</b></div></div>
+          <div><small class="fieldHint">Tipo de negocio</small><div>${escapeHtml(CEO_ADMIN_BUSINESS_TYPES[businessType] || 'No configurado')}</div></div>
+          <div><small class="fieldHint">Periodo</small><div>${escapeHtml(access.activationPeriod || '-')}</div></div>
+          <div><small class="fieldHint">Revision</small><div>${escapeHtml(String(access.revision ?? '-'))}</div></div>
+        </div>
+      </section>
+      <section class="card sectionCard">
+        <h3>Uso</h3>
+        ${ceoAdminUsageBar('Productos activos', result.usage?.productsActive || 0, limits.productsActive)}
+        ${ceoAdminUsageBar('Almacenamiento de imagenes', result.usage?.storageBytesApprox || 0, limits.storageBytes)}
+        <p class="fieldHint">Negocios en la cuenta: ${(result.businesses || []).length} / ${limits.businesses ?? '-'}</p>
+      </section>
+      <section class="card sectionCard">
+        <h3>Workers</h3>
+        <p class="cloudStatus">${businessUnitStatus === 'CUTOVER_VERIFIED'
+          ? `Migracion modular completa. Workers actualmente <b>${workersOn ? 'ACTIVADOS' : 'DESACTIVADOS'}</b>.`
+          : 'Este cliente todavia no tiene la migracion modular completa (CUTOVER_VERIFIED) -- activar Workers requiere correr primero scripts/worker-boundary-activate-tenant.mjs desde la CLI.'}</p>
+        ${businessUnitStatus === 'CUTOVER_VERIFIED' ? `<button class="btn ${workersOn ? 'silver' : 'primary'} block" id="ceoAdminToggleWorkersBtn" data-enable="${workersOn ? 'false' : 'true'}">${workersOn ? 'Desactivar Workers' : 'Activar Workers'}</button>` : ''}
+      </section>
+      ${addOnsRequested.length || (result.seatRequests || []).length || (result.capacityRequests || []).length ? `<section class="card sectionCard">
+        <h3>Add-ons y solicitudes</h3>
+        ${addOnsRequested.length ? `<p class="fieldHint">Add-ons registrados en el alta: ${addOnsRequested.map(escapeHtml).join(', ')}</p>` : ''}
+        ${(result.seatRequests || []).map((r) => `<div class="movement"><span><b>Cupo de Worker</b><br><small>${escapeHtml(r.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(r.status || 'pending')}</span></div>`).join('')}
+        ${(result.capacityRequests || []).map((r) => `<div class="movement"><span><b>${escapeHtml(r.kind === 'storage' ? 'Almacenamiento' : 'Productos')}</b><br><small>${escapeHtml(r.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(r.status || 'pending')}</span></div>`).join('')}
+      </section>` : ''}
+      <section class="card sectionCard">
+        <h3>Cambiar plan</h3>
+        <div id="ceoAdminActivationArea">${ceoAdminActivationFormHtml(currentPlanCode)}</div>
+      </section>
+      <section class="card sectionCard">
+        <h3>Cuenta</h3>
+        <button class="btn ${isSuspended ? 'primary' : 'danger'} block" id="ceoAdminSuspendBtn">${isSuspended ? 'Reactivar (elige un plan arriba y aplica)' : 'Suspender cuenta'}</button>
+        ${isSuspended ? '<p class="fieldHint">Para reactivar, selecciona un plan arriba y aplica -- eso cambia el estado de "suspended" a activo automaticamente.</p>' : '<p class="fieldHint">Suspender no borra ningun dato. El cliente queda en modo lectura hasta reactivar.</p>'}
+      </section>
+      ${(result.auditLog || []).length ? `<section class="card sectionCard"><h3>Actividad reciente (audit log)</h3>${(result.auditLog || []).map((entry) => `<div class="movement"><span><b>${escapeHtml(entry.action || '-')}</b><br><small>${escapeHtml(entry.actorEmail || '')}</small></span><span class="badge">${entry.createdAt?.toDate ? escapeHtml(entry.createdAt.toDate().toLocaleString('es-EC')) : ''}</span></div>`).join('')}</section>` : ''}`;
+  }
+  function ceoAdminActivationFormHtml(currentPlanCode) {
+    const domain = window.CLICK360_V16_DOMAIN;
+    const catalog = domain?.PLAN_CATALOG || {};
+    const planOptions = ['base', 'pro', 'business', 'enterprise', 'founder_legacy']
+      .map((code) => `<option value="${code}" ${code === currentPlanCode ? 'selected' : ''}>${escapeHtml(catalog[code]?.name || code)}</option>`).join('');
+    return `<form id="ceoAdminActivationForm" class="formGrid">
+      <div class="field"><label>Plan</label><select id="ceoAdminPlanSelect">${planOptions}</select></div>
+      <div class="field"><label>Periodo</label><select id="ceoAdminPeriodSelect"><option value="month">Mensual</option><option value="year" selected>Anual (recomendado)</option></select></div>
+      <div class="field"><label>Tipo de negocio (opcional)</label><select id="ceoAdminBusinessType"><option value="">No cambiar</option>${Object.entries(CEO_ADMIN_BUSINESS_TYPES).map(([value, label]) => `<option value="${value}">${escapeHtml(label)}</option>`).join('')}</select></div>
+      <div class="field full"><label>Add-ons (opcional, separados por coma)</label><input id="ceoAdminAddOns" placeholder="Ej. almacenamiento extra"></div>
+      <button class="btn primary block" type="submit">Ver preview</button>
+    </form>`;
+  }
+  function ceoAdminPreviewHtml(preview, uid, plan, period, businessType, addOns) {
+    const p = preview.proposed;
+    return `<div class="card sectionCard" style="border-color:rgba(244,196,49,.5);">
+      <h4>Este cliente recibira:</h4>
+      <p class="fieldHint">Plan <b>${escapeHtml(p.plan)}</b> &middot; estado <b>${escapeHtml(p.status)}</b> &middot; periodo ${escapeHtml(p.activationPeriod)}</p>
+      <p class="fieldHint">Negocios permitidos: ${escapeHtml(String(p.businessLimit))} &middot; Cupos de Workers maximos: ${escapeHtml(String(p.workerLimit))}</p>
+      ${p.onboardingProfile?.addOnsRequested?.length ? `<p class="fieldHint">Add-ons: ${p.onboardingProfile.addOnsRequested.map(escapeHtml).join(', ')}</p>` : ''}
+      <p class="fieldHint">Productos activos y almacenamiento se rigen por PLAN_CATALOG (ver Mi plan del cliente).</p>
+      <button class="btn primary block" id="ceoAdminConfirmActivationBtn" data-uid="${escapeHtml(uid)}" data-plan="${escapeHtml(plan)}" data-period="${escapeHtml(period)}" data-business-type="${escapeHtml(businessType)}" data-addons="${escapeHtml(addOns)}" data-before-revision="${preview.beforeRevision}">Confirmar y aplicar</button>
+      <button class="btn silver block" id="ceoAdminCancelActivationBtn">Cancelar</button>
+    </div>`;
+  }
+  function ceoAdminView() {
+    if (!window.click360IsPlatformAdmin?.()) {
+      return `<div class="pageHead"><div><h1>CEO Admin</h1></div></div><section class="card sectionCard"><p class="empty">No autorizado.</p></section>`;
+    }
+    return `<div class="pageHead"><div><h1>CEO Admin</h1><p>Buscar y administrar clientes. Cada cambio queda respaldado y auditado.</p></div></div>
+      <section class="card sectionCard">
+        <div class="field"><label>Correo del cliente</label><input id="ceoAdminSearchEmail" type="email" placeholder="cliente@gmail.com" value="${escapeHtml(ceoAdminLastSearchEmail)}"></div>
+        <button class="btn primary block" id="ceoAdminSearchBtn">Buscar cliente</button>
+      </section>
+      ${ceoAdminResultHtml()}`;
+  }
+  function bindCeoAdmin() {
+    if (!window.click360IsPlatformAdmin?.()) return;
+    $('#ceoAdminSearchBtn').onclick = async () => {
+      const email = $('#ceoAdminSearchEmail').value.trim();
+      if (!email) return toast('Ingresa un correo.', 'err');
+      const btn = $('#ceoAdminSearchBtn');
+      btn.disabled = true;
+      try {
+        ceoAdminLastSearchEmail = email;
+        ceoAdminSearchError = '';
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(email);
+      } catch (error) {
+        ceoAdminSearchError = error.message || 'No se pudo buscar el cliente.';
+        ceoAdminSearchResult = null;
+      } finally {
+        btn.disabled = false;
+        renderApp('ceoAdmin');
+      }
+    };
+    $('#ceoAdminActivationForm')?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const plan = $('#ceoAdminPlanSelect').value;
+      const period = plan === 'founder_legacy' ? 'historical' : $('#ceoAdminPeriodSelect').value;
+      const businessType = $('#ceoAdminBusinessType').value;
+      const addOns = $('#ceoAdminAddOns').value;
+      const submitBtn = event.target.querySelector('button[type=submit]');
+      submitBtn.disabled = true;
+      try {
+        const preview = await window.click360CeoAdminPreviewActivation({
+          uid: ceoAdminSearchResult.uid, plan, period, businessType,
+          addOns: addOns.split(',').map((s) => s.trim()).filter(Boolean)
+        });
+        $('#ceoAdminActivationArea').innerHTML = ceoAdminPreviewHtml(preview, ceoAdminSearchResult.uid, plan, period, businessType, addOns);
+        bindCeoAdminPreviewButtons();
+      } catch (error) {
+        toast(error.message || 'No se pudo generar la vista previa.', 'err');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+    $('#ceoAdminSuspendBtn')?.addEventListener('click', async () => {
+      if (!confirm('Confirmas suspender esta cuenta? El cliente quedara en modo lectura; nada se borra.')) return;
+      const btn = $('#ceoAdminSuspendBtn');
+      btn.disabled = true;
+      try {
+        await window.click360CeoAdminSuspend(ceoAdminSearchResult.uid);
+        toast('Cuenta suspendida');
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(ceoAdminLastSearchEmail);
+        renderApp('ceoAdmin');
+      } catch (error) {
+        toast(error.message || 'No se pudo suspender.', 'err');
+        btn.disabled = false;
+      }
+    });
+    $('#ceoAdminToggleWorkersBtn')?.addEventListener('click', async (event) => {
+      const enable = event.currentTarget.dataset.enable === 'true';
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      try {
+        await window.click360CeoAdminToggleWorkers(ceoAdminSearchResult.uid, enable);
+        toast(enable ? 'Workers activados' : 'Workers desactivados');
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(ceoAdminLastSearchEmail);
+        renderApp('ceoAdmin');
+      } catch (error) {
+        toast(error.message || 'No se pudo cambiar Workers.', 'err');
+        btn.disabled = false;
+      }
+    });
+  }
+  function bindCeoAdminPreviewButtons() {
+    $('#ceoAdminCancelActivationBtn')?.addEventListener('click', () => {
+      $('#ceoAdminActivationArea').innerHTML = ceoAdminActivationFormHtml(window.CLICK360_V16_DOMAIN?.normalizePlan?.(ceoAdminSearchResult?.accountAccess?.plan) || 'base');
+      bindCeoAdmin();
+    });
+    $('#ceoAdminConfirmActivationBtn')?.addEventListener('click', async (event) => {
+      const btn = event.currentTarget;
+      btn.disabled = true;
+      try {
+        const { uid, plan, period, beforeRevision } = btn.dataset;
+        const businessType = btn.dataset.businessType;
+        const addOns = btn.dataset.addons;
+        await window.click360CeoAdminApplyActivation({
+          uid, plan, period, businessType,
+          addOns: addOns.split(',').map((s) => s.trim()).filter(Boolean),
+          expectedRevision: Number(beforeRevision)
+        });
+        toast('Plan actualizado y auditado');
+        ceoAdminSearchResult = await window.click360CeoAdminSearchCustomer(ceoAdminLastSearchEmail);
+        renderApp('ceoAdmin');
+      } catch (error) {
+        toast(error.message || 'No se pudo aplicar el cambio.', 'err');
+        btn.disabled = false;
+      }
+    });
+  }
+
 	  function crmCustomers() {
 	    const businessId = currentBusiness()?.id;
       const legacyBusinessId = state.settings?.legacyDataBusinessId;
@@ -3814,103 +4022,293 @@ function parseMoney(value) {
 	      closeModal(); renderApp('logistics'); toast('Ruta creada');
 	    };
 	  }
-	  function openRouteWorkspace(routeId) {
-	    const route = logisticsForBiz('routes').find((item) => item.id === routeId);
-	    if (!route) return toast('Ruta no encontrada.', 'err');
-	    const summary = logisticsSummary(route);
-	    const sheet = logisticsForBiz('loadSheets').find((item) => item.routeId === route.id && !['closed','cancelled'].includes(item.status));
-	    const productOptions = productsForBiz().map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${Number(product.qty || 0)} disp.</option>`).join('');
-	    showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p class="fieldHint">${escapeHtml(route.zone || 'Ruta')} · ${escapeHtml(route.date || today())}</p></div><button class="closeBtn" data-close>×</button></div>
-	      <section class="kpiGrid routeKpis"><article class="card kpi"><span>Venta ruta</span><strong>${fmt(summary.sold)}</strong></article><article class="card kpi"><span>Cobrado</span><strong>${fmt(summary.collected)}</strong></article><article class="card kpi"><span>Retornos</span><strong>${fmt(summary.returned)}</strong></article></section>
-	      <section class="card sectionCard"><h3>Hoja de carga</h3><div class="logisticsList">${sheet?.items?.length ? sheet.items.map((item) => `<div class="logisticsRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><strong>${fmt(item.total)}</strong></div>`).join('') : '<p class="empty">Sin productos cargados.</p>'}</div>
-	        <form id="routeLoadForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="routeLoadProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeLoadQty" type="number" min="1" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Agregar carga</button></form></section>
-	      <section class="card sectionCard"><h3>Venta, cobranza y retorno</h3>
-	        <form id="routeSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="routeCustomer" maxlength="80" placeholder="Cliente de ruta"></div><div class="field"><label>Producto vendido</label><select id="routeSaleProduct" ${productOptions ? '' : 'disabled'}><option value="">Venta manual</option>${productOptions}</select></div><div class="field"><label>Cant.</label><input id="routeSaleQty" type="number" min="1" value="1"></div><div class="field"><label>Total venta</label><input id="routeSaleTotal" type="number" min="0" step="0.01" value="0" placeholder="Se calcula si eliges producto"></div><div class="field"><label>Tipo</label><select id="routePaymentType"><option value="cash">Contado</option><option value="credit">Crédito</option><option value="transfer">Transferencia</option></select></div><button class="btn primary" type="submit">Registrar venta</button></form>
-	        <form id="routeCollectionForm" class="formGrid"><div class="field"><label>Cobranza</label><input id="routeCollectionAmount" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Método</label><select id="routeCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><button class="btn silver" type="submit">Registrar cobro</button></form>
-	        <form id="routeReturnForm" class="formGrid"><div class="field"><label>Producto devuelto</label><select id="routeReturnProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeReturnQty" type="number" min="1" value="1"></div><div class="field"><label>Estado</label><select id="routeReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Registrar retorno</button></form></section>
-	      <div class="tableCheckoutActions"><button class="btn" id="routePrintBtn" type="button">${icon('printer')} Imprimir hoja</button><button class="btn primary" id="routeCloseBtn" type="button">Liquidar ruta</button></div>`);
-	    $('#routeLoadForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const productId = decodeActionId($('#routeLoadProduct').value);
-	      const product = productsForBiz().find((item) => item.id === productId);
-	      const qty = Math.max(1, Math.trunc(Number($('#routeLoadQty').value || 1)));
-	      if (!product || qty > Number(product.stock ?? product.qty ?? 0)) return toast('Inventario insuficiente para cargar ruta.', 'err');
-	      let currentSheet = sheet || { id:uid('loadsheet'), businessId:currentBusiness().id, routeId:route.id, status:'draft', items:[], createdAt:new Date().toISOString() };
-	      if (!sheet) state.logistics.loadSheets.push(currentSheet);
-	      const existing = currentSheet.items.find((item) => item.productId === product.id);
-	      if (existing) { existing.qty += qty; existing.total = Number(existing.qty || 0) * Number(existing.price || 0); }
-	      else currentSheet.items.push({ id:uid('loaditem'), productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), total:qty * Number(product.price || 0), createdAt:new Date().toISOString() });
-	      currentSheet.updatedAtMs = Date.now();
-	      addAudit('logistics_load_item_added', { routeId:route.id, productId:product.id, qty });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeSaleForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const productId = decodeActionId($('#routeSaleProduct')?.value || '');
-	      const product = productsForBiz().find((item) => item.id === productId);
-	      const qty = Math.max(1, Math.trunc(Number($('#routeSaleQty')?.value || 1)));
-	      let total = Math.max(0, Number($('#routeSaleTotal').value || 0));
-	      const items = [];
-	      if (product) {
-	        const loadedQty = (sheet?.items || []).filter((item) => item.productId === product.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
-	        const soldQty = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id).flatMap((sale) => sale.items || []).filter((item) => item.productId === product.id).reduce((sum, item) => sum + Number(item.qty || 0), 0);
-	        const availableQty = Math.max(0, loadedQty - soldQty);
-	        if (qty > availableQty) return toast(`Carga insuficiente para vender. Disponible en ruta: ${availableQty}.`, 'err');
-	        const unitPrice = Number(product.price || 0);
-	        total = total > 0 ? total : qty * unitPrice;
-	        items.push({ id:uid('routesaleitem'), productId:product.id, code:product.code, name:product.name, qty, price:qty ? total / qty : unitPrice, total, createdAt:new Date().toISOString() });
-	      }
-	      if (!total) return toast(product ? 'El producto necesita precio o total manual.' : 'Ingresa el total de la venta de ruta.', 'err');
-	      const paymentType = $('#routePaymentType').value;
-	      const sale = { id:uid('routesale'), businessId:currentBusiness().id, routeId:route.id, customerName:$('#routeCustomer').value.trim() || 'Cliente de ruta', items, subtotal:total, discount:0, total, paymentType, paidAmount:paymentType === 'credit' ? 0 : total, balance:paymentType === 'credit' ? total : 0, status:paymentType === 'credit' ? 'credit' : 'paid', createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name };
-	      state.logistics.routeSales.push(sale);
-	      addAudit('logistics_route_sale_created', { routeId:route.id, saleId:sale.id, total, productId:product?.id || '' });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeCollectionForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const amount = Math.max(0, Number($('#routeCollectionAmount').value || 0));
-	      if (!amount) return toast('Ingresa el valor cobrado.', 'err');
-	      state.logistics.collections.push({ id:uid('collection'), businessId:currentBusiness().id, routeId:route.id, amount, method:$('#routeCollectionMethod').value, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
-	      addAudit('logistics_collection_created', { routeId:route.id, amount });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeReturnForm').onsubmit = (event) => {
-	      event.preventDefault();
-	      const productId = decodeActionId($('#routeReturnProduct').value);
-	      const product = productsForBiz().find((item) => item.id === productId);
-	      const qty = Math.max(1, Math.trunc(Number($('#routeReturnQty').value || 1)));
-	      if (!product) return toast('Producto no encontrado.', 'err');
-	      state.logistics.returns.push({ id:uid('return'), businessId:currentBusiness().id, routeId:route.id, productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), condition:$('#routeReturnCondition').value, createdAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name });
-	      addAudit('logistics_return_created', { routeId:route.id, productId:product.id, qty });
-	      if (!save()) return;
-	      closeModal(); openRouteWorkspace(route.id);
-	    };
-	    $('#routeCloseBtn').onclick = () => {
-	      const next = logisticsSummary(route);
-	      const settlement = { id:uid('settlement'), businessId:currentBusiness().id, routeId:route.id, status:'closed', totalSales:next.sold, totalCollections:next.collected, totalReturns:next.returned, totalExpenses:next.spent, expectedCash:next.expected, closedAt:new Date().toISOString(), createdAtMs:Date.now(), createdBy:authUser().name };
-	      state.logistics.routeSettlements.push(settlement);
-	      route.status = 'closed';
-	      route.closedAt = new Date().toISOString();
-	      addAudit('logistics_route_closed', { routeId:route.id, settlementId:settlement.id, expectedCash:settlement.expectedCash });
-	      if (!save()) return;
-	      closeModal(); renderApp('logistics'); toast('Ruta liquidada');
-	    };
-	    $('#routePrintBtn').onclick = () => {
-	      // Used to be a standalone window.open() + a print() call on that
-	      // popup window, entirely bypassing handoffPrint -- no anti-double
-	      // print guard, no button disabling, no shared error handling, and
-	      // silently blocked by popup blockers with only a generic toast.
-	      // Routed through the same handoffPrint() path as every other print
-	      // button so this route sheet gets the same protections for free.
-	      const html = `<section class="printReceipt"><h1>${escapeHtml(route.name)}</h1><p>${escapeHtml(route.zone || '')} · ${escapeHtml(route.date || '')}</p><h2>Hoja de carga</h2>${(sheet?.items || []).map((item) => `<p>${escapeHtml(item.name)} · ${item.qty} · ${fmt(item.total)}</p>`).join('') || '<p>Sin carga</p>'}<h2>Liquidación</h2><p>Venta: ${fmt(summary.sold)}</p><p>Cobrado: ${fmt(summary.collected)}</p><p>Retornos: ${fmt(summary.returned)}</p></section>`;
-	      handoffPrint({ html, media:'receipt-80' }, 'system');
-	    };
-	    refreshIcons();
-	  }
+  function applyLogisticsProductQty(nextProducts) {
+    (nextProducts || []).forEach((next) => {
+      const real = state.products.find((product) => product.id === next.id);
+      if (real && Number(real.qty ?? real.stock ?? 0) !== Number(next.qty)) {
+        real.stock = Number(next.qty);
+        real.qty = Number(next.qty);
+        real.updatedAtMs = Date.now();
+        real.updatedAt = new Date().toISOString();
+      }
+    });
+  }
+  function logisticsProductsSnapshot() {
+    return productsForBiz().map((product) => ({ ...product, qty: Number(product.qty ?? product.stock ?? 0) }));
+  }
+  function latestRouteSettlement(routeId) {
+    return logisticsForBiz('routeSettlements').filter((entry) => entry.routeId === routeId)
+      .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))[0] || null;
+  }
+  const SETTLEMENT_STATUS_LABELS = { pending_approval: 'Pendiente de aprobación', approved: 'Aprobada, falta cerrar', rejected: 'Observada / rechazada', closed: 'Cerrada', reopened: 'Reabierta' };
+  const LOAD_SHEET_STATUS_LABELS = { draft: 'Borrador (no despachada)', confirmed: 'Confirmada', dispatched: 'Despachada' };
+  function openRouteWorkspace(routeId) {
+    const route = logisticsForBiz('routes').find((item) => item.id === routeId);
+    if (!route) return toast('Ruta no encontrada.', 'err');
+    const summary = logisticsSummary(route);
+    const sheet = logisticsForBiz('loadSheets').find((item) => item.routeId === route.id && item.status !== 'cancelled');
+    const settlement = latestRouteSettlement(route.id);
+    const dispatched = ['dispatched', 'in_progress', 'settlement_pending'].includes(route.status);
+    const productOptions = productsForBiz().map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${Number(product.stock ?? product.qty ?? 0)} disp.</option>`).join('');
+    const L = window.CLICK360_P2_LOGISTICS;
+    showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p class="fieldHint">${escapeHtml(route.zone || 'Ruta')} · ${escapeHtml(route.date || today())} · <span class="badge gold">${escapeHtml(route.status)}</span></p></div><button class="closeBtn" data-close>×</button></div>
+      <section class="kpiGrid routeKpis"><article class="card kpi"><span>Venta ruta</span><strong>${fmt(summary.sold)}</strong></article><article class="card kpi"><span>Cobrado</span><strong>${fmt(summary.collected)}</strong></article><article class="card kpi"><span>Retornos</span><strong>${fmt(summary.returned)}</strong></article></section>
+      <section class="card sectionCard"><h3>Hoja de carga <span class="badge">${escapeHtml(LOAD_SHEET_STATUS_LABELS[sheet?.status] || 'Sin carga')}</span></h3>
+        <div class="logisticsList">${sheet?.items?.length ? sheet.items.map((item) => `<div class="logisticsRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><strong>${fmt(item.total)}</strong></div>`).join('') : '<p class="empty">Sin productos cargados.</p>'}</div>
+        ${(!sheet || sheet.status === 'draft') ? `
+          <form id="routeLoadForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="routeLoadProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeLoadQty" type="number" min="1" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Agregar carga</button></form>
+          ${sheet?.items?.length ? `<button type="button" class="btn primary block" id="routeDispatchBtn" style="margin-top:10px;">${icon('truck')} Despachar ruta (descuenta inventario)</button><p class="fieldHint">Al despachar, la cantidad cargada se descuenta del inventario del negocio -- ya no está disponible para venta en tienda mientras está en la ruta.</p>` : ''}
+        ` : `<p class="cloudStatus">Ruta despachada el ${escapeHtml(sheet.dispatchedAt ? new Date(sheet.dispatchedAt).toLocaleString('es-EC') : '')}. El inventario ya fue descontado y la carga queda bloqueada.</p>`}
+      </section>
+      <section class="card sectionCard"><h3>Venta, cobranza y retorno</h3>
+        ${!dispatched ? '<p class="cloudStatus">Despacha la ruta primero para poder registrar ventas, cobros o retornos.</p>' : `
+        <form id="routeSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="routeCustomer" maxlength="80" placeholder="Cliente de ruta"></div><div class="field"><label>Producto vendido</label><select id="routeSaleProduct" ${productOptions ? '' : 'disabled'}><option value="">Venta manual</option>${productOptions}</select></div><div class="field"><label>Cant.</label><input id="routeSaleQty" type="number" min="1" value="1"></div><div class="field"><label>Total venta</label><input id="routeSaleTotal" type="number" min="0" step="0.01" value="0" placeholder="Se calcula si eliges producto"></div><div class="field"><label>Tipo</label><select id="routePaymentType"><option value="cash">Contado</option><option value="credit">Crédito</option><option value="transfer">Transferencia</option></select></div><button class="btn primary" type="submit">Registrar venta</button></form>
+        <form id="routeCollectionForm" class="formGrid">${(() => { const creditSales = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0); return creditSales.length ? `<div class="field full"><label>Venta a crédito</label><select id="routeCollectionSale">${creditSales.map((sale) => `<option value="${actionId(sale.id)}">${escapeHtml(sale.customerName || 'Cliente de ruta')} · Saldo ${fmt(sale.balance)}</option>`).join('')}</select></div>` : '<p class="fieldHint full">No hay ventas a crédito pendientes de cobro en esta ruta.</p>'; })()}<div class="field"><label>Cobranza</label><input id="routeCollectionAmount" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Método</label><select id="routeCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><button class="btn silver" type="submit" ${logisticsForBiz('routeSales').some((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0) ? '' : 'disabled'}>Registrar cobro</button></form>
+        <form id="routeReturnForm" class="formGrid"><div class="field"><label>Producto devuelto</label><select id="routeReturnProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeReturnQty" type="number" min="1" value="1"></div><div class="field"><label>Estado</label><select id="routeReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Registrar retorno</button></form>
+        <p class="fieldHint">Los retornos vendibles regresan al inventario recién al cerrar la liquidación (evita contarlos dos veces mientras la ruta sigue abierta).</p>`}
+      </section>
+      <section class="card sectionCard"><h3>Liquidación</h3>${routeSettlementSectionHtml(route, sheet, settlement)}</section>
+      <div class="tableCheckoutActions"><button class="btn" id="routePrintBtn" type="button">${icon('printer')} Imprimir hoja</button></div>`);
+    $('#routeLoadForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const productId = decodeActionId($('#routeLoadProduct').value);
+      const product = productsForBiz().find((item) => item.id === productId);
+      const qty = Math.max(1, Math.trunc(Number($('#routeLoadQty').value || 1)));
+      if (!product) return toast('Selecciona un producto.', 'err');
+      let currentSheet = sheet || { id:uid('loadsheet'), businessId:currentBusiness().id, routeId:route.id, status:'draft', items:[], createdAt:new Date().toISOString(), createdAtMs:Date.now(), auditTrail:[] };
+      let nextSheet;
+      try {
+        nextSheet = L.addLoadItem({ sheet:currentSheet, product:{ ...product, qty:Number(product.stock ?? product.qty ?? 0) }, qty, actor:logisticsActor() });
+      } catch (error) {
+        return toast(error.message === 'insufficient_inventory' ? 'Inventario insuficiente para cargar ruta.' : (error.message || 'No se pudo agregar la carga.'), 'err');
+      }
+      if (!sheet) state.logistics.loadSheets.push(nextSheet);
+      else Object.assign(sheet, nextSheet);
+      addAudit('logistics_load_item_added', { routeId:route.id, productId:product.id, qty });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeDispatchBtn')?.addEventListener('click', async () => {
+      const btn = $('#routeDispatchBtn');
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        const previousState = cloneState(state);
+        const products = logisticsProductsSnapshot();
+        let confirmedSheet;
+        try {
+          confirmedSheet = L.confirmLoadSheet({ sheet, products, actor:logisticsActor() });
+        } catch (error) {
+          return toast(error.message?.startsWith('insufficient_inventory') ? 'El inventario cambió desde que se cargó; revisa las cantidades.' : (error.message || 'No se pudo confirmar la carga.'), 'err');
+        }
+        let dispatchResult;
+        try {
+          dispatchResult = L.dispatchLoadSheet({ sheet:confirmedSheet, route, products, actor:logisticsActor() });
+        } catch (error) {
+          return toast(error.message?.startsWith('insufficient_inventory') ? 'El inventario cambió desde que se cargó; revisa las cantidades.' : (error.message || 'No se pudo despachar la ruta.'), 'err');
+        }
+        Object.assign(sheet, dispatchResult.sheet);
+        Object.assign(route, dispatchResult.route);
+        applyLogisticsProductQty(dispatchResult.products);
+        addAudit('logistics_route_dispatched', { routeId:route.id, loadSheetId:sheet.id, noop:dispatchResult.noop === true });
+        const committed = await commitCriticalMutation(previousState, 'logistics_route_dispatched', (next) =>
+          next.logistics?.loadSheets?.some((item) => item.id === sheet.id && item.status === 'dispatched'));
+        if (!committed.ok) { renderApp('logistics'); return; }
+        closeModal(); openRouteWorkspace(route.id);
+        toast(committed.pending ? 'Ruta despachada; sincronización pendiente.' : 'Ruta despachada e inventario descontado.');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+    $('#routeSaleForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const productId = decodeActionId($('#routeSaleProduct')?.value || '');
+      const product = productsForBiz().find((item) => item.id === productId);
+      const qty = Math.max(1, Math.trunc(Number($('#routeSaleQty')?.value || 1)));
+      let total = Math.max(0, Number($('#routeSaleTotal').value || 0));
+      const items = [];
+      if (product) { total = total > 0 ? total : qty * Number(product.price || 0); items.push({ productId:product.id, code:product.code, name:product.name, qty, price:qty ? total / qty : Number(product.price || 0) }); }
+      if (!total) return toast(product ? 'El producto necesita precio o total manual.' : 'Ingresa el total de la venta de ruta.', 'err');
+      const paymentType = $('#routePaymentType').value;
+      let sale;
+      try {
+        sale = L.createRouteSale({
+          input:{ businessId:currentBusiness().id, customerName:$('#routeCustomer').value.trim() || 'Cliente de ruta', items, paymentType },
+          route, sheet, products:logisticsProductsSnapshot(), routeSales:logisticsForBiz('routeSales'), actor:logisticsActor()
+        });
+      } catch (error) {
+        const map = { route_inventory_exceeded:'No hay suficiente carga disponible en la ruta para esa cantidad.', route_sale_empty:'Ingresa un producto o un total.', route_not_dispatched:'Despacha la ruta antes de vender.' };
+        const code = String(error.message || '').split(':')[0];
+        return toast(map[code] || error.message || 'No se pudo registrar la venta.', 'err');
+      }
+      state.logistics.routeSales.push(sale);
+      addAudit('logistics_route_sale_created', { routeId:route.id, saleId:sale.id, total, productId:product?.id || '' });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeCollectionForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const amount = Math.max(0, Number($('#routeCollectionAmount').value || 0));
+      if (!amount) return toast('Ingresa el valor cobrado.', 'err');
+      const saleId = decodeActionId($('#routeCollectionSale')?.value || '');
+      const sale = logisticsForBiz('routeSales').find((item) => item.id === saleId);
+      if (!sale) return toast('Selecciona la venta a crédito que estás cobrando.', 'err');
+      let result;
+      try {
+        result = L.recordCollection({
+          input:{ businessId:currentBusiness().id, amount, method:$('#routeCollectionMethod').value, idempotencyKey:uid('collection') },
+          route, sale, collections:logisticsForBiz('collections'), actor:logisticsActor()
+        });
+      } catch (error) {
+        const map = { collection_amount_invalid:'El cobro no puede superar el saldo pendiente de esa venta.', collection_not_available:'Esta venta ya no tiene saldo pendiente.', route_sale_scope_denied:'La venta no pertenece a esta ruta.' };
+        const code = String(error.message || '').split(':')[0];
+        return toast(map[code] || error.message || 'No se pudo registrar el cobro.', 'err');
+      }
+      if (result.noop) { closeModal(); return openRouteWorkspace(route.id); }
+      state.logistics.collections.push(result.collection);
+      addAudit('logistics_collection_created', { routeId:route.id, saleId:sale.id, amount });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeReturnForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const productId = decodeActionId($('#routeReturnProduct').value);
+      const product = productsForBiz().find((item) => item.id === productId);
+      const qty = Math.max(1, Math.trunc(Number($('#routeReturnQty').value || 1)));
+      if (!product) return toast('Producto no encontrado.', 'err');
+      let entry;
+      try {
+        entry = L.recordReturn({
+          input:{ businessId:currentBusiness().id, productId:product.id, code:product.code, name:product.name, qty, price:Number(product.price || 0), condition:$('#routeReturnCondition').value },
+          route, sheet, routeSales:logisticsForBiz('routeSales'), returns:logisticsForBiz('returns'), actor:logisticsActor()
+        });
+      } catch (error) {
+        return toast(error.message === 'return_quantity_invalid' ? 'La cantidad supera lo cargado/no vendido/no devuelto todavía en esta ruta.' : (error.message || 'No se pudo registrar el retorno.'), 'err');
+      }
+      state.logistics.returns.push(entry);
+      addAudit('logistics_return_created', { routeId:route.id, productId:product.id, qty, condition:entry.condition });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+    });
+    $('#routeSettlementForm')?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const receivedCash = Math.max(0, Number($('#routeReceivedCash').value || 0));
+      let result;
+      try {
+        result = L.createSettlement({
+          input:{ businessId:currentBusiness().id, receivedCash }, route, sheet,
+          routeSales:logisticsForBiz('routeSales'), collections:logisticsForBiz('collections'), returns:logisticsForBiz('returns'),
+          expenses:logisticsForBiz('routeExpenses'), shortages:[], overages:[], actor:logisticsActor()
+        });
+      } catch (error) {
+        return toast(error.message || 'No se pudo crear la liquidación.', 'err');
+      }
+      state.logistics.routeSettlements.push(result.settlement);
+      Object.assign(route, result.route);
+      addAudit('logistics_settlement_created', { routeId:route.id, settlementId:result.settlement.id, expectedCash:result.settlement.calculation.expectedCash, difference:result.settlement.difference });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación enviada para aprobación');
+    });
+    $('#settlementApproveBtn')?.addEventListener('click', () => {
+      let next;
+      try { next = L.approveSettlement({ settlement, actor:logisticsActor() }); }
+      catch (error) { return toast(error.message || 'No se pudo aprobar.', 'err'); }
+      Object.assign(settlement, next);
+      addAudit('logistics_settlement_approved', { routeId:route.id, settlementId:settlement.id });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación aprobada');
+    });
+    $('#settlementRejectBtn')?.addEventListener('click', () => {
+      const reason = prompt('Motivo del rechazo / observación:');
+      if (!reason || !reason.trim()) return toast('Se requiere un motivo.', 'err');
+      let result;
+      try { result = L.rejectSettlement({ settlement, route, reason:reason.trim(), actor:logisticsActor() }); }
+      catch (error) { return toast(error.message || 'No se pudo rechazar.', 'err'); }
+      Object.assign(settlement, result.settlement);
+      Object.assign(route, result.route);
+      addAudit('logistics_settlement_rejected', { routeId:route.id, settlementId:settlement.id, reason:reason.trim() });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación observada; la ruta vuelve a estar en curso');
+    });
+    $('#settlementCloseBtn')?.addEventListener('click', async () => {
+      const btn = $('#settlementCloseBtn');
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        const previousState = cloneState(state);
+        let result;
+        try {
+          result = L.closeSettlement({ settlement, route, products:logisticsProductsSnapshot(), returns:logisticsForBiz('returns'), actor:logisticsActor() });
+        } catch (error) {
+          return toast(error.message || 'No se pudo cerrar la liquidación.', 'err');
+        }
+        Object.assign(settlement, result.settlement);
+        Object.assign(route, result.route);
+        applyLogisticsProductQty(result.products);
+        addAudit('logistics_settlement_closed', { routeId:route.id, settlementId:settlement.id });
+        const committed = await commitCriticalMutation(previousState, 'logistics_settlement_closed', (next) =>
+          next.logistics?.routeSettlements?.some((item) => item.id === settlement.id && item.status === 'closed'));
+        if (!committed.ok) { renderApp('logistics'); return; }
+        closeModal(); renderApp('logistics');
+        toast(committed.pending ? 'Ruta liquidada; sincronización pendiente.' : 'Ruta liquidada y cerrada');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+    $('#settlementReopenBtn')?.addEventListener('click', () => {
+      if (!isOwnerUser()) return toast('Solo el dueño puede reabrir una liquidación.', 'err');
+      const reason = prompt('Motivo de la reapertura:');
+      if (!reason || !reason.trim()) return toast('Se requiere un motivo.', 'err');
+      let result;
+      try { result = L.reopenSettlement({ settlement, route, reason:reason.trim(), actor:logisticsActor() }); }
+      catch (error) { return toast(error.message || 'No se pudo reabrir.', 'err'); }
+      Object.assign(settlement, result.settlement);
+      Object.assign(route, result.route);
+      addAudit('logistics_settlement_reopened', { routeId:route.id, settlementId:settlement.id, reason:reason.trim() });
+      if (!save()) return;
+      closeModal(); openRouteWorkspace(route.id);
+      toast('Liquidación reabierta');
+    });
+    $('#routePrintBtn').onclick = () => {
+      const html = window.CLICK360_P2_LOGISTICS?.printDocument({ kind:'load_sheet', businessName:currentBusiness().name, route, sheet })
+        || `<section class="printReceipt"><h1>${escapeHtml(route.name)}</h1></section>`;
+      handoffPrint({ html, media:'receipt-80' }, 'system');
+    };
+    refreshIcons();
+  }
+  function routeSettlementSectionHtml(route, sheet, settlement) {
+    const dispatched = ['dispatched', 'in_progress', 'settlement_pending'].includes(route.status);
+    if (!settlement || ['rejected', 'closed', 'reopened'].includes(settlement.status)) {
+      if (settlement?.status === 'rejected') {
+        return `<p class="cloudStatus" style="color:#ff8d92;">Liquidación anterior observada: "${escapeHtml(settlement.rejectReason || '')}".</p>${dispatched ? routeSettlementFormHtml() : '<p class="cloudStatus">Despacha la ruta antes de liquidar.</p>'}`;
+      }
+      if (settlement?.status === 'closed' && route.status === 'closed') {
+        return `<p class="cloudStatus">Ruta liquidada y cerrada el ${escapeHtml(settlement.closedAt ? new Date(settlement.closedAt).toLocaleString('es-EC') : '')}.</p>
+          <p class="fieldHint">Esperado: ${fmt(settlement.calculation.expectedCash)} · Recibido: ${fmt(settlement.receivedCash)} · Diferencia: ${fmt(settlement.difference)}</p>
+          <button type="button" class="btn silver block" id="settlementReopenBtn">${icon('rotate-ccw')} Reabrir liquidación (solo dueño)</button>`;
+      }
+      if (settlement?.status === 'reopened') {
+        return `<p class="cloudStatus">Liquidación reabierta: "${escapeHtml(settlement.reopenReason || '')}". Aprueba de nuevo para volver a cerrarla.</p>
+          <div class="tableCheckoutActions"><button type="button" class="btn primary" id="settlementApproveBtn">${icon('check')} Aprobar</button><button type="button" class="btn danger" id="settlementRejectBtn">${icon('x')} Rechazar / observar</button></div>`;
+      }
+      return dispatched ? routeSettlementFormHtml() : '<p class="cloudStatus">Despacha la ruta antes de poder liquidarla.</p>';
+    }
+    if (settlement.status === 'pending_approval') {
+      return `<p class="fieldHint">Esperado: ${fmt(settlement.calculation.expectedCash)} · Recibido: ${fmt(settlement.receivedCash)} · Diferencia: <b style="color:${Math.abs(settlement.difference) > 0.01 ? '#ff8d92' : '#37d57e'}">${fmt(settlement.difference)}</b></p>
+        <div class="tableCheckoutActions"><button type="button" class="btn primary" id="settlementApproveBtn">${icon('check')} Aprobar</button><button type="button" class="btn danger" id="settlementRejectBtn">${icon('x')} Rechazar / observar</button></div>`;
+    }
+    if (settlement.status === 'approved') {
+      return `<p class="cloudStatus">Liquidación aprobada. Esperado: ${fmt(settlement.calculation.expectedCash)} · Recibido: ${fmt(settlement.receivedCash)} · Diferencia: ${fmt(settlement.difference)}</p>
+        <button type="button" class="btn primary block" id="settlementCloseBtn">${icon('lock')} Cerrar liquidación</button>`;
+    }
+    return '<p class="empty">Estado de liquidación desconocido.</p>';
+  }
+  function routeSettlementFormHtml() {
+    return `<form id="routeSettlementForm" class="formGrid"><div class="field"><label>Efectivo contado al regreso</label><input id="routeReceivedCash" type="number" min="0" step="0.01" value="0" required></div><button class="btn primary block" type="submit">${icon('calculator')} Cerrar ruta y enviar a liquidar</button></form><p class="fieldHint">Esto envía la liquidación a aprobación; el inventario vendible que se devolvió se restaura recién al aprobar y cerrar.</p>`;
+  }
 	  function bindLogistics() {
 	    $('#newVehicleBtn')?.addEventListener('click', openVehicleModal);
 	    $('#newRouteBtn')?.addEventListener('click', openRouteModal);
@@ -4051,6 +4449,7 @@ function parseMoney(value) {
 	  }
 
 			function moreView(){
+			    const ceoAdminTool = window.click360IsPlatformAdmin?.() ? `<button class="card bigRow" data-more="ceoAdmin"><span>${icon('shield-check')} CEO Admin</span>${icon('chevron-right')}</button>` : '';
 			    const ownerTools = isOwnerUser() ? `
 			      <button class="card bigRow" data-more="debtors"><span>${icon('hand-coins')} Apartados</span>${icon('chevron-right')}</button>
 			      <button class="card bigRow" data-more="activity"><span>${icon('history')} Actividad</span>${icon('chevron-right')}</button>
@@ -4059,6 +4458,7 @@ function parseMoney(value) {
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
 		    ` : `<button class="card bigRow" data-more="settings"><span>${icon('user-round-cog')} Mi perfil</span>${icon('chevron-right')}</button>`;
 			    return `<div class="pageHead"><div><h1>Más</h1></div></div><section class="moreList">
+			      ${ceoAdminTool}
 			      ${ownerTools}
 			      <button class="card bigRow" data-more="printing"><span>${icon('printer')} Centro de impresión</span>${icon('chevron-right')}</button>
 			      <button class="card bigRow" data-more="access"><span>${icon('badge-dollar-sign')} Mi plan y acceso</span>${icon('chevron-right')}</button>
@@ -4990,6 +5390,7 @@ function parseMoney(value) {
     if(r==='finance') bindFinance();
     if(r==='help') bindHelp();
 	    if(r==='access') bindAccess();
+	    if(r==='ceoAdmin') bindCeoAdmin();
 	    if(r==='printing') bindPrinting();
 	  }
   function bindDebtors() {
@@ -7847,7 +8248,7 @@ function parseMoney(value) {
 	      <div class="smartPrintProgress"><span id="smartPrintStepText">Paso 1 de 9</span><progress id="smartPrintProgress" max="9" value="1">1 de 9</progress></div>
 	      <ol class="labelGuideSteps smartPrintSteps"><li class="active" data-smart-step-nav="1"><b>1</b><span>Salida</span></li><li data-smart-step-nav="2"><b>2</b><span>Papel</span></li><li data-smart-step-nav="3"><b>3</b><span>Medidas</span></li><li data-smart-step-nav="4"><b>4</b><span>Contenido</span></li><li data-smart-step-nav="5"><b>5</b><span>Cantidad</span></li><li data-smart-step-nav="6"><b>6</b><span>Inicio</span></li><li data-smart-step-nav="7"><b>7</b><span>Vista</span></li><li data-smart-step-nav="8"><b>8</b><span>Revisión</span></li><li data-smart-step-nav="9"><b>9</b><span>Imprimir</span></li></ol></div>
 	      <div class="labelCustomizerLayout">
-		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Lienzo visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><div class="labelCanvasActions" role="toolbar" aria-label="Acciones del lienzo"><button type="button" class="btn" id="labelCanvasUndo" title="Deshacer">${icon('undo-2')}</button><button type="button" class="btn" id="labelCanvasRedo" title="Rehacer">${icon('redo-2')}</button><button type="button" class="btn" id="labelCanvasDuplicate">${icon('copy')} Duplicar</button><button type="button" class="btn" id="labelCanvasRotate">${icon('rotate-cw')} Rotar</button><button type="button" class="btn" id="labelCanvasAlign">${icon('align-center')} Alinear</button></div><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
+		        <details class="labelPreviewDisclosure" data-smart-step="7" open><summary>Vista previa del sticker · Lienzo</summary><div class="labelPreviewSticky"><canvas id="labelPreviewCanvas" tabindex="0" role="application" aria-label="Lienzo visual de etiqueta. Usa las flechas para mover el elemento seleccionado y las teclas más o menos para cambiar su tamaño."></canvas><p id="labelSelectedElementIndicator" class="fieldHint" aria-live="polite">Elemento seleccionado: QR</p><div class="labelCanvasActions" role="toolbar" aria-label="Acciones del lienzo"><button type="button" class="btn" id="labelCanvasUndo" title="Deshacer">${icon('undo-2')}</button><button type="button" class="btn" id="labelCanvasRedo" title="Rehacer">${icon('redo-2')}</button><button type="button" class="btn" id="labelCanvasDuplicate">${icon('copy')} Duplicar</button><button type="button" class="btn" id="labelCanvasRotate">${icon('rotate-cw')} Rotar</button><button type="button" class="btn" id="labelCanvasAlign">${icon('align-center')} Alinear</button></div><button type="button" class="btn" id="labelPreviewLarge">${icon('maximize-2')} Ver grande</button></div></details>
 	        <div class="labelControls">
 	          <section class="smartPrintPanel" data-smart-step="1"><h3>¿Cómo vas a imprimir?</h3><div class="smartChoiceGrid" role="radiogroup" aria-label="Salida de impresión"><label><input type="radio" name="smartPrintOutput" value="system" checked><span>${icon('printer')}<b>Imprimir ahora</b><small>Abre el diálogo de tu dispositivo para elegir impresora y copias.</small></span></label><label><input type="radio" name="smartPrintOutput" value="pdf"><span>${icon('file-down')}<b>Guardar un PDF</b><small>Crea un archivo independiente, sin abrir la impresora.</small></span></label><label><input type="radio" name="smartPrintOutput" value="certified" ${printProfiles.some(profile => profile.status === 'certified') ? '' : 'disabled'}><span>${icon('badge-check')}<b>Perfil certificado por CLICK</b><small>${printProfiles.some(profile => profile.status === 'certified') ? 'Selecciona un perfil certificado.' : 'Todavía no hay perfiles certificados.'}</small></span></label><label><input type="radio" name="smartPrintOutput" value="custom"><span>${icon('settings-2')}<b>Configurar otro formato</b><small>Usa medidas personalizadas.</small></span></label></div><p class="wizardHelp">Imprimir y Guardar PDF son acciones independientes. CLICK no instala drivers ni selecciona la impresora por ti.</p></section>
 		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
@@ -7869,7 +8270,7 @@ function parseMoney(value) {
 	            <div class="field"><label>Mover textos <span id="yOffsetVal">0px</span></label><input type="range" id="labelYOffset" min="-50" max="50" value="0"></div><div class="formGrid"><div class="field"><label>Tamaño nombre <span id="nameScaleVal">1.0x</span></label><input type="range" id="labelNameScale" min="0.6" max="1.4" step="0.1" value="1.0"></div><div class="field"><label>Tamaño precio <span id="priceScaleVal">1.0x</span></label><input type="range" id="labelPriceScale" min="0.6" max="1.4" step="0.1" value="1.0"></div></div>
 	          </div></details>
 	          <section class="labelPrintContract" data-smart-step="5"><h3>¿Cuántas etiquetas necesitas?</h3><div class="field"><label>Cantidad exacta</label><input type="number" id="labelCopies" min="1" max="500" step="1" inputmode="numeric" value="1"></div><label class="consentCheck"><input type="checkbox" id="labelUseStock"><span>Imprimir una etiqueta por cada unidad en stock (${product.qty})</span></label><p id="labelQuantitySummary" class="fieldHint">Se imprimirá 1 etiqueta. El stock no cambia esta cantidad.</p></section>
-	          <details class="settingsDisclosure" data-smart-step="3" open><summary>Medidas del sticker y del soporte</summary><div class="labelAdvancedBody"><div class="formGrid"><div class="field full"><label>Perfil de papel</label><select id="labelPaperType">${labelPaperOptions(initialPaperType)}</select></div><div class="field"><label>Ancho de cada sticker (mm)</label><input type="number" min="10" max="250" step="0.1" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div><div class="field"><label>Alto de cada sticker (mm)</label><input type="number" min="10" max="400" step="0.1" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 40)}"></div><div class="field"><label>Ancho total del rollo/hoja (mm)</label><input id="labelMediaWidth" type="number" min="0" max="1000" step="0.1" value="${numericInputValue(initialTemplate?.mediaWidthMm || 0)}"></div><div class="field"><label>Alto total de hoja/tramo (mm)</label><input id="labelMediaHeight" type="number" min="0" max="2000" step="0.1" value="${numericInputValue(initialTemplate?.mediaHeightMm || 0)}"></div><div class="field"><label>Columnas</label><input id="labelColumns" type="number" min="1" max="6" step="1" value="${numericInputValue(initialTemplate?.columns || 1)}"></div><div class="field"><label>Filas por hoja/tramo</label><input id="labelRows" type="number" min="1" max="20" step="1" value="${numericInputValue(initialTemplate?.rows || 1)}"></div><div class="field"><label>Separación horizontal (mm)</label><input id="labelGapX" type="number" min="0" max="100" step="0.1" value="${numericInputValue(initialTemplate?.gapXmm ?? 0)}"></div><div class="field"><label>Separación vertical / gap (mm)</label><input id="labelGapY" type="number" min="0" max="100" step="0.1" value="${numericInputValue(initialTemplate?.gapYmm ?? 0)}"></div></div><label class="consentCheck"><input type="checkbox" id="labelMeasurementsConfirmed"><span>Confirmé estas medidas con el material físico</span></label><p id="smartMeasurementHint" class="wizardHelp">Sticker individual y soporte completo son medidas distintas.</p><div class="formGrid expertOnly"><div class="field"><label>Margen superior (mm)</label><input id="labelMarginTop" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginTopMm || 0)}"></div><div class="field"><label>Margen derecho (mm)</label><input id="labelMarginRight" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginRightMm || 0)}"></div><div class="field"><label>Margen inferior (mm)</label><input id="labelMarginBottom" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginBottomMm || 0)}"></div><div class="field"><label>Margen izquierdo (mm)</label><input id="labelMarginLeft" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginLeftMm || 0)}"></div><div class="field"><label>Forma física</label><select id="labelShape"><option value="rounded" ${!['square','circle'].includes(initialTemplate?.shape) ? 'selected' : ''}>Rectangular redondeada</option><option value="square" ${initialTemplate?.shape === 'square' ? 'selected' : ''}>Rectangular / cuadrada</option><option value="circle" ${initialTemplate?.shape === 'circle' ? 'selected' : ''}>Circular</option></select></div><div class="field"><label>Rotación del contenido</label><select id="labelContentRotation"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></div><div class="field"><label>DPI nominal (referencia del driver)</label><select id="labelDpi"><option value="203" ${Number(initialTemplate?.dpi || 203) === 203 ? 'selected' : ''}>203 DPI</option><option value="300" ${Number(initialTemplate?.dpi) === 300 ? 'selected' : ''}>300 DPI</option><option value="600" ${Number(initialTemplate?.dpi) === 600 ? 'selected' : ''}>600 DPI</option></select></div></div><label class="consentCheck expertOnly"><input type="checkbox" id="labelShowBarcode" ${initialTemplate?.showBarcode === false ? '' : 'checked'}><span>Mostrar código de barras cuando sea compatible</span></label></div></details>
+	          <details class="settingsDisclosure" data-smart-step="3" open><summary>Medidas del sticker y del soporte</summary><div class="labelAdvancedBody"><div class="formGrid"><div class="field full"><label>Perfil de papel</label><select id="labelPaperType">${labelPaperOptions(initialPaperType)}</select></div><div class="field"><label>Ancho de cada sticker (mm)</label><input type="number" min="10" max="250" step="0.1" id="labelWidthMm" value="${numericInputValue(initialTemplate?.widthMm || 60)}"></div><div class="field"><label>Alto de cada sticker (mm)</label><input type="number" min="10" max="400" step="0.1" id="labelHeightMm" value="${numericInputValue(initialTemplate?.heightMm || 40)}"></div><div class="field expertOnly"><label>Ancho total del rollo/hoja (mm)</label><input id="labelMediaWidth" type="number" min="0" max="1000" step="0.1" value="${numericInputValue(initialTemplate?.mediaWidthMm || 0)}"></div><div class="field expertOnly"><label>Alto total de hoja/tramo (mm)</label><input id="labelMediaHeight" type="number" min="0" max="2000" step="0.1" value="${numericInputValue(initialTemplate?.mediaHeightMm || 0)}"></div><p class="fieldHint simpleOnly full">El tamaño total del rollo u hoja se calcula automaticamente a partir del sticker, columnas, filas y separacion -- no necesitas escribirlo.</p><div class="field"><label>Columnas</label><input id="labelColumns" type="number" min="1" max="6" step="1" value="${numericInputValue(initialTemplate?.columns || 1)}"></div><div class="field"><label>Filas por hoja/tramo</label><input id="labelRows" type="number" min="1" max="20" step="1" value="${numericInputValue(initialTemplate?.rows || 1)}"></div><div class="field"><label>Separación horizontal (mm)</label><input id="labelGapX" type="number" min="0" max="100" step="0.1" value="${numericInputValue(initialTemplate?.gapXmm ?? 0)}"></div><div class="field"><label>Separación vertical / gap (mm)</label><input id="labelGapY" type="number" min="0" max="100" step="0.1" value="${numericInputValue(initialTemplate?.gapYmm ?? 0)}"></div></div><label class="consentCheck"><input type="checkbox" id="labelMeasurementsConfirmed"><span>Confirmé estas medidas con el material físico</span></label><p id="smartMeasurementHint" class="wizardHelp">Sticker individual y soporte completo son medidas distintas.</p><div class="formGrid"><div class="field"><label>Orientación del contenido</label><select id="labelContentRotation"><option value="0">Normal</option><option value="90">Girado 90°</option><option value="180">Girado 180°</option><option value="270">Girado 270°</option></select></div><div class="field"><label>DPI de la impresora</label><select id="labelDpi"><option value="203" ${Number(initialTemplate?.dpi || 203) === 203 ? 'selected' : ''}>203 DPI (común en térmicas)</option><option value="300" ${Number(initialTemplate?.dpi) === 300 ? 'selected' : ''}>300 DPI</option><option value="600" ${Number(initialTemplate?.dpi) === 600 ? 'selected' : ''}>600 DPI</option></select></div></div><div class="formGrid expertOnly"><div class="field"><label>Margen superior (mm)</label><input id="labelMarginTop" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginTopMm || 0)}"></div><div class="field"><label>Margen derecho (mm)</label><input id="labelMarginRight" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginRightMm || 0)}"></div><div class="field"><label>Margen inferior (mm)</label><input id="labelMarginBottom" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginBottomMm || 0)}"></div><div class="field"><label>Margen izquierdo (mm)</label><input id="labelMarginLeft" type="number" min="0" max="200" step="0.1" value="${numericInputValue(initialTemplate?.marginLeftMm || 0)}"></div><div class="field"><label>Forma física</label><select id="labelShape"><option value="rounded" ${!['square','circle'].includes(initialTemplate?.shape) ? 'selected' : ''}>Rectangular redondeada</option><option value="square" ${initialTemplate?.shape === 'square' ? 'selected' : ''}>Rectangular / cuadrada</option><option value="circle" ${initialTemplate?.shape === 'circle' ? 'selected' : ''}>Circular</option></select></div></div><label class="consentCheck expertOnly"><input type="checkbox" id="labelShowBarcode" ${initialTemplate?.showBarcode === false ? '' : 'checked'}><span>Mostrar código de barras cuando sea compatible</span></label></div></details>
 	          <section class="smartPrintPanel" data-smart-step="6"><h3>¿Desde dónde quieres empezar?</h3><div class="formGrid"><div class="field"><label>Primera casilla</label><input id="labelStartSlot" type="number" min="1" max="120" step="1" value="1"></div><div class="field"><label>Acceso rápido</label><select id="labelStartPreset"><option value="first">Primera disponible</option><option value="left">Columna izquierda</option><option value="right">Columna derecha</option><option value="custom">Casilla específica</option></select></div></div><p class="wizardHelp">Toca casillas para marcarlas como ya usadas. Se mostrarán en gris y CLICK no imprimirá sobre ellas.</p><div id="labelStartGrid" class="labelStartGrid" aria-label="Selector de casilla inicial"></div></section>
 	          <section class="labelSheetPreviewPanel" data-smart-step="7"><div><h3>Así quedará tu papel completo</h3><p id="labelValidationSummary" class="fieldHint"></p><p id="labelPhysicalSummary" class="fieldHint"></p></div><div id="labelSheetPreview" class="labelSheetPreview" aria-label="Distribución física de etiquetas"></div></section>
 	          <section class="smartPrintPanel smartPreflight" data-smart-step="8"><h3>Revisión antes de imprimir</h3><div id="labelPreflightList" class="smartPreflightList" role="status" aria-live="polite"></div><div class="labelPrimaryActions"><button type="button" class="btn" id="labelAutoCorrect">${icon('wand-sparkles')} Corregir automáticamente</button><button type="button" class="btn" id="labelUseCompact">${icon('layout-template')} Usar diseño compacto</button><button type="button" class="btn" id="copyPrintDiagnostic">${icon('clipboard-copy')} Copiar diagnóstico</button></div></section>
@@ -8299,6 +8700,8 @@ function parseMoney(value) {
       const key = elementSelect.value;
       const element = editorLayout[key];
       if (!element) return;
+      const indicator = $('#labelSelectedElementIndicator');
+      if (indicator) indicator.textContent = `Elemento seleccionado: ${elementSelect.options[elementSelect.selectedIndex]?.textContent || key}`;
       $('#labelElementVisible').checked = element.visible !== false;
       $('#labelElementLocked').checked = element.locked === true;
       $('#labelElementX').value = Math.round(Number(element.x || 0));

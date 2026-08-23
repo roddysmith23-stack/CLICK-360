@@ -6,6 +6,21 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // CEO Admin Web (r36): the ONE real server-side security boundary for the
+    // admin panel. Deliberately a single hardcoded, human-verified email --
+    // matches AUTHORIZED_ADMIN_EMAILS in scripts/lib/click360-v16-admin-core.mjs
+    // exactly (the same identity that already has unrestricted production
+    // database access via Application Default Credentials for the CLI admin
+    // scripts). This does not widen the trust boundary; it adds one more
+    // access path (the browser) for the same already-fully-trusted operator.
+    // Hiding a menu item is NOT security -- every admin-only read/write below
+    // is independently gated by this function, checked on every request.
+    function isPlatformAdmin() {
+      return signedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'roddysmithceo@gmail.com';
+    }
+
     function userDoc() {
       return get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid));
     }
@@ -560,7 +575,27 @@ service cloud.firestore {
     }
 
     match /accountAccess/{uid} {
-      allow read: if signedIn() && request.auth.uid == uid;
+      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
+      // CEO Admin Web: activation/plan-change/suspend writes for ANY tenant.
+      // The exact field shape (status/planCode/limits/onboardingProfile/etc.)
+      // is built by the single canonical activationFields() in
+      // v16-domain.js -- the same function the CLI uses -- so this rule only
+      // needs to enforce identity/plan-validity/monotonic-revision, not
+      // re-derive the whole shape. app.js additionally writes a backup to
+      // adminBackups and an entry to adminAuditLogs around every such write.
+      allow create: if isPlatformAdmin()
+        && uid != "demo-click360"
+        && request.resource.data.uid == uid
+        && request.resource.data.businessId == uid
+        && request.resource.data.plan in ["base", "pro", "business", "enterprise", "founder_legacy"]
+        && request.resource.data.revision == 1;
+      allow update: if isPlatformAdmin()
+        && uid != "demo-click360"
+        && request.resource.data.uid == uid
+        && request.resource.data.businessId == uid
+        && request.resource.data.plan in ["base", "pro", "business", "enterprise", "founder_legacy"]
+        && request.resource.data.revision is int
+        && request.resource.data.revision > resource.data.revision;
       allow create: if signedIn()
         && request.auth.uid == uid
         && request.resource.data.keys().hasAll([
@@ -738,8 +773,16 @@ service cloud.firestore {
     // The owner may read their own tenant's flag (e.g. to show rollout status);
     // no client may ever write it.
     match /businesses/{ownerUid}/featureFlags/{docId} {
-      allow read: if request.auth.uid == ownerUid;
-      allow create, update, delete: if false;
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      // CEO Admin Web: toggle the Workers flag for a tenant. Production
+      // migrations already default this to false on creation (see
+      // worker-boundary-migrate.mjs); this only lets the admin flip it once
+      // a businessUnit is CUTOVER_VERIFIED, same effect as
+      // worker-boundary-admin.mjs --action enable-workers, just from the browser.
+      allow update: if isPlatformAdmin()
+        && ownerUid != "demo-click360"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["enabled", "enabledAt", "enabledBy", "updatedBy", "updatedAt", "notes"]);
+      allow create, delete: if false;
     }
 
     // Owner-initiated, immutable request log for additional worker seats
@@ -748,7 +791,7 @@ service cloud.firestore {
     // fulfillment happens out-of-band via scripts/worker-boundary-admin.mjs
     // (which bypasses rules), not by writing back to this doc from a client.
     match /businesses/{ownerUid}/seatRequests/{requestId} {
-      allow read: if request.auth.uid == ownerUid;
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
       allow create: if request.auth.uid == ownerUid
         && request.resource.data.ownerUid == ownerUid
         && request.resource.data.requestedBy == request.auth.uid
@@ -763,7 +806,7 @@ service cloud.firestore {
     // capacity, mirroring seatRequests exactly -- an immutable, auditable
     // record for AIIA, never mutated by the client, no billing automation.
     match /businesses/{ownerUid}/capacityRequests/{requestId} {
-      allow read: if request.auth.uid == ownerUid;
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
       allow create: if request.auth.uid == ownerUid
         && request.resource.data.ownerUid == ownerUid
         && request.resource.data.requestedBy == request.auth.uid
@@ -777,7 +820,7 @@ service cloud.firestore {
     // Admin-SDK-only, like adminBackups -- written before any mutation and
     // updated once at the end, never by a client.
     match /businesses/{ownerUid}/activationLog/{activationId} {
-      allow read: if request.auth.uid == ownerUid;
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
       allow create, update, delete: if false;
     }
 
@@ -785,7 +828,8 @@ service cloud.firestore {
     // manifest. Public clients cannot create or promote a business unit.
     match /businesses/{ownerUid}/businessUnits/{businessId} {
       allow read: if businessUnitOwner(ownerUid, businessId)
-        || activeBusinessUnitMember(ownerUid, businessId);
+        || activeBusinessUnitMember(ownerUid, businessId)
+        || isPlatformAdmin();
       allow create, update, delete: if false;
     }
 
@@ -1121,20 +1165,34 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Administrative operations run only through IAM-protected Admin SDK
-    // tooling. Public clients can never inspect backups or audit records.
+    // Administrative operations mostly run through IAM-protected Admin SDK
+    // tooling (which bypasses rules entirely) -- these two collections stay
+    // hard-blocked for every ordinary client. The ONE exception is the CEO
+    // Admin Web panel (r36): the platform admin can create (never modify or
+    // delete) a backup/audit entry, and read the audit trail back, exactly
+    // mirroring the backup-before-write / audit-after-write pattern every
+    // CLI admin script already follows.
     match /adminBackups/{backupId} {
-      allow read, write: if false;
+      allow read: if isPlatformAdmin();
+      allow create: if isPlatformAdmin()
+        && request.resource.data.actorEmail is string
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
     }
 
     match /adminAuditLogs/{eventId} {
-      allow read, write: if false;
+      allow read: if isPlatformAdmin();
+      allow create: if isPlatformAdmin()
+        && request.resource.data.actorEmail is string
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
     }
 
     // The public client may only read/write the tenant state document. Legacy
     // backups are created by the administrative migrator with Admin SDK.
     match /businesses/{businessId}/state/{stateId} {
       allow read: if stateId == "main" && tenantReadable(businessId);
+      allow read: if stateId == "main" && isPlatformAdmin();
       allow create: if stateId == "main" && request.auth.uid == businessId && ownerUser() && writeMatchesTenant(businessId);
       allow update: if stateId == "main"
         && ownerUser()

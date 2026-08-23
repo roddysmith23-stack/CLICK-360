@@ -71,12 +71,21 @@ assert.equal(domain.planLimits('enterprise').workers, 9999, 'enterprise workerSe
 
 // Commercial MVP: canonical plan catalog / entitlements / quota evaluation
 assert.equal(domain.PLAN_CATALOG.base.name, 'Basic', 'internal code stays "base"; only the display name changes to Basic');
-assert.equal(domain.PLAN_CATALOG.base.prices.month, 40, 'Basic keeps the pre-existing Base price -- no silent change for already-billed customers');
+// r36 commercial reset (2026-08-23): explicit owner-approved pricing for
+// NEW customers. quarter/semester/lifetime deliberately removed from the
+// catalog -- see the comment above PLAN_CATALOG in v16-domain.js.
+assert.equal(domain.PLAN_CATALOG.base.prices.month, 39.99, 'Basic r36 monthly price');
+assert.equal(domain.PLAN_CATALOG.base.prices.year, 399, 'Basic r36 annual price');
+assert.equal(domain.PLAN_CATALOG.base.prices.quarter, undefined, 'quarter pricing must not exist in the current commercial offer');
+assert.equal(domain.PLAN_CATALOG.base.prices.semester, undefined, 'semester pricing must not exist in the current commercial offer');
+assert.equal(domain.PLAN_CATALOG.base.prices.lifetime, undefined, 'lifetime pricing must not exist in the current commercial offer (no new lifetime sales)');
 assert.equal(domain.PLAN_CATALOG.pro.prices.month, 59.99);
+assert.equal(domain.PLAN_CATALOG.pro.prices.year, 599);
 assert.equal(domain.PLAN_CATALOG.business.prices.month, 99.99);
 assert.equal(domain.PLAN_CATALOG.business.prices.year, 999);
 assert.equal(domain.PLAN_CATALOG.enterprise.prices.custom, true, 'Enterprise has no fixed price -- cotizacion');
 assert.equal(domain.PLAN_CATALOG.founder_legacy.prices.historical, true, 'Founder legacy has no billing price');
+assert.equal(domain.PLAN_CATALOG.founder_legacy.notSoldToNewCustomers, true, 'Founder must never be offered as a self-serve purchase to new customers');
 assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.productsActive, 2000, 'Founder quota derived from real data-scale measurement, well above SHARY\'s current usage');
 assert.equal(domain.planEntitlements('unknown_code').code, 'base', 'unknown plan codes fall back to base, never throw');
 assert.equal(domain.planEntitlements('BUSINESS').code, 'business', 'plan code lookup is case-insensitive');

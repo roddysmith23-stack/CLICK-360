@@ -59,10 +59,19 @@ assert(/quota\?\.productsActive\?\.blocked.*return toast\(quotaBlockMessage/.tes
 assert(app.includes('function tenantAccountPlan()') && app.includes('function tenantUsageSnapshot()') && app.includes('function tenantQuotaStatus()'), 'the three quota primitives must exist');
 assert(app.includes('function resolvedPlanFeatures('), 'Mi plan must resolve "Todo X"-style catalog shorthand into a real included/not-included feature list, not show marketing shorthand to the customer');
 assert(app.includes("data-request-plan=\"${code}\" data-request-period=\"custom\""), 'the Enterprise plan card must request a quote (period=custom) instead of fabricating a self-serve price');
+// r36 Section 4: Founder accounts see their permanent-license card, not the purchasable plan grid or the WhatsApp purchase CTA.
+assert(/isFounder \? `<section class="card sectionCard"[^`]*Tu licencia Founder/.test(app), 'a Founder account must be shown a dedicated permanent-license card');
+assert(/\$\{!isFounder \? `<a href="\$\{escapeHtml\(purchaseWhatsAppUrl\(\)\)\}"/.test(app), 'the WhatsApp purchase CTA must be hidden for Founder accounts (no upsell)');
 
 // ── Structural: capacity-request path matches field-for-field, client -> rules ──
 const service = fs.readFileSync('firebase-service.js', 'utf8');
 assert(service.includes('window.click360RequestCapacity = async function(kind, note = \'\')'), 'click360RequestCapacity must exist with the (kind, note) signature');
+// r36: the pre-login public plan teaser was found hardcoding its own separate
+// prices ($40 for Base) that had drifted from PLAN_CATALOG's real $39.99 --
+// exactly the duplicated-price-source bug Section 1 exists to prevent. It
+// must read the canonical catalog live, never a second hardcoded number.
+assert(!/\$40 \/ mes/.test(service), 'the public plan teaser must not hardcode a stale Base price');
+['base', 'pro', 'business'].forEach((code) => assert(service.includes(`window.CLICK360_V16_DOMAIN?.PLAN_CATALOG?.${code}?.prices?.month`), `the public plan teaser must read the ${code} price live from PLAN_CATALOG, not a hardcoded literal`));
 assert(/\['products', 'storage'\]\.includes\(safeKind\)/.test(service), 'click360RequestCapacity must validate kind against the exact same whitelist as firestore.rules');
 const rules = fs.readFileSync('firestore.rules', 'utf8');
 assert(/match \/businesses\/\{ownerUid\}\/capacityRequests\/\{requestId\}/.test(rules), 'firestore.rules must define the capacityRequests contract');
@@ -70,8 +79,14 @@ assert(/request\.resource\.data\.kind == "products" \|\| request\.resource\.data
 assert(/data\.status == "founder_legacy" && data\.plan == "founder_legacy"/.test(rules), 'firestore.rules write gate must recognize founder_legacy accounts');
 
 // ── Structural: admin activation tooling supports every sellable tier + founder_legacy ──
+// r36: activationFields() now lives in v16-domain.js (single canonical
+// implementation shared by CLI and CEO Admin Web); click360-v16-admin-core.mjs
+// is a thin re-export wrapper, so the plan-code/period checks live in the
+// domain source itself, not in admin-core.mjs.
+const domainSource = fs.readFileSync('v16-domain.js', 'utf8');
+tiers.forEach((code) => assert(domainSource.includes(`'${code}'`), `activationFields() must recognize the ${code} plan code`));
+assert(/founder_legacy has no billing period/.test(domainSource), 'founder_legacy activation must reject a billing period instead of silently accepting one');
 const adminCore = fs.readFileSync('scripts/lib/click360-v16-admin-core.mjs', 'utf8');
-tiers.forEach((code) => assert(adminCore.includes(`'${code}'`), `admin activation tooling must recognize the ${code} plan code`));
-assert(/founder_legacy has no billing period/.test(adminCore), 'founder_legacy activation must reject a billing period instead of silently accepting one');
+assert(/domain\.activationFields\(/.test(adminCore), 'click360-v16-admin-core.mjs must delegate to the canonical v16-domain.js activationFields(), not maintain its own copy');
 
 console.log('PASS Commercial MVP: 5-tier plan catalog, quota-blocks-creation-only contract, founder_legacy entitlement, capacityRequests wiring, admin activation coverage (structural + domain regression)');

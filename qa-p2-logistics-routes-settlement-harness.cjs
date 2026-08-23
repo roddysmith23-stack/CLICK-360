@@ -97,6 +97,19 @@ const now = 1_700_000_000_000;
   assert.equal(settlement.calculation.expectedCash, 21, 'cash sales plus collections less expenses yields expected cash');
   assert.equal(settlement.difference, 0);
   assert.throws(() => L.approveSettlement({ settlement, actor:routeSeller }), /permission_denied:settlements.approve/);
+  // r36: reject/observe -- a pending settlement can be sent back with a
+  // required reason instead of only ever being approved; the route returns
+  // to in_progress and a fresh createSettlement() supersedes it, but the
+  // rejected record itself is never deleted (append-only audit trail).
+  assert.throws(() => L.rejectSettlement({ settlement, route, actor:owner }), /reject_reason_required/);
+  assert.throws(() => L.rejectSettlement({ settlement, route, reason:'Falta contar efectivo', actor:routeSeller }), /permission_denied:settlements.approve/);
+  const rejection = L.rejectSettlement({ settlement, route, reason:'Falta contar efectivo', actor:owner, now:now + 14.5 });
+  assert.equal(rejection.settlement.status, 'rejected');
+  assert.equal(rejection.settlement.rejectReason, 'Falta contar efectivo');
+  assert.equal(rejection.route.status, 'in_progress');
+  assert.throws(() => L.approveSettlement({ settlement:rejection.settlement, actor:owner }), /settlement_not_approvable/, 'a rejected settlement cannot be approved directly -- it must be superseded');
+  const resubmitted = L.createSettlement({ input:{ id:'settlement-a-v2', businessId:'biz-alpha', receivedCash:21 }, route:rejection.route, sheet, routeSales, collections, returns, expenses, shortages, overages, actor:owner, now:now + 14.6 });
+  settlement = resubmitted.settlement; route = resubmitted.route;
   settlement = L.approveSettlement({ settlement, actor:owner, now:now + 15 });
   const closing = L.closeSettlement({ settlement, route, products, returns, actor:owner, now:now + 16 });
   settlement = closing.settlement; route = closing.route; products = closing.products;
