@@ -15,6 +15,17 @@ Si intentas activar un plan para alguien que todavía no inició sesión ni una 
 
 ## Paso a paso: activar un cliente nuevo
 
+Hay dos formas de hacerlo — misma lógica, mismas verificaciones (respaldo, hash, auditoría), dos interfaces:
+
+### Opción A — CEO Admin Web (r36, recomendado para el día a día)
+
+1. Entra a CLICK 360 con `roddysmithceo@gmail.com` y abre "CEO Admin" en el menú (solo visible para esa cuenta).
+2. Busca al cliente por su correo de Google. Si todavía no inició sesión ni una vez, el panel te lo dice claramente — pide al cliente que entre una vez y vuelve a buscar.
+3. En "Cambiar plan", elige plan y período, y presiona "Ver preview" — te muestra exactamente lo que el cliente va a recibir (plan, estado, período, límites de negocios y Workers) sin cambiar nada todavía.
+4. Revisa el preview y presiona "Confirmar y aplicar". El panel hace respaldo antes de escribir, verifica que nada cambió desde el preview, y deja registro de auditoría — igual que la CLI.
+
+### Opción B — Terminal (para lo que el panel web todavía no cubre: migración de Workers, activación Founder histórica)
+
 Requiere acceso a una terminal con las credenciales administrativas de CLICK 360 (hoy: solo `roddysmithceo@gmail.com`).
 
 ```
@@ -62,7 +73,7 @@ El cliente ve, dentro de "Mi plan y acceso", los botones "Solicitar más capacid
 
 ## Activar Founder (licencia histórica)
 
-Solo para clientes explícitamente aprobados por Mr. Smith como fundadores históricos (ver matriz comercial sección 4 para el estado actual). Mismo comando de onboarding, con `--plan founder_legacy --period historical`. No se puede combinar con ningún otro período de facturación.
+Solo para clientes explícitamente aprobados por Mr. Smith como fundadores históricos (ver matriz comercial sección 4 para la lista vigente — SHARY y Lía Perfumería confirmadas en r36). Mismo comando de onboarding, con `--plan founder_legacy --period historical`. No se puede combinar con ningún otro período de facturación. El CEO Admin Web permite ver/gestionar una cuenta Founder ya activada (uso, Workers, suspensión), pero la activación inicial de `founder_legacy --period historical` sigue siendo exclusiva de la CLI por ahora.
 
 ## Workers (trabajadores) para un cliente nuevo
 
