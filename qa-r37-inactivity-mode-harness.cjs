@@ -39,7 +39,8 @@ assert(/now - inactivityLastActivityAtMs < 1000\) return/.test(app), 'activity h
 assert(/\['click', 'keydown', 'touchstart', 'mousemove', 'scroll'\]/.test(app), 'the activity watch must listen for a broad set of real interaction signals, not just clicks (a cashier reading the screen while scrolling is still "active")');
 
 // ── Wired into renderApp() so it starts as soon as a session exists, and into Settings so an owner can actually turn it on ──
-assert(/startInactivityWatch\(\);\s*\n\s*markAppReady/.test(app), 'renderApp() must start the inactivity watch on every render (idempotent -- only truly arms once, and only for shared_terminal devices)');
+const renderAppTailBlock = app.slice(app.indexOf("if (r !== 'legalGate') setTimeout(maybeShowLegalGraceBanner, 0);"), app.indexOf('markAppReady(`route:${r}`)') + 30);
+assert(renderAppTailBlock.includes('startInactivityWatch();'), 'renderApp() must start the inactivity watch on every render (idempotent -- only truly arms once, and only for shared_terminal devices)');
 assert(app.includes("$('#deviceModeSelect')"), 'Settings must expose a "Este dispositivo" device-mode selector');
 assert(app.includes("$('#deviceInactivityMinutesSelect')"), 'Settings must expose the 3/5/10/15 minute selector');
 assert(/deviceInactivityMinutesField[\s\S]{0,200}style\.display = currentMode === 'shared_terminal' \? '' : 'none'/.test(app), 'the minutes selector must only be visible when shared_terminal mode is actually selected -- never dangling/confusing on a personal device');

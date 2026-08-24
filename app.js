@@ -1063,6 +1063,39 @@ function parseMoney(value) {
     __setMsPerMinuteForTesting: (ms) => { inactivityMsPerMinuteForTesting = Number(ms) > 0 ? Number(ms) : 60000; }
   });
 
+  // r37 (#93): a lightweight, best-effort health beacon so CEO Admin can see
+  // real customer device health (version, sync status, hydration, pending
+  // operations, last runtime error) WITHOUT ever hand-editing Firestore.
+  // Diagnostic-only -- never gates this device's own app, and a failed
+  // publish is silently ignored (see click360PublishCustomerHealth). The
+  // field shape here must stay in lockstep with firestore.rules'
+  // customerHealth allowlist.
+  let lastHealthPublishAtMs = 0;
+  const HEALTH_PUBLISH_MIN_INTERVAL_MS = 60000;
+  function publishCustomerHealthSnapshot(force = false) {
+    if (typeof window.click360PublishCustomerHealth !== 'function' || !activeTenantContext) return;
+    const now = Date.now();
+    if (!force && now - lastHealthPublishAtMs < HEALTH_PUBLISH_MIN_INTERVAL_MS) return;
+    lastHealthPublishAtMs = now;
+    const syncState = window.click360GetSyncState?.({ reason: 'health_beacon' }) || {};
+    const lastError = window.CLICK360_RUNTIME_GUARD?.listReports?.()?.[0] || null;
+    window.click360PublishCustomerHealth({
+      appVersion: String(APP_RELEASE_VERSION || ''),
+      buildSha: String(APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? APP_BUILD_SHA : ''),
+      assetVersion: String(APP_ASSET_VERSION || ''),
+      isOnline: navigator.onLine !== false,
+      tenantDataHydrated: tenantDataHydrated === true,
+      pendingOperations: Number(criticalActionGate?.size?.() || 0),
+      syncStatus: String(syncState.status || ''),
+      syncReason: String(syncState.reason || ''),
+      localHash: String(syncState.localHash || ''),
+      remoteHash: String(syncState.remoteHash || ''),
+      lastRuntimeError: lastError ? `${String(lastError.message || '').slice(0, 200)} (${lastError.createdAt || ''})` : '',
+      route: String(route || '')
+    });
+  }
+  window.CLICK360_QA_PUBLISH_HEALTH = publishCustomerHealthSnapshot;
+
   function stateStorageKey() {
     return activeTenantContext?.authUid && activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.authUid}:${activeTenantContext.tenantKey}` : '';
   }
@@ -2382,6 +2415,7 @@ function parseMoney(value) {
       if (r === 'home') setTimeout(showOnboardingForNewAccount, 0);
       if (r !== 'legalGate') setTimeout(maybeShowLegalGraceBanner, 0);
       startInactivityWatch();
+      publishCustomerHealthSnapshot();
       markAppReady(`route:${r}`);
 	    } catch(e) {
 	      console.error("Error al renderizar la app:", e);
@@ -3427,6 +3461,58 @@ function parseMoney(value) {
     if (!quota) return '';
     return quotaMeterHtml(label, quota, label.toLowerCase().includes('almacen') ? formatBytesApprox : (n) => String(n));
   }
+  // r37 (#93): green/yellow/red with REAL meaning, not decoration --
+  // documented rules so a future reader (or the CEO) can trust the color:
+  //   RED    = a recent runtime error, a real sync conflict, or the device
+  //            has sent no health signal in over 24h (likely unused/stuck).
+  //   YELLOW = offline right now, not yet hydrated, has operations still
+  //            in flight, or its last signal is merely stale (30min-24h --
+  //            normal for a business that's simply closed for the day).
+  //   GREEN  = a fresh, online, hydrated signal with nothing pending and no
+  //            errors.
+  // localHash/remoteHash are shown as auxiliary diagnostic fields only --
+  // the actual clean/dirty decision is syncStatus itself (see
+  // qa-r37-reliability-hash-labels-harness.cjs), so a legitimate
+  // localHash!=remoteHash on an otherwise-clean, green record is NOT a
+  // contradiction and must never be presented as one.
+  function ceoAdminHealthLevel(result) {
+    const health = result.health;
+    if (!health) return { level: 'yellow', label: 'Sin señal aún', detail: 'Este cliente todavía no ha enviado ningún reporte de salud (normal si nunca abrió esta versión de la app).' };
+    const updatedAtMs = health.updatedAt ? new Date(health.updatedAt).getTime() : 0;
+    const ageMs = updatedAtMs ? Date.now() - updatedAtMs : Infinity;
+    if (health.lastRuntimeError) return { level: 'red', label: 'Error reciente', detail: health.lastRuntimeError };
+    if (health.syncStatus === 'real_conflict') return { level: 'red', label: 'Conflicto de sincronización real' };
+    if (ageMs > 24 * 60 * 60 * 1000) return { level: 'red', label: 'Sin señales en más de 24h' };
+    if (health.isOnline === false) return { level: 'yellow', label: 'Última señal: sin conexión' };
+    if (health.tenantDataHydrated === false) return { level: 'yellow', label: 'Datos aún no hidratados en su último reporte' };
+    if (Number(health.pendingOperations || 0) > 0) return { level: 'yellow', label: 'Tenía operaciones en curso en su último reporte' };
+    if (ageMs > 30 * 60 * 1000) return { level: 'yellow', label: 'Señal no reciente (posiblemente cerrado por hoy)' };
+    return { level: 'green', label: 'Saludable' };
+  }
+  function ceoAdminHealthSectionHtml(result) {
+    const health = result.health;
+    const level = ceoAdminHealthLevel(result);
+    const badgeClass = level.level === 'green' ? 'green' : level.level === 'red' ? 'danger' : 'gold';
+    const legal = result.legal || {};
+    const legalLabels = { vigente: 'Vigente', pendiente: 'Pendiente', grace: 'En periodo de gracia', requiere_aceptacion: 'Requiere aceptación' };
+    const legalBadgeClass = legal.status === 'vigente' ? 'green' : legal.status === 'requiere_aceptacion' ? 'danger' : 'gold';
+    return `<section class="card sectionCard">
+        <h3>Salud del cliente <span class="badge ${badgeClass}" style="margin-left:8px;">${escapeHtml(level.label)}</span></h3>
+        ${result.pendingCashClose ? `<p class="cloudStatus" style="color:#ffb020;">⚠ Tiene una caja de un día anterior sin cerrar.</p>` : ''}
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-top:8px;">
+          <div><small class="fieldHint">Versión / release</small><div>${escapeHtml(health?.appVersion || '-')}${health?.buildSha ? ` <small class="fieldHint">(${escapeHtml(health.buildSha.slice(0, 7))})</small>` : ''}</div></div>
+          <div><small class="fieldHint">Último reporte</small><div>${health?.updatedAt ? escapeHtml(new Date(health.updatedAt).toLocaleString('es-EC')) : 'Nunca'}</div></div>
+          <div><small class="fieldHint">Conexión (últ. reporte)</small><div>${health ? (health.isOnline ? 'En línea' : 'Sin conexión') : '-'}</div></div>
+          <div><small class="fieldHint">Datos hidratados</small><div>${health ? (health.tenantDataHydrated ? 'Sí' : 'No') : '-'}</div></div>
+          <div><small class="fieldHint">Operaciones pendientes</small><div>${health ? escapeHtml(String(health.pendingOperations ?? 0)) : '-'}</div></div>
+          <div><small class="fieldHint">Confiabilidad (sync)</small><div>${health?.syncStatus ? escapeHtml(health.syncStatus) : '-'}</div></div>
+          <div><small class="fieldHint">Hash local / remoto</small><div><small>${health?.localHash ? escapeHtml(health.localHash.slice(0, 10)) : '-'} / ${health?.remoteHash ? escapeHtml(health.remoteHash.slice(0, 10)) : '-'}</small></div></div>
+          <div><small class="fieldHint">Último error de ejecución</small><div>${health?.lastRuntimeError ? escapeHtml(health.lastRuntimeError) : 'Ninguno reportado'}</div></div>
+          <div><small class="fieldHint">Aceptación legal</small><div><span class="badge ${legalBadgeClass}">${escapeHtml(legalLabels[legal.status] || legal.status || '-')}</span>${legal.latestAcceptedAt ? `<br><small class="fieldHint">${escapeHtml(new Date(legal.latestAcceptedAt).toLocaleDateString('es-EC'))}</small>` : ''}</div></div>
+        </div>
+        <p class="fieldHint" style="margin-top:10px;">Los hashes local/remoto son solo diagnóstico -- el estado real de "confiabilidad" (limpio/pendiente/conflicto) es el campo que decide, no la comparación de hashes por sí sola.</p>
+      </section>`;
+  }
   function ceoAdminResultHtml() {
     if (ceoAdminSearchError) return `<section class="card sectionCard" style="margin-top:14px;border-color:rgba(255,92,98,.5);"><p class="cloudStatus">${escapeHtml(ceoAdminSearchError)}</p></section>`;
     const result = ceoAdminSearchResult;
@@ -3459,6 +3545,7 @@ function parseMoney(value) {
           <div><small class="fieldHint">Revision</small><div>${escapeHtml(String(access.revision ?? '-'))}</div></div>
         </div>
       </section>
+      ${ceoAdminHealthSectionHtml(result)}
       <section class="card sectionCard">
         <h3>Uso</h3>
         ${ceoAdminUsageBar('Productos activos', result.usage?.productsActive || 0, limits.productsActive)}

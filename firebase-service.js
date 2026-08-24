@@ -2416,7 +2416,7 @@
 	    if (snap.empty) return { found: false, email: safeEmail };
 	    const accessDoc = snap.docs[0];
 	    const uid = accessDoc.id;
-	    const [stateSnap, flagSnap, businessUnitSnap, seatReqSnap, capReqSnap, auditSnap, legalGraceSnap, legalAcceptanceSnap] = await Promise.all([
+	    const [stateSnap, flagSnap, businessUnitSnap, seatReqSnap, capReqSnap, auditSnap, legalGraceSnap, legalAcceptanceSnap, customerHealthSnap] = await Promise.all([
 	      db.collection('businesses').doc(uid).collection('state').doc('main').get().catch(() => null),
 	      db.collection('businesses').doc(uid).collection('featureFlags').doc('workers').get().catch(() => null),
 	      db.collection('businesses').doc(uid).collection('businessUnits').doc('biz_main').get().catch(() => null),
@@ -2424,12 +2424,20 @@
 	      db.collection('businesses').doc(uid).collection('capacityRequests').limit(20).get().catch(() => null),
 	      db.collection('adminAuditLogs').where('uid', '==', uid).limit(30).get().catch(() => null),
 	      db.collection('legalGraceStatus').doc(uid).get().catch(() => null),
-	      db.collection('legalAcceptances').where('uid', '==', uid).limit(10).get().catch(() => null)
+	      db.collection('legalAcceptances').where('uid', '==', uid).limit(10).get().catch(() => null),
+	      db.collection('customerHealth').doc(uid).get().catch(() => null)
 	    ]);
 	    const stateData = stateSnap?.exists ? stateSnap.data() : null;
 	    const businesses = stateData?.payload?.data?.businesses || [];
 	    const products = stateData?.payload?.data?.products || [];
 	    const storageBytesApprox = products.reduce((sum, product) => sum + (typeof product.imageData === 'string' ? product.imageData.length : 0), 0);
+	    // r37 (#93): a cash session left open from a PRIOR day (not today) is a
+	    // real operational problem the owner needs to see and close -- same
+	    // "prior-day unclosed cash session" signal already surfaced client-side
+	    // (see qa/r36-p0-2-reliability-e2e.mjs), now also visible remotely.
+	    const cashSessions = stateData?.payload?.data?.cashSessions || [];
+	    const todayKey = new Date().toISOString().slice(0, 10);
+	    const pendingCashClose = cashSessions.some((session) => session?.status === 'open' && session?.date && session.date < todayKey);
 	    const sortByTimestampFieldDesc = (docs, field) => docs
 	      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
 	      .sort((a, b) => (b[field]?.toMillis?.() || 0) - (a[field]?.toMillis?.() || 0));
@@ -2470,8 +2478,28 @@
 	        latestAcceptedAt: latestAcceptance?.acceptedAt?.toDate?.()?.toISOString?.() || null,
 	        termsPresentedAt: legalGraceData?.termsPresentedAt?.toDate?.()?.toISOString?.() || null,
 	        graceExpiresAt: graceExpiresAtMs ? new Date(graceExpiresAtMs).toISOString() : null
-	      }
+	      },
+	      health: customerHealthSnap?.exists ? {
+	        ...customerHealthSnap.data(),
+	        updatedAt: customerHealthSnap.data()?.updatedAt?.toDate?.()?.toISOString?.() || null
+	      } : null,
+	      pendingCashClose
 	    };
+	  };
+
+	  // r37 (#93): a lightweight, best-effort health beacon the customer's OWN
+	  // device writes about itself (never about another tenant -- enforced by
+	  // firestore.rules requiring request.auth.uid == the doc id) so CEO Admin
+	  // can see real device health WITHOUT ever hand-editing Firestore. This is
+	  // diagnostic-only: never gates the customer's own app, and a failed
+	  // write here must never surface an error to the customer (best-effort).
+	  window.click360PublishCustomerHealth = function(snapshot = {}) {
+	    if (!ACTIVE_CONTEXT?.authUid) return;
+	    const uid = ACTIVE_CONTEXT.authUid;
+	    db.collection('customerHealth').doc(uid).set({
+	      ...snapshot,
+	      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+	    }, { merge: true }).catch(() => {});
 	  };
 
 	  function assertCeoAdmin() {

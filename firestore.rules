@@ -1084,6 +1084,24 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // r37 (#93): a lightweight, best-effort health beacon the customer's OWN
+    // device writes about itself -- diagnostic-only, never gates the
+    // customer's own app, lets CEO Admin see real device health (version,
+    // sync status, hydration, pending ops, last runtime error) without ever
+    // hand-editing Firestore. Field-allowlisted and size-bounded so this can
+    // never become an arbitrary-data write path.
+    match /customerHealth/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+          "appVersion", "buildSha", "assetVersion", "isOnline", "tenantDataHydrated",
+          "pendingOperations", "syncStatus", "syncReason", "localHash", "remoteHash",
+          "lastRuntimeError", "route", "updatedAt"
+        ])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
     // r37 (worker invite flow, Section 11-16): the invite-acceptance
     // transaction already grants a technically-active member record (it
     // must -- server-side seat/security enforcement lives there and is
