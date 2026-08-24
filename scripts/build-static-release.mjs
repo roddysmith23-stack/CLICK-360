@@ -29,6 +29,7 @@ const files = [
   'universal-label-editor.js',
   'service-worker.js',
   'manifest.webmanifest',
+  'release-manifest.json',
   'robots.txt',
   'sitemap.xml',
   'assets',
@@ -57,4 +58,14 @@ await writeFile(appPath, appSource.replace(
   `const APP_BUILD_SHA = '${shortSha}';`
 ));
 
-console.log(`CLICK 360 static release: ${files.length} allowlisted entries copied to dist/`);
+// r37.1 (P0-A safe update): release-manifest.json (a real, tracked source
+// file -- see build note below) is stamped with the real buildSha and a
+// fresh generatedAt so repair.html's {cache:'no-store'} reachability probe
+// also proves it isn't looking at a stale copy served from somewhere odd.
+const manifestPath = join(output, 'release-manifest.json');
+const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+manifest.buildSha = shortSha;
+manifest.generatedAt = new Date().toISOString();
+await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+console.log(`CLICK 360 static release: ${files.length} allowlisted entries copied to dist/, release-manifest.json stamped (version=${manifest.version})`);
