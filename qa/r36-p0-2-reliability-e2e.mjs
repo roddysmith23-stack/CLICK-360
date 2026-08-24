@@ -72,7 +72,8 @@ async function run() {
         dailyReports: [], deletedProducts: [], auditLogs: [], layaways: [], invoices: [],
         tables: [], tableOrders: [], restaurantPayments: [], restaurantPrintHistory: [],
         restaurantEvents: [], restaurantRecipes: [], labelPrintHistory: [], notifications: [],
-        legalAcceptances: [], finance: {}, settings: {}, logistics: {},
+        legalAcceptances: [{ id: 'legal1', businessId: 'biz_main', uid, termsVersion: window.CLICK360_V16_DOMAIN?.TERMS_VERSION, privacyVersion: window.CLICK360_V16_DOMAIN?.PRIVACY_VERSION, acceptedAt: new Date().toISOString(), source: 'onboarding' }],
+        finance: {}, settings: {}, logistics: {},
         updatedAtMs: Date.now(), updatedAt: new Date().toISOString()
       };
       window.click360ApplyTenantState(realData, context);

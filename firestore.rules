@@ -1033,7 +1033,10 @@ service cloud.firestore {
     }
 
     match /legalAcceptances/{acceptanceId} {
-      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      // r37: CEO Admin must be able to see a customer's real legal status
+      // (vigente/pendiente/grace/requiere aceptación) without ever
+      // hand-editing Firestore -- isPlatformAdmin() added for that read.
+      allow read: if (signedIn() && resource.data.uid == request.auth.uid) || isPlatformAdmin();
       allow create: if signedIn()
         && request.resource.data.keys().hasAll([
           "acceptanceId", "uid", "businessId", "tenantKey", "termsVersion", "privacyVersion",
@@ -1052,6 +1055,65 @@ service cloud.firestore {
         && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
         && request.resource.data.acceptedAt == request.time;
       allow update, delete: if false;
+    }
+
+    // r37 (legacy consent grace): tracks WHEN the "Términos actualizados"
+    // banner was first presented to an already-onboarded (legacy) account,
+    // separately from legalAcceptances (which only records an actual
+    // acceptance). This is mutable bookkeeping -- re-presenting the banner
+    // updates lastShownAt but must never move termsPresentedAt backward
+    // once set, since that timestamp is what starts the 7-day grace clock.
+    // CEO Admin reads this (isPlatformAdmin()) to compute a customer's
+    // real legal status (vigente/grace/requiere aceptación) without ever
+    // needing to hand-edit Firestore.
+    match /legalGraceStatus/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["uid", "termsPresentedAt", "presentedTermsVersion", "presentedPrivacyVersion", "lastShownAt", "updatedAt"])
+        && request.resource.data.uid == uid
+        && request.resource.data.termsPresentedAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["uid", "termsPresentedAt", "presentedTermsVersion", "presentedPrivacyVersion", "lastShownAt", "updatedAt"])
+        && request.resource.data.uid == uid
+        // termsPresentedAt is write-once: only the very first presentation
+        // may set it (via create); every subsequent update must carry it
+        // through unchanged so the 7-day grace window can never be reset.
+        && request.resource.data.termsPresentedAt == resource.data.termsPresentedAt
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // r37 (worker invite flow, Section 11-16): the invite-acceptance
+    // transaction already grants a technically-active member record (it
+    // must -- server-side seat/security enforcement lives there and is
+    // unrelated to this). This collection is a SEPARATE, additive human
+    // workflow layer on top: the worker's own client withholds the
+    // restricted UI (shows "esperando aprobación" instead) until the
+    // OWNER explicitly approves, giving the owner a real chance to review
+    // the worker's completed profile before they start operating --
+    // without touching the already-audited acceptance transaction/rules.
+    match /workerAccessRequests/{requestId} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || resource.data.ownerId == request.auth.uid || isPlatformAdmin());
+      allow create: if signedIn() && request.auth.uid == request.resource.data.uid
+        && requestId == request.resource.data.ownerId + '_' + request.resource.data.uid
+        && request.resource.data.keys().hasOnly(["requestId", "ownerId", "uid", "email", "name", "phone", "businessUnitId", "status", "requestedAt", "decidedAt", "decidedBy"])
+        && request.resource.data.requestId == requestId
+        && request.resource.data.status == "pending"
+        && request.resource.data.requestedAt == request.time
+        && request.resource.data.decidedAt == null
+        && request.resource.data.decidedBy == "";
+      allow update: if signedIn() && request.auth.uid == resource.data.ownerId
+        && request.resource.data.keys().hasOnly(["requestId", "ownerId", "uid", "email", "name", "phone", "businessUnitId", "status", "requestedAt", "decidedAt", "decidedBy"])
+        && request.resource.data.requestId == resource.data.requestId
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.requestedAt == resource.data.requestedAt
+        && resource.data.status == "pending"
+        && (request.resource.data.status == "approved" || request.resource.data.status == "rejected")
+        && request.resource.data.decidedAt == request.time
+        && request.resource.data.decidedBy == request.auth.uid;
+      allow delete: if false;
     }
 
     // ownerId lets a modular Workers session (where businessId is the

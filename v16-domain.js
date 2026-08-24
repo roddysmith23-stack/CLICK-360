@@ -3,6 +3,11 @@
 
   const APP_VERSION = '16.2';
   const TERMS_VERSION = '2026-07-14';
+  // r37: tracked independently from TERMS_VERSION so a future privacy-only
+  // content change (e.g. a new data processor) doesn't force a re-acceptance
+  // of the terms text too, and vice versa. Currently equal because neither
+  // document has diverged since TERMS_VERSION was last bumped.
+  const PRIVACY_VERSION = '2026-07-14';
   const TRIAL_DAYS = 7;
   const DAY_MS = 24 * 60 * 60 * 1000;
   // Commercial catalog, r36 pricing reset (2026-08-23) -- this is the
@@ -72,6 +77,19 @@
       features: Object.freeze(['Todo Business', 'Licencia funcional historica permanente', 'Sin mensualidad por funciones ya adquiridas', 'Cuotas de infraestructura amplias con margen de crecimiento']),
       historical: true,
       notSoldToNewCustomers: true
+    })
+  });
+
+  // r37: single-source-of-truth catalog for optional hardware add-ons
+  // (Mi Plan y Acceso). Prices live here ONLY -- no page should hardcode
+  // its own literal price for the same item.
+  const HARDWARE_CATALOG = Object.freeze({
+    thermalPrinter: Object.freeze({
+      name: 'Impresora térmica de etiquetas',
+      description: 'Lista para etiquetas QR y comprobantes; incluye envío y un rollo de papel adhesivo de cortesía.',
+      regularPrice: 78.00,
+      offerPrice: 64.99,
+      onOffer: true
     })
   });
 
@@ -579,8 +597,10 @@
   const api = Object.freeze({
     APP_VERSION,
     TERMS_VERSION,
+    PRIVACY_VERSION,
     TRIAL_DAYS,
     PLAN_CATALOG,
+    HARDWARE_CATALOG,
     QUOTA_THRESHOLDS,
     planEntitlements,
     evaluateQuota,

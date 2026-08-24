@@ -214,8 +214,19 @@
 			    if (legacyMigrationRequired()) return { allowed: false, reason: 'legacy_migration_required' };
 			    if (MODULAR_MODE) {
 			      if (!tenantGuard.canWrite(ACTIVE_CONTEXT)) return { allowed:false, reason:'tenant_guard_not_ready' };
-			      if (!navigator.onLine) return { allowed:false, reason:'offline_online_only' };
-			      return { allowed:true, reason:'modular_server_confirmed_boundary' };
+			      // r37 (Section 41-49 offline audit): this used to hard-block ALL
+			      // modular/worker writes while offline, unlike legacy/owner mode
+			      // (which only blocks when ONLINE_ONLY_SAFE -- local storage itself
+			      // is unavailable). pushModularState() already no-ops safely offline
+			      // (sets status 'offline', never throws) and the local write below
+			      // persists to the SAME localStorage/IndexedDB path legacy mode
+			      // uses, so there is no structural reason a worker with local
+			      // storage available couldn't sell/close-cash/print while offline --
+			      // only the deferred remote push needs connectivity. Matching
+			      // legacy mode's own standard here (see the online-reconnect fix
+			      // right below, which flushes this queued write once reconnected).
+			      if (ONLINE_ONLY_SAFE && !navigator.onLine) return { allowed:false, reason:'offline_online_only' };
+			      return { allowed:true, reason: navigator.onLine ? 'modular_server_confirmed_boundary' : 'modular_offline_local_queued' };
 			    }
 			    const syncState = getSyncState({ cleanup: true, reason: 'write_gate' });
 			    if (syncState.status === 'real_conflict') return { allowed: false, reason: 'sync_conflict', syncState };
@@ -677,7 +688,15 @@
 		  window.addEventListener("offline", () => setSyncStatus("offline", ONLINE_ONLY_SAFE ? "Sin conexión. Este dispositivo está en modo solo en línea; la edición queda pausada." : "Sin conexión. Los cambios quedan en este dispositivo."));
 	  window.addEventListener("online", () => {
 	    setSyncStatus("pending", "Conexión recuperada. Sincronizando cambios pendientes.");
-	    if (AUTH_APPROVED && PULL_COMPLETE && STATE_DOC) pushLocalToFirestore("online_reconnect").catch(() => {});
+	    // r37: this used to only flush legacy-mode's pending write (checking
+	    // STATE_DOC, calling pushLocalToFirestore directly) -- a modular/worker
+	    // session that wrote locally while offline (see the writeGateStatus()
+	    // fix above) had no reconnect trigger at all and stayed stuck as
+	    // "pending" until an unrelated event (e.g. tab visibility change)
+	    // happened to fire pushModularState().
+	    if (MODULAR_MODE) {
+	      if (AUTH_APPROVED && PULL_COMPLETE && MODULAR_GATEWAY) pushModularState("online_reconnect").catch(() => {});
+	    } else if (AUTH_APPROVED && PULL_COMPLETE && STATE_DOC) pushLocalToFirestore("online_reconnect").catch(() => {});
 	  });
 
   const initUrlParams = new URLSearchParams(location.search);
@@ -1085,7 +1104,20 @@
 			      reason,
 			      activeBusinessId: String(hashes.payload?.data?.activeBusinessId || ''),
 			      hasDirtyFields,
-			      localHash: hashFingerprint(hashes.payloadHash),
+			      // r37: localHash/remoteHash here are diagnostic DISPLAY fields only
+			      // (the real clean/dirty decision above uses materialEquivalent/
+			      // hasDirtyFields, computed from materialMatchesLastApplied(hashes),
+			      // never these two). They previously paired a FULL-payload hash
+			      // (payloadHash, which changes on every write since it includes
+			      // volatile fields like updatedAt/updatedAtMs) against a
+			      // MATERIAL-only hash of the last applied remote snapshot -- an
+			      // apples-to-oranges comparison that made a "clean" report look
+			      // alarming (localHash != remoteHash on nearly every real report,
+			      // even when genuinely clean) to whoever reads the diagnostic
+			      // message. Both sides now use the material hash so the two
+			      // values are directly comparable and a real material difference
+			      // is what actually shows up as a mismatch.
+			      localHash: hashFingerprint(hashes.materialHash),
 			      remoteHash: hashFingerprint(lastMaterial || safeStorageGet(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'))),
 			      lastUpdatedAt: new Date(now).toISOString(),
 			      displayMode: window.matchMedia?.('(display-mode: standalone)')?.matches === true || navigator.standalone === true ? 'standalone' : 'browser',
@@ -1890,7 +1922,7 @@
   window.click360SaveLegalAcceptance = async function(acceptance = {}) {
     const user = auth.currentUser;
     if (!user || !ACTIVE_CONTEXT || user.uid !== ACTIVE_CONTEXT.authUid) throw new Error('Sesion no verificada.');
-    const termsVersion = String(acceptance.termsVersion || window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13');
+    const termsVersion = String(acceptance.termsVersion || window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14');
     const acceptanceId = `${user.uid}_${termsVersion.replace(/[^0-9a-z_-]/gi, '_')}`;
     const ref = db.collection('legalAcceptances').doc(acceptanceId);
     await db.runTransaction(async (transaction) => {
@@ -1912,6 +1944,37 @@
       });
     });
     return { acceptanceId, termsVersion };
+  };
+
+  // r37 (legacy consent grace): records WHEN the "Términos actualizados"
+  // banner was first shown to an already-onboarded (legacy) account --
+  // separate from legalAcceptances, which only records an actual
+  // acceptance. termsPresentedAt is write-once (matches firestore.rules:
+  // set only on the initial create via serverTimestamp(), never touched
+  // by the update branch) since it is what starts the 7-day grace clock;
+  // re-presenting the banner only bumps lastShownAt. CEO Admin reads this
+  // collection directly to compute a customer's real legal status.
+  window.click360SaveLegalGracePresented = async function(grace = {}) {
+    const user = auth.currentUser;
+    if (!user || !ACTIVE_CONTEXT || user.uid !== ACTIVE_CONTEXT.authUid) throw new Error('Sesion no verificada.');
+    const ref = db.collection('legalGraceStatus').doc(user.uid);
+    const nowServer = firebase.firestore.FieldValue.serverTimestamp();
+    await db.runTransaction(async (transaction) => {
+      const existing = await transaction.get(ref);
+      if (!existing.exists) {
+        transaction.set(ref, {
+          uid: user.uid,
+          termsPresentedAt: nowServer,
+          presentedTermsVersion: String(grace.presentedTermsVersion || window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14'),
+          presentedPrivacyVersion: String(grace.presentedPrivacyVersion || window.CLICK360_V16_DOMAIN?.PRIVACY_VERSION || '2026-07-14'),
+          lastShownAt: nowServer,
+          updatedAt: nowServer
+        });
+      } else {
+        transaction.update(ref, { lastShownAt: nowServer, updatedAt: nowServer });
+      }
+    });
+    return { ok: true };
   };
 
   function safeAuditDelta(value = {}) {
@@ -2171,6 +2234,83 @@
 	    return true;
 	  };
 
+	  // r37 (worker invite flow, Section 11-16): a worker who just accepted
+	  // their invite calls this AFTER completing their profile, before ever
+	  // seeing the real restricted UI. This does NOT grant any additional
+	  // server-side data access (the acceptance transaction already did that,
+	  // scoped to whatever permissions the owner chose) -- it is purely the
+	  // human "the owner gets to review who's actually behind this account"
+	  // checkpoint the client enforces before rendering anything.
+	  window.click360RequestWorkerAccess = async function(profile = {}) {
+	    const user = auth.currentUser;
+	    if (!user || !ACTIVE_CONTEXT) throw new Error('Sesion no verificada.');
+	    const ownerId = String(profile.ownerId || ACTIVE_CONTEXT.ownerUid || '').trim();
+	    if (!ownerId) throw new Error('Falta el negocio de la invitación.');
+	    const requestId = `${ownerId}_${user.uid}`;
+	    const ref = db.collection('workerAccessRequests').doc(requestId);
+	    const existing = await ref.get();
+	    if (existing.exists) return { requestId, status: existing.data()?.status || 'pending' };
+	    await ref.set({
+	      requestId,
+	      ownerId,
+	      uid: user.uid,
+	      email: String(user.email || '').trim().toLowerCase(),
+	      name: String(profile.name || user.displayName || '').slice(0, 120),
+	      phone: String(profile.phone || '').slice(0, 30),
+	      businessUnitId: String(profile.businessUnitId || ''),
+	      status: 'pending',
+	      requestedAt: firebase.firestore.FieldValue.serverTimestamp(),
+	      decidedAt: null,
+	      decidedBy: ''
+	    });
+	    recordTelemetry('worker_access_requested', { requestId }).catch(() => {});
+	    return { requestId, status: 'pending' };
+	  };
+
+	  window.click360GetWorkerAccessRequestStatus = async function() {
+	    const user = auth.currentUser;
+	    if (!user || !ACTIVE_CONTEXT) return null;
+	    const ownerId = String(ACTIVE_CONTEXT.ownerUid || '').trim();
+	    if (!ownerId || ownerId === user.uid) return null; // owners never have an access request
+	    const requestId = `${ownerId}_${user.uid}`;
+	    const snap = await db.collection('workerAccessRequests').doc(requestId).get({ source: 'server' }).catch(() => null);
+	    return snap?.exists ? { requestId, ...snap.data() } : null;
+	  };
+
+	  window.click360ListWorkerAccessRequests = async function() {
+	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
+	    const ownerId = window.click360User.uid;
+	    const snap = await db.collection('workerAccessRequests').where('ownerId', '==', ownerId).where('status', '==', 'pending').limit(30).get();
+	    return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+	  };
+
+	  window.click360ApproveWorkerAccess = async function(requestId) {
+	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
+	    const ownerId = window.click360User.uid;
+	    const ref = db.collection('workerAccessRequests').doc(String(requestId || ''));
+	    const snap = await ref.get({ source: 'server' });
+	    if (!snap.exists || snap.data()?.ownerId !== ownerId) throw new Error('Solicitud no encontrada.');
+	    await ref.update({ status: 'approved', decidedAt: firebase.firestore.FieldValue.serverTimestamp(), decidedBy: ownerId });
+	    recordTelemetry('worker_access_approved', { requestId }).catch(() => {});
+	    return true;
+	  };
+
+	  window.click360RejectWorkerAccess = async function(requestId) {
+	    if (!window.click360User || window.click360User.role !== 'owner') throw new Error('No tienes permisos.');
+	    const ownerId = window.click360User.uid;
+	    const ref = db.collection('workerAccessRequests').doc(String(requestId || ''));
+	    const snap = await ref.get({ source: 'server' });
+	    if (!snap.exists || snap.data()?.ownerId !== ownerId) throw new Error('Solicitud no encontrada.');
+	    const request = snap.data();
+	    await ref.update({ status: 'rejected', decidedAt: firebase.firestore.FieldValue.serverTimestamp(), decidedBy: ownerId });
+	    // Rejecting an access request also revokes the underlying membership --
+	    // an owner who rejects the human review must not leave a technically-
+	    // active (if UI-gated) account behind.
+	    await window.click360RevokeWorker(request.email, request.uid, '').catch(() => {});
+	    recordTelemetry('worker_access_rejected', { requestId }).catch(() => {});
+	    return true;
+	  };
+
 	  // P0 commercial rule: every business includes 2 free worker seats; this
 	  // lets the owner change the purchased add-on seat quota for one modular
 	  // business. No price is enforced or computed here by design -- that stays
@@ -2276,13 +2416,15 @@
 	    if (snap.empty) return { found: false, email: safeEmail };
 	    const accessDoc = snap.docs[0];
 	    const uid = accessDoc.id;
-	    const [stateSnap, flagSnap, businessUnitSnap, seatReqSnap, capReqSnap, auditSnap] = await Promise.all([
+	    const [stateSnap, flagSnap, businessUnitSnap, seatReqSnap, capReqSnap, auditSnap, legalGraceSnap, legalAcceptanceSnap] = await Promise.all([
 	      db.collection('businesses').doc(uid).collection('state').doc('main').get().catch(() => null),
 	      db.collection('businesses').doc(uid).collection('featureFlags').doc('workers').get().catch(() => null),
 	      db.collection('businesses').doc(uid).collection('businessUnits').doc('biz_main').get().catch(() => null),
 	      db.collection('businesses').doc(uid).collection('seatRequests').limit(20).get().catch(() => null),
 	      db.collection('businesses').doc(uid).collection('capacityRequests').limit(20).get().catch(() => null),
-	      db.collection('adminAuditLogs').where('uid', '==', uid).limit(30).get().catch(() => null)
+	      db.collection('adminAuditLogs').where('uid', '==', uid).limit(30).get().catch(() => null),
+	      db.collection('legalGraceStatus').doc(uid).get().catch(() => null),
+	      db.collection('legalAcceptances').where('uid', '==', uid).limit(10).get().catch(() => null)
 	    ]);
 	    const stateData = stateSnap?.exists ? stateSnap.data() : null;
 	    const businesses = stateData?.payload?.data?.businesses || [];
@@ -2291,6 +2433,24 @@
 	    const sortByTimestampFieldDesc = (docs, field) => docs
 	      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
 	      .sort((a, b) => (b[field]?.toMillis?.() || 0) - (a[field]?.toMillis?.() || 0));
+	    const legalGraceData = legalGraceSnap?.exists ? legalGraceSnap.data() : null;
+	    const legalAcceptanceDocs = legalAcceptanceSnap ? sortByTimestampFieldDesc(legalAcceptanceSnap.docs, 'acceptedAt') : [];
+	    const currentTermsVersion = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '';
+	    const currentPrivacyVersion = window.CLICK360_V16_DOMAIN?.PRIVACY_VERSION || currentTermsVersion;
+	    const latestAcceptance = legalAcceptanceDocs[0] || null;
+	    const hasCurrentAcceptance = !!latestAcceptance
+	      && latestAcceptance.termsVersion === currentTermsVersion
+	      && (latestAcceptance.privacyVersion || latestAcceptance.termsVersion) === currentPrivacyVersion;
+	    const hasOnboarded = !!stateData?.payload?.data?.settings?.onboarding?.completedAt;
+	    const presentedAtMs = legalGraceData?.termsPresentedAt?.toMillis?.() || 0;
+	    const graceExpiresAtMs = presentedAtMs ? presentedAtMs + (7 * 24 * 60 * 60 * 1000) : 0;
+	    let legalStatus = 'vigente';
+	    if (!hasCurrentAcceptance) {
+	      if (!hasOnboarded) legalStatus = 'pendiente'; // new owner, hard-gated by the app itself
+	      else if (!presentedAtMs) legalStatus = 'pendiente'; // legacy, banner not shown yet
+	      else if (Date.now() < graceExpiresAtMs) legalStatus = 'grace';
+	      else legalStatus = 'requiere_aceptacion';
+	    }
 	    return {
 	      found: true,
 	      uid,
@@ -2301,7 +2461,16 @@
 	      businessUnit: businessUnitSnap?.exists ? businessUnitSnap.data() : null,
 	      seatRequests: seatReqSnap ? sortByTimestampFieldDesc(seatReqSnap.docs, 'requestedAt').slice(0, 10) : [],
 	      capacityRequests: capReqSnap ? sortByTimestampFieldDesc(capReqSnap.docs, 'requestedAt').slice(0, 10) : [],
-	      auditLog: auditSnap ? sortByTimestampFieldDesc(auditSnap.docs, 'createdAt').slice(0, 10) : []
+	      auditLog: auditSnap ? sortByTimestampFieldDesc(auditSnap.docs, 'createdAt').slice(0, 10) : [],
+	      legal: {
+	        status: legalStatus,
+	        currentTermsVersion,
+	        currentPrivacyVersion,
+	        latestAcceptedVersion: latestAcceptance?.termsVersion || null,
+	        latestAcceptedAt: latestAcceptance?.acceptedAt?.toDate?.()?.toISOString?.() || null,
+	        termsPresentedAt: legalGraceData?.termsPresentedAt?.toDate?.()?.toISOString?.() || null,
+	        graceExpiresAt: graceExpiresAtMs ? new Date(graceExpiresAtMs).toISOString() : null
+	      }
 	    };
 	  };
 
@@ -2930,7 +3099,7 @@
 	            </div>
 	            <button id="c360-change-google" class="c360-change-button" style="display:none;">Cambiar cuenta / Cerrar sesión</button>
 	            <button id="c360-clear-cache" class="c360-cache-button" style="display:none;">Actualizar archivos de la app</button>
-	            <p class="c360-auth-legal">Al continuar aceptas los <button id="c360-public-terms">Términos</button> y la <button id="c360-public-privacy">Política de privacidad</button>.</p>
+	            <p class="c360-auth-legal">Al continuar aceptas los <a id="c360-public-terms" href="/terms.html" target="_blank" rel="noopener noreferrer">Términos</a> y la <a id="c360-public-privacy" href="/privacy.html" target="_blank" rel="noopener noreferrer">Política de privacidad</a>.</p>
 	          </section>
 	        </div>
 	      `;
@@ -2987,8 +3156,6 @@
 	        plans.hidden = !plans.hidden;
 	      };
 	      document.getElementById('c360-retry-access').onclick = () => window.location.reload();
-      document.getElementById('c360-public-terms').onclick = () => showPublicLegal('terms');
-      document.getElementById('c360-public-privacy').onclick = () => showPublicLegal('privacy');
       document.getElementById("c360-change-google").onclick = async () => {
         if(window.click360Logout) await window.click360Logout();
         else {
@@ -3056,15 +3223,6 @@
 	    if (changeBtn) changeBtn.style.display = policy.showChangeAccount ? 'block' : 'none';
 	    if (clearBtn) clearBtn.style.display = policy.showRefreshAssets ? 'block' : 'none';
 	  }
-
-	  function showPublicLegal(kind) {
-    const title = kind === 'privacy' ? 'Política de privacidad' : 'Términos y condiciones';
-    const body = kind === 'privacy'
-	      ? 'CLICK 360 usa los datos necesarios para autenticar, sincronizar y operar el negocio. Cada cuenta conserva su información separada. No vendemos información personal.'
-      : 'CLICK 360 es una herramienta de gestión. El comercio es responsable de revisar sus políticas y obligaciones legales. Los datos pueden exportarse y se conservan al terminar una prueba.';
-    const message = document.getElementById('c360-auth-msg');
-    if (message) message.innerHTML = `<b>${title}</b><br>${body}<br><small>Versión 2026-07-13</small>`;
-  }
 
   function embeddedBrowser() {
     const ua = navigator.userAgent || '';

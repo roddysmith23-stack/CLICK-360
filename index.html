@@ -216,9 +216,31 @@
 <script>
   if ('serviceWorker' in navigator) {
     const hadServiceWorkerController = !!navigator.serviceWorker.controller;
+    // r37 (Section 5, automatic self-heal): a new active Service Worker
+    // means fresh assets are already cached and ready -- the client used to
+    // ONLY show a passive "will apply next time you open CLICK 360" toast,
+    // requiring the customer to notice and manually close/reopen the app.
+    // Now it self-heals by reloading automatically, but ONLY when it is
+    // safe to do so (no modal open, sitting on the neutral #home route --
+    // never mid-sale or mid-form) and AT MOST ONCE per session (a
+    // sessionStorage flag, not localStorage, so it never loops and always
+    // resets on the next real session). If it is not safe right now, it
+    // falls back to the original passive toast -- never forces a reload
+    // over a possible unsaved draft.
+    const AUTO_HEAL_SESSION_KEY = 'CLICK360_SW_AUTO_HEAL_DONE';
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadServiceWorkerController) return;
       const toast = document.getElementById('toast');
+      let alreadyHealed = true;
+      try { alreadyHealed = sessionStorage.getItem(AUTO_HEAL_SESSION_KEY) === '1'; } catch { alreadyHealed = true; }
+      const noModalOpen = !document.body.classList.contains('has-modal');
+      const onNeutralRoute = location.hash === '' || location.hash === '#home';
+      if (!alreadyHealed && noModalOpen && onNeutralRoute) {
+        try { sessionStorage.setItem(AUTO_HEAL_SESSION_KEY, '1'); } catch {}
+        if (toast) { toast.textContent = 'Actualizando CLICK 360...'; toast.className = 'toast show ok'; }
+        setTimeout(() => window.location.reload(), 900);
+        return;
+      }
       if (!toast) return;
       toast.textContent = 'Actualización lista. Se aplicará al volver a abrir CLICK 360.';
       toast.className = 'toast show ok';
