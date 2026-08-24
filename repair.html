@@ -40,9 +40,10 @@
     </div>
   </div>
 
-  <button class="primary" id="repairBtn">Reparar CLICK 360</button>
+  <button class="primary" id="repairBtn">Actualizar CLICK 360</button>
   <button id="openBtn">Abrir CLICK 360 normalmente</button>
   <div id="log" role="status" aria-live="polite"></div>
+  <p class="lead" style="margin-top:14px; font-size:12px;">Esta actualización es segura: primero verificamos que la nueva versión esté realmente disponible. Si algo falla, tu versión actual sigue funcionando -- nunca te quedas sin CLICK 360.</p>
 
   <a class="back" href="/">Volver al inicio</a>
 </main>
@@ -53,7 +54,7 @@
   // Self-contained on purpose: no dependency on app.js, Firebase Auth, or
   // tenant state. If any of those are the reason CLICK 360 isn't opening,
   // this page must still work.
-  var REPAIR_PAGE_VERSION = 'commercial-1-0-5-r37-stable-ga';
+  var REPAIR_PAGE_VERSION = 'commercial-1-0-5-r37-1-label-engine-hotfix';
   var log = document.getElementById('log');
   function writeLog(line) { log.textContent += (log.textContent ? '\n' : '') + line; }
 
@@ -91,45 +92,109 @@
     window.location.href = '/';
   });
 
+  // r37.1 (P0-A, real SHARY evidence): the old flow unregistered the
+  // service worker and deleted every click360- cache BEFORE ever confirming
+  // a new version could actually be downloaded. If the network dropped (or
+  // the server hiccupped) at that exact moment, the customer was left with
+  // NOTHING -- no worker, no cache, and a navigation to '/' with nothing to
+  // serve it. That is the exact "No se puede acceder a este sitio" -> blank
+  // screen SHARY hit.
+  //
+  // New contract: PREPARE (verify the network + a fresh manifest are really
+  // reachable right now, touching nothing) -> COMMIT (let the browser's own
+  // atomic service-worker install do its job -- a failed install NEVER
+  // replaces the currently active worker, by spec) -> ROLLBACK (any failure
+  // at any point leaves the existing worker/cache completely untouched; the
+  // customer keeps using the app exactly as it was). We only ever navigate
+  // away after a real, confirmed-active new worker -- never before.
+  var UPDATE_TIMEOUT_MS = 20000;
+
+  function withTimeout(promise, ms, label) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error(label + ' agotó el tiempo de espera.')); }, ms);
+      promise.then(function (value) { clearTimeout(timer); resolve(value); }, function (error) { clearTimeout(timer); reject(error); });
+    });
+  }
+
+  // Resolves once `registration` has a genuinely active worker running the
+  // latest install attempt -- whether that's a brand-new worker that just
+  // finished installing, or (when update() found nothing new) the worker
+  // that was already active. Rejects if the new worker fails and becomes
+  // redundant, which the browser does WITHOUT touching the previous one.
+  function waitForActiveWorker(registration) {
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      function finish(ok) {
+        if (settled) return;
+        settled = true;
+        if (ok) resolve(); else reject(new Error('El nuevo service worker no pudo instalarse.'));
+      }
+      function track(worker) {
+        if (!worker) return;
+        if (worker.state === 'activated') return finish(true);
+        if (worker.state === 'redundant') return finish(false);
+        worker.addEventListener('statechange', function () {
+          if (worker.state === 'activated') finish(true);
+          else if (worker.state === 'redundant') finish(false);
+        });
+      }
+      registration.addEventListener('updatefound', function () { track(registration.installing); });
+      if (registration.installing) track(registration.installing);
+      else if (registration.waiting) track(registration.waiting);
+      else if (registration.active) finish(true); // update() found nothing new -- already current.
+    });
+  }
+
   document.getElementById('repairBtn').addEventListener('click', function () {
     var btn = document.getElementById('repairBtn');
     btn.disabled = true;
-    btn.textContent = 'Reparando...';
-    writeLog('Iniciando reparación...');
+    btn.textContent = 'Verificando conexión...';
+    writeLog('Verificando que la nueva versión esté disponible...');
 
-    var steps = [];
+    function rollback(message) {
+      writeLog(message);
+      writeLog('Tu versión actual sigue funcionando. No se eliminó nada.');
+      btn.disabled = false;
+      btn.textContent = 'Reintentar actualización';
+    }
 
-    steps.push(function () {
-      if (!('serviceWorker' in navigator)) return Promise.resolve();
-      return navigator.serviceWorker.getRegistrations().then(function (regs) {
-        writeLog('Service workers encontrados: ' + regs.length);
-        // The app owns this entire origin -- there is only ever one real
-        // registration here. Unregister every one found, never a partial
-        // guess by name, so a stray/orphaned registration can't survive.
-        return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
-      }).then(function () { writeLog('Service worker(s) eliminado(s).'); });
-    });
+    if (!navigator.onLine) {
+      return rollback('No pudimos actualizar ahora: sin conexión. Puedes seguir trabajando con tu versión actual.');
+    }
 
-    steps.push(function () {
-      if (!('caches' in window)) return Promise.resolve();
-      return caches.keys().then(function (keys) {
-        var c360Keys = keys.filter(function (k) { return k.indexOf('click360-') === 0; });
-        writeLog('Cachés de CLICK 360 a eliminar: ' + c360Keys.length);
-        return Promise.all(c360Keys.map(function (k) { return caches.delete(k); }));
-      }).then(function () { writeLog('Cachés eliminadas. Tus datos de negocio están en la nube, no en estas cachés.'); });
-    });
+    // PREPARE -- prove the network + server are really serving fresh
+    // content right now, before touching anything.
+    fetch('./release-manifest.json?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (response) {
+        if (!response.ok) throw new Error('El servidor respondió con un error (' + response.status + ').');
+        return response.json();
+      })
+      .then(function (manifest) {
+        if (!manifest || !manifest.version) throw new Error('La respuesta del servidor no fue válida.');
+        writeLog('Nueva versión disponible: ' + manifest.version);
+        btn.textContent = 'Descargando actualización...';
 
-    steps.reduce(function (chain, step) { return chain.then(step); }, Promise.resolve())
+        // COMMIT -- let the browser's own atomic install do the real work.
+        if (!('serviceWorker' in navigator)) return; // Nothing to update safely; just proceed to open the app.
+        return navigator.serviceWorker.getRegistration().then(function (existingReg) {
+          if (existingReg) {
+            writeLog('Actualizando el service worker...');
+            var ready = waitForActiveWorker(existingReg);
+            return withTimeout(existingReg.update().then(function () { return ready; }), UPDATE_TIMEOUT_MS, 'La actualización');
+          }
+          writeLog('Registrando el service worker...');
+          return withTimeout(
+            navigator.serviceWorker.register('./service-worker.js').then(waitForActiveWorker),
+            UPDATE_TIMEOUT_MS, 'El registro'
+          );
+        });
+      })
       .then(function () {
-        writeLog('Reparación completa. Abriendo CLICK 360...');
-        setTimeout(function () {
-          window.location.href = '/?repaired=' + Date.now();
-        }, 700);
+        writeLog('Actualización lista. Abriendo tu nueva versión de CLICK 360...');
+        setTimeout(function () { window.location.href = '/?repaired=' + Date.now(); }, 500);
       })
       .catch(function (error) {
-        writeLog('Ocurrió un problema durante la reparación: ' + (error && error.message || error));
-        btn.disabled = false;
-        btn.textContent = 'Reintentar reparación';
+        rollback('No pudimos actualizar ahora: ' + (error && error.message || error) + '.');
       });
   });
 })();

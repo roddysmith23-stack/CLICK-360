@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r37-stable-ga';
+const CACHE = 'click360-commercial-1-0-5-r37-1-label-engine-hotfix';
 const ASSETS = [
   './',
   './index.html',
@@ -70,7 +70,11 @@ self.addEventListener('fetch', event => {
   // independent rescue path -- it must never depend on this worker (or on
   // whatever bundle/state this worker happens to be serving). Let it fall
   // through to a completely normal, uncontrolled network request.
-  if (url.pathname.endsWith('/repair.html')) return;
+  // r37.1 (P0-A safe update): release-manifest.json is repair.html's
+  // network-reachability probe -- it must reflect the REAL, current network
+  // state (a stale/broken worker answering from its own cache would defeat
+  // the entire point of the check), so it gets the same bypass.
+  if (url.pathname.endsWith('/repair.html') || url.pathname.endsWith('/release-manifest.json')) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(

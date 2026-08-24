@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="es-EC">
+<head><meta charset="utf-8"><title>r37.1 safe-update fixture</title></head>
+<body>
+<script>
+  window.__ready = navigator.serviceWorker.register('./service-worker.js').then(function (reg) {
+    return new Promise(function (resolve) {
+      function settle() { if (reg.active) resolve(reg); }
+      if (reg.active) return resolve(reg);
+      reg.addEventListener('updatefound', function () {
+        var worker = reg.installing;
+        if (worker) worker.addEventListener('statechange', settle);
+      });
+      navigator.serviceWorker.addEventListener('controllerchange', settle);
+    });
+  });
+</script>
+</body>
+</html>

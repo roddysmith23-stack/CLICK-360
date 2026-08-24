@@ -21,6 +21,102 @@
     const parsed = number(value, fallback);
     return clamp(parsed / legacyBase * axisMm, 0, axisMm, fallback);
   }
+  const HEX_COLOR_RE = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
+  function safeColorOrDefault(value, fallback) {
+    return typeof value === 'string' && HEX_COLOR_RE.test(value.trim()) ? value.trim() : fallback;
+  }
+
+  // r37.1 (P0-B, real Owner evidence): color/style used to travel as a
+  // "renderOptions" sidecar attached OUTSIDE normalizeDocument()'s own
+  // return shape (see the r37 red-design bridge functions in app.js) --
+  // meaning EVERY one of the ~24 call sites across app.js/
+  // universal-label-editor.js that calls normalizeDocument() directly had
+  // to remember to manually re-attach it, or silently lose the design's
+  // real colors. Several already didn't. Making style/qrStyle/barcodeStyle
+  // genuine fields of the canonical document itself (not a sidecar) fixes
+  // every call site at once and makes it structurally impossible to lose
+  // color data through a normalize/clone/history round-trip.
+  function normalizeStyle(input = {}, legacyRenderOptions = null) {
+    // r37.1 (P0-B): legacyRenderOptions wins whenever present. It is NEVER
+    // part of normalizeDocument()'s own output shape -- the only way it
+    // appears on an input document is because an app.js bridge function
+    // (universalDocumentFromTemplate, universalDocumentFromAdvancedState,
+    // buildUniversalLabelPrintNode) deliberately attached it as the
+    // freshest known color. If input.style is ALSO present, it can only be
+    // a stale default baked in by an earlier, colorless normalizeDocument()
+    // call before that bridge ran -- preferring it silently reverted a real
+    // saved color (e.g. an Owner's red design) back to white/black on any
+    // second normalize pass (re-opening the design, a Simple<->Expert
+    // switch, buildUniversalLabelPrintNode's own second normalize call).
+    const source = legacyRenderOptions || input.style || {};
+    return {
+      background: safeColorOrDefault(source.background, '#ffffff'),
+      foreground: safeColorOrDefault(source.foreground, '#111111'),
+      border: source.border === true,
+      radius: clamp(source.radius, 0, 50, 0)
+    };
+  }
+  function normalizeQrStyle(input, style, legacyRenderOptions = null) {
+    // A QR's own colors default to the label's text/QR color (matching the
+    // existing "Texto / QR" single-color-picker convention) so a document
+    // that never explicitly touched QR color still renders sensibly --
+    // but once a document DOES carry an explicit qrStyle (or the legacy
+    // qrBackground field), that value is preserved verbatim and is never
+    // silently reset back to match `style` on a later re-normalize, even
+    // if `style` itself changes.
+    // Same legacyRenderOptions-wins precedence as normalizeStyle, and for
+    // the same reason: it's only ever attached by a bridge function as the
+    // freshest known color, while an already-present `input` (qrStyle) at
+    // the same time can only be a stale default from an earlier normalize.
+    const source = (legacyRenderOptions ? { foreground: legacyRenderOptions.foreground, background: legacyRenderOptions.qrBackground } : null) || input || {};
+    return {
+      foreground: safeColorOrDefault(source.foreground, style.foreground),
+      background: safeColorOrDefault(source.background, style.background),
+      quietZoneModules: clamp(source.quietZoneModules, 0, 16, 4),
+      errorCorrection: ['L', 'M', 'Q', 'H'].includes(source.errorCorrection) ? source.errorCorrection : 'M'
+    };
+  }
+  function normalizeBarcodeStyle(input, style) {
+    const source = input || {};
+    return {
+      foreground: safeColorOrDefault(source.foreground, style.foreground),
+      background: safeColorOrDefault(source.background, style.background)
+    };
+  }
+
+  // r37.1 (P0-B, QR professional rules): contrast + minimum physical size
+  // are ADVISORY, never a silent auto-change -- a design's own colors are
+  // never overridden without the user explicitly choosing to (see the
+  // "Optimizar para escaneo" CTA these warnings are meant to drive).
+  function relativeLuminance(hex) {
+    const value = String(hex || '#000000').replace('#', '');
+    const full = value.length === 3 ? value.split('').map((c) => c + c).join('') : value.padEnd(6, '0');
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16) / 255);
+    const channel = (c) => (Number.isFinite(c) ? c : 0) <= 0.03928 ? (c || 0) / 12.92 : Math.pow(((c || 0) + 0.055) / 1.055, 2.4);
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  }
+  function contrastRatio(hexA, hexB) {
+    const a = relativeLuminance(hexA) + 0.05;
+    const b = relativeLuminance(hexB) + 0.05;
+    return a > b ? a / b : b / a;
+  }
+  const QR_MIN_CONTRAST_RATIO = 3;
+  const QR_MIN_RECOMMENDED_SIZE_MM = 15;
+  function validateQrDesign(input) {
+    const document = normalizeDocument(input);
+    const warnings = [];
+    for (const object of document.objects) {
+      if (object.type !== 'qr' || !object.visible) continue;
+      const ratio = contrastRatio(document.qrStyle.foreground, document.qrStyle.background);
+      if (ratio < QR_MIN_CONTRAST_RATIO) {
+        warnings.push({ objectId: object.id, code: 'low_contrast', ratio, message: 'Este QR puede ser difícil de leer.', suggestion: 'Optimizar para escaneo.' });
+      }
+      if (object.widthMm < QR_MIN_RECOMMENDED_SIZE_MM) {
+        warnings.push({ objectId: object.id, code: 'small_size', widthMm: object.widthMm, message: 'Este QR puede ser difícil de leer.', suggestion: 'Optimizar para escaneo.' });
+      }
+    }
+    return { valid: warnings.length === 0, warnings };
+  }
 
   function normalizePaper(input = {}) {
     const widthMm = clamp(input.widthMm || input.labelWidthMm, 10, 250, 60);
@@ -70,12 +166,20 @@
     const heightMm = hasMillimeters
       ? clamp(object.heightMm, 2, paper.heightMm, type === 'text' ? 5 : Math.min(20, paper.heightMm))
       : clamp(legacyHeight / legacyBase.height * paper.heightMm, 2, paper.heightMm, type === 'text' ? 5 : Math.min(20, paper.heightMm));
+    // r37.1 (P0-B, QR professional rules): a QR must never stretch --
+    // width and height are forced equal (the smaller of the two computed
+    // values, so it always stays within the paper bounds) regardless of
+    // what a legacy/malformed document tried to save independently for
+    // each axis.
+    const squareSizeMm = type === 'qr' ? Math.min(widthMm, heightMm) : null;
+    const finalWidthMm = squareSizeMm ?? widthMm;
+    const finalHeightMm = squareSizeMm ?? heightMm;
     const xMm = hasMillimeters
-      ? clamp(object.xMm, 0, Math.max(0, paper.widthMm - widthMm), 0)
-      : legacyToMm(object.x, Math.max(0, paper.widthMm - widthMm), legacyBase.width, 0);
+      ? clamp(object.xMm, 0, Math.max(0, paper.widthMm - finalWidthMm), 0)
+      : legacyToMm(object.x, Math.max(0, paper.widthMm - finalWidthMm), legacyBase.width, 0);
     const yMm = hasMillimeters
-      ? clamp(object.yMm, 0, Math.max(0, paper.heightMm - heightMm), 0)
-      : legacyToMm(object.y, Math.max(0, paper.heightMm - heightMm), legacyBase.height, 0);
+      ? clamp(object.yMm, 0, Math.max(0, paper.heightMm - finalHeightMm), 0)
+      : legacyToMm(object.y, Math.max(0, paper.heightMm - finalHeightMm), legacyBase.height, 0);
     return {
       id: safeId(object.id, `${type}-${index + 1}`),
       type,
@@ -83,8 +187,8 @@
       imageData: String(object.imageData || '').slice(0, 2_000_000),
       xMm,
       yMm,
-      widthMm,
-      heightMm,
+      widthMm: finalWidthMm,
+      heightMm: finalHeightMm,
       rotation: clamp(object.rotation, -180, 180, 0),
       locked: object.locked === true,
       visible: object.visible !== false,
@@ -119,9 +223,22 @@
       : input.layout ? normalizeLegacyLayout(input.layout, paper) : defaultsForPaper(paper);
     // Older saved canvas documents stored coordinates on a 0..1000 logical grid.
     const legacyBase = { width: 1000, height: 1000 };
+    // r37.1 (P0-B): style/qrStyle/barcodeStyle are now genuine, canonical
+    // fields of the document itself -- never a "renderOptions" sidecar a
+    // caller has to remember to carry across separately. A document that
+    // still only carries the legacy sidecar (input.renderOptions) is
+    // bridged here, once, so every consumer downstream of normalizeDocument
+    // automatically sees the real, correct colors with no special-casing.
+    const legacyRenderOptions = input.renderOptions || null;
+    const style = normalizeStyle(input, legacyRenderOptions);
+    const qrStyle = normalizeQrStyle(input.qrStyle, style, legacyRenderOptions);
+    const barcodeStyle = normalizeBarcodeStyle(input.barcodeStyle, style);
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       paper,
+      style,
+      qrStyle,
+      barcodeStyle,
       objects: sourceObjects.map((object, index) => normalizeObject(object, index, paper, legacyBase)).sort((a, b) => a.z - b.z),
       quantity: Math.max(1, Math.trunc(clamp(input.quantity || input.copies, 1, 500, 1))),
       startSlot: Math.max(1, Math.trunc(clamp(input.startSlot, 1, Math.max(1, paper.columns * paper.rows), 1))),
@@ -266,18 +383,31 @@
     draw(-width / 2, -height / 2, width, height);
     ctx.restore();
   }
-  function drawQr(ctx, value, x, y, width, height, background) {
+  function drawQr(ctx, value, x, y, width, height, qrStyle = {}) {
     if (typeof root.qrcode !== 'function') return false;
     try {
-      const qr = root.qrcode(0, 'M');
+      const errorCorrection = ['L', 'M', 'Q', 'H'].includes(qrStyle.errorCorrection) ? qrStyle.errorCorrection : 'M';
+      const qr = root.qrcode(0, errorCorrection);
       qr.addData(value || 'CLICK360');
       qr.make();
       const count = qr.getModuleCount();
-      const cell = Math.min(width, height) / count;
-      ctx.fillStyle = String(background || '#ffffff'); ctx.fillRect(x, y, width, height);
-      ctx.fillStyle = '#000000';
+      // r37.1 (P0-B, QR professional rules): the quiet zone is expressed in
+      // QR MODULES (the spec's own unit, minimum 4 by default) rather than
+      // an arbitrary percentage of the object's box -- a percentage-based
+      // inset shrinks/grows nonlinearly with box size and can violate the
+      // spec's real minimum at small sizes. The object itself is already
+      // forced square (see normalizeObject), so width===height here.
+      const quietZoneModules = Math.max(0, Number(qrStyle.quietZoneModules ?? 4));
+      const cell = Math.min(width, height) / (count + quietZoneModules * 2);
+      const background = String(qrStyle.background || '#ffffff');
+      const foreground = String(qrStyle.foreground || '#000000');
+      ctx.fillStyle = background;
+      ctx.fillRect(x, y, width, height);
+      ctx.fillStyle = foreground;
+      const offsetX = x + quietZoneModules * cell;
+      const offsetY = y + quietZoneModules * cell;
       for (let row = 0; row < count; row += 1) for (let column = 0; column < count; column += 1) {
-        if (qr.isDark(row, column)) ctx.fillRect(x + column * cell, y + row * cell, Math.ceil(cell), Math.ceil(cell));
+        if (qr.isDark(row, column)) ctx.fillRect(offsetX + column * cell, offsetY + row * cell, Math.ceil(cell), Math.ceil(cell));
       }
       return true;
     } catch { return false; }
@@ -285,6 +415,23 @@
   async function renderLabelToCanvas(canvas, input, data = {}, options = {}) {
     const document = normalizeDocument(input);
     const paper = document.paper;
+    // r37.1 (P0-B): the document's own style/qrStyle/barcodeStyle are the
+    // real, canonical color source now -- `options` only OVERRIDES when a
+    // caller explicitly passes a value (e.g. a one-off preview tint), so
+    // the SAME document renders with the SAME colors regardless of which
+    // surface (Wizard bridge, Universal Canvas, PDF, print) called this.
+    const background = String(options.background ?? document.style.background);
+    const foreground = String(options.foreground ?? document.style.foreground);
+    const qrStyle = {
+      foreground: options.qrForeground ?? document.qrStyle.foreground,
+      background: options.qrBackground ?? document.qrStyle.background,
+      quietZoneModules: options.qrQuietZoneModules ?? document.qrStyle.quietZoneModules,
+      errorCorrection: options.qrErrorCorrection ?? document.qrStyle.errorCorrection
+    };
+    const barcodeStyle = {
+      foreground: options.barcodeForeground ?? document.barcodeStyle.foreground,
+      background: options.barcodeBackground ?? document.barcodeStyle.background
+    };
     const dpi = Math.max(72, Number(options.dpi || paper.dpi || 203));
     const pxPerMm = dpi / MM_PER_INCH;
     canvas.width = Math.max(1, Math.round(paper.widthMm * pxPerMm));
@@ -293,7 +440,7 @@
     canvas.dataset.heightMm = String(paper.heightMm);
     canvas.dataset.renderer = 'universal-mm-v2';
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.fillStyle = String(options.background || '#ffffff');
+    ctx.fillStyle = background;
     if (paper.shape === 'circle') {
       ctx.save();
       ctx.beginPath();
@@ -304,26 +451,19 @@
     } else {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-    ctx.fillStyle = String(options.foreground || '#111111');
     const payload = String(data.qrPayload || data.product?.code || data.product?.id || 'CLICK360');
-    const qrBackground = options.qrBackground || options.background || '#ffffff';
-    // qrMarginRatio insets the QR module grid within its object box, preserving a quiet zone
-    // (0..0.3 of the box). Matches the legacy advanced wizard's "labelQrMargin" control.
-    const qrMarginRatio = Math.max(0, Math.min(0.3, Number(options.qrMarginRatio || 0)));
     ctx.save();
     ctx.scale(paper.scaleX, paper.scaleY);
     for (const object of document.objects.filter((entry) => entry.visible).sort((a, b) => a.z - b.z)) {
       if (object.type === 'qr') {
         drawRotated(ctx, object, pxPerMm, (x, y, width, height) => {
-          const insetX = width * qrMarginRatio / 2;
-          const insetY = height * qrMarginRatio / 2;
-          drawQr(ctx, payload, x + insetX, y + insetY, width - insetX * 2, height - insetY * 2, qrBackground);
+          drawQr(ctx, payload, x, y, width, height, qrStyle);
         });
       } else if (object.type === 'barcode' && typeof root.JsBarcode === 'function') {
         const barcode = root.document?.createElement?.('canvas');
         if (!barcode) continue;
         try {
-          root.JsBarcode(barcode, String(data.product?.code || data.sku || 'CLICK360'), { format: 'CODE128', displayValue: false, margin: 0, height: 120, background: '#ffffff', lineColor: '#111111' });
+          root.JsBarcode(barcode, String(data.product?.code || data.sku || 'CLICK360'), { format: 'CODE128', displayValue: false, margin: 0, height: 120, background: barcodeStyle.background, lineColor: barcodeStyle.foreground });
           drawRotated(ctx, object, pxPerMm, (x, y, width, height) => ctx.drawImage(barcode, x, y, width, height));
         } catch {}
       } else if (object.type === 'image' && object.imageData && typeof root.Image === 'function') {
@@ -336,6 +476,11 @@
           let size = Math.max(7, height * 0.72);
           ctx.font = `700 ${size}px Arial`;
           while (ctx.measureText(value).width > width && size > 7) { size -= 1; ctx.font = `700 ${size}px Arial`; }
+          // Explicit every time -- drawQr/drawImage above mutate ctx.fillStyle
+          // and drawRotated only save/restore for a ROTATED object, so a
+          // text object drawn right after an unrotated QR/barcode must not
+          // silently inherit whatever color those last left behind.
+          ctx.fillStyle = foreground;
           ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
           ctx.fillText(value, x, y + height / 2, width);
         });
@@ -347,7 +492,7 @@
       rotated.width = canvas.width; rotated.height = canvas.height;
       rotated.getContext('2d').drawImage(canvas, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = String(options.background || '#ffffff');
+      ctx.fillStyle = background;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.save();
       ctx.translate(canvas.width / 2, canvas.height / 2);
@@ -364,6 +509,7 @@
 
   root.CLICK360_UNIVERSAL_LABEL_CANVAS = Object.freeze({
     VERSION, OBJECT_TYPES, MM_PER_INCH, normalizePaper, normalizeObject, normalizeDocument, normalizeLegacyLayout, defaultsForPaper,
+    normalizeStyle, normalizeQrStyle, normalizeBarcodeStyle, validateQrDesign,
     createHistory, commit, undo, redo, updateObject, addObject, deleteObjects, duplicateObject, alignObjects, arrangeObject,
     toPrintPaper, buildPrintPlan, planFingerprint, renderLabelToCanvas
   });

@@ -57,18 +57,18 @@ const flags = read('p2-web-safe-flags.js');
 const build = read('scripts/build-static-release.mjs');
 const printing = read('printing-service.js');
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r37-stable-ga'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r37-1-label-engine-hotfix'/);
 assert.match(index, /By AIIA INTELLIGENCE TECHNOLOGIES/, 'startup splash shows the required AIIA footer');
-assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r37-stable-ga/, 'startup splash uses the HD logo instead of the low-resolution favicon');
-assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r37-stable-ga"/, 'startup HD logo is preloaded before scripts');
+assert.match(index, /assets\/logo\.png\?v=commercial-1-0-5-r37-1-label-engine-hotfix/, 'startup splash uses the HD logo instead of the low-resolution favicon');
+assert.match(index, /rel="preload" as="image" href="assets\/logo\.png\?v=commercial-1-0-5-r37-1-label-engine-hotfix"/, 'startup HD logo is preloaded before scripts');
 assert.match(index, /click360SplashProgress/, 'startup splash keeps a loading progress bar while the app prepares');
 assert.doesNotMatch(index, /click-360\.web\.app<\/span>/, 'startup splash must not show the public URL as footer copy');
 assert.match(app, /function markAppReady/, 'app explicitly marks the splash ready after real UI render');
-assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r37-stable-ga/);
-assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r37-stable-ga/);
-assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r37-stable-ga/);
-assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r37-stable-ga/);
-assert.match(worker, /click360-commercial-1-0-5-r37-stable-ga/);
+assert.match(index, /universal-label-canvas\.js\?v=commercial-1-0-5-r37-1-label-engine-hotfix/);
+assert.match(index, /universal-label-editor\.js\?v=commercial-1-0-5-r37-1-label-engine-hotfix/);
+assert.match(index, /p2-restaurant-domain\.js\?v=commercial-1-0-5-r37-1-label-engine-hotfix/);
+assert.match(index, /p2-logistics-domain\.js\?v=commercial-1-0-5-r37-1-label-engine-hotfix/);
+assert.match(worker, /click360-commercial-1-0-5-r37-1-label-engine-hotfix/);
 assert.match(flags, /p2UniversalLabelsEnabled: true/);
 for (const key of ['p2WorkersEnabled', 'p2OwnerPreviewEnabled']) {
   assert.match(flags, new RegExp(`${key}: false`), `${key} must remain disabled`);
@@ -149,7 +149,7 @@ assert.match(printing, /pdf-render-blank/, 'PDF export rejects blank rendered ou
 assert.match(printing, /dataset\.click360Printing = 'true'/, 'system print exposes a ready state before invoking the native dialog');
 assert.match(printing, /element\.dataset\.printReady = 'true'/, 'system print portal is explicitly marked ready');
 assert.match(printing, /system-print-dialog-failed/, 'native dialog failures return an actionable code');
-assert.match(index, /rel="icon" type="image\/png" sizes="32x32" href="assets\/favicon\.png\?v=commercial-1-0-5-r37-stable-ga"/, 'browser receives the real 32 px favicon');
+assert.match(index, /rel="icon" type="image\/png" sizes="32x32" href="assets\/favicon\.png\?v=commercial-1-0-5-r37-1-label-engine-hotfix"/, 'browser receives the real 32 px favicon');
 assert.match(index, /rel="apple-touch-icon" sizes="180x180"/, 'iOS receives an explicit home-screen icon');
 for (const iconPath of ['assets/favicon.png', 'assets/favicon.ico', 'assets/icon-192.png', 'assets/icon-512.png', 'assets/apple-touch-icon.png']) {
   assert.equal(fs.existsSync(path.join(root, iconPath)), true, `missing PWA icon: ${iconPath}`);
