@@ -979,6 +979,90 @@ function parseMoney(value) {
     }
   }
   window.click360GuardedAction = guardedAction;
+
+  // r37 (#91): configurable inactivity mode -- SHARED/POS-TERMINAL devices
+  // only, never a personal device. This is a per-device, per-browser choice
+  // (localStorage, never synced through tenant state/Firestore) because the
+  // same business can have both a personal phone and a shared front-counter
+  // tablet at once; defaulting every existing session to 'personal' means
+  // this feature is a pure no-op until an owner explicitly opts a specific
+  // device in from Ajustes. An active draft (a non-empty sell cart) or any
+  // in-flight critical mutation (criticalActionGate) must NEVER be
+  // abandoned by an auto-logout -- the check simply defers itself instead
+  // of firing while either is true.
+  const DEVICE_MODE_KEY = 'click360_device_mode';
+  const DEVICE_INACTIVITY_MINUTES_KEY = 'click360_device_inactivity_minutes';
+  const DEVICE_INACTIVITY_ALLOWED_MINUTES = Object.freeze([3, 5, 10, 15]);
+  const DEVICE_INACTIVITY_DEFAULT_MINUTES = 5;
+  function deviceMode() {
+    try { return localStorage.getItem(DEVICE_MODE_KEY) === 'shared_terminal' ? 'shared_terminal' : 'personal'; }
+    catch { return 'personal'; }
+  }
+  function setDeviceMode(mode) {
+    try { localStorage.setItem(DEVICE_MODE_KEY, mode === 'shared_terminal' ? 'shared_terminal' : 'personal'); } catch {}
+  }
+  function deviceInactivityMinutes() {
+    const stored = Number(localStorage.getItem(DEVICE_INACTIVITY_MINUTES_KEY));
+    return DEVICE_INACTIVITY_ALLOWED_MINUTES.includes(stored) ? stored : DEVICE_INACTIVITY_DEFAULT_MINUTES;
+  }
+  function setDeviceInactivityMinutes(minutes) {
+    const value = DEVICE_INACTIVITY_ALLOWED_MINUTES.includes(Number(minutes)) ? Number(minutes) : DEVICE_INACTIVITY_DEFAULT_MINUTES;
+    try { localStorage.setItem(DEVICE_INACTIVITY_MINUTES_KEY, String(value)); } catch {}
+  }
+  function hasActiveDraftOrPendingOperation() {
+    if ((criticalActionGate?.size?.() || 0) > 0) return true;
+    if (Number(window.click360SellCartCount?.() || 0) > 0) return true;
+    return false;
+  }
+  let inactivityIdleTimer = null;
+  let inactivityWatchStarted = false;
+  let inactivityLastActivityAtMs = 0;
+  // Testing-only seam: real devices always use 60000 (a real minute). QA
+  // harnesses can shrink this so a 3-15 "minute" timeout resolves in
+  // milliseconds instead of requiring the test to actually wait minutes.
+  let inactivityMsPerMinuteForTesting = 60000;
+  function scheduleInactivityCheck() {
+    clearTimeout(inactivityIdleTimer);
+    if (deviceMode() !== 'shared_terminal' || !currentUser()) return;
+    inactivityIdleTimer = setTimeout(() => {
+      if (deviceMode() !== 'shared_terminal' || !currentUser()) return;
+      if (hasActiveDraftOrPendingOperation()) {
+        // Never abandon a draft/pending operation -- defer instead of
+        // logging out, and keep re-checking until it's genuinely idle.
+        scheduleInactivityCheck();
+        return;
+      }
+      window.click360Logout?.();
+    }, deviceInactivityMinutes() * inactivityMsPerMinuteForTesting);
+  }
+  function registerDeviceActivity() {
+    const now = Date.now();
+    if (now - inactivityLastActivityAtMs < 1000) return; // throttle mousemove/scroll floods
+    inactivityLastActivityAtMs = now;
+    scheduleInactivityCheck();
+  }
+  function startInactivityWatch() {
+    if (inactivityWatchStarted) return;
+    inactivityWatchStarted = true;
+    ['click', 'keydown', 'touchstart', 'mousemove', 'scroll'].forEach((evtName) =>
+      window.addEventListener(evtName, registerDeviceActivity, { passive: true }));
+    scheduleInactivityCheck();
+  }
+  window.CLICK360_DEVICE_MODE = Object.freeze({
+    get: deviceMode,
+    set: setDeviceMode,
+    getInactivityMinutes: deviceInactivityMinutes,
+    setInactivityMinutes: setDeviceInactivityMinutes,
+    ALLOWED_MINUTES: DEVICE_INACTIVITY_ALLOWED_MINUTES,
+    hasActiveDraftOrPendingOperation,
+    scheduleInactivityCheck,
+    startInactivityWatch: () => startInactivityWatch(),
+    // Testing-only: real devices never call this. Lets an E2E harness
+    // shrink a "minute" to a few milliseconds instead of waiting for real
+    // wall-clock minutes to prove the watchdog actually fires (or defers).
+    __setMsPerMinuteForTesting: (ms) => { inactivityMsPerMinuteForTesting = Number(ms) > 0 ? Number(ms) : 60000; }
+  });
+
   function stateStorageKey() {
     return activeTenantContext?.authUid && activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.authUid}:${activeTenantContext.tenantKey}` : '';
   }
@@ -2297,6 +2381,7 @@ function parseMoney(value) {
       checkDueReminders();
       if (r === 'home') setTimeout(showOnboardingForNewAccount, 0);
       if (r !== 'legalGate') setTimeout(maybeShowLegalGraceBanner, 0);
+      startInactivityWatch();
       markAppReady(`route:${r}`);
 	    } catch(e) {
 	      console.error("Error al renderizar la app:", e);
@@ -5835,6 +5920,28 @@ function parseMoney(value) {
         <button type="button" class="btn silver block" id="createBiz">Crear negocio</button>
       </section>
 
+	      <section class="card sectionCard" style="margin-top:14px;${ownerOnlyStyle}">
+	        <h3>Este dispositivo</h3>
+	        <p class="fieldHint">Configura esto SOLO si este dispositivo se queda fijo en el mostrador y lo usan varios trabajadores (terminal compartido / POS). En un celular o computadora personal, deja "Dispositivo personal" -- nunca cierra sesión sola.</p>
+	        <div class="field">
+	          <label>Tipo de dispositivo</label>
+	          <select id="deviceModeSelect">
+	            <option value="personal">Dispositivo personal (nunca cierra sesión por inactividad)</option>
+	            <option value="shared_terminal">Terminal compartido / POS (cierra sesión tras inactividad)</option>
+	          </select>
+	        </div>
+	        <div class="field" id="deviceInactivityMinutesField" style="display:none;">
+	          <label>Cerrar sesión tras inactividad de</label>
+	          <select id="deviceInactivityMinutesSelect">
+	            <option value="3">3 minutos</option>
+	            <option value="5">5 minutos</option>
+	            <option value="10">10 minutos</option>
+	            <option value="15">15 minutos</option>
+	          </select>
+	        </div>
+	        <p class="fieldHint">Si hay una venta en curso (carrito con productos) o una operación sin confirmar, CLICK 360 nunca cierra la sesión sola -- espera a que termines.</p>
+	      </section>
+
 	      <section class="card sectionCard" style="margin-top:14px; border:1px solid #4a1c1c;${ownerOnlyStyle}">
         <h3 style="color:#d9534f;">Zona de Peligro</h3>
         <button type="button" class="btn danger block" id="resetInventoryBtn" style="margin-bottom:10px;">Reiniciar Inventario</button>
@@ -6173,6 +6280,7 @@ function parseMoney(value) {
 	  function bindSell(){
 	    if(!$('#payMethod')) return;
 	    let cart=[];
+	    window.click360SellCartCount = () => cart.length;
 	    const currentTax = businessTaxConfig();
 	    $('#calculatorSellBtn')?.addEventListener('click', () => openCalculator({ base: parseMoney($('#cartTotal')?.textContent || 0), preferredTarget: 'cashReceived' }));
 
@@ -7829,6 +7937,30 @@ function parseMoney(value) {
   function bindSettings(){
     $('#configureTablesBtn')?.addEventListener('click', () => renderApp('tables'));
     $('#configureLogisticsBtn')?.addEventListener('click', () => renderApp('logistics'));
+
+    const deviceModeSelect = $('#deviceModeSelect');
+    const deviceInactivityMinutesField = $('#deviceInactivityMinutesField');
+    const deviceInactivityMinutesSelect = $('#deviceInactivityMinutesSelect');
+    if (deviceModeSelect) {
+      const currentMode = window.CLICK360_DEVICE_MODE.get();
+      deviceModeSelect.value = currentMode;
+      if (deviceInactivityMinutesSelect) deviceInactivityMinutesSelect.value = String(window.CLICK360_DEVICE_MODE.getInactivityMinutes());
+      if (deviceInactivityMinutesField) deviceInactivityMinutesField.style.display = currentMode === 'shared_terminal' ? '' : 'none';
+      deviceModeSelect.onchange = () => {
+        window.CLICK360_DEVICE_MODE.set(deviceModeSelect.value);
+        if (deviceInactivityMinutesField) deviceInactivityMinutesField.style.display = deviceModeSelect.value === 'shared_terminal' ? '' : 'none';
+        window.CLICK360_DEVICE_MODE.scheduleInactivityCheck();
+        toast(deviceModeSelect.value === 'shared_terminal'
+          ? 'Este dispositivo cerrará sesión sola tras inactividad (sin abandonar ventas en curso).'
+          : 'Este dispositivo es personal: nunca cerrará sesión sola.');
+      };
+      if (deviceInactivityMinutesSelect) {
+        deviceInactivityMinutesSelect.onchange = () => {
+          window.CLICK360_DEVICE_MODE.setInactivityMinutes(deviceInactivityMinutesSelect.value);
+          window.CLICK360_DEVICE_MODE.scheduleInactivityCheck();
+        };
+      }
+    }
     let pendingLogoUrl = safeImageSrc((currentBusiness().settings || {}).logoUrl);
     const logoUpload = $('#bizLogoUpload');
     if (logoUpload) {
