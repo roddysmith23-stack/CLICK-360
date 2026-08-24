@@ -2,5 +2,15 @@
   "projects": {
     "default": "click-360",
     "staging": "click360-staging-7620168025"
-  }
+  },
+  "targets": {
+    "click360-staging-7620168025": {
+      "hosting": {
+        "staging": [
+          "click360-staging-7620168025"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
