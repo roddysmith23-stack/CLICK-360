@@ -21,7 +21,8 @@
   function editorMarkup() {
     return `<div class="ulcHeader"><div><h2>Lienzo universal de etiquetas</h2><p>Medidas reales en milimetros. El zoom nunca altera el plan fisico.</p></div><div class="ulcHeaderActions"><button type="button" class="btn active" id="ulcSimpleMode" aria-current="true">Modo simple · Lienzo</button><button type="button" class="btn" id="ulcUndo" title="Deshacer">Deshacer</button><button type="button" class="btn" id="ulcRedo" title="Rehacer">Rehacer</button><button type="button" class="btn" id="ulcAdvanced">Modo experto · Asistente</button><button type="button" class="closeBtn" data-close aria-label="Cerrar">x</button></div></div>
       <div class="ulcWorkspace">
-        <aside class="ulcPanel ulcLeft" aria-label="Papel y objetos">
+        <details class="ulcPanel ulcLeft" aria-label="Papel y objetos" open>
+          <summary>Papel y objetos</summary>
           <h3>Papel</h3>
           <label>Formato<select id="ulcPreset"><option value="a4">A4</option><option value="roll">Rollo</option><option value="roll2">Rollo 2 columnas 40 x 60</option><option value="custom">Personalizado</option></select></label>
           <div class="ulcFields two"><label>Ancho mm<input id="ulcWidth" type="number" min="10" max="250" step="0.1"></label><label>Alto mm<input id="ulcHeight" type="number" min="10" max="400" step="0.1"></label></div>
@@ -31,16 +32,17 @@
           <details class="ulcMeasurement"><summary>Medicion y calibracion</summary><p>Perfil provisional por negocio y dispositivo. Mide antes de certificar.</p><label>Perfil de impresora<select id="ulcProfiles"><option value="">Perfil nuevo</option></select></label><label>Nombre del perfil<input id="ulcProfileName" maxlength="80" placeholder="Impresora / papel"></label><div class="ulcFields two"><label>Ancho total<input id="ulcMediaWidth" type="number" min="0" max="1000" step="0.1"></label><label>Pitch mm<input id="ulcPitch" type="number" min="0" max="500" step="0.1"></label><label>Offset X<input id="ulcOffsetX" type="number" min="-50" max="50" step="0.1"></label><label>Offset Y<input id="ulcOffsetY" type="number" min="-50" max="50" step="0.1"></label><label>Escala X<input id="ulcScaleX" type="number" min="0.8" max="1.2" step="0.001"></label><label>Escala Y<input id="ulcScaleY" type="number" min="0.8" max="1.2" step="0.001"></label></div><button type="button" class="btn" id="ulcSaveProfile">Guardar perfil provisional</button><button type="button" class="btn" id="ulcCalibrationSheet">Hoja de calibracion</button></details>
           <h3>Agregar</h3><div class="ulcObjectButtons"><button type="button" data-ulc-add="qr">QR</button><button type="button" data-ulc-add="barcode">Codigo</button><button type="button" data-ulc-add="name">Nombre</button><button type="button" data-ulc-add="price">Precio</button><button type="button" data-ulc-add="sku">SKU</button><button type="button" data-ulc-add="text">Texto</button><button type="button" id="ulcAddImage">Imagen</button><input id="ulcImageInput" type="file" accept="image/*" hidden></div>
           <h3>Plantillas</h3><div id="ulcTemplateList" class="ulcTemplateList" aria-label="Plantillas guardadas"></div><div class="ulcInline"><button type="button" class="btn" id="ulcSaveTemplate">Guardar plantilla</button></div>
-        </aside>
+        </details>
         <section class="ulcCanvasRegion" aria-label="Lienzo de etiquetas">
           <div class="ulcCanvasToolbar"><label>Zoom <input id="ulcZoom" type="range" min="0.5" max="2" step="0.1" value="1"></label><output id="ulcZoomValue">100%</output><label><input id="ulcGrid" type="checkbox" checked> Cuadricula</label><label><input id="ulcSnap" type="checkbox" checked> Ajustar</label><span id="ulcPhysicalSize"></span></div>
           <div id="ulcViewport" class="ulcViewport"><div id="ulcStage" class="ulcStage" role="application" aria-label="Lienzo de etiqueta en milimetros"></div></div>
         </section>
-        <aside class="ulcPanel ulcRight" aria-label="Propiedades del objeto">
-          <h3>Propiedades</h3><p id="ulcEmptySelection">Selecciona un objeto en el lienzo.</p><div id="ulcProperties" hidden><label>Objeto<select id="ulcObjectSelect"></select></label><div class="ulcFields two"><label>X mm<input id="ulcX" type="number" step="0.1"></label><label>Y mm<input id="ulcY" type="number" step="0.1"></label><label>Ancho mm<input id="ulcObjectWidth" type="number" min="2" step="0.1"></label><label>Alto mm<input id="ulcObjectHeight" type="number" min="2" step="0.1"></label></div><label>Rotacion <input id="ulcRotation" type="range" min="-180" max="180" step="1"><output id="ulcRotationValue"></output></label><label id="ulcTextField">Texto<input id="ulcText" maxlength="160"></label><div class="ulcObjectActions"><button type="button" id="ulcDuplicate">Duplicar</button><button type="button" id="ulcDelete">Eliminar</button><button type="button" id="ulcLock">Bloquear</button><button type="button" id="ulcCopy">Copiar</button><button type="button" id="ulcPaste">Pegar</button><button type="button" id="ulcFront">Al frente</button><button type="button" id="ulcBack">Al fondo</button></div><fieldset><legend>Alinear seleccion</legend><div class="ulcAlign"><button type="button" data-ulc-align="left">Izq.</button><button type="button" data-ulc-align="center">Centro</button><button type="button" data-ulc-align="right">Der.</button><button type="button" data-ulc-align="top">Arriba</button><button type="button" data-ulc-align="middle">Medio</button><button type="button" data-ulc-align="bottom">Abajo</button></div></fieldset></div>
-        </aside>
+        <details class="ulcPanel ulcRight" aria-label="Propiedades del objeto" open>
+          <summary>Propiedades</summary>
+          <p id="ulcEmptySelection">Selecciona un objeto en el lienzo.</p><div id="ulcProperties" hidden><label>Objeto<select id="ulcObjectSelect"></select></label><div class="ulcFields two"><label>X mm<input id="ulcX" type="number" step="0.1"></label><label>Y mm<input id="ulcY" type="number" step="0.1"></label><label>Ancho mm<input id="ulcObjectWidth" type="number" min="2" step="0.1"></label><label>Alto mm<input id="ulcObjectHeight" type="number" min="2" step="0.1"></label></div><label>Rotacion <input id="ulcRotation" type="range" min="-180" max="180" step="1"><output id="ulcRotationValue"></output></label><label id="ulcTextField">Texto<input id="ulcText" maxlength="160"></label><div class="ulcObjectActions"><button type="button" id="ulcDuplicate">Duplicar</button><button type="button" id="ulcDelete">Eliminar</button><button type="button" id="ulcLock">Bloquear</button><button type="button" id="ulcCopy">Copiar</button><button type="button" id="ulcPaste">Pegar</button><button type="button" id="ulcFront">Al frente</button><button type="button" id="ulcBack">Al fondo</button></div><fieldset><legend>Alinear seleccion</legend><div class="ulcAlign"><button type="button" data-ulc-align="left">Izq.</button><button type="button" data-ulc-align="center">Centro</button><button type="button" data-ulc-align="right">Der.</button><button type="button" data-ulc-align="top">Arriba</button><button type="button" data-ulc-align="middle">Medio</button><button type="button" data-ulc-align="bottom">Abajo</button></div></fieldset></div>
+        </details>
       </div>
-      <footer class="ulcFooter"><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div><div class="ulcInline" id="ulcPrintActions"><button type="button" class="btn primary" id="ulcPrint">Guardar PDF limpio</button><button type="button" class="btn" id="ulcSystemPrint">Imprimir con navegador</button></div><div id="ulcPrintWarnings" class="ulcPrintWarnings" aria-live="polite"></div></footer>`;
+      <footer class="ulcFooter"><details class="ulcQuickPrint" open><summary><span>Cantidad e impresion por lote</span></summary><div class="ulcInline"><label>Cantidad exacta<input id="ulcQuantity" type="number" min="1" max="500" step="1"></label><label>Empezar en<input id="ulcStartSlot" type="number" min="1" step="1"></label><button type="button" id="ulcFillRow">Llenar fila</button><button type="button" id="ulcFillPage">Llenar pagina</button></div></details><div class="ulcInline" id="ulcPrintActions"><button type="button" class="btn primary" id="ulcPrint">Guardar PDF limpio</button><button type="button" class="btn" id="ulcSystemPrint">Imprimir con navegador</button></div><div id="ulcPrintWarnings" class="ulcPrintWarnings" aria-live="polite"></div></footer>`;
   }
 
   function open(api) {
@@ -73,6 +75,15 @@
     const modalRoot = root.document.querySelector('#modalRoot');
     const modal = modalRoot.querySelector('.modal');
     modal.classList.add('universalLabelCanvasModal');
+    // On narrow screens the canvas itself must win the fight for vertical
+    // space -- the Papel/Propiedades panels and the batch-print quantity
+    // controls are real <details> accordions in the markup (desktop-open
+    // by default so nothing changes there); here we start them collapsed
+    // only below the phone breakpoint so the label is visible without the
+    // footer/side panels burying it (see the r37 mobile-canvas fix).
+    if (root.innerWidth <= 720) {
+      modalRoot.querySelectorAll('.ulcLeft, .ulcRight, .ulcQuickPrint').forEach((panel) => panel.removeAttribute('open'));
+    }
     const $ = (selector) => modalRoot.querySelector(selector);
     const $$ = (selector) => [...modalRoot.querySelectorAll(selector)];
     const current = () => history.present;

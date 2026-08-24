@@ -8,6 +8,8 @@ const output = join(root, 'dist');
 const files = [
   'index.html',
   'repair.html',
+  'terms.html',
+  'privacy.html',
   'styles.css',
   'runtime-guard.js',
   'app.js',

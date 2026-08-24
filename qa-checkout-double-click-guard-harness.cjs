@@ -46,4 +46,14 @@ assertGuarded('reopenCashBtn', 'btnReopenCash.onclick = async () => {', 'btnReop
 // ── Business settings save (#saveBiz) -- consistency with #saveUser ──
 assertGuarded('saveBiz', "$('#saveBiz').onclick=async ()=>{", 'saveBizBtn.disabled = true;', 300, 'saveBizBtn.disabled = false;', 3000);
 
+// ── r37 (Section 36-38, Action Guardian): cash movements and supplier
+// invoices had NO anti-double-submit guard at all -- unlike checkout,
+// where a duplicate op is at least idempotency-adjacent, these forms
+// generate a fresh id on every submit event, so a fast double-click
+// created two genuinely distinct financial records (a doubled income/
+// expense entry, or a doubled supplier invoice + its linked movement). ──
+assertGuarded('moveForm (new cash movement)', "$('#moveForm').onsubmit = async (e) => {", 'submitBtn.disabled = true;', 900, 'submitBtn.disabled = false;', 1500);
+assertGuarded('editMoveForm (edit cash movement)', "$('#editMoveForm').onsubmit = async (e) => {", 'submitBtn.disabled = true;', 400, 'submitBtn.disabled = false;', 1800);
+assertGuarded('invoiceForm (supplier invoice)', "$('#invoiceForm').onsubmit = async e => {", 'submitBtn.disabled = true;', 500, 'submitBtn.disabled = false;', 3500);
+
 console.log('PASS Checkout/cash/settings double-click guard (structural regression against app.js)');

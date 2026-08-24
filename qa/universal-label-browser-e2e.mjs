@@ -71,7 +71,10 @@ async function assertResponsiveLayout(page, browserName) {
     });
     if (layout.hasOverflow) throw new Error(`${browserName} overflow at ${width}px`);
     if (!layout.previewVisible) throw new Error(`${browserName} label preview is not visible at ${width}px`);
-    if (width <= 720 && !layout.simpleVisible) throw new Error(`${browserName} simple mode button is hidden at ${width}px`);
+    // #ulcSimpleMode is an inert "you are already here" indicator (clicking it just
+    // toasts a no-op) -- r37 intentionally hides it below the phone breakpoint so its
+    // header space goes to the canvas instead. #ulcAdvanced is the real, actionable
+    // mode switch and must stay visible.
     if (width <= 720 && !layout.advancedVisible) throw new Error(`${browserName} advanced mode button is hidden at ${width}px`);
     if (!layout.footerVisible || !layout.actionVisible) {
       throw new Error(`${browserName} primary print action is not visible at ${width}px`);
@@ -205,7 +208,9 @@ async function runWebKit() {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const errors = collectUnexpectedErrors(page);
     await page.goto(url, { waitUntil: 'networkidle' });
-    if (!(await page.locator('#ulcSimpleMode').isVisible())) throw new Error('WebKit mobile simple mode button is hidden.');
+    // #ulcSimpleMode is intentionally hidden below the phone breakpoint (see
+    // assertResponsiveLayout above) -- only #ulcAdvanced, the actionable mode
+    // switch, is required to stay visible.
     if (!(await page.locator('#ulcAdvanced').isVisible())) throw new Error('WebKit mobile advanced mode button is hidden.');
     const box = await page.locator('[data-ulc-object]').first().boundingBox();
     if (!box) throw new Error('Touch object is not visible.');
@@ -226,6 +231,11 @@ async function runWebKit() {
     const after = Number(await page.locator('#ulcX').inputValue());
     if (after === before) throw new Error('WebKit touch drag did not change the physical X coordinate.');
 
+    // Below the phone breakpoint the batch-quantity controls live inside a
+    // collapsed <details> accordion (r37 mobile-canvas fix) so the canvas
+    // itself gets priority over always-visible chrome -- open it first, the
+    // same tap a real mobile user would make.
+    await page.locator('.ulcQuickPrint > summary').click();
     await page.locator('#ulcQuantity').fill('2');
     await page.locator('#ulcStartSlot').fill('1');
     await page.locator('#ulcPrint').click();

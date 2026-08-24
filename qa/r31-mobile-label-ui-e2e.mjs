@@ -17,8 +17,8 @@ const viewports = [
 ];
 const fixtures = [
   { name: 'simple-label', path: '/qa/fixtures/r30-label-simple.html', root: '.quickLabelHome', interactive: '.quickLabelHome button,.quickLabelHome input,.quickLabelHome select' },
-  { name: 'advanced-wizard', path: '/qa/fixtures/p1-5c-smart-print-visual.html', root: '.labelEditorModal', interactive: '.labelEditorModal button,.labelEditorModal input,.labelEditorModal select' },
-  { name: 'universal-canvas', path: '/qa/fixtures/p2-universal-label-canvas.html', root: '.universalLabelCanvasModal', interactive: '.universalLabelCanvasModal button' }
+  { name: 'advanced-wizard', path: '/qa/fixtures/p1-5c-smart-print-visual.html', root: '.labelEditorModal', interactive: '.labelEditorModal button,.labelEditorModal input,.labelEditorModal select', canvas: '.labelPreviewSticky canvas' },
+  { name: 'universal-canvas', path: '/qa/fixtures/p2-universal-label-canvas.html', root: '.universalLabelCanvasModal', interactive: '.universalLabelCanvasModal button', canvas: '#ulcStage' }
 ];
 
 const server = spawn(process.execPath, [path.join(root, 'node_modules/http-server/bin/http-server'), '.', '-p', String(port), '-c-1'], { cwd: root, stdio: 'ignore' });
@@ -44,7 +44,7 @@ async function checkFixture(browserName, browserType, fixture) {
     for (const viewport of viewports) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       await page.waitForTimeout(60);
-      const result = await page.evaluate(({ rootSelector, interactiveSelector }) => {
+      const result = await page.evaluate(({ rootSelector, interactiveSelector, canvasSelector }) => {
         const root = document.documentElement;
         const modal = document.querySelector(rootSelector);
         const modalRect = modal?.getBoundingClientRect();
@@ -53,13 +53,16 @@ async function checkFixture(browserName, browserType, fixture) {
           const style = getComputedStyle(node);
           return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height, visible: style.display !== 'none' && style.visibility !== 'hidden' };
         }).filter((box) => box.visible && box.width > 0 && box.height > 0);
+        const canvasNode = canvasSelector ? document.querySelector(canvasSelector) : null;
+        const canvasRect = canvasNode?.getBoundingClientRect();
         return {
           scrollWidth: root.scrollWidth,
           clientWidth: root.clientWidth,
           modal: modalRect && { left: modalRect.left, right: modalRect.right, width: modalRect.width },
-          controls
+          controls,
+          canvas: canvasRect && { top: canvasRect.top, bottom: canvasRect.bottom, left: canvasRect.left, right: canvasRect.right, width: canvasRect.width, height: canvasRect.height }
         };
-      }, { rootSelector: fixture.root, interactiveSelector: fixture.interactive });
+      }, { rootSelector: fixture.root, interactiveSelector: fixture.interactive, canvasSelector: fixture.canvas });
 
       if (result.scrollWidth > result.clientWidth + 1) {
         throw new Error(`${fixture.name}/${browserName} horizontal page overflow at ${viewport.label}px (scrollWidth=${result.scrollWidth} > clientWidth=${result.clientWidth})`);
@@ -73,6 +76,18 @@ async function checkFixture(browserName, browserType, fixture) {
       for (const box of result.controls) {
         if (box.left < -1 || box.right > viewport.width + 1) {
           throw new Error(`${fixture.name}/${browserName} a control is clipped outside the viewport at ${viewport.label}px (left=${box.left} right=${box.right})`);
+        }
+      }
+      // r37: the label preview/canvas itself must be visible and un-clipped on
+      // phone widths -- not just "some control exists" (a settings field would
+      // satisfy that while the actual label design is scrolled out of view or
+      // painted under other chrome, which is exactly the bug this locks in).
+      if (fixture.canvas) {
+        if (!result.canvas || result.canvas.width <= 0 || result.canvas.height <= 0) {
+          throw new Error(`${fixture.name}/${browserName} the label canvas/preview is not visible at ${viewport.label}px`);
+        }
+        if (result.canvas.top < -1 || result.canvas.bottom > viewport.height + 1) {
+          throw new Error(`${fixture.name}/${browserName} the label canvas/preview is clipped out of the viewport at ${viewport.label}px (top=${result.canvas.top} bottom=${result.canvas.bottom} viewportHeight=${viewport.height})`);
         }
       }
       if (browserName === 'chromium') {

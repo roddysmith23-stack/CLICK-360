@@ -167,7 +167,7 @@ assert(firebase.includes('window.click360ClearLocalRecoveryState'), 'safe local 
 assert(firebase.includes('window.click360ResolveSyncConflict'), 'real conflict actions are exposed');
 assert(firebase.includes('remote_material_equivalent'), 'remote revision mismatch with equal material payload does not become a conflict');
 assert(app.includes('Conflicto de sincronización'), 'UI retains true-conflict recovery modal');
-assert(app.includes('Actualizar desde nube') && app.includes('Conservar mi versión local') && app.includes('Limpiar estado local de esta app'), 'UI exposes recovery actions for meaningful local data');
+assert(app.includes('Actualizar desde nube') && app.includes('Conservar mi versión local') && app.includes('Reparar sincronización'), 'UI exposes recovery actions for meaningful local data');
 assert(app.includes('window.click360GetReliabilityDiagnostics'), 'UI exposes safe reliability diagnostics');
 assert(runtime.includes('reliability:') && runtime.includes('lockAgeMs') && runtime.includes('hasDirtyFields'), 'runtime reports sanitized reliability fields');
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');

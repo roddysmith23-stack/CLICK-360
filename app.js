@@ -29,6 +29,7 @@
   const WORKER_TENANT_ACCESS_ENABLED = window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(
     window.CLICK360_FIREBASE_CONFIG?.projectId
   ) === true;
+  let WORKERS_BIND_GEN = 0;
   const RECEIPT_FOOTER_TEXT = 'Control total de tu negocio con CLICK 360';
   const RECEIPT_DEFAULT_NOTE = 'Comprobante interno. No válido como factura electrónica.';
   const RECEIPT_WIDTH_PRESETS = Object.freeze({
@@ -108,6 +109,12 @@
   window.click360CanWriteByAccess = () => !accessInfo().readOnly;
   let lastWriteBlock = null;
   function writeGateStatus() {
+    // r37 (legacy consent grace): a legacy owner whose 7-day grace period
+    // has expired without accepting the updated Terms/Privacy is blocked
+    // from NEW commercial mutations here -- but this must never touch
+    // reads, exports, navigation, #legal, or logout, none of which call
+    // save()/writeGateStatus() in the first place.
+    if (legalMutationGateActive()) return { allowed: false, reason: 'legal_acceptance_required' };
     const external = typeof window.click360WriteGate === 'function' ? window.click360WriteGate() : null;
     if (external && external.allowed === false) {
       const access = accessInfo();
@@ -118,6 +125,7 @@
   }
   function writeBlockMessage(gate = {}) {
     const reason = String(gate.reason || 'unknown');
+    if (reason === 'legal_acceptance_required') return 'Necesitamos que aceptes los Términos y la Política de privacidad actualizados para seguir registrando cambios. Puedes revisarlos y aceptarlos ahora.';
     if (reason === 'read_only') return 'Tu acceso está en modo lectura. Contacta a CLICK 360 para activar tu plan.';
     if (reason === 'pending_remote_sync') return 'Sincronizando cambios...';
     if (reason === 'offline_online_only') return 'Este dispositivo necesita internet para guardar. Conéctate y vuelve a intentar.';
@@ -274,17 +282,33 @@
   // to make the same real sale look like it belongs to "yesterday" on one
   // device and "today" on another, or to make an already-open cash session
   // look like it started on the wrong day. Always resolve the date key in
-  // the business's fixed timezone, independent of the device's own clock
-  // timezone setting (only the device's absolute instant matters).
-  const BUSINESS_TIMEZONE = 'America/Guayaquil';
-  const businessDateFormatter = (() => {
-    try { return new Intl.DateTimeFormat('en-CA', { timeZone: BUSINESS_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }); }
-    catch { return null; }
-  })();
+  // the business's OWN configured timezone (businessTimeZone(), set at
+  // onboarding -- see business.settings.timeZone), independent of the
+  // device's own clock timezone setting (only the device's absolute
+  // instant matters).
+  // r37 (Section 50, world-ready): this was previously hardcoded to
+  // America/Guayaquil regardless of business.settings.timeZone, even
+  // though the onboarding form already lets a new customer pick Colombia/
+  // Peru/Mexico/US/Spain. Every existing production tenant (SHARY, Lia,
+  // etc.) is genuinely in America/Guayaquil, so businessTimeZone()
+  // resolves to the exact same value for them -- this is a no-op for
+  // current customers and only changes behavior for a future non-Ecuador
+  // customer. Cached per resolved timezone string since today()/
+  // localDateKey() are called on nearly every render.
+  let cachedBusinessDateFormatter = null;
+  let cachedBusinessDateFormatterTz = null;
+  function businessDateFormatterFor(timeZone) {
+    if (cachedBusinessDateFormatterTz === timeZone) return cachedBusinessDateFormatter;
+    cachedBusinessDateFormatterTz = timeZone;
+    try { cachedBusinessDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }); }
+    catch { cachedBusinessDateFormatter = null; }
+    return cachedBusinessDateFormatter;
+  }
   function localDateKey(date = new Date()) {
-    if (businessDateFormatter) {
+    const formatter = businessDateFormatterFor(businessTimeZone());
+    if (formatter) {
       // en-CA formats as YYYY-MM-DD directly -- no manual field reassembly.
-      const formatted = businessDateFormatter.format(date);
+      const formatted = formatter.format(date);
       if (/^\d{4}-\d{2}-\d{2}$/.test(formatted)) return formatted;
     }
     const pad = (value) => String(value).padStart(2, '0');
@@ -317,13 +341,38 @@
     return `${dayName}, ${dayNum} de ${monthName} de ${year}`;
   }
   function businessTimeZone() {
-    return currentBusiness?.()?.settings?.timeZone || 'America/Guayaquil';
+    const raw = currentBusiness?.()?.settings?.timeZone || 'America/Guayaquil';
+    // r37: a corrupted/invalid saved timeZone string (typo, stray edit, a
+    // future onboarding bug) would otherwise reach Intl.DateTimeFormat(...,
+    // {timeZone: raw}) and throw a synchronous RangeError at every call
+    // site that formats a date -- validate once here instead of trusting
+    // stored data blindly.
+    try { new Intl.DateTimeFormat('en', { timeZone: raw }); return raw; }
+    catch { return 'America/Guayaquil'; }
   }
   function liveClockLabel(compact = false) {
     try {
 	      return window.CLICK360_V16_DOMAIN?.formatBusinessClock(Date.now(), 'es-EC', businessTimeZone(), compact)
 	        || new Date().toLocaleString('es-EC');
     } catch { return new Date().toLocaleString('es-EC'); }
+  }
+  // r37 (#reminders crash, err_5286e4d9...): formatBusinessDate/normalizePhone
+  // were called unguarded at several reminders/notifications call sites --
+  // unlike liveClockLabel() above, which already wraps the sibling Intl call
+  // in try/catch specifically because Intl.DateTimeFormat can throw
+  // synchronously on an unusual timeZone/locale combination (observed on
+  // Safari standalone PWA). These two helpers give every caller the same
+  // safety liveClockLabel() already had, with a plain-text fallback instead
+  // of an uncaught exception that takes down the whole #reminders route.
+  function safeFormatBusinessDate(value, includeTime = true) {
+    if (!value) return '';
+    try {
+      return window.CLICK360_V16_DOMAIN?.formatBusinessDate?.(value, 'es-EC', businessTimeZone(), includeTime) || String(value);
+    } catch { return String(value); }
+  }
+  function safeNormalizePhone(value) {
+    try { return window.CLICK360_V16_DOMAIN?.normalizePhone?.(value || '') || ''; }
+    catch { return ''; }
   }
   function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
   function actionId(value) { return encodeURIComponent(String(value ?? '')).replace(/'/g, '%27'); }
@@ -896,6 +945,157 @@ function parseMoney(value) {
       actionLock.release();
     }
   }
+  // Action Guardian: wraps a critical-mutation trigger button so a second
+  // tap/click while the first is still in flight is ignored outright (no
+  // redundant network call, no confusing second toast) instead of relying
+  // only on the backend's scope:reason idempotency gate to silently absorb
+  // it. Gives visible "Procesando..." feedback on the first tap, and -- if
+  // the operation is taking unusually long -- swaps in a human notice
+  // instead of leaving an unexplained spinner. Safe to invoke again after
+  // such a notice: retrying re-enters through the SAME
+  // commitCriticalMutation() gate, which self-heals rather than duplicating
+  // the mutation (see acquireCriticalAction above).
+  const ACTION_GUARDIAN_WATCHDOG_MS = 8000;
+  async function guardedAction(button, run) {
+    if (!button) return run();
+    if (button.dataset.guardianBusy === '1') return undefined;
+    button.dataset.guardianBusy = '1';
+    const originalText = button.textContent;
+    const originalDisabled = button.disabled;
+    button.disabled = true;
+    button.textContent = 'Procesando...';
+    const watchdog = setTimeout(() => {
+      if (button.dataset.guardianBusy === '1') button.textContent = 'Esto está tardando más de lo normal...';
+    }, ACTION_GUARDIAN_WATCHDOG_MS);
+    try {
+      return await run();
+    } finally {
+      clearTimeout(watchdog);
+      delete button.dataset.guardianBusy;
+      if (button.isConnected) {
+        button.disabled = originalDisabled;
+        button.textContent = originalText;
+      }
+    }
+  }
+  window.click360GuardedAction = guardedAction;
+
+  // r37 (#91): configurable inactivity mode -- SHARED/POS-TERMINAL devices
+  // only, never a personal device. This is a per-device, per-browser choice
+  // (localStorage, never synced through tenant state/Firestore) because the
+  // same business can have both a personal phone and a shared front-counter
+  // tablet at once; defaulting every existing session to 'personal' means
+  // this feature is a pure no-op until an owner explicitly opts a specific
+  // device in from Ajustes. An active draft (a non-empty sell cart) or any
+  // in-flight critical mutation (criticalActionGate) must NEVER be
+  // abandoned by an auto-logout -- the check simply defers itself instead
+  // of firing while either is true.
+  const DEVICE_MODE_KEY = 'click360_device_mode';
+  const DEVICE_INACTIVITY_MINUTES_KEY = 'click360_device_inactivity_minutes';
+  const DEVICE_INACTIVITY_ALLOWED_MINUTES = Object.freeze([3, 5, 10, 15]);
+  const DEVICE_INACTIVITY_DEFAULT_MINUTES = 5;
+  function deviceMode() {
+    try { return localStorage.getItem(DEVICE_MODE_KEY) === 'shared_terminal' ? 'shared_terminal' : 'personal'; }
+    catch { return 'personal'; }
+  }
+  function setDeviceMode(mode) {
+    try { localStorage.setItem(DEVICE_MODE_KEY, mode === 'shared_terminal' ? 'shared_terminal' : 'personal'); } catch {}
+  }
+  function deviceInactivityMinutes() {
+    const stored = Number(localStorage.getItem(DEVICE_INACTIVITY_MINUTES_KEY));
+    return DEVICE_INACTIVITY_ALLOWED_MINUTES.includes(stored) ? stored : DEVICE_INACTIVITY_DEFAULT_MINUTES;
+  }
+  function setDeviceInactivityMinutes(minutes) {
+    const value = DEVICE_INACTIVITY_ALLOWED_MINUTES.includes(Number(minutes)) ? Number(minutes) : DEVICE_INACTIVITY_DEFAULT_MINUTES;
+    try { localStorage.setItem(DEVICE_INACTIVITY_MINUTES_KEY, String(value)); } catch {}
+  }
+  function hasActiveDraftOrPendingOperation() {
+    if ((criticalActionGate?.size?.() || 0) > 0) return true;
+    if (Number(window.click360SellCartCount?.() || 0) > 0) return true;
+    return false;
+  }
+  let inactivityIdleTimer = null;
+  let inactivityWatchStarted = false;
+  let inactivityLastActivityAtMs = 0;
+  // Testing-only seam: real devices always use 60000 (a real minute). QA
+  // harnesses can shrink this so a 3-15 "minute" timeout resolves in
+  // milliseconds instead of requiring the test to actually wait minutes.
+  let inactivityMsPerMinuteForTesting = 60000;
+  function scheduleInactivityCheck() {
+    clearTimeout(inactivityIdleTimer);
+    if (deviceMode() !== 'shared_terminal' || !currentUser()) return;
+    inactivityIdleTimer = setTimeout(() => {
+      if (deviceMode() !== 'shared_terminal' || !currentUser()) return;
+      if (hasActiveDraftOrPendingOperation()) {
+        // Never abandon a draft/pending operation -- defer instead of
+        // logging out, and keep re-checking until it's genuinely idle.
+        scheduleInactivityCheck();
+        return;
+      }
+      window.click360Logout?.();
+    }, deviceInactivityMinutes() * inactivityMsPerMinuteForTesting);
+  }
+  function registerDeviceActivity() {
+    const now = Date.now();
+    if (now - inactivityLastActivityAtMs < 1000) return; // throttle mousemove/scroll floods
+    inactivityLastActivityAtMs = now;
+    scheduleInactivityCheck();
+  }
+  function startInactivityWatch() {
+    if (inactivityWatchStarted) return;
+    inactivityWatchStarted = true;
+    ['click', 'keydown', 'touchstart', 'mousemove', 'scroll'].forEach((evtName) =>
+      window.addEventListener(evtName, registerDeviceActivity, { passive: true }));
+    scheduleInactivityCheck();
+  }
+  window.CLICK360_DEVICE_MODE = Object.freeze({
+    get: deviceMode,
+    set: setDeviceMode,
+    getInactivityMinutes: deviceInactivityMinutes,
+    setInactivityMinutes: setDeviceInactivityMinutes,
+    ALLOWED_MINUTES: DEVICE_INACTIVITY_ALLOWED_MINUTES,
+    hasActiveDraftOrPendingOperation,
+    scheduleInactivityCheck,
+    startInactivityWatch: () => startInactivityWatch(),
+    // Testing-only: real devices never call this. Lets an E2E harness
+    // shrink a "minute" to a few milliseconds instead of waiting for real
+    // wall-clock minutes to prove the watchdog actually fires (or defers).
+    __setMsPerMinuteForTesting: (ms) => { inactivityMsPerMinuteForTesting = Number(ms) > 0 ? Number(ms) : 60000; }
+  });
+
+  // r37 (#93): a lightweight, best-effort health beacon so CEO Admin can see
+  // real customer device health (version, sync status, hydration, pending
+  // operations, last runtime error) WITHOUT ever hand-editing Firestore.
+  // Diagnostic-only -- never gates this device's own app, and a failed
+  // publish is silently ignored (see click360PublishCustomerHealth). The
+  // field shape here must stay in lockstep with firestore.rules'
+  // customerHealth allowlist.
+  let lastHealthPublishAtMs = 0;
+  const HEALTH_PUBLISH_MIN_INTERVAL_MS = 60000;
+  function publishCustomerHealthSnapshot(force = false) {
+    if (typeof window.click360PublishCustomerHealth !== 'function' || !activeTenantContext) return;
+    const now = Date.now();
+    if (!force && now - lastHealthPublishAtMs < HEALTH_PUBLISH_MIN_INTERVAL_MS) return;
+    lastHealthPublishAtMs = now;
+    const syncState = window.click360GetSyncState?.({ reason: 'health_beacon' }) || {};
+    const lastError = window.CLICK360_RUNTIME_GUARD?.listReports?.()?.[0] || null;
+    window.click360PublishCustomerHealth({
+      appVersion: String(APP_RELEASE_VERSION || ''),
+      buildSha: String(APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? APP_BUILD_SHA : ''),
+      assetVersion: String(APP_ASSET_VERSION || ''),
+      isOnline: navigator.onLine !== false,
+      tenantDataHydrated: tenantDataHydrated === true,
+      pendingOperations: Number(criticalActionGate?.size?.() || 0),
+      syncStatus: String(syncState.status || ''),
+      syncReason: String(syncState.reason || ''),
+      localHash: String(syncState.localHash || ''),
+      remoteHash: String(syncState.remoteHash || ''),
+      lastRuntimeError: lastError ? `${String(lastError.message || '').slice(0, 200)} (${lastError.createdAt || ''})` : '',
+      route: String(route || '')
+    });
+  }
+  window.CLICK360_QA_PUBLISH_HEALTH = publishCustomerHealthSnapshot;
+
   function stateStorageKey() {
     return activeTenantContext?.authUid && activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.authUid}:${activeTenantContext.tenantKey}` : '';
   }
@@ -1877,7 +2077,7 @@ function parseMoney(value) {
     { id:'finance-goals', category:'Finanzas', title:'¿Cómo creo una meta o un sobre?', keywords:'meta sueño ahorro sobre dinero separado presupuesto finanzas', steps:['Ve a Más y abre Finanzas.','Elige Metas o Sobres de dinero.','Escribe el objetivo y el monto guardado; esto no mueve la caja.'] },
     { id:'install-pwa', category:'Aplicación', title:'¿Cómo instalo CLICK 360 en mi celular?', keywords:'pwa instalar iphone android pantalla inicio app', steps:['Abre Más.','Toca Instalar CLICK 360 como app.','Sigue la instrucción de Safari o Chrome para añadirla a inicio.'] },
     { id:'offline', category:'Nube y respaldo', title:'¿Qué puedo hacer sin internet?', keywords:'offline sin conexión pendiente sincronizar nube', steps:['Puedes consultar la última copia validada.','Las acciones que requieren nube pueden quedar pendientes.','Reconecta y espera la confirmación antes de cerrar la app.'] },
-    { id:'local-state', category:'Nube y respaldo', title:'¿Qué significa limpiar estado local?', keywords:'conflicto stale lock caché safari pwa', steps:['Abre Diagnóstico o Ajustes.','Usa Limpiar estado local de esta app.','CLICK 360 elimina bloqueos obsoletos y vuelve a leer la nube; no borra Firebase.'] },
+    { id:'local-state', category:'Nube y respaldo', title:'¿Qué hace Reparar sincronización?', keywords:'conflicto stale lock caché safari pwa firebase estado local limpiar', steps:['Abre Nube y Respaldo (en Más).','Usa el botón Reparar sincronización.','CLICK 360 actualiza los datos guardados en tu dispositivo y los vuelve a traer desde la nube. No borra tus negocios ni tus productos.'] },
     { id:'common-errors', category:'Errores comunes', title:'¿Qué hago si una acción no se completa?', keywords:'error código falla bloqueado soporte', steps:['Comprueba internet.','Anota el código visible.','Reintenta una vez y, si continúa, comparte el diagnóstico con soporte.'] },
     { id:'support', category:'Soporte', title:'¿Cómo contactar soporte?', keywords:'whatsapp ayuda contacto', steps:['Toca Contactar soporte por WhatsApp.','Describe la pantalla y el código de error.','Nunca compartas contraseñas ni códigos de acceso.'] }
   ]);
@@ -2086,9 +2286,9 @@ function parseMoney(value) {
       ? `<img src="${escapeHtml(businessLogo)}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;">`
       : `<div class="logoIcon" style="width:44px;height:44px;"></div>`;
     const avatarHtml = profilePhoto
-      ? `<img src="${escapeHtml(profilePhoto)}" style="width:100%;height:100%;object-fit:contain;background:#111;">`
+      ? `<img src="${escapeHtml(profilePhoto)}" style="width:100%;height:100%;object-fit:cover;background:#111;">`
       : (businessLogo
-        ? `<img src="${escapeHtml(businessLogo)}" style="width:100%;height:100%;object-fit:contain;background:#111;">`
+        ? `<img src="${escapeHtml(businessLogo)}" style="width:100%;height:100%;object-fit:cover;background:#111;">`
         : (authUser().name || 'U').charAt(0).toUpperCase());
     const unreadCount = notificationItems().filter((item) => !item.read).length;
 
@@ -2203,14 +2403,19 @@ function parseMoney(value) {
 	    try {
 	      if(!checkAuth('business')) return;
 	      if(!can(r)) r='home';
+	      if (r !== 'legal' && requiresLegalHardGate()) r = 'legalGate';
+	      else if (r !== 'legal' && requiresWorkerAccessGate()) r = 'workerAccessGate';
 	      stopScanner(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
-	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView,ceoAdmin:ceoAdminView};
+	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,legalGate:legalAcceptanceGateView,workerAccessGate:workerAccessGateView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView,ceoAdmin:ceoAdminView};
       app.innerHTML=shell((views[r]||homeView)(), r);
       bindShell(); bindView(r);
       checkDueReminders();
       if (r === 'home') setTimeout(showOnboardingForNewAccount, 0);
+      if (r !== 'legalGate') setTimeout(maybeShowLegalGraceBanner, 0);
+      startInactivityWatch();
+      publishCustomerHealthSnapshot();
       markAppReady(`route:${r}`);
 	    } catch(e) {
 	      console.error("Error al renderizar la app:", e);
@@ -2651,7 +2856,7 @@ function parseMoney(value) {
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
 	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
     return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
-        <div style="display:flex; gap:8px;">
+        <div class="toolbar" style="gap:8px;">
 	          <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
 	          <button class="btn silver" onclick="window.printReports('pdf')">Guardar PDF</button>
 	          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
@@ -2679,7 +2884,7 @@ function parseMoney(value) {
             <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Ticket
             </button>
-            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.cancelSale('${actionId(s.id)}')">
+            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.click360GuardedAction(this, () => window.cancelSale('${actionId(s.id)}'))">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg> Anular
             </button>` : ''}
           </div>
@@ -2711,7 +2916,7 @@ function parseMoney(value) {
         const shortId = String(sale.id || '').slice(-6).toUpperCase();
         const dueDate = sale.dueDate || layaway.pickupDueAt || '';
         const searchKey = [customerName, sale.customerPhone || layaway.customerSnapshot?.phone || '', shortId, sale.id || ''].join(' ').toLowerCase();
-        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}" data-layaway-search="${escapeHtml(searchKey)}"><div class="layawaySummary"><span><b>${escapeHtml(customerName)}</b><small>#${escapeHtml(shortId)} · ${escapeHtml(sale.when || layaway.createdAt || '')}${dueDate ? ` · Límite: ${escapeHtml(dueDate)}` : ''}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.payLayaway('${actionId(sale.id)}')">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.cancelSale('${actionId(sale.id)}')">Cancelar</button>` : ''}</div></article>`;
+        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}" data-layaway-search="${escapeHtml(searchKey)}"><div class="layawaySummary"><span><b>${escapeHtml(customerName)}</b><small>#${escapeHtml(shortId)} · ${escapeHtml(sale.when || layaway.createdAt || '')}${dueDate ? ` · Límite: ${escapeHtml(dueDate)}` : ''}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.click360GuardedAction(this, () => window.payLayaway('${actionId(sale.id)}'))">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.click360GuardedAction(this, () => window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup'))">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.click360GuardedAction(this, () => window.markLayawayStatus('${actionId(layaway.id)}','picked_up'))">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.click360GuardedAction(this, () => window.cancelSale('${actionId(sale.id)}'))">Cancelar</button>` : ''}</div></article>`;
       }).join('') || '<p class="empty">Aún no hay apartados.</p>'}</div></section>`;
   }
 
@@ -2873,8 +3078,18 @@ function parseMoney(value) {
 	    const labels = { founder: 'Fundador', trial: 'Prueba gratuita', trial_active: 'Prueba gratuita', trial_expired: 'Modo lectura', paid_base: 'Plan Basic', paid_pro: 'Plan Pro', paid_business: 'Plan Business', paid_enterprise: 'Plan Enterprise', founder_legacy: 'Fundador (Founder)', lifetime: 'Acceso de por vida', member: 'Trabajador' };
 	    const currentPlanCode = domain?.normalizePlan?.(access.plan) || 'base';
 	    const isFounder = access.mode === 'founder' || currentPlanCode === 'founder_legacy';
+	    // r37: internal/platform 'founder' access (roddysmithceo@gmail.com's own
+	    // account, distinct from the founder_legacy COMMERCIAL tier granted to
+	    // SHARY/Lia) normalizes to the literal code 'founder', which has no
+	    // PLAN_CATALOG entry of its own -- catalog['founder'] is undefined, so
+	    // every lookup keyed on it (name, features) silently came back empty,
+	    // producing the "Funciones de tu plan: Incluidas -" bug. founder_legacy
+	    // is the closest real tier (a superset of business) and is what a
+	    // founder account should see listed, so display-only lookups resolve
+	    // through it. isFounder/access.mode/entitlements are untouched by this.
+	    const displayPlanCode = currentPlanCode === 'founder' ? 'founder_legacy' : currentPlanCode;
 	    const quota = tenantQuotaStatus();
-	    const currentPlanEntry = catalog[currentPlanCode] || {};
+	    const currentPlanEntry = catalog[displayPlanCode] || {};
 	    // r36 commercial reset: only Monthly and Annual (recommended) are
 	    // offered as primary options going forward. Quarter/semester/lifetime
 	    // still work administratively for historical accounts (see
@@ -2882,15 +3097,15 @@ function parseMoney(value) {
 	    const periodOptions = () => `<option value="month">Mensual</option><option value="year">Anual — recomendado</option>`;
 	    const planPriceSummary = (code) => {
 	      const prices = catalog[code]?.prices || {};
-	      if (prices.custom) return `<p class="cloudStatus">Precio segun necesidad: numero de negocios, catalogo de productos y cupos de Workers.</p>`;
+	      if (prices.custom) return `<p class="cloudStatus">Precio segun necesidad: numero de negocios, catalogo de productos y cupos de trabajadores.</p>`;
 	      if (!prices.year) return '';
 	      return `<div class="planPriceSummary neuroPrice" aria-label="Precios ${escapeHtml(catalog[code]?.name || code)}">
 	        <div class="neuPlanTier"><div class="neuTierLabel muted">Mensual</div><div class="neuTierPrice"><b>${fmt(prices.month || 0)}<small>/mes</small></b></div><div class="neuTierNote muted">Facturado cada mes</div></div>
 	        <div class="neuPlanTier neuStar"><div class="neuBadge">⭐ RECOMENDADO</div><div class="neuTierLabel">Anual</div><div class="neuTierPrice"><b class="neuBig">${fmt(prices.year / 12)}<small>/mes</small></b></div><div class="neuTierNote">${fmt(prices.year)} al año · un solo pago</div></div>
 	      </div>`;
 	    };
-	    const includedFeatures = resolvedPlanFeatures(currentPlanCode, catalog);
-	    const nextCode = PLAN_UPGRADE_LADDER[currentPlanCode];
+	    const includedFeatures = resolvedPlanFeatures(displayPlanCode, catalog);
+	    const nextCode = PLAN_UPGRADE_LADDER[displayPlanCode];
 	    const notIncludedFeatures = nextCode ? resolvedPlanFeatures(nextCode, catalog).filter((feature) => !includedFeatures.includes(feature)) : [];
 	    const renewalHtml = access.expiresAtMs ? `<div><small class="fieldHint">Proxima renovacion</small><div>${escapeHtml(window.CLICK360_V16_DOMAIN?.formatBusinessDate?.(access.expiresAtMs, 'es-EC', businessTimeZone(), true) || new Date(access.expiresAtMs).toLocaleDateString('es-EC'))}</div></div>` : '';
 	    return `<div class="pageHead"><div><h1>Mi plan y acceso</h1><p>Tu plan, tus cupos y como ampliarlos.</p></div></div>
@@ -2908,13 +3123,13 @@ function parseMoney(value) {
 	        ${quota ? `
 	          ${quotaMeterHtml('Productos activos', quota.productsActive)}
 	          ${quotaMeterHtml('Almacenamiento de imagenes', quota.storageBytes, formatBytesApprox)}
-	          ${quotaMeterHtml('Cupos de Workers', quota.workerSeats)}
+	          ${quotaMeterHtml('Cupos de trabajadores', quota.workerSeats)}
 	          ${quotaMeterHtml('Negocios en tu cuenta', quota.businesses)}
 	          <p class="fieldHint">El almacenamiento mostrado es un estimado. Llegar al limite nunca bloquea vender, cobrar, imprimir ni consultar lo existente: solo pausa la creacion de recursos nuevos hasta ampliar el plan.</p>
 	        ` : '<p class="empty">No se pudo calcular el uso todavia.</p>'}
 	        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
 	          <button type="button" class="btn silver" id="requestCapacityBtn">Solicitar más capacidad</button>
-	          <button type="button" class="btn silver" id="goToWorkersBtn">Solicitar Worker adicional</button>
+	          <button type="button" class="btn silver" id="goToWorkersBtn">Solicitar trabajador adicional</button>
 	        </div>
 	      </section>
 	      <section class="card sectionCard">
@@ -2944,7 +3159,12 @@ function parseMoney(value) {
 	          </article>`;
 	        }).join('')}
 	      </section>`}
-	      <section class="card printerOfferCard"><div><span class="badge gold">Equipo opcional</span><h3>Impresora térmica de etiquetas</h3><p>Lista para etiquetas QR y comprobantes; incluye envío y un rollo de papel adhesivo de cortesía.</p></div><strong>${fmt(65)}</strong><a class="btn primary" target="_blank" rel="noopener noreferrer" href="${supportWhatsAppUrl('Hola CLICK 360, quiero información sobre la impresora térmica de etiquetas de $65.')}">Consultar por WhatsApp</a></section>
+	      ${(() => {
+	        const hw = window.CLICK360_V16_DOMAIN?.HARDWARE_CATALOG?.thermalPrinter;
+	        if (!hw) return '';
+	        const onOffer = hw.onOffer && Number(hw.offerPrice) < Number(hw.regularPrice);
+	        return `<section class="card printerOfferCard"><div><span class="badge gold">Equipo opcional${onOffer ? ' · OFERTA' : ''}</span><h3>${escapeHtml(hw.name)}</h3><p>${escapeHtml(hw.description)}</p></div><div class="printerOfferPrice">${onOffer ? `<s>${fmt(hw.regularPrice)}</s>` : ''}<strong>${fmt(onOffer ? hw.offerPrice : hw.regularPrice)}</strong></div><a class="btn primary" target="_blank" rel="noopener noreferrer" href="${supportWhatsAppUrl(`Hola CLICK 360, quiero información sobre la ${hw.name} de ${fmt(onOffer ? hw.offerPrice : hw.regularPrice)}.`)}">Consultar por WhatsApp</a></section>`;
+	      })()}
 	      ${requests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de plan</h3>${requests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(String(request.plan || '').toUpperCase())}</b><br><small>${escapeHtml(request.requestCode || '')} · ${escapeHtml(request.period || '')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
 	      ${capacityRequests.length ? `<section class="card sectionCard" style="margin-top:14px;"><h3>Solicitudes de capacidad</h3>${capacityRequests.slice().reverse().map((request) => `<div class="movement"><span><b>${escapeHtml(request.kind === 'storage' ? 'Almacenamiento' : 'Productos')}</b><br><small>${escapeHtml(request.note || 'Sin detalle')}</small></span><span class="badge gold">${escapeHtml(request.status === 'pending' ? 'Pendiente' : request.status || 'Pendiente')}</span></div>`).join('')}</section>` : ''}
 	      ${!isFounder ? `<a href="${escapeHtml(purchaseWhatsAppUrl())}" target="_blank" rel="noopener noreferrer" class="btn block" style="margin-top:14px;border:1px solid #25D366;color:#25D366;background:transparent;">Hablar con CLICK 360 por WhatsApp</a>` : ''}`;
@@ -2974,7 +3194,7 @@ function parseMoney(value) {
 	    };
 	  }
 	  function legalView() {
-	    const version = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
+	    const version = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14';
 	    return `<div class="pageHead"><div><h1>Terminos y privacidad</h1><p>Version ${escapeHtml(version)}</p></div></div><section class="legalDocument">
 	      <article><h2>Terminos y condiciones</h2><p>CLICK 360 proporciona herramientas para administrar inventario, ventas, caja, clientes y tareas del negocio. La persona titular de la cuenta es responsable de la exactitud de la informacion registrada y del uso que autorice a sus trabajadores.</p></article>
 		      <article><h2>Privacidad y datos</h2><p>La autenticación se realiza con Google y los datos operativos se guardan de forma separada para cada cuenta. CLICK 360 no vende información personal. El negocio puede descargar respaldos y solicitar asistencia para exportación o eliminación.</p></article>
@@ -2985,6 +3205,252 @@ function parseMoney(value) {
 	      <article><h2>Responsabilidades</h2><p>Los comprobantes y reportes son registros operativos. No sustituyen documentos tributarios oficiales, asesoria contable ni asesoramiento legal. Antes de una accion destructiva se recomienda generar y verificar un respaldo.</p></article>
 	    </section>`;
 	  }
+	  // r37 (Section 17-20): existing accounts created before the onboarding
+	  // acceptance checkbox existed (or before a future terms/privacy version
+	  // bump) have no matching legalAcceptances record. hasAcceptedCurrentLegalVersions()
+	  // is the single read-back check gating access -- UNKNOWN counts as NOT
+	  // accepted (blocks), but only once hydration is real (never during the
+	  // loading flash) and never for internal platform staff.
+	  function hasAcceptedCurrentLegalVersions() {
+	    const domain = window.CLICK360_V16_DOMAIN;
+	    const termsVersion = domain?.TERMS_VERSION;
+	    const privacyVersion = domain?.PRIVACY_VERSION || termsVersion;
+	    const uid = window.click360User?.uid;
+	    if (!termsVersion || !uid) return true;
+	    return (state.legalAcceptances || []).some((entry) =>
+	      entry.uid === uid && entry.termsVersion === termsVersion && (entry.privacyVersion || entry.termsVersion) === privacyVersion);
+	  }
+	  // r37 (legacy consent grace, adjusted after production-risk review): a
+	  // universal hard gate would have surprised every existing owner
+	  // (SHARY, Lia, Industrias Omega, Mi Negocio) on their very next login.
+	  // The contract now distinguishes:
+	  //  - hard_gate: an owner who never finished initial onboarding (brand
+	  //    new after r37) -- must accept via the onboarding clickwrap/gate
+	  //    before operating at all.
+	  //  - grace_unpresented / grace_active: an ALREADY-onboarded (legacy)
+	  //    owner who hasn't accepted the current version yet -- shown a
+	  //    dismissible banner (not a route block), gets 7 days of normal
+	  //    operation from the moment the banner is first presented.
+	  //  - mutation_gate: grace expired without acceptance -- reads/exports/
+	  //    account access/support/logout/#legal all keep working; only NEW
+	  //    commercial mutations (save()) are blocked, with a clear reason.
+	  const LEGAL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+	  function legalGateEligible() {
+	    const domain = window.CLICK360_V16_DOMAIN;
+	    return !!(domain?.TERMS_VERSION && window.click360User?.uid && isOwnerUser() && !window.click360IsPlatformAdmin?.());
+	  }
+	  function legalAcceptanceStatus() {
+	    if (!legalGateEligible()) return 'accepted';
+	    if (hasAcceptedCurrentLegalVersions()) return 'accepted';
+	    if (!state.settings?.onboarding?.completedAt) return 'hard_gate';
+	    const grace = state.settings?.legalGrace || {};
+	    const presentedAtMs = grace.termsPresentedAt ? Date.parse(grace.termsPresentedAt) : NaN;
+	    if (!Number.isFinite(presentedAtMs)) return 'grace_unpresented';
+	    return (Date.now() - presentedAtMs) < LEGAL_GRACE_MS ? 'grace_active' : 'mutation_gate';
+	  }
+	  function requiresLegalHardGate() {
+	    return tenantDataHydrated && legalAcceptanceStatus() === 'hard_gate';
+	  }
+	  function legalMutationGateActive() {
+	    return tenantDataHydrated && legalAcceptanceStatus() === 'mutation_gate';
+	  }
+	  // Direct local persist, deliberately bypassing save()/writeGateStatus():
+	  // legal-compliance bookkeeping (a presented-at timestamp, an acceptance
+	  // record) must NEVER be blocked by the very gate it exists to satisfy --
+	  // that would be a deadlock (mutation_gate blocking the one write that
+	  // clears mutation_gate). Matches click360ApplyTenantState's own direct
+	  // localStorage write for the same reason.
+	  function persistLegalMetaLocal() {
+	    if (!activeTenantContext || !stateStorageKey()) return false;
+	    try { localStorage.setItem(stateStorageKey(), JSON.stringify(state)); return true; }
+	    catch { return false; }
+	  }
+	  async function acceptLegalTerms(source = 'gate') {
+	    const domain = window.CLICK360_V16_DOMAIN;
+	    const termsVersion = domain?.TERMS_VERSION || '2026-07-14';
+	    const privacyVersion = domain?.PRIVACY_VERSION || termsVersion;
+	    state.legalAcceptances ||= [];
+	    state.legalAcceptances.push({ id: uid('legal'), businessId: currentBusiness()?.id || '', uid: window.click360User.uid, termsVersion, privacyVersion, acceptedAt: new Date().toISOString(), source });
+	    persistLegalMetaLocal();
+	    await window.click360SaveLegalAcceptance?.({ termsVersion, privacyVersion, source }).catch((error) => console.warn('Aceptacion legal pendiente de nube:', error.message));
+	  }
+	  async function recordLegalGracePresented(status) {
+	    const domain = window.CLICK360_V16_DOMAIN;
+	    const termsVersion = domain?.TERMS_VERSION || '2026-07-14';
+	    const privacyVersion = domain?.PRIVACY_VERSION || termsVersion;
+	    const nowIso = new Date().toISOString();
+	    state.settings ||= {};
+	    const existing = state.settings.legalGrace || {};
+	    state.settings.legalGrace = {
+	      termsPresentedAt: existing.termsPresentedAt || nowIso,
+	      presentedTermsVersion: existing.presentedTermsVersion || termsVersion,
+	      presentedPrivacyVersion: existing.presentedPrivacyVersion || privacyVersion,
+	      lastShownAt: nowIso
+	    };
+	    persistLegalMetaLocal();
+	    await window.click360SaveLegalGracePresented?.(state.settings.legalGrace).catch((error) => console.warn('Registro de presentación legal pendiente de nube:', error.message));
+	  }
+	  function legalAcceptanceGateView() {
+	    const termsVersion = escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14');
+	    return `<div class="pageHead"><div><h1>Actualizacion de Terminos y Privacidad</h1><p>Necesitamos tu confirmacion para continuar usando CLICK 360.</p></div></div>
+	      <section class="card sectionCard">
+	        <p>Antes de continuar, confirma que aceptas los Terminos y la Politica de privacidad vigentes (version ${termsVersion}). Puedes leerlos completos antes de aceptar.</p>
+	        <p><a href="#legal">Leer Terminos y Politica de privacidad completos</a></p>
+	        <label class="consentCheck full"><input id="legalGateCheckbox" type="checkbox"><span>He leido y acepto los Terminos y la Politica de privacidad de CLICK 360, version ${termsVersion}.</span></label>
+	        <button class="btn primary block" id="legalGateAcceptBtn" disabled>Aceptar y continuar</button>
+	        <p class="fieldHint">¿Dudas? <a href="${escapeHtml(supportWhatsAppUrl('Hola CLICK 360, tengo una pregunta sobre los Terminos y la Politica de privacidad.'))}" target="_blank" rel="noopener noreferrer">Escribenos por WhatsApp</a>.</p>
+	      </section>`;
+	  }
+	  function bindLegalGate() {
+	    const checkbox = $('#legalGateCheckbox');
+	    const acceptBtn = $('#legalGateAcceptBtn');
+	    if (!checkbox || !acceptBtn) return;
+	    checkbox.onchange = () => { acceptBtn.disabled = !checkbox.checked; };
+	    acceptBtn.onclick = async () => {
+	      if (!checkbox.checked || acceptBtn.disabled) return;
+	      acceptBtn.disabled = true;
+	      acceptBtn.textContent = 'Procesando...';
+	      await acceptLegalTerms('gate');
+	      renderApp('home');
+	    };
+	  }
+	  let legalGraceBannerShownThisPageLoad = false;
+	  function maybeShowLegalGraceBanner() {
+	    if (legalGraceBannerShownThisPageLoad) return;
+	    if (document.body.classList.contains('has-modal')) return;
+	    const status = legalAcceptanceStatus();
+	    if (!['grace_unpresented', 'grace_active', 'mutation_gate'].includes(status)) return;
+	    const todayKey = today();
+	    const lastShownDate = String(state.settings?.legalGrace?.lastShownAt || '').slice(0, 10);
+	    let sessionShown = false;
+	    try { sessionShown = sessionStorage.getItem('CLICK360_LEGAL_GRACE_SHOWN_SESSION') === '1'; } catch {}
+	    if (status !== 'grace_unpresented' && (sessionShown || lastShownDate === todayKey)) return;
+	    legalGraceBannerShownThisPageLoad = true;
+	    try { sessionStorage.setItem('CLICK360_LEGAL_GRACE_SHOWN_SESSION', '1'); } catch {}
+	    recordLegalGracePresented(status).then(() => renderLegalGraceBannerModal());
+	  }
+	  function legalGraceDaysRemaining() {
+	    const presentedAtMs = Date.parse(state.settings?.legalGrace?.termsPresentedAt || '');
+	    if (!Number.isFinite(presentedAtMs)) return 7;
+	    return Math.max(0, Math.ceil((LEGAL_GRACE_MS - (Date.now() - presentedAtMs)) / (24 * 60 * 60 * 1000)));
+	  }
+	  function renderLegalGraceBannerModal() {
+	    const status = legalAcceptanceStatus();
+	    const termsVersion = escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14');
+	    const daysLeft = legalGraceDaysRemaining();
+	    const body = status === 'mutation_gate'
+	      ? `<p style="color:#ff8d92;">El período de revisión terminó. Puedes seguir usando CLICK 360 con normalidad para consultar información, exportar datos y usar soporte -- pero para registrar nuevas ventas, movimientos u otros cambios, primero necesitamos tu aceptación.</p>`
+	      : `<p>Actualizamos los Términos y la Política de privacidad de CLICK 360 (versión ${termsVersion}). Tienes ${daysLeft} día${daysLeft === 1 ? '' : 's'} para revisarlos con calma; mientras tanto, todo sigue funcionando con normalidad.</p>`;
+	    showModal(`<div class="modalHeader"><div><h2>Términos y Privacidad actualizados</h2></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <section class="card sectionCard">
+	        ${body}
+	        <p><a href="#legal">Leer Términos y Política de privacidad completos</a></p>
+	        <label class="consentCheck full"><input id="legalGraceCheckbox" type="checkbox"><span>He leído y acepto los Términos y la Política de privacidad de CLICK 360, versión ${termsVersion}.</span></label>
+	        <div style="display:grid; gap:8px; margin-top:10px;">
+	          <button class="btn primary block" id="legalGraceAcceptBtn" disabled>Revisar y aceptar</button>
+	          <button class="btn silver block" id="legalGraceLaterBtn" type="button">Recordarme después</button>
+	        </div>
+	      </section>`);
+	    const checkbox = $('#legalGraceCheckbox');
+	    const acceptBtn = $('#legalGraceAcceptBtn');
+	    const laterBtn = $('#legalGraceLaterBtn');
+	    if (checkbox && acceptBtn) checkbox.onchange = () => { acceptBtn.disabled = !checkbox.checked; };
+	    if (acceptBtn) acceptBtn.onclick = async () => {
+	      if (!checkbox?.checked || acceptBtn.disabled) return;
+	      acceptBtn.disabled = true;
+	      acceptBtn.textContent = 'Procesando...';
+	      await acceptLegalTerms('grace_banner');
+	      closeModal();
+	      toast('¡Gracias! Términos y Privacidad aceptados.', 'ok');
+	      renderApp(route);
+	    };
+	    if (laterBtn) laterBtn.onclick = () => closeModal();
+	  }
+	  // r37 (Section 11-16, worker invite flow): a worker's client withholds
+	  // ALL restricted UI -- never a flash of it, not even during hydration --
+	  // until (a) this device knows whether an access request exists/was
+	  // approved, and (b) if not yet requested, the worker has completed
+	  // their profile and explicitly requested access. This is a CLIENT-SIDE
+	  // human-workflow gate on top of the already-audited, server-enforced
+	  // acceptance transaction/permissions -- it does not grant or restrict
+	  // any actual data access itself (see workerAccessRequests in
+	  // firestore.rules for why this is safe: the owner already vetted this
+	  // specific person by creating the invitation in the first place).
+	  let workerAccessGateChecked = false;
+	  let workerAccessGateChecking = false;
+	  let workerAccessGateStatus = null; // 'needs_profile' | 'pending' | 'approved'
+	  let workerAccessGateData = null;
+	  async function ensureWorkerAccessGateChecked() {
+	    if (workerAccessGateChecked || workerAccessGateChecking) return;
+	    workerAccessGateChecking = true;
+	    try {
+	      const request = await window.click360GetWorkerAccessRequestStatus?.().catch(() => null);
+	      workerAccessGateData = request;
+	      workerAccessGateStatus = !request ? 'needs_profile' : (request.status === 'approved' ? 'approved' : 'pending');
+	    } finally {
+	      workerAccessGateChecked = true;
+	      workerAccessGateChecking = false;
+	      renderApp(route);
+	    }
+	  }
+	  function requiresWorkerAccessGate() {
+	    if (isOwnerUser() || window.click360IsPlatformAdmin?.()) return false;
+	    if (!tenantDataHydrated) return false;
+	    if (!workerAccessGateChecked) { ensureWorkerAccessGateChecked(); return true; }
+	    return workerAccessGateStatus !== 'approved';
+	  }
+	  function workerAccessGateView() {
+	    if (workerAccessGateStatus === 'pending') {
+	      return `<div class="pageHead"><div><h1>Solicitud enviada</h1><p>Esperando aprobación del dueño del negocio.</p></div></div>
+	        <section class="card sectionCard">
+	          <p>Tu solicitud de acceso fue enviada. En cuanto el dueño la apruebe, podrás empezar a trabajar.</p>
+	          <p class="fieldHint">Si ya pasó tiempo y nadie te ha dado acceso, contacta directamente al dueño del negocio.</p>
+	        </section>`;
+	    }
+	    const termsVersion = escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14');
+	    return `<div class="pageHead"><div><h1>Completa tu perfil</h1><p>Un último paso antes de solicitar tu acceso.</p></div></div>
+	      <section class="card sectionCard">
+	        <form id="workerAccessRequestForm" class="formGrid">
+	          <div class="field full"><label>Nombre completo</label><input id="workerAccessName" required value="${escapeHtml(authUser().name || '')}"></div>
+	          <div class="field full"><label>Teléfono</label><input id="workerAccessPhone" type="tel" required placeholder="0999999999"></div>
+	          <p><a href="#legal">Leer Términos y Política de privacidad completos</a></p>
+	          <label class="consentCheck full"><input id="workerAccessTermsCheckbox" type="checkbox" required><span>He leído y acepto los Términos y la Política de privacidad de CLICK 360, versión ${termsVersion}.</span></label>
+	          <button class="btn primary block" type="submit">Solicitar acceso</button>
+	        </form>
+	      </section>`;
+	  }
+	  function bindWorkerAccessGate() {
+	    const form = $('#workerAccessRequestForm');
+	    if (!form) return;
+	    form.onsubmit = async (event) => {
+	      event.preventDefault();
+	      const submitBtn = form.querySelector('button[type="submit"]');
+	      if (submitBtn?.disabled) return;
+	      const name = $('#workerAccessName').value.trim();
+	      const phone = $('#workerAccessPhone').value.trim();
+	      if (!name || !phone) return toast('Completa tu nombre y teléfono.', 'err');
+	      if (!$('#workerAccessTermsCheckbox').checked) return toast('Debes aceptar los términos para continuar.', 'err');
+	      submitBtn.disabled = true;
+	      submitBtn.textContent = 'Enviando...';
+	      try {
+	        // A worker accepting legal terms is scoped to their OWN uid, same
+	        // gate-bypass rationale as acceptLegalTerms() for owners.
+	        const domain = window.CLICK360_V16_DOMAIN;
+	        const termsVersion = domain?.TERMS_VERSION || '2026-07-14';
+	        const privacyVersion = domain?.PRIVACY_VERSION || termsVersion;
+	        await window.click360SaveLegalAcceptance?.({ termsVersion, privacyVersion, source: 'worker_onboarding' }).catch((error) => console.warn('Aceptación legal del trabajador pendiente de nube:', error.message));
+	        const result = await window.click360RequestWorkerAccess?.({ name, phone, ownerId: activeTenantContext?.ownerUid || window.click360User?.ownerId || '', businessUnitId: activeTenantContext?.businessId || '' });
+	        workerAccessGateStatus = 'pending';
+	        workerAccessGateData = result;
+	        toast('Solicitud enviada. Espera la aprobación del dueño.', 'ok');
+	        renderApp(route);
+	      } catch (error) {
+	        toast(error.message || 'No se pudo enviar la solicitud.', 'err');
+	        submitBtn.disabled = false;
+	        submitBtn.textContent = 'Solicitar acceso';
+	      }
+	    };
+	  }
   let ceoAdminLastSearchEmail = '';
   let ceoAdminSearchResult = null;
   let ceoAdminSearchError = '';
@@ -2994,6 +3460,58 @@ function parseMoney(value) {
     const quota = domain?.evaluateQuota ? domain.evaluateQuota(used, limit) : null;
     if (!quota) return '';
     return quotaMeterHtml(label, quota, label.toLowerCase().includes('almacen') ? formatBytesApprox : (n) => String(n));
+  }
+  // r37 (#93): green/yellow/red with REAL meaning, not decoration --
+  // documented rules so a future reader (or the CEO) can trust the color:
+  //   RED    = a recent runtime error, a real sync conflict, or the device
+  //            has sent no health signal in over 24h (likely unused/stuck).
+  //   YELLOW = offline right now, not yet hydrated, has operations still
+  //            in flight, or its last signal is merely stale (30min-24h --
+  //            normal for a business that's simply closed for the day).
+  //   GREEN  = a fresh, online, hydrated signal with nothing pending and no
+  //            errors.
+  // localHash/remoteHash are shown as auxiliary diagnostic fields only --
+  // the actual clean/dirty decision is syncStatus itself (see
+  // qa-r37-reliability-hash-labels-harness.cjs), so a legitimate
+  // localHash!=remoteHash on an otherwise-clean, green record is NOT a
+  // contradiction and must never be presented as one.
+  function ceoAdminHealthLevel(result) {
+    const health = result.health;
+    if (!health) return { level: 'yellow', label: 'Sin señal aún', detail: 'Este cliente todavía no ha enviado ningún reporte de salud (normal si nunca abrió esta versión de la app).' };
+    const updatedAtMs = health.updatedAt ? new Date(health.updatedAt).getTime() : 0;
+    const ageMs = updatedAtMs ? Date.now() - updatedAtMs : Infinity;
+    if (health.lastRuntimeError) return { level: 'red', label: 'Error reciente', detail: health.lastRuntimeError };
+    if (health.syncStatus === 'real_conflict') return { level: 'red', label: 'Conflicto de sincronización real' };
+    if (ageMs > 24 * 60 * 60 * 1000) return { level: 'red', label: 'Sin señales en más de 24h' };
+    if (health.isOnline === false) return { level: 'yellow', label: 'Última señal: sin conexión' };
+    if (health.tenantDataHydrated === false) return { level: 'yellow', label: 'Datos aún no hidratados en su último reporte' };
+    if (Number(health.pendingOperations || 0) > 0) return { level: 'yellow', label: 'Tenía operaciones en curso en su último reporte' };
+    if (ageMs > 30 * 60 * 1000) return { level: 'yellow', label: 'Señal no reciente (posiblemente cerrado por hoy)' };
+    return { level: 'green', label: 'Saludable' };
+  }
+  function ceoAdminHealthSectionHtml(result) {
+    const health = result.health;
+    const level = ceoAdminHealthLevel(result);
+    const badgeClass = level.level === 'green' ? 'green' : level.level === 'red' ? 'danger' : 'gold';
+    const legal = result.legal || {};
+    const legalLabels = { vigente: 'Vigente', pendiente: 'Pendiente', grace: 'En periodo de gracia', requiere_aceptacion: 'Requiere aceptación' };
+    const legalBadgeClass = legal.status === 'vigente' ? 'green' : legal.status === 'requiere_aceptacion' ? 'danger' : 'gold';
+    return `<section class="card sectionCard">
+        <h3>Salud del cliente <span class="badge ${badgeClass}" style="margin-left:8px;">${escapeHtml(level.label)}</span></h3>
+        ${result.pendingCashClose ? `<p class="cloudStatus" style="color:#ffb020;">⚠ Tiene una caja de un día anterior sin cerrar.</p>` : ''}
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-top:8px;">
+          <div><small class="fieldHint">Versión / release</small><div>${escapeHtml(health?.appVersion || '-')}${health?.buildSha ? ` <small class="fieldHint">(${escapeHtml(health.buildSha.slice(0, 7))})</small>` : ''}</div></div>
+          <div><small class="fieldHint">Último reporte</small><div>${health?.updatedAt ? escapeHtml(new Date(health.updatedAt).toLocaleString('es-EC')) : 'Nunca'}</div></div>
+          <div><small class="fieldHint">Conexión (últ. reporte)</small><div>${health ? (health.isOnline ? 'En línea' : 'Sin conexión') : '-'}</div></div>
+          <div><small class="fieldHint">Datos hidratados</small><div>${health ? (health.tenantDataHydrated ? 'Sí' : 'No') : '-'}</div></div>
+          <div><small class="fieldHint">Operaciones pendientes</small><div>${health ? escapeHtml(String(health.pendingOperations ?? 0)) : '-'}</div></div>
+          <div><small class="fieldHint">Confiabilidad (sync)</small><div>${health?.syncStatus ? escapeHtml(health.syncStatus) : '-'}</div></div>
+          <div><small class="fieldHint">Hash local / remoto</small><div><small>${health?.localHash ? escapeHtml(health.localHash.slice(0, 10)) : '-'} / ${health?.remoteHash ? escapeHtml(health.remoteHash.slice(0, 10)) : '-'}</small></div></div>
+          <div><small class="fieldHint">Último error de ejecución</small><div>${health?.lastRuntimeError ? escapeHtml(health.lastRuntimeError) : 'Ninguno reportado'}</div></div>
+          <div><small class="fieldHint">Aceptación legal</small><div><span class="badge ${legalBadgeClass}">${escapeHtml(legalLabels[legal.status] || legal.status || '-')}</span>${legal.latestAcceptedAt ? `<br><small class="fieldHint">${escapeHtml(new Date(legal.latestAcceptedAt).toLocaleDateString('es-EC'))}</small>` : ''}</div></div>
+        </div>
+        <p class="fieldHint" style="margin-top:10px;">Los hashes local/remoto son solo diagnóstico -- el estado real de "confiabilidad" (limpio/pendiente/conflicto) es el campo que decide, no la comparación de hashes por sí sola.</p>
+      </section>`;
   }
   function ceoAdminResultHtml() {
     if (ceoAdminSearchError) return `<section class="card sectionCard" style="margin-top:14px;border-color:rgba(255,92,98,.5);"><p class="cloudStatus">${escapeHtml(ceoAdminSearchError)}</p></section>`;
@@ -3027,6 +3545,7 @@ function parseMoney(value) {
           <div><small class="fieldHint">Revision</small><div>${escapeHtml(String(access.revision ?? '-'))}</div></div>
         </div>
       </section>
+      ${ceoAdminHealthSectionHtml(result)}
       <section class="card sectionCard">
         <h3>Uso</h3>
         ${ceoAdminUsageBar('Productos activos', result.usage?.productsActive || 0, limits.productsActive)}
@@ -3238,7 +3757,7 @@ function parseMoney(value) {
 	        id: `reminder:${reminder.id}`,
 	        type: reminder.type || 'task',
 	        title: reminder.title || 'Recordatorio',
-		        detail: Number.isFinite(dueMs) ? `${dueMs < now ? 'Vencido' : 'Proximo'} · ${window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || reminder.dueAt}` : 'Sin fecha',
+		        detail: Number.isFinite(dueMs) ? `${dueMs < now ? 'Vencido' : 'Proximo'} · ${safeFormatBusinessDate(reminder.dueAt, true) || reminder.dueAt}` : 'Sin fecha',
 		        route: 'reminders',
 		        dueAt: reminder.dueAt || '',
 		        priority: Number.isFinite(dueMs) && dueMs < now ? 'Alta' : 'Media',
@@ -3295,9 +3814,9 @@ function parseMoney(value) {
 	    if (!reminders.length) return '<p class="empty">No hay recordatorios pendientes.</p>';
 	    return reminders.map((reminder) => {
 	      const customer = crmCustomers().find((item) => item.id === reminder.customerId);
-	      const phone = window.CLICK360_V16_DOMAIN?.normalizePhone(reminder.phone || customer?.phone || '') || '';
-	      const message = `Hola ${customer?.name || reminder.customerName || ''}, te recordamos un saldo pendiente de ${fmt(reminder.amount || 0)} con ${currentBusiness()?.name || ''}. Fecha acordada: ${window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || reminder.dueAt}.`;
-	      return `<article class="movement reminderCard"><div style="flex:1;"><div><span class="badge">${escapeHtml(reminder.type || 'tarea')}</span> <b>${escapeHtml(reminder.title || 'Recordatorio')}</b></div><small>${escapeHtml(reminder.dueAt ? (window.CLICK360_V16_DOMAIN?.formatBusinessDate(reminder.dueAt, 'es-EC', businessTimeZone(), true) || new Date(reminder.dueAt).toLocaleString('es-EC')) : 'Sin fecha')}${reminder.notes ? ` · ${escapeHtml(reminder.notes)}` : ''}</small>${customer ? `<small>${escapeHtml(customer.name)}${reminder.amount ? ` · ${fmt(reminder.amount)}` : ''}</small>` : ''}</div><div class="reminderActions">${phone ? `<a class="btn whatsapp" target="_blank" rel="noopener noreferrer" href="https://wa.me/${escapeHtml(phone)}?text=${encodeURIComponent(message)}">Cobrar por WhatsApp</a>` : ''}<button class="btn silver" data-reminder-edit="${actionId(reminder.id)}">Editar</button>${reminder.done || reminder.status === 'completed' ? '<span class="badge">Hecho</span>' : `<button class="btn silver" data-reminder-postpone="${actionId(reminder.id)}">Posponer</button><button class="btn primary" data-reminder-done="${actionId(reminder.id)}">Completar</button>`}<button class="iconBtn danger" title="Eliminar" aria-label="Eliminar recordatorio" data-reminder-delete="${actionId(reminder.id)}">&#128465;</button></div></article>`;
+	      const phone = safeNormalizePhone(reminder.phone || customer?.phone || '');
+	      const message = `Hola ${customer?.name || reminder.customerName || ''}, te recordamos un saldo pendiente de ${fmt(reminder.amount || 0)} con ${currentBusiness()?.name || ''}. Fecha acordada: ${safeFormatBusinessDate(reminder.dueAt, true) || reminder.dueAt}.`;
+	      return `<article class="movement reminderCard"><div style="flex:1;"><div><span class="badge">${escapeHtml(reminder.type || 'tarea')}</span> <b>${escapeHtml(reminder.title || 'Recordatorio')}</b></div><small>${escapeHtml(reminder.dueAt ? (safeFormatBusinessDate(reminder.dueAt, true) || new Date(reminder.dueAt).toLocaleString('es-EC')) : 'Sin fecha')}${reminder.notes ? ` · ${escapeHtml(reminder.notes)}` : ''}</small>${customer ? `<small>${escapeHtml(customer.name)}${reminder.amount ? ` · ${fmt(reminder.amount)}` : ''}</small>` : ''}</div><div class="reminderActions">${phone ? `<a class="btn whatsapp" target="_blank" rel="noopener noreferrer" href="https://wa.me/${escapeHtml(phone)}?text=${encodeURIComponent(message)}">Cobrar por WhatsApp</a>` : ''}<button class="btn silver" data-reminder-edit="${actionId(reminder.id)}">Editar</button>${reminder.done || reminder.status === 'completed' ? '<span class="badge">Hecho</span>' : `<button class="btn silver" data-reminder-postpone="${actionId(reminder.id)}">Posponer</button><button class="btn primary" data-reminder-done="${actionId(reminder.id)}">Completar</button>`}<button class="iconBtn danger" title="Eliminar" aria-label="Eliminar recordatorio" data-reminder-delete="${actionId(reminder.id)}">&#128465;</button></div></article>`;
 	    }).join('');
 	  }
 	  function openReminderModal(reminderId = '') {
@@ -3433,7 +3952,7 @@ function parseMoney(value) {
     if (!shouldPromptInitialBusinessSetup(access, business)) return;
     onboardingPrompted = true;
 		    const onboardingAction = ['trial', 'trial_active'].includes(access.mode) ? 'Comenzar prueba' : 'Guardar y continuar';
-		    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Apellido</label><input id="onboardingLastName" autocomplete="family-name"></div><div class="field"><label>Teléfono</label><input id="onboardingPhone" type="tel" autocomplete="tel" required placeholder="0999999999"></div><div class="field"><label>País</label><select id="onboardingCountry"><option value="EC">Ecuador</option><option value="CO">Colombia</option><option value="PE">Perú</option><option value="MX">México</option><option value="US">Estados Unidos</option><option value="other">Otro</option></select></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><div class="field"><label>Moneda</label><select id="onboardingCurrency"><option value="USD">USD</option><option value="COP">COP</option><option value="PEN">PEN</option><option value="MXN">MXN</option><option value="EUR">EUR</option></select></div><div class="field"><label>Zona horaria</label><select id="onboardingTimezone"><option value="America/Guayaquil">America/Guayaquil</option><option value="America/Bogota">America/Bogota</option><option value="America/Lima">America/Lima</option><option value="America/Mexico_City">America/Mexico_City</option><option value="America/New_York">America/New_York</option><option value="Europe/Madrid">Europe/Madrid</option></select></div><label class="consentCheck full"><input id="onboardingTerms" type="checkbox" required><span>Acepto los Términos y la Política de privacidad de CLICK 360, versión ${escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14')}.</span></label><button class="btn primary block" type="submit">${onboardingAction}</button></form>`);
+		    showModal(`<div class="modalHeader"><h2>Configura tu negocio</h2><button class="closeBtn" data-close>×</button></div><form id="onboardingForm" class="formGrid"><div class="field"><label>Nombre</label><input id="onboardingName" required value="${escapeHtml(authUser().name || '')}"></div><div class="field"><label>Apellido</label><input id="onboardingLastName" autocomplete="family-name"></div><div class="field"><label>Teléfono</label><input id="onboardingPhone" type="tel" autocomplete="tel" required placeholder="0999999999"></div><div class="field"><label>País</label><select id="onboardingCountry"><option value="EC">Ecuador</option><option value="CO">Colombia</option><option value="PE">Perú</option><option value="MX">México</option><option value="US">Estados Unidos</option><option value="other">Otro</option></select></div><div class="field"><label>Nombre de empresa</label><input id="onboardingBusiness" required value="${escapeHtml(business.name === 'Mi Negocio' ? '' : business.name)}"></div><div class="field"><label>Tipo de negocio</label><select id="onboardingType">${typeOptions(business.type || 'otro')}</select></div><div class="field"><label>Moneda</label><select id="onboardingCurrency"><option value="USD">USD</option><option value="COP">COP</option><option value="PEN">PEN</option><option value="MXN">MXN</option><option value="EUR">EUR</option></select></div><div class="field"><label>Zona horaria</label><select id="onboardingTimezone"><option value="America/Guayaquil">America/Guayaquil</option><option value="America/Bogota">America/Bogota</option><option value="America/Lima">America/Lima</option><option value="America/Mexico_City">America/Mexico_City</option><option value="America/New_York">America/New_York</option><option value="Europe/Madrid">Europe/Madrid</option></select></div><label class="consentCheck full"><input id="onboardingTerms" type="checkbox" required><span>Acepto los Términos y la Política de privacidad de CLICK 360, versión ${escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14')}.</span></label><label class="consentCheck full"><input id="onboardingMarketing" type="checkbox"><span>Quiero recibir novedades y promociones de CLICK 360 por correo o WhatsApp (opcional, no requerido para usar la app).</span></label><button class="btn primary block" type="submit">${onboardingAction}</button></form>`);
 	    $('#onboardingForm').onsubmit = async (event) => {
 	      event.preventDefault();
 	      const name = $('#onboardingName').value.trim();
@@ -3450,10 +3969,14 @@ function parseMoney(value) {
 	      business.settings.country = $('#onboardingCountry').value;
 	      business.settings.currency = $('#onboardingCurrency').value;
 	      business.settings.timeZone = $('#onboardingTimezone').value;
-	      const termsVersion = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-13';
+	      const termsVersion = window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14';
+	      const privacyVersion = window.CLICK360_V16_DOMAIN?.PRIVACY_VERSION || termsVersion;
 		      state.settings.onboarding = { completedAt: new Date().toISOString(), operationId, version: 16.2, checklist: { business: true, product: false, cash: false, sale: false, customer: false, reminder: false, label: false, report: false } };
 	      state.legalAcceptances ||= [];
-	      state.legalAcceptances.push({ id: uid('legal'), businessId: business.id, uid: window.click360User.uid, termsVersion, privacyVersion: termsVersion, acceptedAt: new Date().toISOString(), source: 'onboarding' });
+	      state.legalAcceptances.push({ id: uid('legal'), businessId: business.id, uid: window.click360User.uid, termsVersion, privacyVersion, acceptedAt: new Date().toISOString(), source: 'onboarding' });
+	      // Deliberately separate from legalAcceptances: marketing consent is
+	      // optional and never gates access to the app, unlike Terms/Privacy.
+	      business.settings.marketingConsent = { granted: !!$('#onboardingMarketing').checked, updatedAt: new Date().toISOString() };
 	      window.click360User.name = fullName;
 	      business.settings.ownerName = fullName;
 	      cacheUserProfile({ uid: window.click360User.uid, name: fullName, email: window.click360User.email, photoURL: window.click360User.photoURL });
@@ -3463,7 +3986,7 @@ function parseMoney(value) {
 	        next.settings?.onboarding?.operationId === operationId);
 	      if (!committed.ok) { closeModal(); renderApp('home'); return; }
 	      const profileSynced = await flushPendingProfile();
-	      await window.click360SaveLegalAcceptance?.({ termsVersion, privacyVersion: termsVersion, source: 'onboarding' }).catch((error) => console.warn('Aceptacion legal pendiente de nube:', error.message));
+	      await window.click360SaveLegalAcceptance?.({ termsVersion, privacyVersion, source: 'onboarding' }).catch((error) => console.warn('Aceptacion legal pendiente de nube:', error.message));
 	      closeModal(); renderApp('home'); toast(committed.pending || !profileSynced ? 'Tu negocio está listo; queda una sincronización pendiente.' : 'Tu negocio está listo');
 	    };
 	  }
@@ -4515,7 +5038,8 @@ function parseMoney(value) {
 	      <div class="helpSuggestions" aria-label="Búsquedas sugeridas">${['crear producto','cerrar caja','imprimir 1 etiqueta','organizar mesas','instalar app','sin internet'].map((query) => `<button type="button" data-help-query="${escapeHtml(query)}">${escapeHtml(query)}</button>`).join('')}</div>
 	      <div class="helpCategories">${categories.map((category) => `<button type="button" data-help-category="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div>
 	      <section id="helpResults" class="helpResults">${helpTopicCards(HELP_TOPICS)}</section>
-	      <a class="btn whatsapp block helpSupport" href="${supportWhatsAppUrl('Hola CLICK 360, necesito ayuda')}" target="_blank" rel="noopener noreferrer">${icon('message-circle')} Contactar soporte por WhatsApp</a>`;
+	      <a class="btn whatsapp block helpSupport" href="${supportWhatsAppUrl('Hola CLICK 360, necesito ayuda')}" target="_blank" rel="noopener noreferrer">${icon('message-circle')} Contactar soporte por WhatsApp</a>
+	      <p style="text-align:center; font-size:12px; color:var(--muted); margin-top:12px;"><a href="#legal">Términos y Política de privacidad</a></p>`;
 	  }
 	  function helpTopicCards(topics) {
 	    return topics.length ? topics.map((topic) => `<details class="card helpTopic"><summary><span><small>${escapeHtml(topic.category)}</small>${escapeHtml(topic.title)}</span>${icon('chevron-down')}</summary><ol>${(topic.steps || [topic.body]).filter(Boolean).map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol></details>`).join('') : '<div class="card empty">No encontramos una guía con esas palabras. Prueba “cerrar caja”, “etiqueta” o “sin internet”.</div>';
@@ -4547,8 +5071,6 @@ function parseMoney(value) {
 			function moreView(){
 			    const ceoAdminTool = window.click360IsPlatformAdmin?.() ? `<button class="card bigRow" data-more="ceoAdmin"><span>${icon('shield-check')} CEO Admin</span>${icon('chevron-right')}</button>` : '';
 			    const ownerTools = isOwnerUser() ? `
-			      <button class="card bigRow" data-more="debtors"><span>${icon('hand-coins')} Apartados</span>${icon('chevron-right')}</button>
-			      <button class="card bigRow" data-more="activity"><span>${icon('history')} Actividad</span>${icon('chevron-right')}</button>
 			      <button class="card bigRow" data-more="backup"><span>${icon('cloud-check')} Respaldo y nube</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="invoices"><span>${icon('receipt-text')} Facturas de proveedores</span>${icon('chevron-right')}</button>
 		      <button class="card bigRow" data-more="settings"><span>${icon('settings')} Ajustes</span>${icon('chevron-right')}</button>
@@ -5308,9 +5830,9 @@ function parseMoney(value) {
 	        <p id="cloudStatusDetail" class="cloudStatus">${escapeHtml(cloud.detail)}</p>
 		        <div class="split" style="gap:10px;margin-top:12px;"><button type="button" class="btn silver" id="refreshCloudBtn">Actualizar desde nube</button><button type="button" class="btn primary" id="forceSyncCloud">Guardar ahora en nube</button></div>
 		        <div class="syncRecoveryCard">
-		          <button type="button" class="btn block" id="clearLocalAppStateBtn">Limpiar estado local de esta app</button>
-		          <button type="button" class="btn silver block" id="copySyncDiagnosticBtn" style="margin-top:8px;">Copiar diagnóstico técnico</button>
-		          <p class="fieldHint">Solo limpia locks locales de sincronización y vuelve a leer la nube. No borra Firebase, negocios ni productos.</p>
+		          <button type="button" class="btn block" id="clearLocalAppStateBtn">Reparar sincronización</button>
+		          <p class="fieldHint">Actualiza los datos guardados en este dispositivo y los vuelve a traer desde la nube. No borra tus negocios ni tus productos.</p>
+		          <details class="settingsDisclosure" style="margin-top:8px;"><summary>Diagnóstico avanzado</summary><p class="fieldHint">Elimina bloqueos técnicos de sincronización guardados en este dispositivo (no en la nube) y vuelve a leer tu información desde el servidor.</p><button type="button" class="btn silver block" id="copySyncDiagnosticBtn" style="margin-top:8px;">Copiar diagnóstico técnico</button></details>
 		        </div>
 	      </section>
       <section class="card sectionCard" style="margin-top:14px">
@@ -5333,30 +5855,73 @@ function parseMoney(value) {
         <div class="split" style="gap:10px;"><button type="button" class="btn silver" id="backupBtn">\uD83D\uDCBE Guardar Respaldo</button><label class="btn silver" style="flex:1; text-align:center; display:flex; align-items:center; justify-content:center;"><input type="file" id="restoreFile" accept="application/json" hidden/>\uD83D\uDD04 Restaurar Respaldo</label></div>
       </section>`;
   }
+  // r37 (Section 11-16, worker invite flow): commercial-facing role
+  // presets. The underlying security roles/permission modules stay the
+  // SAME closed, server-validated set (worker/seller/cashier/inventory/
+  // supervisor/admin -- see ROLE_ALIASES/ROLE_PERMISSIONS in
+  // worker-data-boundary.js and businessUnitPermission() in
+  // firestore.rules, both untouched here) -- deliberately NOT extended
+  // with brand-new role codes, since that would mean touching the exact
+  // multi-tenant security boundary the SHARY Workers migration existed to
+  // protect. Each preset instead maps to the closest baseRole plus
+  // permission overrides (restrict-only, never grant beyond the
+  // baseline -- see normalizePermissionMap()), computed client-side and
+  // sent as the invitation's explicit permissions.
+  const WORKER_ROLE_PRESETS = Object.freeze([
+    { id: 'cajero', label: 'Cajero', baseRole: 'cashier', overrides: {} },
+    { id: 'vendedor', label: 'Vendedor', baseRole: 'seller', overrides: {} },
+    { id: 'bodega', label: 'Bodega', baseRole: 'inventory', overrides: {} },
+    { id: 'mesero', label: 'Mesero', baseRole: 'seller', overrides: { movements: { create: false } } },
+    { id: 'cocina', label: 'Cocina', baseRole: 'seller', overrides: { sales: { create: false }, movements: { read: false, create: false }, layaways: { create: false, payment: false } } },
+    { id: 'repartidor', label: 'Repartidor', baseRole: 'inventory', overrides: { products: { create: false, delete: false } } },
+    { id: 'administrador_limitado', label: 'Administrador limitado', baseRole: 'supervisor', overrides: {} },
+    { id: 'personalizado', label: 'Personalizado', baseRole: 'admin', overrides: null }
+  ]);
+  function workerRolePresetOptionsHtml(selected = 'vendedor') {
+    return WORKER_ROLE_PRESETS.map((preset) => `<option value="${preset.id}" ${preset.id === selected ? 'selected' : ''}>${escapeHtml(preset.label)}</option>`).join('');
+  }
+  function workerRolePresetPermissions(presetId) {
+    const preset = WORKER_ROLE_PRESETS.find((item) => item.id === presetId) || WORKER_ROLE_PRESETS[1];
+    if (preset.overrides === null) return null; // 'Personalizado': owner edits exact permissions after creating the invite
+    try { return window.CLICK360_WORKER_DATA_BOUNDARY?.normalizePermissionMap?.(preset.baseRole, preset.overrides) || null; }
+    catch { return null; }
+  }
   function workersView(){
-    // Initial paint uses the static, project-only WORKER_TENANT_ACCESS_ENABLED
-    // (correct immediately for staging/demo, and a safe default-closed guess
-    // for production before the owner's own tenant flag is known).
-    // bindWorkers() re-checks the real per-tenant flag asynchronously right
-    // after this renders and corrects both the notice and the form's
-    // visibility if they disagree -- see Phase 3.3 staging-only-dependency audit.
+    // r37: the initial paint used to guess WORKER_TENANT_ACCESS_ENABLED (a
+    // static, project-only flag that is safely-closed-by-default for real
+    // production tenants) and show "Registro pausado" immediately, then
+    // bindWorkers() would silently correct it a moment later once the real
+    // per-tenant flag resolved -- a visible ~1s false "paused" flash for any
+    // tenant that's actually enabled (LOADING != OFF). Now the initial paint
+    // shows a neutral loading state; bindWorkers() reveals whichever real
+    // state applies once it actually knows, never before.
     return `<div class="pageHead"><div><h1>Trabajadores</h1><p>Administra los accesos a tu negocio.</p></div></div>
-	  <section class="card sectionCard" id="workerRegistrationPausedNotice" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:none' : ''}"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>
-      <section class="card sectionCard" id="workerRegistrationCard" ${WORKER_TENANT_ACCESS_ENABLED ? '' : 'aria-disabled="true"'}>
+	  <section class="card sectionCard" id="workerAccessLoadingNotice"><p class="cloudStatus">Cargando acceso del equipo…</p></section>
+	  <section class="card sectionCard" id="workerRegistrationPausedNotice" style="display:none"><h3>Registro pausado</h3><p class="cloudStatus">El acceso operativo para trabajadores está temporalmente pausado. Puedes revisar o revocar invitaciones existentes; no se crearán accesos nuevos desde esta versión.</p></section>
+      <section class="card sectionCard" id="workerRegistrationCard" style="display:none" aria-disabled="true">
          <h3>Registrar Trabajador</h3>
-         <p class="fieldHint" id="workerRegistrationHint" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:none' : ''}">Disponible en una fase posterior; no se activó en este release P1.1.</p>
-	         <form id="addWorkerForm" style="${WORKER_TENANT_ACCESS_ENABLED ? 'display:flex' : 'display:none'}; flex-direction:column; gap:10px; margin-bottom:14px;">
+         <p class="fieldHint" id="workerRegistrationHint" style="display:none">Disponible en una fase posterior; no se activó en este release P1.1.</p>
+	         <form id="addWorkerForm" style="display:none; flex-direction:column; gap:10px; margin-bottom:14px;">
             <div class="field"><label>Nombre</label><input id="workerName" required placeholder="Ej. Juan Pérez"></div>
             <div class="field"><label>Correo de Google del Trabajador</label><input id="workerEmail" type="email" required placeholder="Ej. juan@gmail.com"></div>
-            <div class="field"><label>Rol inicial</label><select id="workerRole"><option value="admin">Administrador</option><option value="supervisor">Supervisor</option><option value="seller">Vendedor</option><option value="cashier">Cajero</option><option value="inventory">Inventario</option></select></div>
+            <div class="field"><label>Rol inicial</label><select id="workerRole">${workerRolePresetOptionsHtml()}</select><small class="fieldHint" id="workerRoleCustomHint" style="display:none;">Podrás ajustar los permisos exactos después de crear la invitación, desde la lista de trabajadores.</small></div>
             <button class="btn primary block" type="submit">Crear invitacion segura</button>
          </form>
 
          <div id="inviteLinkBox" style="display:none; margin-top:14px; background:rgba(55,213,126,0.1); border:1px solid rgba(55,213,126,0.3); padding:12px; border-radius:12px;">
             <small style="color:var(--green); display:block; margin-bottom:6px; font-weight:bold;">Enlace de Invitación:</small>
             <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:8px; border-radius:8px;">
-            <button class="btn silver block" id="copyInviteLinkBtn" type="button">Copiar Enlace</button>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+              <a class="btn whatsapp" id="whatsappInviteLinkBtn" target="_blank" rel="noopener noreferrer" href="#">${icon('message-circle')} WhatsApp</a>
+              <button class="btn silver" id="shareInviteLinkBtn" type="button" style="display:none;">Compartir</button>
+            </div>
+            <button class="btn silver block" id="copyInviteLinkBtn" type="button" style="margin-top:8px;">Copiar Enlace</button>
          </div>
+      </section>
+      <section class="card sectionCard" id="workerAccessRequestsCard" style="margin-top:14px; display:none;">
+         <h3>Solicitudes de acceso pendientes</h3>
+         <p class="fieldHint">Trabajadores que ya aceptaron la invitación y completaron su perfil -- revisa y aprueba para que puedan empezar a trabajar.</p>
+         <div id="workerAccessRequestsList"></div>
       </section>
       <section class="card sectionCard" id="workerSeatCard" style="margin-top:14px; display:none;">
          <h3>Trabajadores adicionales</h3>
@@ -5442,6 +6007,28 @@ function parseMoney(value) {
         <button type="button" class="btn silver block" id="createBiz">Crear negocio</button>
       </section>
 
+	      <section class="card sectionCard" style="margin-top:14px;${ownerOnlyStyle}">
+	        <h3>Este dispositivo</h3>
+	        <p class="fieldHint">Configura esto SOLO si este dispositivo se queda fijo en el mostrador y lo usan varios trabajadores (terminal compartido / POS). En un celular o computadora personal, deja "Dispositivo personal" -- nunca cierra sesión sola.</p>
+	        <div class="field">
+	          <label>Tipo de dispositivo</label>
+	          <select id="deviceModeSelect">
+	            <option value="personal">Dispositivo personal (nunca cierra sesión por inactividad)</option>
+	            <option value="shared_terminal">Terminal compartido / POS (cierra sesión tras inactividad)</option>
+	          </select>
+	        </div>
+	        <div class="field" id="deviceInactivityMinutesField" style="display:none;">
+	          <label>Cerrar sesión tras inactividad de</label>
+	          <select id="deviceInactivityMinutesSelect">
+	            <option value="3">3 minutos</option>
+	            <option value="5">5 minutos</option>
+	            <option value="10">10 minutos</option>
+	            <option value="15">15 minutos</option>
+	          </select>
+	        </div>
+	        <p class="fieldHint">Si hay una venta en curso (carrito con productos) o una operación sin confirmar, CLICK 360 nunca cierra la sesión sola -- espera a que termines.</p>
+	      </section>
+
 	      <section class="card sectionCard" style="margin-top:14px; border:1px solid #4a1c1c;${ownerOnlyStyle}">
         <h3 style="color:#d9534f;">Zona de Peligro</h3>
         <button type="button" class="btn danger block" id="resetInventoryBtn" style="margin-bottom:10px;">Reiniciar Inventario</button>
@@ -5489,6 +6076,8 @@ function parseMoney(value) {
 	    if(r==='access') bindAccess();
 	    if(r==='ceoAdmin') bindCeoAdmin();
 	    if(r==='printing') bindPrinting();
+	    if(r==='legalGate') bindLegalGate();
+	    if(r==='workerAccessGate') bindWorkerAccessGate();
 	  }
   function bindDebtors() {
     const select = $('#layawayStatusFilter');
@@ -5634,7 +6223,7 @@ function parseMoney(value) {
   }
   function bindInventoryActions(){
     $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit && p.businessId===currentBusiness()?.id)));
-    $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
+    $$('[data-del]').forEach(b=>b.onclick=()=>window.click360GuardedAction(b, ()=>deleteProduct(b.dataset.del)));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
     $$('[data-quick-print]').forEach((button) => {
       button.onclick = () => runQuickLabelPrintFlow({
@@ -5778,6 +6367,7 @@ function parseMoney(value) {
 	  function bindSell(){
 	    if(!$('#payMethod')) return;
 	    let cart=[];
+	    window.click360SellCartCount = () => cart.length;
 	    const currentTax = businessTaxConfig();
 	    $('#calculatorSellBtn')?.addEventListener('click', () => openCalculator({ base: parseMoney($('#cartTotal')?.textContent || 0), preferredTarget: 'cashReceived' }));
 
@@ -6944,8 +7534,20 @@ function parseMoney(value) {
 
         $('#moveForm').onsubmit = async (e) => {
           e.preventDefault();
+          // r37 (Section 36-38, Action Guardian): this form had no
+          // anti-double-submit guard at all -- a rapid double-click on
+          // "Guardar" generated two distinct movementIds (uid('mov') runs
+          // again on the second submit event) and pushed two separate cash
+          // movements, silently double-counting a real income/expense
+          // entry. commitCriticalMutation()'s operationId check only
+          // protects against duplicate SYNC pushes of the SAME write, not
+          // against the client creating two genuinely different writes.
+          const submitBtn = e.target.querySelector('button[type="submit"]');
+          if (submitBtn?.disabled) return;
+          if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Procesando...'; }
+          try {
           const k=$('#mKind').value, a=parseMoney($('#mAmount').value), n=$('#mNote').value.trim();
-          if(!Number.isFinite(a)||a<=0) return toast('Monto inválido','err');
+          if(!Number.isFinite(a)||a<=0) { toast('Monto inválido','err'); return; }
 	          const previousState = cloneState(state);
 	          const movementId = uid('mov');
 	          const businessId = currentBusiness().id;
@@ -6955,6 +7557,9 @@ function parseMoney(value) {
 	            next.movements.some((movement) => movement.id === movementId && movement.businessId === businessId));
 	          if (!committed.ok) { closeModal(); renderApp('cash'); return; }
 	          closeModal(); renderApp('cash'); toast(committed.pending ? 'Movimiento guardado; sincronización pendiente.' : 'Movimiento guardado');
+          } finally {
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Guardar'; }
+          }
         };
       };
     }
@@ -7140,6 +7745,16 @@ function parseMoney(value) {
   }
 
   async function bindWorkers() {
+    // renderApp() can re-invoke bindWorkers() a second time in quick
+    // succession (e.g. an optimistic first paint followed by a hydration
+    // re-render once the real tenant data/flag arrives). Each call has
+    // its own async checkpoints (below), so an earlier, now-superseded
+    // call could otherwise resolve LATER than a newer one and stomp on
+    // DOM elements the newer call already finished wiring -- a real
+    // re-entrancy race, not just a stale-reference read. A generation
+    // token lets every call detect it has been superseded and bail out
+    // without touching the DOM at all.
+    const myWorkersBindGen = ++WORKERS_BIND_GEN;
     renderWorkerSeatStatus().catch(() => {});
     const list = $('#workersList');
     if (!window.click360User || window.click360User.role !== 'owner') {
@@ -7156,14 +7771,50 @@ function parseMoney(value) {
     // closed there.
     const tenantAccessEnabled = WORKER_TENANT_ACCESS_ENABLED
       || (await window.click360CurrentOwnerWorkersEnabled?.(window.click360User.uid).catch(() => false));
+    if (myWorkersBindGen !== WORKERS_BIND_GEN) return;
+    const loadingNotice = $('#workerAccessLoadingNotice');
     const pausedNotice = $('#workerRegistrationPausedNotice');
     const registrationCard = $('#workerRegistrationCard');
     const registrationHint = $('#workerRegistrationHint');
     const addWorkerForm = $('#addWorkerForm');
+    // r37: this is the FIRST moment the real per-tenant flag is known --
+    // reveal the correct state now instead of correcting a guess that was
+    // already visible (the "Registro pausado" flicker).
+    if (loadingNotice) loadingNotice.style.display = 'none';
     if (pausedNotice) pausedNotice.style.display = tenantAccessEnabled ? 'none' : '';
-    if (registrationCard) tenantAccessEnabled ? registrationCard.removeAttribute('aria-disabled') : registrationCard.setAttribute('aria-disabled', 'true');
+    if (registrationCard) { registrationCard.style.display = ''; tenantAccessEnabled ? registrationCard.removeAttribute('aria-disabled') : registrationCard.setAttribute('aria-disabled', 'true'); }
     if (registrationHint) registrationHint.style.display = tenantAccessEnabled ? 'none' : '';
     if (addWorkerForm) addWorkerForm.style.display = tenantAccessEnabled ? 'flex' : 'none';
+
+    const workerRoleSelect = $('#workerRole');
+    const workerRoleCustomHint = $('#workerRoleCustomHint');
+    if (workerRoleSelect && workerRoleCustomHint) {
+      workerRoleSelect.onchange = () => { workerRoleCustomHint.style.display = workerRoleSelect.value === 'personalizado' ? '' : 'none'; };
+    }
+
+    const loadAccessRequests = async () => {
+      const requestsCard = $('#workerAccessRequestsCard');
+      const requestsList = $('#workerAccessRequestsList');
+      if (!requestsCard || !requestsList) return;
+      try {
+        const requests = await window.click360ListWorkerAccessRequests?.() || [];
+        if (!requests.length) { requestsCard.style.display = 'none'; return; }
+        requestsCard.style.display = '';
+        requestsList.innerHTML = requests.map((request) => `<article class="movement"><div><b>${escapeHtml(request.name || request.email || 'Trabajador')}</b><br><small>${escapeHtml(request.email || '')}${request.phone ? ` · ${escapeHtml(request.phone)}` : ''}</small></div><span style="display:flex;gap:6px;"><button type="button" class="btn primary small" data-approve-request="${escapeHtml(request.id)}">Aprobar</button><button type="button" class="btn danger small" data-reject-request="${escapeHtml(request.id)}">Rechazar</button></span></article>`).join('');
+        requestsList.querySelectorAll('[data-approve-request]').forEach((btn) => btn.onclick = async () => {
+          btn.disabled = true;
+          try { await window.click360ApproveWorkerAccess(btn.dataset.approveRequest); toast('Acceso aprobado.', 'ok'); await loadAccessRequests(); }
+          catch (error) { toast(error.message || 'No se pudo aprobar.', 'err'); btn.disabled = false; }
+        });
+        requestsList.querySelectorAll('[data-reject-request]').forEach((btn) => btn.onclick = async () => {
+          if (!confirm('¿Rechazar esta solicitud? Se revocará el acceso de este trabajador.')) return;
+          btn.disabled = true;
+          try { await window.click360RejectWorkerAccess(btn.dataset.rejectRequest); toast('Solicitud rechazada.', 'ok'); await loadAccessRequests(); await loadWorkers(); }
+          catch (error) { toast(error.message || 'No se pudo rechazar.', 'err'); btn.disabled = false; }
+        });
+      } catch (error) { console.warn('No se pudieron cargar las solicitudes de acceso:', error.message); }
+    };
+    loadAccessRequests();
 
     let displayedWorkers = [];
     const loadWorkers = async () => {
@@ -7203,8 +7854,10 @@ function parseMoney(value) {
         button.onclick = async () => {
           try {
             const link = await window.click360GetInviteLink(decodeActionId(button.dataset.workerLink));
-            $('#inviteLinkBox').style.display = 'block';
-            $('#inviteLinkVal').value = link;
+            const inviteLinkBoxEl = $('#inviteLinkBox');
+            if (inviteLinkBoxEl) inviteLinkBoxEl.style.display = 'block';
+            const inviteLinkValEl = $('#inviteLinkVal');
+            if (inviteLinkValEl) inviteLinkValEl.value = link;
             await navigator.clipboard?.writeText(link).catch(() => {});
             toast('Enlace recuperado y listo para compartir');
           } catch (error) { toast(error.message, 'err'); }
@@ -7220,7 +7873,7 @@ function parseMoney(value) {
           const actions = ['read','create','update','delete','payment','close','manage'];
 	          const workerStatus = worker.status === 'pending' ? 'Pendiente' : worker.status === 'active' ? 'Activo' : worker.status === 'revoked' ? 'Revocado' : 'Bloqueado';
 	          const actionLabels = { read:'Ver', create:'Crear', update:'Editar', delete:'Eliminar', payment:'Registrar abono', close:'Cerrar caja', manage:'Administrar' };
-	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="admin" ${worker.role === 'admin' ? 'selected' : ''}>Administrador</option><option value="supervisor" ${worker.role === 'supervisor' ? 'selected' : ''}>Supervisor</option><option value="seller" ${['worker','seller'].includes(worker.role) ? 'selected' : ''}>Vendedor</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Cajero</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Inventario</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
+	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="admin" ${worker.role === 'admin' ? 'selected' : ''}>Administrador</option><option value="supervisor" ${worker.role === 'supervisor' ? 'selected' : ''}>Supervisor</option><option value="seller" ${['worker','seller'].includes(worker.role) ? 'selected' : ''}>Vendedor</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Cajero</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Bodega</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
           $('#saveWorkerPermissions').onclick = async () => {
             const permissions = {};
             $$('[data-permission-module]').forEach((input) => {
@@ -7272,13 +7925,18 @@ function parseMoney(value) {
     };
 
     await loadWorkers();
+	    if (myWorkersBindGen !== WORKERS_BIND_GEN) return;
 	    if (!tenantAccessEnabled) return;
+	    if (!addWorkerForm) return;
 
-    $('#addWorkerForm').onsubmit = async (e) => {
+    addWorkerForm.onsubmit = async (e) => {
       e.preventDefault();
       const name = $('#workerName').value.trim();
       const email = $('#workerEmail').value.trim().toLowerCase();
-      const role = $('#workerRole').value;
+      const presetId = $('#workerRole').value;
+      const preset = WORKER_ROLE_PRESETS.find((item) => item.id === presetId) || WORKER_ROLE_PRESETS[1];
+      const role = preset.baseRole;
+      const presetPermissions = workerRolePresetPermissions(presetId);
 
       const workers = displayedWorkers;
       const activeCount = workers.filter(worker => worker.status !== 'revoked' && worker.status !== 'blocked').length;
@@ -7292,31 +7950,47 @@ function parseMoney(value) {
       }
 
       const submitBtn = $('#addWorkerForm button[type="submit"]');
-      submitBtn.textContent = 'Procesando...';
-      submitBtn.disabled = true;
+      if (submitBtn) { submitBtn.textContent = 'Procesando...'; submitBtn.disabled = true; }
 
       try {
          // 1. Write the cloud invitation before presenting it as active.
 	         if (!window.click360InviteWorkerEmail) throw new Error('La invitación en nube no está disponible.');
-	         const inviteMeta = await window.click360InviteWorkerEmail(email, name, { role, businessUnitId:currentBusiness()?.id || '' });
+	         const inviteMeta = await window.click360InviteWorkerEmail(email, name, { role, permissions: presetPermissions, businessUnitId:currentBusiness()?.id || '' });
 
          // 2. Add to local storage settings list
          state.settings ||= {};
          state.settings.workers ||= [];
-	         state.settings.workers.push({ email, name, status: 'pending', role, inviteHash: inviteMeta?.inviteHash || '', permissions: inviteMeta?.permissions || {}, ownerId: window.click360User.uid, createdAt: new Date().toISOString() });
-	         addAudit('worker_invited', { inviteHash:inviteMeta?.inviteHash || '', role, entityType:'worker_invitation', entityId:inviteMeta?.inviteHash || '' });
+	         state.settings.workers.push({ email, name, status: 'pending', role, rolePreset: presetId, inviteHash: inviteMeta?.inviteHash || '', permissions: inviteMeta?.permissions || {}, ownerId: window.click360User.uid, createdAt: new Date().toISOString() });
+	         addAudit('worker_invited', { inviteHash:inviteMeta?.inviteHash || '', role, rolePreset: presetId, entityType:'worker_invitation', entityId:inviteMeta?.inviteHash || '' });
 	         if (!save()) {
 	           await window.click360CancelInviteEmail(email, inviteMeta?.inviteHash || '').catch(() => {});
 	           throw new Error('No se pudo guardar la invitación localmente; la invitación en nube fue cancelada.');
 	         }
 
          // 3. Display invite link PWA-compatible
-         $('#inviteLinkBox').style.display = 'block';
+         const inviteLinkBoxEl = $('#inviteLinkBox');
+         if (inviteLinkBoxEl) inviteLinkBoxEl.style.display = 'block';
 	         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + encodeURIComponent(window.click360User.uid) + "&inviteHash=" + encodeURIComponent(inviteMeta.inviteHash) + "&inviteToken=" + encodeURIComponent(inviteMeta.inviteToken);
-         $('#inviteLinkVal').value = inviteLink;
+         const inviteLinkValEl = $('#inviteLinkVal');
+         if (inviteLinkValEl) inviteLinkValEl.value = inviteLink;
+         const whatsappBtn = $('#whatsappInviteLinkBtn');
+         if (whatsappBtn) {
+           const message = `Hola ${name || ''}, te invito a unirte a ${currentBusiness()?.name || 'nuestro negocio'} en CLICK 360 como ${escapeHtml(preset.label)}. Abre este enlace con tu cuenta de Google para aceptar: ${inviteLink}`;
+           whatsappBtn.href = `https://wa.me/?text=${encodeURIComponent(message)}`;
+         }
+         const shareBtn = $('#shareInviteLinkBtn');
+         if (shareBtn) {
+           if (navigator.share) {
+             shareBtn.style.display = '';
+             shareBtn.onclick = () => navigator.share({ title: 'Invitación CLICK 360', text: `Te invito a unirte como ${preset.label}.`, url: inviteLink }).catch(() => {});
+           } else {
+             shareBtn.style.display = 'none';
+           }
+         }
 
          toast('Invitacion segura creada', 'ok');
          await loadWorkers();
+         await loadAccessRequests();
 
          // Reset fields
          $('#workerName').value = '';
@@ -7324,17 +7998,20 @@ function parseMoney(value) {
       } catch(err) {
          toast('Error al registrar: ' + err.message, 'err');
       } finally {
-         submitBtn.textContent = 'Crear invitacion segura';
-         submitBtn.disabled = false;
+         if (submitBtn) { submitBtn.textContent = 'Crear invitacion segura'; submitBtn.disabled = false; }
       }
     };
 
-    $('#copyInviteLinkBtn').onclick = async () => {
-       const el = $('#inviteLinkVal');
-       try { await navigator.clipboard.writeText(el.value); }
-       catch { el.select(); document.execCommand('copy'); }
-       toast('Enlace copiado al portapapeles');
-    };
+    const copyInviteLinkBtn = $('#copyInviteLinkBtn');
+    if (copyInviteLinkBtn) {
+      copyInviteLinkBtn.onclick = async () => {
+         const el = $('#inviteLinkVal');
+         if (!el) return;
+         try { await navigator.clipboard.writeText(el.value); }
+         catch { el.select(); document.execCommand('copy'); }
+         toast('Enlace copiado al portapapeles');
+      };
+    }
   }
 
   function bindReports(){
@@ -7347,6 +8024,30 @@ function parseMoney(value) {
   function bindSettings(){
     $('#configureTablesBtn')?.addEventListener('click', () => renderApp('tables'));
     $('#configureLogisticsBtn')?.addEventListener('click', () => renderApp('logistics'));
+
+    const deviceModeSelect = $('#deviceModeSelect');
+    const deviceInactivityMinutesField = $('#deviceInactivityMinutesField');
+    const deviceInactivityMinutesSelect = $('#deviceInactivityMinutesSelect');
+    if (deviceModeSelect) {
+      const currentMode = window.CLICK360_DEVICE_MODE.get();
+      deviceModeSelect.value = currentMode;
+      if (deviceInactivityMinutesSelect) deviceInactivityMinutesSelect.value = String(window.CLICK360_DEVICE_MODE.getInactivityMinutes());
+      if (deviceInactivityMinutesField) deviceInactivityMinutesField.style.display = currentMode === 'shared_terminal' ? '' : 'none';
+      deviceModeSelect.onchange = () => {
+        window.CLICK360_DEVICE_MODE.set(deviceModeSelect.value);
+        if (deviceInactivityMinutesField) deviceInactivityMinutesField.style.display = deviceModeSelect.value === 'shared_terminal' ? '' : 'none';
+        window.CLICK360_DEVICE_MODE.scheduleInactivityCheck();
+        toast(deviceModeSelect.value === 'shared_terminal'
+          ? 'Este dispositivo cerrará sesión sola tras inactividad (sin abandonar ventas en curso).'
+          : 'Este dispositivo es personal: nunca cerrará sesión sola.');
+      };
+      if (deviceInactivityMinutesSelect) {
+        deviceInactivityMinutesSelect.onchange = () => {
+          window.CLICK360_DEVICE_MODE.setInactivityMinutes(deviceInactivityMinutesSelect.value);
+          window.CLICK360_DEVICE_MODE.scheduleInactivityCheck();
+        };
+      }
+    }
     let pendingLogoUrl = safeImageSrc((currentBusiness().settings || {}).logoUrl);
     const logoUpload = $('#bizLogoUpload');
     if (logoUpload) {
@@ -7802,12 +8503,12 @@ function parseMoney(value) {
 		  window.click360ShowSyncConflictRecovery = showSyncConflictRecovery;
 		  async function clearLocalAppStateRecovery() {
 		    if (!window.click360ClearLocalRecoveryState) return toast('Recuperación local no disponible en este entorno.', 'err');
-		    if (!confirm('Esto limpiará únicamente locks locales de sincronización de esta app y recargará desde nube. No borra Firebase ni tus negocios. ¿Continuar?')) return;
-		    downloadBackup('antes-de-limpiar-estado-local');
-		    toast('Limpiando estado local...');
+		    if (!confirm('Esto actualiza los datos guardados en este dispositivo y los vuelve a traer desde la nube. No borra tus negocios ni tus productos. ¿Continuar?')) return;
+		    downloadBackup('antes-de-reparar-sincronizacion');
+		    toast('Reparando sincronización...');
 		    const result = await window.click360ClearLocalRecoveryState().catch(() => null);
 		    renderApp(route);
-		    toast(result?.ok ? 'Estado local recuperado desde nube.' : 'No se pudo completar la recuperación local.', result?.ok ? 'ok' : 'err');
+		    toast(result?.ok ? 'Sincronización reparada.' : 'No se pudo completar la reparación.', result?.ok ? 'ok' : 'err');
 		  }
 		  function closeCalculator(){ $('#calculatorRoot')?.remove(); }
 	  function calculatorOperation(left, right, operator) {
@@ -9703,9 +10404,10 @@ function parseMoney(value) {
   function universalDocumentFromTemplate(template = {}) {
     const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvas) return null;
-    if (template.universalDocument) return canvas.normalizeDocument(template.universalDocument);
-    if (Array.isArray(template.objects) || template.schemaVersion === 2) return canvas.normalizeDocument(template);
-    return canvas.normalizeDocument({
+    let documentModel;
+    if (template.universalDocument) documentModel = canvas.normalizeDocument(template.universalDocument);
+    else if (Array.isArray(template.objects) || template.schemaVersion === 2) documentModel = canvas.normalizeDocument(template);
+    else documentModel = canvas.normalizeDocument({
       schemaVersion:2,
       paper:universalPaperFromTemplate(template),
       layout:normalizedLabelLayout(template.layout),
@@ -9714,6 +10416,32 @@ function parseMoney(value) {
       gridMm:Number(template.gridMm || 2),
       snap:template.snap !== false
     });
+    // r37 (red-design bug): normalizeDocument()'s schema has no color field
+    // at all -- background/foreground/QR colors travel as a separate
+    // "renderOptions" sidecar (see universalDocumentFromAdvancedState(),
+    // read back by buildUniversalLabelPrintNode()). This function used to
+    // return the normalized document with NO renderOptions at all, so any
+    // SAVED template printed through the canonical pipeline silently fell
+    // back to white/near-black/white defaults regardless of the template's
+    // own saved bgColor/fgColor/qrBgColor -- while the legacy preview canvas
+    // (drawLabelOnCanvas) read those same fields directly and rendered them
+    // correctly, producing two different-looking renders of the same saved
+    // design. Prefer renderOptions already embedded in a prior canonical
+    // save (template.universalDocument.renderOptions); otherwise bridge the
+    // legacy flat fields the wizard actually saves.
+    const existingRenderOptions = template.universalDocument?.renderOptions;
+    const bgColor = existingRenderOptions?.background || safeColor(template.bgColor, '#ffffff');
+    const fgColor = existingRenderOptions?.foreground || safeColor(template.fgColor, '#000000');
+    return {
+      ...documentModel,
+      priceFormat: template.priceFormat || 'full',
+      renderOptions: existingRenderOptions || {
+        background: bgColor,
+        foreground: fgColor,
+        qrBackground: safeColor(template.qrBgColor, bgColor),
+        qrMarginRatio: Math.max(0, Math.min(0.3, (Number(template.qrMargin) || 5) / 40))
+      }
+    };
   }
   function legacyLayoutFromUniversalDocument(sourceDocument = {}) {
     const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
@@ -11177,10 +11905,15 @@ function parseMoney(value) {
 
     $('#editMoveForm').onsubmit = async (e) => {
        e.preventDefault();
+       // r37 (Section 36-38, Action Guardian): anti-double-submit guard.
+       const submitBtn = e.target.querySelector('button[type="submit"]');
+       if (submitBtn?.disabled) return;
+       if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Procesando...'; }
+       try {
        const k = $('#emKind').value;
        const a = parseMoney($('#emAmount').value);
        const n = $('#emNote').value.trim();
-       if (!Number.isFinite(a) || a < 0) return toast('Monto inválido', 'err');
+       if (!Number.isFinite(a) || a < 0) { toast('Monto inválido', 'err'); return; }
 	       const previousState = cloneState(state);
 	       const operationId = uid('movementedit');
 
@@ -11196,6 +11929,9 @@ function parseMoney(value) {
        closeModal();
        renderApp('cash');
 	       if (committed.ok) toast(committed.pending ? 'Movimiento actualizado; sincronización pendiente.' : 'Movimiento actualizado');
+       } finally {
+         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Guardar cambios'; }
+       }
     };
   };
 
@@ -11467,7 +12203,7 @@ function parseMoney(value) {
             <div style="font-weight:bold; color:var(--gold); font-size:16px; margin-bottom:6px;">${fmt(i.amount)}</div>
             <div style="display:flex; align-items:center; justify-content:flex-end;">
                ${imgBtn}
-               ${cancelled ? '' : `<button class="btn danger mini" onclick="window.deleteInvoice('${invoiceId}')" style="padding:4px 8px; font-size:12px;">🗑️</button>`}
+               ${cancelled ? '' : `<button class="btn danger mini" onclick="window.click360GuardedAction(this, () => window.deleteInvoice('${invoiceId}'))" style="padding:4px 8px; font-size:12px;">🗑️</button>`}
             </div>
          </div>
       </div>`;
@@ -11590,6 +12326,13 @@ function parseMoney(value) {
 
 	    $('#invoiceForm').onsubmit = async e => {
        e.preventDefault();
+       // r37 (Section 36-38, Action Guardian): anti-double-submit guard --
+       // a duplicate submit here would create both a duplicate supplier
+       // invoice AND a duplicate linked cash movement.
+       const submitBtn = e.target.querySelector('button[type="submit"]');
+       if (submitBtn?.disabled) return;
+       if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Procesando...'; }
+       try {
        const provider = $('#iProvider').value.trim();
        const number = $('#iNumber').value.trim();
        const date = $('#iDate').value;
@@ -11643,10 +12386,13 @@ function parseMoney(value) {
        closeModal();
 	       toast(committed.pending ? 'Factura guardada; sincronización pendiente.' : 'Factura guardada con éxito', 'ok');
        if (onSaved) onSaved();
+       } finally {
+         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Guardar Factura'; }
+       }
     };
   }
 
-  window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR};
+  window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, universalDocumentFromTemplate, legalAcceptanceStatus, maybeShowLegalGraceBanner, writeGateStatus, requiresWorkerAccessGate, workerRolePresetPermissions, WORKER_ROLE_PRESETS, guardedAction, ACTION_GUARDIAN_WATCHDOG_MS};
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
@@ -11662,7 +12408,17 @@ function parseMoney(value) {
     // that reopens rarely, could sit on a stale worker for longer than
     // necessary before ever re-checking.
     navigator.serviceWorker.register(`./service-worker.js?v=${APP_ASSET_VERSION}`, { updateViaCache: 'none' })
-      .then((registration) => { registration?.update?.().catch(() => {}); })
+      .then((registration) => {
+        registration?.update?.().catch(() => {});
+        // r37 (Section 5, automatic self-heal): the one-shot check above
+        // only covers the moment this tab boots. A device left open for
+        // hours/days (a POS terminal, a shared tablet) would otherwise
+        // never notice a new release until manually closed and reopened.
+        // Checking periodically closes that gap; the actual update is
+        // still applied safely (see index.html's controllerchange handler
+        // -- reload only when no modal is open and the route is neutral).
+        setInterval(() => registration?.update?.().catch(() => {}), 30 * 60 * 1000);
+      })
       .catch(() => {});
   }
   renderLogin();
