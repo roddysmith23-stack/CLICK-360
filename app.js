@@ -945,6 +945,40 @@ function parseMoney(value) {
       actionLock.release();
     }
   }
+  // Action Guardian: wraps a critical-mutation trigger button so a second
+  // tap/click while the first is still in flight is ignored outright (no
+  // redundant network call, no confusing second toast) instead of relying
+  // only on the backend's scope:reason idempotency gate to silently absorb
+  // it. Gives visible "Procesando..." feedback on the first tap, and -- if
+  // the operation is taking unusually long -- swaps in a human notice
+  // instead of leaving an unexplained spinner. Safe to invoke again after
+  // such a notice: retrying re-enters through the SAME
+  // commitCriticalMutation() gate, which self-heals rather than duplicating
+  // the mutation (see acquireCriticalAction above).
+  const ACTION_GUARDIAN_WATCHDOG_MS = 8000;
+  async function guardedAction(button, run) {
+    if (!button) return run();
+    if (button.dataset.guardianBusy === '1') return undefined;
+    button.dataset.guardianBusy = '1';
+    const originalText = button.textContent;
+    const originalDisabled = button.disabled;
+    button.disabled = true;
+    button.textContent = 'Procesando...';
+    const watchdog = setTimeout(() => {
+      if (button.dataset.guardianBusy === '1') button.textContent = 'Esto está tardando más de lo normal...';
+    }, ACTION_GUARDIAN_WATCHDOG_MS);
+    try {
+      return await run();
+    } finally {
+      clearTimeout(watchdog);
+      delete button.dataset.guardianBusy;
+      if (button.isConnected) {
+        button.disabled = originalDisabled;
+        button.textContent = originalText;
+      }
+    }
+  }
+  window.click360GuardedAction = guardedAction;
   function stateStorageKey() {
     return activeTenantContext?.authUid && activeTenantContext?.tenantKey ? `${STATE_PREFIX}${activeTenantContext.authUid}:${activeTenantContext.tenantKey}` : '';
   }
@@ -2731,7 +2765,7 @@ function parseMoney(value) {
             <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Ticket
             </button>
-            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.cancelSale('${actionId(s.id)}')">
+            ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.click360GuardedAction(this, () => window.cancelSale('${actionId(s.id)}'))">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg> Anular
             </button>` : ''}
           </div>
@@ -2763,7 +2797,7 @@ function parseMoney(value) {
         const shortId = String(sale.id || '').slice(-6).toUpperCase();
         const dueDate = sale.dueDate || layaway.pickupDueAt || '';
         const searchKey = [customerName, sale.customerPhone || layaway.customerSnapshot?.phone || '', shortId, sale.id || ''].join(' ').toLowerCase();
-        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}" data-layaway-search="${escapeHtml(searchKey)}"><div class="layawaySummary"><span><b>${escapeHtml(customerName)}</b><small>#${escapeHtml(shortId)} · ${escapeHtml(sale.when || layaway.createdAt || '')}${dueDate ? ` · Límite: ${escapeHtml(dueDate)}` : ''}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.payLayaway('${actionId(sale.id)}')">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup')">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.markLayawayStatus('${actionId(layaway.id)}','picked_up')">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.cancelSale('${actionId(sale.id)}')">Cancelar</button>` : ''}</div></article>`;
+        return `<article class="layawayRow" data-layaway-status="${escapeHtml(status)}" data-layaway-active="${!['cancelled','picked_up','refunded'].includes(status)}" data-layaway-search="${escapeHtml(searchKey)}"><div class="layawaySummary"><span><b>${escapeHtml(customerName)}</b><small>#${escapeHtml(shortId)} · ${escapeHtml(sale.when || layaway.createdAt || '')}${dueDate ? ` · Límite: ${escapeHtml(dueDate)}` : ''}</small><small>${items || 'Sin detalle'}</small></span><span class="layawayBalance"><b>${fmt(sale.balance || 0)}</b><small>de ${fmt(sale.total || 0)}</small><span class="badge ${status === 'cancelled' ? 'danger' : 'gold'}">${escapeHtml(statusLabel(status))}</span></span></div><div class="layawayActions"><button class="btn silver" onclick="window.viewLayawayDetails('${actionId(sale.id)}')">Ver detalle</button>${sale.customerPhone ? `<button class="btn whatsapp" onclick="window.sendWhatsAppReminder('${actionId(sale.id)}')">WhatsApp</button>` : ''}<button class="btn silver" onclick="window.printReceipt('${actionId(sale.id)}')">Comprobante</button>${canPay ? `<button class="btn primary" onclick="window.click360GuardedAction(this, () => window.payLayaway('${actionId(sale.id)}'))">Abonar</button>` : ''}${status === 'paid' ? `<button class="btn silver" onclick="window.click360GuardedAction(this, () => window.markLayawayStatus('${actionId(layaway.id)}','ready_for_pickup'))">Listo</button>` : ''}${['paid','ready_for_pickup'].includes(status) ? `<button class="btn primary" onclick="window.click360GuardedAction(this, () => window.markLayawayStatus('${actionId(layaway.id)}','picked_up'))">Entregar</button>` : ''}${!['cancelled','picked_up','refunded'].includes(status) ? `<button class="btn danger" onclick="window.click360GuardedAction(this, () => window.cancelSale('${actionId(sale.id)}'))">Cancelar</button>` : ''}</div></article>`;
       }).join('') || '<p class="empty">Aún no hay apartados.</p>'}</div></section>`;
   }
 
@@ -5995,7 +6029,7 @@ function parseMoney(value) {
   }
   function bindInventoryActions(){
     $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit && p.businessId===currentBusiness()?.id)));
-    $$('[data-del]').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
+    $$('[data-del]').forEach(b=>b.onclick=()=>window.click360GuardedAction(b, ()=>deleteProduct(b.dataset.del)));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
     $$('[data-quick-print]').forEach((button) => {
       button.onclick = () => runQuickLabelPrintFlow({
@@ -11950,7 +11984,7 @@ function parseMoney(value) {
             <div style="font-weight:bold; color:var(--gold); font-size:16px; margin-bottom:6px;">${fmt(i.amount)}</div>
             <div style="display:flex; align-items:center; justify-content:flex-end;">
                ${imgBtn}
-               ${cancelled ? '' : `<button class="btn danger mini" onclick="window.deleteInvoice('${invoiceId}')" style="padding:4px 8px; font-size:12px;">🗑️</button>`}
+               ${cancelled ? '' : `<button class="btn danger mini" onclick="window.click360GuardedAction(this, () => window.deleteInvoice('${invoiceId}'))" style="padding:4px 8px; font-size:12px;">🗑️</button>`}
             </div>
          </div>
       </div>`;
@@ -12139,7 +12173,7 @@ function parseMoney(value) {
     };
   }
 
-  window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, universalDocumentFromTemplate, legalAcceptanceStatus, maybeShowLegalGraceBanner, writeGateStatus, requiresWorkerAccessGate, workerRolePresetPermissions, WORKER_ROLE_PRESETS};
+  window.CLICK360_QA={parseMoney, normalizeCode, productPayload, QR, universalDocumentFromTemplate, legalAcceptanceStatus, maybeShowLegalGraceBanner, writeGateStatus, requiresWorkerAccessGate, workerRolePresetPermissions, WORKER_ROLE_PRESETS, guardedAction, ACTION_GUARDIAN_WATCHDOG_MS};
 
   window.addEventListener('online', () => { flushPendingProfile().catch(() => {}); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopScanner(); });
