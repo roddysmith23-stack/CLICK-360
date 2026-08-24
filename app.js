@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-stable-ga';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-1-label-engine-hotfix';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -10404,9 +10404,34 @@ function parseMoney(value) {
   function universalDocumentFromTemplate(template = {}) {
     const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvas) return null;
+    // r37.1 (P0-B, red-design bug): resolve color BEFORE normalizing, and
+    // fold it into the SAME normalizeDocument() call that resolves
+    // paper/objects. The prior version called normalizeDocument() first
+    // (baking in a white/black style default), then bolted a renderOptions
+    // sidecar onto the result afterward -- so the RETURNED document's own
+    // style/qrStyle were still wrong. Since normalizeStyle()/normalizeQrStyle()
+    // prefer renderOptions over an already-present style/qrStyle (see
+    // universal-label-canvas.js), any second normalize pass on that returned
+    // document (re-opening the design, a Simple<->Expert switch,
+    // buildUniversalLabelPrintNode's own second normalize call) would have
+    // silently reverted a real saved color (e.g. an Owner's red design)
+    // back to the default. Resolving color first and normalizing once makes
+    // style/qrStyle correct from the start and immune to being re-normalized
+    // later. Prefer renderOptions already embedded in a prior canonical
+    // save (template.universalDocument.renderOptions); otherwise bridge the
+    // legacy flat fields the wizard actually saves.
+    const existingRenderOptions = template.universalDocument?.renderOptions;
+    const bgColor = existingRenderOptions?.background || safeColor(template.bgColor, '#ffffff');
+    const fgColor = existingRenderOptions?.foreground || safeColor(template.fgColor, '#000000');
+    const renderOptions = existingRenderOptions || {
+      background: bgColor,
+      foreground: fgColor,
+      qrBackground: safeColor(template.qrBgColor, bgColor),
+      qrMarginRatio: Math.max(0, Math.min(0.3, (Number(template.qrMargin) || 5) / 40))
+    };
     let documentModel;
-    if (template.universalDocument) documentModel = canvas.normalizeDocument(template.universalDocument);
-    else if (Array.isArray(template.objects) || template.schemaVersion === 2) documentModel = canvas.normalizeDocument(template);
+    if (template.universalDocument) documentModel = canvas.normalizeDocument({ ...template.universalDocument, renderOptions });
+    else if (Array.isArray(template.objects) || template.schemaVersion === 2) documentModel = canvas.normalizeDocument({ ...template, renderOptions });
     else documentModel = canvas.normalizeDocument({
       schemaVersion:2,
       paper:universalPaperFromTemplate(template),
@@ -10414,33 +10439,13 @@ function parseMoney(value) {
       quantity:Math.max(1, Number(template.quantity || template.copies || 1)),
       startSlot:Math.max(1, Number(template.startSlot || 1)),
       gridMm:Number(template.gridMm || 2),
-      snap:template.snap !== false
+      snap:template.snap !== false,
+      renderOptions
     });
-    // r37 (red-design bug): normalizeDocument()'s schema has no color field
-    // at all -- background/foreground/QR colors travel as a separate
-    // "renderOptions" sidecar (see universalDocumentFromAdvancedState(),
-    // read back by buildUniversalLabelPrintNode()). This function used to
-    // return the normalized document with NO renderOptions at all, so any
-    // SAVED template printed through the canonical pipeline silently fell
-    // back to white/near-black/white defaults regardless of the template's
-    // own saved bgColor/fgColor/qrBgColor -- while the legacy preview canvas
-    // (drawLabelOnCanvas) read those same fields directly and rendered them
-    // correctly, producing two different-looking renders of the same saved
-    // design. Prefer renderOptions already embedded in a prior canonical
-    // save (template.universalDocument.renderOptions); otherwise bridge the
-    // legacy flat fields the wizard actually saves.
-    const existingRenderOptions = template.universalDocument?.renderOptions;
-    const bgColor = existingRenderOptions?.background || safeColor(template.bgColor, '#ffffff');
-    const fgColor = existingRenderOptions?.foreground || safeColor(template.fgColor, '#000000');
     return {
       ...documentModel,
       priceFormat: template.priceFormat || 'full',
-      renderOptions: existingRenderOptions || {
-        background: bgColor,
-        foreground: fgColor,
-        qrBackground: safeColor(template.qrBgColor, bgColor),
-        qrMarginRatio: Math.max(0, Math.min(0.3, (Number(template.qrMargin) || 5) / 40))
-      }
+      renderOptions
     };
   }
   function legacyLayoutFromUniversalDocument(sourceDocument = {}) {
@@ -10598,8 +10603,19 @@ function parseMoney(value) {
   function universalDocumentFromAdvancedState(product, options = {}, quantity = 1) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvasApi) return null;
+    // r37.1 (P0-B): resolve renderOptions BEFORE normalizing (see the
+    // matching comment in universalDocumentFromTemplate) so style/qrStyle
+    // are correct on the document normalizeDocument() itself returns, not
+    // only on a sidecar bolted on afterward.
+    const renderOptions = {
+      background: options.bgColor || '#ffffff',
+      foreground: options.fgColor || '#000000',
+      qrBackground: options.qrBgColor || options.bgColor || '#ffffff',
+      qrMarginRatio: Math.max(0, Math.min(0.3, (Number(options.qrMargin) || 5) / 40))
+    };
     const documentModel = canvasApi.normalizeDocument({
       schemaVersion:2,
+      renderOptions,
       paper:{
         ...universalPaperFromTemplate({
           paperType:options.paperType,
@@ -10635,12 +10651,7 @@ function parseMoney(value) {
     return {
       ...documentModel,
       priceFormat: options.priceFormat || 'full',
-      renderOptions:{
-        background: options.bgColor || '#ffffff',
-        foreground: options.fgColor || '#000000',
-        qrBackground: options.qrBgColor || options.bgColor || '#ffffff',
-        qrMarginRatio: Math.max(0, Math.min(0.3, (Number(options.qrMargin) || 5) / 40))
-      }
+      renderOptions
     };
   }
   async function prepareLabelPrintJob({

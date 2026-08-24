@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r37-stable-ga';
+const CACHE = 'click360-commercial-1-0-5-r37-1-label-engine-hotfix';
 const ASSETS = [
   './',
   './index.html',

@@ -20,12 +20,13 @@ const physical = canvas.normalizeDocument({
   quantity: 3,
   startSlot: 2
 });
-assert.equal(physical.schemaVersion, 2);
+assert.equal(physical.schemaVersion, 3);
 assert.equal(physical.paper.widthMm, 40);
 assert.equal(physical.paper.columns, 2);
 assert.deepEqual(Object.keys(physical.objects[0]).sort(), ['heightMm', 'id', 'imageData', 'locked', 'rotation', 'text', 'type', 'visible', 'widthMm', 'xMm', 'yMm', 'z']);
 assert.equal(physical.objects[0].xMm, 2);
 assert.equal(physical.objects[0].widthMm, 18);
+assert.ok(physical.style && physical.qrStyle && physical.barcodeStyle, 'v3 documents must carry canonical style/qrStyle/barcodeStyle');
 
 const legacyV1 = canvas.normalizeDocument({
   version: 1,
@@ -33,9 +34,15 @@ const legacyV1 = canvas.normalizeDocument({
   objects: [{ id: 'legacy-qr', type: 'qr', x: 500, y: 250, width: 250, height: 250 }]
 });
 assert.equal(legacyV1.objects[0].xMm, 15);
-assert.equal(legacyV1.objects[0].yMm, 11.25);
+assert.equal(legacyV1.objects[0].yMm, 12.5); // shifts with the forced-square heightMm (was 15mm, now 10mm, widening the available y-clamp range
+// r37.1 (P0-B, QR professional rules): a QR object is FORCED square (the
+// smaller of the two legacy-converted axes) -- the legacy grid's own
+// width:height ratio doesn't map 1:1 onto mm space unless the paper itself
+// is square, so converting each axis independently (the pre-fix behavior)
+// silently stretched the QR into a 10x15mm box here. That was the exact
+// "QR nunca debe estirarse" bug.
 assert.equal(legacyV1.objects[0].widthMm, 10);
-assert.equal(legacyV1.objects[0].heightMm, 15);
+assert.equal(legacyV1.objects[0].heightMm, 10);
 
 const legacyLayout = canvas.normalizeDocument({
   paper: { widthMm: 60, heightMm: 88, columns: 1, rows: 1 },

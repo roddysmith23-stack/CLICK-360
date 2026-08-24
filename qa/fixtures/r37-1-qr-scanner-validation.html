@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es-EC">
+<head>
+  <meta charset="utf-8">
+  <title>CLICK 360 QR scanner validation fixture</title>
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsQR.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+</head>
+<body>
+<canvas id="qrCanvas"></canvas>
+<script>
+  window.__renderAndDecode = async function (documentInput, payload, dpi) {
+    const canvas = document.getElementById('qrCanvas');
+    const engine = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const dimensions = await engine.renderLabelToCanvas(canvas, documentInput, { qrPayload: payload }, dpi ? { dpi } : {});
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const decoded = window.jsQR(imageData.data, imageData.width, imageData.height);
+    return {
+      decodedText: decoded ? decoded.data : null,
+      widthPx: dimensions.widthPx,
+      heightPx: dimensions.heightPx
+    };
+  };
+</script>
+</body>
+</html>
