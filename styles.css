@@ -400,7 +400,14 @@ a{color:inherit;text-decoration:none}
   .manualRow{grid-template-columns:1fr auto auto}
   .formGrid{grid-template-columns:1fr 1fr}
   .cartItem{grid-template-columns:1fr auto}
-  .totalRow{display:flex;justify-content:space-between;align-items:flex-end}
+  /* r37.2 (Section 21, RESPONSIVE REAL): at intermediate desktop widths
+     (e.g. exactly 1024px, where .sellWrap's .8fr cart column lands too
+     narrow for "Total" + Limpiar/Cobrar to share one row) the two
+     .totalRow children have no room to sit side by side; flex-wrap lets
+     them stack onto a second line instead of pushing the buttons past the
+     card edge and widening document.documentElement.scrollWidth past the
+     viewport. */
+  .totalRow{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end}
 }
 @media(min-width:900px){
   .app{display:block; height:auto; overflow:visible; padding-bottom:0}
