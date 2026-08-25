@@ -1,9 +1,10 @@
-const CACHE = 'click360-commercial-1-0-5-r37-2-logistics-worker-permissions';
+const CACHE = 'click360-commercial-1-0-5-r37-2-1-live-client-hotfix';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './runtime-guard.js',
+  './safe-update.js',
   './app.js',
   './firebase-config.js',
   './p0-tenant-guard.js',

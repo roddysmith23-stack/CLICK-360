@@ -12,6 +12,7 @@ const files = [
   'privacy.html',
   'styles.css',
   'runtime-guard.js',
+  'safe-update.js',
   'app.js',
   'firebase-config.js',
   'p0-tenant-guard.js',

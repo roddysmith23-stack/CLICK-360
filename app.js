@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-logistics-worker-permissions';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-1-live-client-hotfix';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -9389,7 +9389,13 @@ function parseMoney(value) {
       ctx.translate(w / 2, h / 2);
       ctx.rotate(contentRotation * Math.PI / 180);
       if (contentRotation === 90 || contentRotation === 270) {
-        ctx.drawImage(rendered, -h / 2, -w / 2, h, w);
+        // r37.2.1: same fix as universal-label-canvas.js renderLabelToCanvas
+        // -- fit rotated content within the SAME box (uniform scale), never
+        // stretch it to fill the box non-uniformly.
+        const fitScale = Math.min(w / h, h / w);
+        const drawWidth = w * fitScale;
+        const drawHeight = h * fitScale;
+        ctx.drawImage(rendered, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
       } else {
         ctx.drawImage(rendered, -w / 2, -h / 2, w, h);
       }
@@ -10761,7 +10767,18 @@ function parseMoney(value) {
       scaleX:Number(template.scaleX ?? paper.scaleX ?? 1),
       scaleY:Number(template.scaleY ?? paper.scaleY ?? 1),
       dpi:Number(template.dpi ?? paper.dpi ?? preset.dpi ?? 203),
-      orientation:template.orientation || paper.orientation || 'portrait'
+      orientation:template.orientation || paper.orientation || 'portrait',
+      // r37.2.1 (SHARY physical print -- orientation): these two fields
+      // were never copied here, so a SAVED template always normalized to
+      // contentRotation:0/shape:'rounded' regardless of what the Owner
+      // actually configured -- the exact "Orientación del contenido"
+      // control the Owner already has, silently discarded specifically on
+      // the saved-template print path (the path a real Owner's print
+      // button actually uses). universalDocumentFromAdvancedState() below
+      // patches these back in by hand for its own (different) caller,
+      // which is what let this go unnoticed.
+      shape:['square','circle'].includes(template.shape ?? paper.shape) ? (template.shape ?? paper.shape) : 'rounded',
+      contentRotation:[90,180,270].includes(Number(template.contentRotation ?? paper.contentRotation)) ? Number(template.contentRotation ?? paper.contentRotation) : 0
     };
   }
   function universalDocumentFromTemplate(template = {}) {
@@ -10867,8 +10884,20 @@ function parseMoney(value) {
     const rowAdvanceMm = paper.pitchMm > paper.heightMm ? paper.pitchMm : paper.heightMm + paper.gapYmm;
     const naturalWidth = paper.marginLeftMm + paper.marginRightMm
       + paper.columns * paper.widthMm + Math.max(0, paper.columns - 1) * paper.gapXmm;
-    const naturalHeight = paper.marginTopMm + paper.marginBottomMm + paper.heightMm
-      + Math.max(0, paper.rows - 1) * rowAdvanceMm;
+    // r37.2.1 (SHARY physical print -- blank rows between printed groups):
+    // each "page" this system emits is one physical row (or, for
+    // multi-row sheets, `paper.rows` rows) of a continuously-fed roll --
+    // the real distance the printer advances per page must include the
+    // gap to the NEXT row, or every page is emitted `gapYmm` short. With
+    // the shipped roll presets (rows:1, so the old `(rows-1)*rowAdvanceMm`
+    // term was always 0), the entire gap was silently dropped from every
+    // single page, so the printed pitch drifted from the true physical
+    // pitch on every row until the printer's gap sensor had to eject a
+    // blank label to resynchronize. Using `rows * rowAdvanceMm` (instead
+    // of `heightMm + (rows-1)*rowAdvanceMm`) gives every row -- including
+    // the only row in the common rows:1 case -- its real physical pitch.
+    const naturalHeight = paper.marginTopMm + paper.marginBottomMm
+      + paper.rows * rowAdvanceMm;
     const width = paper.mediaWidthMm && paper.mediaWidthMm <= naturalWidth * SANITY_FACTOR ? paper.mediaWidthMm : naturalWidth;
     const height = paper.mediaHeightMm && paper.mediaHeightMm <= naturalHeight * SANITY_FACTOR ? paper.mediaHeightMm : naturalHeight;
     return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
@@ -10895,7 +10924,11 @@ function parseMoney(value) {
       scaleX:Number(paper.scaleX ?? 1),
       scaleY:Number(paper.scaleY ?? 1),
       dpi:Number(paper.nominalDpi ?? paper.dpi ?? 203),
-      orientation:paper.orientation || 'portrait'
+      orientation:paper.orientation || 'portrait',
+      // r37.2.1: same omission as universalPaperFromTemplate() above -- see
+      // that comment for the real Owner-facing consequence.
+      shape:['square','circle'].includes(paper.shape) ? paper.shape : 'rounded',
+      contentRotation:[90,180,270].includes(Number(paper.contentRotation)) ? Number(paper.contentRotation) : 0
     };
   }
   function resolveLabelPrintProfile(businessId, template = {}, profileId = '') {
