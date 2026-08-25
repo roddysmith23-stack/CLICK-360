@@ -60,10 +60,16 @@ async function run() {
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
 
-    // 1. Loads with no app dependency at all.
+    // 1. Loads with no app dependency at all. r37.2.1: repair.html now
+    // shares its update engine (safe-update.js) with the other two update
+    // entry points instead of duplicating it inline -- safe to allow
+    // specifically because safe-update.js is itself self-contained (no
+    // dependency on app.js/Firebase/tenant state, see its own header
+    // comment), so it can't reintroduce the rescue path's dependency on
+    // exactly the systems it exists to route around.
     await page.goto(`http://127.0.0.1:${port}/repair.html`, { waitUntil: 'networkidle' });
     const scriptSrcs = await page.evaluate(() => [...document.querySelectorAll('script[src]')].map((s) => s.getAttribute('src')));
-    assert(scriptSrcs.length === 0, `repair.html must not load any external script (app.js/firebase/etc) -- found: ${JSON.stringify(scriptSrcs)}`);
+    assert(scriptSrcs.every((src) => src === 'safe-update.js'), `repair.html must not load any external script other than its self-contained safe-update.js engine (no app.js/firebase/etc) -- found: ${JSON.stringify(scriptSrcs)}`);
     assert(await page.locator('#repairBtn').isVisible(), 'Actualizar CLICK 360 button must be visible');
     assert(await page.locator('#openBtn').isVisible(), 'Abrir CLICK 360 normalmente button must be visible');
 

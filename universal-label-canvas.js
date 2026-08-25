@@ -498,7 +498,20 @@
       ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.rotate(paper.contentRotation * Math.PI / 180);
       if (paper.contentRotation === 90 || paper.contentRotation === 270) {
-        ctx.drawImage(rotated, -canvas.height / 2, -canvas.width / 2, canvas.height, canvas.width);
+        // r37.2.1 (SHARY physical print -- orientation squash): the
+        // physical label box (canvas.width x canvas.height) never changes
+        // size -- "content rotation" rotates the ARTWORK inside the SAME
+        // die-cut sticker, it does not redefine the sticker's own
+        // dimensions. After a 90/270 rotation the content's natural
+        // footprint is (canvas.height x canvas.width) -- drawing that at
+        // the OLD (canvas.height x canvas.width) destination size inside a
+        // (canvas.width x canvas.height) box stretched every element
+        // non-uniformly (a round QR came out oval). Scale uniformly to
+        // fit within the real box instead, so nothing distorts.
+        const fitScale = Math.min(canvas.width / canvas.height, canvas.height / canvas.width);
+        const drawWidth = canvas.width * fitScale;
+        const drawHeight = canvas.height * fitScale;
+        ctx.drawImage(rotated, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
       } else {
         ctx.drawImage(rotated, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
       }

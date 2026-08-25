@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLICK 360 SHARY Physical Print v2</title><link rel="stylesheet" href="../../styles.css"></head>
+<body>
+  <div id="app" hidden></div><div id="toast"></div><div id="modalRoot"></div><div id="printRoot"></div>
+  <script>try{Object.defineProperty(navigator,'serviceWorker',{value:{register:()=>Promise.resolve()},configurable:true})}catch{}</script>
+  <script src="../../vendor/qrcode-generator.js"></script><script src="../../vendor/jsbarcode.min.js"></script><script src="../../vendor/lucide.min.js"></script><script src="../../vendor/html2pdf.bundle.min.js"></script>
+  <script src="../../p0-tenant-guard.js"></script><script src="../../v16-domain.js"></script><script src="../../v16-storage.js"></script><script src="../../smart-print-core.js"></script><script src="../../p2-web-safe-flags.js"></script><script src="../../p2-restaurant-domain.js"></script><script src="../../p2-logistics-domain.js"></script><script src="../../universal-label-canvas.js"></script><script src="../../universal-label-editor.js"></script><script src="../../printing-service.js"></script><script src="../../app.js"></script>
+  <script>
+    (() => {
+      const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+      const product = { id:'shary-v2-product', businessId:'qa-business', name:'Blusa SHARY QA', code:'SHA-04060', price:12.5, cardPrice:13.25, qty:20 };
+
+      // A REALISTIC roll -- the shipped roll-2-custom shape (columns:2,
+      // rows:1) but with a real physical gapYmm:2 (the golden-shary-
+      // stability fixture uses gapYmm:0, which is why it never exercised
+      // this bug -- see r37.2.1 report).
+      function makeDocument(quantity, startSlot, contentRotation = 0) {
+        return canvasApi.normalizeDocument({
+          schemaVersion:2,
+          paper:{ id:'shary-v2-40x60-2col', mediaType:'roll-2', widthMm:40, heightMm:60, mediaWidthMm:0, mediaHeightMm:0, columns:2, rows:1, gapXmm:2, gapYmm:2, marginTopMm:0, marginRightMm:0, marginBottomMm:0, marginLeftMm:0, dpi:203, contentRotation },
+          objects:[
+            { id:'qr', type:'qr', xMm:6, yMm:3, widthMm:28, heightMm:28 },
+            { id:'name', type:'name', xMm:2, yMm:33, widthMm:36, heightMm:8 },
+            { id:'price', type:'price', xMm:2, yMm:43, widthMm:36, heightMm:9 },
+            { id:'sku', type:'sku', xMm:2, yMm:53, widthMm:36, heightMm:5 }
+          ],
+          quantity,
+          startSlot
+        });
+      }
+
+      let capture = null;
+      window.print = () => {
+        const portal = document.getElementById('click360PrintPortal');
+        capture = {
+          pageCss:document.getElementById('click360-print-page-style')?.textContent || '',
+          pages:[...(portal?.querySelectorAll('.labelPrintPage') || [])].map((page) => ({
+            width:page.style.width,
+            height:page.style.height,
+            cells:[...page.querySelectorAll('.labelPrintCell')].map((cell) => ({
+              status:cell.classList.contains('filled') ? 'filled' : cell.classList.contains('used') ? 'used' : 'empty',
+              left:cell.style.left,
+              top:cell.style.top
+            }))
+          }))
+        };
+        setTimeout(() => window.dispatchEvent(new Event('afterprint')), 0);
+      };
+
+      // ── Blank-row / pitch scenario: print N labels through the REAL
+      // canonical entry point, exactly as a real "Imprimir etiquetas"
+      // click does. ──
+      window.runPrintScenario = async (quantity) => {
+        capture = null;
+        const documentModel = makeDocument(quantity, 1);
+        const prepared = { product, document:documentModel, renderData:{ price:'Ef. $12.50 · Tj. $13.25' }, fingerprint:`shary-v2-${quantity}` };
+        const result = await window.click360ExecuteCanonicalLabelPrint(prepared, 'system');
+        return { capture, pageCount:result.plan.pages.length };
+      };
+
+      // ── Saved-template round-trip: contentRotation must survive going
+      // THROUGH universalDocumentFromTemplate (the real saved-template
+      // print path a real Owner uses), not just the raw normalizeDocument
+      // call above. ──
+      window.runTemplateRoundTrip = (contentRotation) => {
+        const template = {
+          paperType:'custom',
+          paper:{ widthMm:40, heightMm:60, mediaWidthMm:0, mediaHeightMm:0, columns:2, rows:1, gapXmm:2, gapYmm:2, contentRotation },
+          objects:[{ id:'qr', type:'qr', xMm:6, yMm:3, widthMm:28, heightMm:28 }],
+          quantity:1
+        };
+        const doc = window.CLICK360_QA.universalDocumentFromTemplate(template);
+        return { contentRotation:doc.paper.contentRotation, shape:doc.paper.shape };
+      };
+
+      // ── Squash check: render the SAME square QR-only label at
+      // rotation:0 and rotation:90, measure the QR's rendered pixel
+      // bounding box, and compare width/height. A non-uniform stretch
+      // (the old bug) makes a square QR render as a rectangle; the fixed
+      // uniform-scale letterbox keeps it square. ──
+      window.runRotationSquashCheck = async (contentRotation) => {
+        const documentModel = canvasApi.normalizeDocument({
+          schemaVersion:2,
+          paper:{ id:'squash-check', widthMm:40, heightMm:60, columns:1, rows:1, gapXmm:0, gapYmm:0, dpi:203, contentRotation },
+          objects:[{ id:'qr', type:'qr', xMm:6, yMm:16, widthMm:28, heightMm:28 }],
+          quantity:1
+        });
+        const canvas = document.createElement('canvas');
+        await canvasApi.renderLabelToCanvas(canvas, documentModel, { qrPayload:'CLICK360-SQUASH-CHECK' }, {});
+        const ctx = canvas.getContext('2d');
+        const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let minX = width, maxX = 0, minY = height, maxY = 0;
+        for (let y = 0; y < height; y += 1) {
+          for (let x = 0; x < width; x += 1) {
+            const i = (y * width + x) * 4;
+            // Non-white pixel (the QR modules are black on white).
+            if (data[i] < 200 || data[i + 1] < 200 || data[i + 2] < 200) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+        const boxWidth = maxX - minX;
+        const boxHeight = maxY - minY;
+        return { boxWidth, boxHeight, aspect: boxWidth / boxHeight, canvasWidth:canvas.width, canvasHeight:canvas.height };
+      };
+
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#050505" />
-  <script src="runtime-guard.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
+  <script src="runtime-guard.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="CLICK 360" />
@@ -23,13 +23,13 @@
 	  <meta name="twitter:image" content="https://click-360.web.app/assets/banner-click360-home.png" />
 	  <link rel="canonical" href="https://click-360.web.app/" />
 	  <title>CLICK 360 | Inventario, ventas y caja para tu negocio</title>
-	  <link rel="manifest" href="manifest.webmanifest?v=commercial-1-0-5-r37-2-logistics-worker-permissions" />
-	  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png?v=commercial-1-0-5-r37-2-logistics-worker-permissions" />
-	  <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png?v=commercial-1-0-5-r37-2-logistics-worker-permissions" />
-	  <link rel="shortcut icon" href="assets/favicon.ico?v=commercial-1-0-5-r37-2-logistics-worker-permissions" />
-	  <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=commercial-1-0-5-r37-2-logistics-worker-permissions" />
-	  <link rel="preload" as="image" href="assets/logo.png?v=commercial-1-0-5-r37-2-logistics-worker-permissions" fetchpriority="high" />
-	  <link rel="stylesheet" href="styles.css?v=commercial-1-0-5-r37-2-logistics-worker-permissions" />
+	  <link rel="manifest" href="manifest.webmanifest?v=commercial-1-0-5-r37-2-1-live-client-hotfix" />
+	  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png?v=commercial-1-0-5-r37-2-1-live-client-hotfix" />
+	  <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png?v=commercial-1-0-5-r37-2-1-live-client-hotfix" />
+	  <link rel="shortcut icon" href="assets/favicon.ico?v=commercial-1-0-5-r37-2-1-live-client-hotfix" />
+	  <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png?v=commercial-1-0-5-r37-2-1-live-client-hotfix" />
+	  <link rel="preload" as="image" href="assets/logo.png?v=commercial-1-0-5-r37-2-1-live-client-hotfix" fetchpriority="high" />
+	  <link rel="stylesheet" href="styles.css?v=commercial-1-0-5-r37-2-1-live-client-hotfix" />
 	  <script type="application/ld+json">
 	  {
 	    "@context": "https://schema.org",
@@ -68,13 +68,14 @@
 </head>
 <body>
   <div id="click360Splash" class="click360Splash" aria-hidden="true">
-    <img src="assets/logo.png?v=commercial-1-0-5-r37-2-logistics-worker-permissions" alt="" width="194" height="194" decoding="sync" fetchpriority="high">
+    <img src="assets/logo.png?v=commercial-1-0-5-r37-2-1-live-client-hotfix" alt="" width="194" height="194" decoding="sync" fetchpriority="high">
     <strong>CLICK 360</strong>
     <small>By AIIA INTELLIGENCE TECHNOLOGIES</small>
     <div class="click360SplashProgress" aria-hidden="true"><i></i></div>
   </div>
   <div id="app"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="safe-update.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
   <script>
     (() => {
       const startedAt = Date.now();
@@ -155,24 +156,38 @@
           '</div>';
         splash.classList.add('click360BootRecovery');
         document.getElementById('click360BootRetry')?.addEventListener('click', () => { location.reload(); });
-        document.getElementById('click360BootUpdate')?.addEventListener('click', async () => {
+        // r37.2.1 (LIVE CLIENT RECOVERY -- safe update): this used to
+        // unregister EVERY service worker registration and delete every
+        // click360- cache BEFORE ever confirming a new version could
+        // actually be downloaded -- if the network was the reason boot
+        // stalled in the first place (the most likely case, since this
+        // screen only appears after boot already failed), the customer was
+        // left with NOTHING: no worker, no cache, nothing to serve the
+        // reload. That is the exact "No se puede acceder a este sitio" ->
+        // blank screen a real customer hit. Now this uses the SAME
+        // PREPARE->COMMIT->ROLLBACK engine as repair.html (safe-update.js,
+        // loaded above, self-contained -- works even though the main
+        // application bundle may be exactly what failed to load).
+        document.getElementById('click360BootUpdate')?.addEventListener('click', () => {
           const btn = document.getElementById('click360BootUpdate');
-          if (btn) { btn.disabled = true; btn.textContent = 'Actualizando...'; }
-          try {
-            if ('serviceWorker' in navigator) {
-              const registrations = await navigator.serviceWorker.getRegistrations();
-              await Promise.all(registrations.map((registration) => registration.unregister()));
-            }
-            if ('caches' in window) {
-              const keys = await caches.keys();
-              await Promise.all(keys.filter((key) => key.startsWith('click360-')).map((key) => caches.delete(key)));
-            }
-          } catch (e) {
-            // Best-effort: even if unregister/cache-clear partially fails, the
-            // reload below still forces a fresh network fetch of index.html
-            // (no-cache header) and every ?v=-suffixed asset it references.
+          const msg = document.querySelector('.click360BootRecoveryMsg');
+          if (btn) { btn.disabled = true; btn.textContent = 'Verificando conexión...'; }
+          if (typeof window.click360SafeUpdate !== 'function') {
+            if (msg) msg.textContent = 'Abre click360.app/repair.html para actualizar de forma segura.';
+            if (btn) { btn.disabled = false; btn.textContent = 'Actualizar aplicacion'; }
+            return;
           }
-          location.reload();
+          window.click360SafeUpdate({
+            onLog: function (message) {
+              if (btn && (message.indexOf('Registrando') === 0 || message.indexOf('Actualizando el service worker') === 0)) {
+                btn.textContent = 'Descargando actualización...';
+              }
+            }
+          }).then((result) => {
+            if (result.ok) { location.replace('/?repaired=' + Date.now()); return; }
+            if (msg) msg.textContent = result.message + ' Tu versión actual sigue funcionando; no se eliminó nada.';
+            if (btn) { btn.disabled = false; btn.textContent = 'Reintentar actualización'; }
+          });
         });
         // The recovery screen is a floor, not a dead end: if the boot was
         // merely SLOW (a real, if unusually long, network round-trip to
@@ -205,13 +220,13 @@
       window.addEventListener('load', finishWhenAppRendered, { once: true });
     })();
   </script>
-  <script src="vendor/qrcode-generator.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-  <script src="vendor/jsbarcode.min.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-  <script src="vendor/jsQR.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-  <script src="vendor/zxing-browser.min.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-	  <script src="vendor/html2pdf.bundle.min.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-	  <script src="vendor/xlsx.full.min.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-	  <script src="vendor/lucide.min.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
+  <script src="vendor/qrcode-generator.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+  <script src="vendor/jsbarcode.min.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+  <script src="vendor/jsQR.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+  <script src="vendor/zxing-browser.min.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+	  <script src="vendor/html2pdf.bundle.min.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+	  <script src="vendor/xlsx.full.min.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+	  <script src="vendor/lucide.min.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
 
 <script>
   if ('serviceWorker' in navigator) {
@@ -247,24 +262,24 @@
     });
   }
 </script>
-<script src="vendor/firebase-app-compat.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="vendor/firebase-auth-compat.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="vendor/firebase-firestore-compat.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./firebase-config.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./p0-tenant-guard.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./v16-domain.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./v16-storage.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./access-flow.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./worker-data-boundary.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./firebase-service.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./smart-print-core.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./p2-web-safe-flags.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./p2-restaurant-domain.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./p2-logistics-domain.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./universal-label-canvas.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./universal-label-editor.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
-<script src="./printing-service.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
+<script src="vendor/firebase-app-compat.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="vendor/firebase-auth-compat.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="vendor/firebase-firestore-compat.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./firebase-config.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./p0-tenant-guard.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./v16-domain.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./v16-storage.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./access-flow.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./worker-data-boundary.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./firebase-service.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./smart-print-core.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./p2-web-safe-flags.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./p2-restaurant-domain.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./p2-logistics-domain.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./universal-label-canvas.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./universal-label-editor.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
+<script src="./printing-service.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
 <!-- Logic -->
-<script src="app.js?v=commercial-1-0-5-r37-2-logistics-worker-permissions"></script>
+<script src="app.js?v=commercial-1-0-5-r37-2-1-live-client-hotfix"></script>
 </body>
 </html>

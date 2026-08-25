@@ -34,8 +34,16 @@ assert(html.includes('const graceTimer = setInterval'), 'showBootRecovery() must
 assert(/graceTimer[\s\S]{0,300}appHasRendered\(\)/.test(html), 'the post-recovery grace watcher must reuse the same appHasRendered() decision, not a narrower check');
 assert(html.includes('id="click360BootRetry"'), 'recovery screen must offer a Retry action');
 assert(html.includes('id="click360BootUpdate"'), 'recovery screen must offer an Update-app action');
-assert(html.includes('registration.unregister()'), 'the update action must unregister stale service worker registrations');
-assert(html.includes("keys.filter((key) => key.startsWith('click360-'))"), 'the update action must clear CLICK 360 caches specifically (scoped to the click360- prefix), never an unscoped wipe of every cache in the browser');
+// r37.2.1 (LIVE CLIENT RECOVERY -- real SHARY incident): this used to
+// REQUIRE the update action to unregister()/caches.delete() BEFORE ever
+// confirming a new version was downloadable -- destroy-first, exactly the
+// bug that left a real customer with "No se puede acceder a este sitio"
+// then a blank screen. The update action must now go through the shared,
+// safe PREPARE->COMMIT->ROLLBACK engine (safe-update.js) instead, and must
+// NEVER call unregister()/caches.delete() directly from a click handler.
+assert(html.includes('window.click360SafeUpdate'), 'the update action must go through the shared click360SafeUpdate() engine (safe-update.js), not a hand-rolled destroy-first flow');
+assert(!/click360BootUpdate[\s\S]{0,600}(registration\.unregister\(\)|getRegistrations\(\)|caches\.delete\()/.test(html), 'the boot-recovery update handler must NEVER unregister the service worker or delete caches directly -- that is exactly the destroy-before-confirming bug a real customer hit; deletion only ever happens inside the browser\'s own atomic SW install, never from this click handler');
+assert(html.includes('safe-update.js'), 'index.html must load the shared safe-update.js engine');
 assert(html.includes('wa.me/593969399562'), 'recovery screen must offer a real support contact path (Reportar problema), consistent with the rest of the app');
 assert(html.includes("window.CLICK360_LAST_RUNTIME_ERROR?.reportId"), 'recovery screen must surface the runtime-guard error code when one was captured, for support diagnosis');
 

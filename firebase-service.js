@@ -11,24 +11,21 @@
     return;
   }
 
-  // Programmatically clear old caches if needed
-		  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-logistics-worker-permissions';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-1-live-client-hotfix';
 	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
-  const CURRENT_CACHE_KEY = `click360-${APP_ASSET_VERSION}`;
-  const CLICK360_CACHE_PREFIX = 'click360-';
-  try {
-    if ('caches' in window) {
-      caches.keys().then(keys => {
-        keys.forEach(key => {
-          if (key.startsWith(CLICK360_CACHE_PREFIX) && key !== CURRENT_CACHE_KEY) {
-            caches.delete(key).catch(() => {});
-          }
-        });
-      }).catch(err => console.warn("Error al obtener llaves de caché:", err));
-    }
-  } catch(cacheErr) {
-    console.warn("Cachés no accesibles en este entorno:", cacheErr);
-  }
+  // r37.2.1 (LIVE CLIENT RECOVERY -- real SHARY incident): this used to also
+  // delete every stale click360- cache here, unconditionally, on every page
+  // script execution -- gated only by a string baked into whichever version
+  // of THIS file happened to be currently running, not by any proof this
+  // device's service worker had actually finished activating the
+  // corresponding new cache. That is the same destroy-before-confirming
+  // shape as the other two incidents: if this script executed before the
+  // new worker actually won activation, it could delete a cache an old,
+  // still-controlling worker still depended on. service-worker.js's own
+  // 'activate' handler already does this exact cleanup at the only
+  // genuinely safe point in the lifecycle (it only fires once the new
+  // worker has actually taken over), so the duplicate here was redundant
+  // as well as risky -- removed rather than gated.
 
 	  const auth = firebase.auth();
 	  const db = firebase.firestore();
@@ -520,6 +517,51 @@
 			    const clean = new URL(location.href);
 			    ['flow', 'invite', 'ownerId', 'inviteHash', 'inviteToken', 'token', 'inviteSession'].forEach((key) => clean.searchParams.delete(key));
 			    history.replaceState({}, '', `${clean.pathname}${clean.search}${clean.hash}`);
+			  }
+			  // r37.2.1 (LIVE CLIENT RECOVERY -- worker invite): the real invite
+			  // link the app generates (app.js ~8315 / click360GetInviteLink below)
+			  // carries `?invite=true&ownerId=...&inviteHash=...&inviteToken=...`.
+			  // Every function above this one, though, only recognizes
+			  // `flow=invite` + a pre-existing `inviteSession` in sessionStorage --
+			  // which a brand-new browser (a family member opening the WhatsApp
+			  // link on their OWN device, zero prior storage) can never have. The
+			  // real invite validation (hash match, ownerId/tenant match, Google
+			  // email match, status/expiry) already happens correctly and
+			  // fail-closed inside acceptInvitationFromUrl() once an intent is
+			  // marked -- this function's ONLY job is to recognize the real
+			  // external URL shape on a fresh browser and locally bootstrap the
+			  // SAME intent-marking + URL-normalization a returning/manual invite
+			  // acceptance already relies on. It never embeds a fixed
+			  // inviteSession in the shareable link -- that stays generated
+			  // fresh, per device, exactly as designed.
+			  function bootstrapInvitationFromExternalUrl() {
+			    try {
+			      const params = new URLSearchParams(location.search);
+			      const declaresInvite = params.get('invite') === 'true' || params.get('flow') === 'invite';
+			      if (!declaresInvite) return false;
+			      // Already bootstrapped (a reload, or the manual "Tengo una
+			      // invitación" form already marked it) -- do not regenerate.
+			      if (params.get('flow') === 'invite' && params.get('inviteSession') && readExplicitInvitationIntent()) return true;
+			      const ownerId = String(params.get('ownerId') || '').trim();
+			      const inviteToken = String(params.get('inviteToken') || params.get('token') || '').trim();
+			      const inviteHash = String(params.get('inviteHash') || '').trim();
+			      const HEX64 = /^[0-9a-f]{64}$/;
+			      // (a) validate basic shape before touching anything -- a
+			      // malformed/garbage URL must fall through to the normal public
+			      // gate, never throw and break boot().
+			      if (!ownerId || ownerId.length > 128 || !HEX64.test(inviteToken) || !HEX64.test(inviteHash)) return false;
+			      const sessionId = markExplicitInvitationIntent(ownerId, inviteToken); // (c)+(d)
+			      if (!sessionId) return false;
+			      params.set('flow', 'invite');
+			      params.set('inviteSession', sessionId);
+			      params.delete('invite');
+			      history.replaceState({}, '', `${location.pathname}?${params.toString()}${location.hash}`);
+			      setPublicAuthIntent('invite');
+			      return true;
+			    } catch (error) {
+			      console.warn('No se pudo preparar la invitación:', error.message);
+			      return false;
+			    }
 			  }
 			  function readPublicAuthIntent() {
 			    const fromUrl = new URLSearchParams(location.search).get('flow');
@@ -3192,28 +3234,42 @@
         }
       };
 
-      document.getElementById("c360-clear-cache").onclick = async () => {
+      // r37.2.1 (LIVE CLIENT RECOVERY -- safe update, the exact button a
+      // real customer -- SHARY -- was told to press): this used to
+      // unregister the service worker and delete every click360- cache
+      // BEFORE ever confirming a new version could actually be downloaded.
+      // If the network was unstable at that exact moment (this button only
+      // shows up on a BLOCKED/RECOVERABLE_ERROR screen -- i.e. exactly
+      // when the network/auth state is already suspect), the device was
+      // left with no worker and no cache, and the forced reload hit "No se
+      // puede acceder a este sitio" with nothing to fall back to -- then a
+      // blank screen. Now this goes through the SAME shared, real
+      // PREPARE->COMMIT->ROLLBACK engine (safe-update.js) repair.html
+      // already used safely -- nothing is ever deleted until a new,
+      // confirmed-active version genuinely exists.
+      document.getElementById("c360-clear-cache").onclick = () => {
         const btn = document.getElementById("c360-clear-cache");
-        btn.textContent = "Actualizando...";
+        const statusMsg = document.getElementById("c360-auth-msg");
+        btn.textContent = "Verificando conexión...";
         btn.disabled = true;
-        try {
-	          if ('serviceWorker' in navigator) {
-	            const registration = await navigator.serviceWorker.getRegistration();
-	            if (registration) await registration.unregister();
-	          }
-	          if ('caches' in window) {
-	            const keys = await caches.keys();
-	            for (let key of keys) {
-	              if (key.startsWith(CLICK360_CACHE_PREFIX)) await caches.delete(key);
-	            }
-          }
-          // Asset caches are disposable; tenant data and sign-in state are not.
-          window.location.reload(true);
-        } catch (e) {
-          alert("Error al limpiar caché: " + e.message);
+        if (typeof window.click360SafeUpdate !== 'function') {
+          if (statusMsg) statusMsg.textContent = 'Abre click360.app/repair.html para actualizar de forma segura.';
           btn.textContent = "Actualizar archivos de la app";
           btn.disabled = false;
+          return;
         }
+        window.click360SafeUpdate({
+          onLog: (message) => {
+            if (message.indexOf('Registrando') === 0 || message.indexOf('Actualizando el service worker') === 0) {
+              btn.textContent = "Descargando actualización...";
+            }
+          }
+        }).then((result) => {
+          if (result.ok) { window.location.href = '/?repaired=' + Date.now(); return; }
+          if (statusMsg) statusMsg.textContent = result.message + ' Tu versión actual sigue funcionando; no se eliminó nada.';
+          btn.textContent = "Reintentar actualización";
+          btn.disabled = false;
+        });
       };
     }
 
@@ -3746,6 +3802,13 @@
     }
 
 	    showGate("Verificando acceso Google...", ACCESS_UI_STATES.LOADING);
+
+	    // r37.2.1: a real invite link opened on a brand-new device (zero
+	    // prior storage) must be recognized BEFORE the auth listener below
+	    // reads readPublicAuthIntent() -- otherwise a genuinely valid
+	    // external invite silently falls through to the generic public
+	    // gate. See bootstrapInvitationFromExternalUrl() for the full story.
+	    bootstrapInvitationFromExternalUrl();
 
 	    const pendingRedirectAtBoot = readAuthRedirectPending();
 	    if (pendingRedirectAtBoot) {
