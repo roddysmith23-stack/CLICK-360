@@ -5912,10 +5912,17 @@ function parseMoney(value) {
             <small style="color:var(--green); display:block; margin-bottom:6px; font-weight:bold;">Enlace de Invitación:</small>
             <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:8px; border-radius:8px;">
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-              <a class="btn whatsapp" id="whatsappInviteLinkBtn" target="_blank" rel="noopener noreferrer" href="#">${icon('message-circle')} WhatsApp</a>
+              <a class="btn whatsapp" id="whatsappInviteLinkBtn" target="_blank" rel="noopener noreferrer" href="#">${icon('message-circle')} Enviar por WhatsApp</a>
               <button class="btn silver" id="shareInviteLinkBtn" type="button" style="display:none;">Compartir</button>
             </div>
-            <button class="btn silver block" id="copyInviteLinkBtn" type="button" style="margin-top:8px;">Copiar Enlace</button>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
+              <button class="btn silver" id="copyInviteTextBtn" type="button">Copiar invitación</button>
+              <button class="btn silver" id="copyInviteLinkBtn" type="button">Copiar enlace</button>
+            </div>
+            <p class="fieldHint" style="margin-top:6px;">
+              <b>Copiar invitación</b> copia el mensaje completo con la empresa, el cargo y el enlace, listo para pegar en cualquier chat.
+              <b>Copiar enlace</b> copia únicamente el enlace de registro.
+            </p>
          </div>
       </section>
       <section class="card sectionCard" id="workerAccessRequestsCard" style="margin-top:14px; display:none;">
@@ -7973,18 +7980,36 @@ function parseMoney(value) {
 	         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + encodeURIComponent(window.click360User.uid) + "&inviteHash=" + encodeURIComponent(inviteMeta.inviteHash) + "&inviteToken=" + encodeURIComponent(inviteMeta.inviteToken);
          const inviteLinkValEl = $('#inviteLinkVal');
          if (inviteLinkValEl) inviteLinkValEl.value = inviteLink;
+         // r37.2 (real Owner evidence): "Copiar Enlace" alone only copies the
+         // raw URL, and a comerciante pasting that bare URL into WhatsApp
+         // looks broken/incomplete -- there is no context. This is the ONE
+         // full invitation message shared by WhatsApp/Compartir/Copiar
+         // invitación, so a comerciante never has to write their own text.
+         const invitationMessage = `${currentBusiness()?.name || 'Tu negocio'} te invita a formar parte de su equipo en CLICK 360 como ${preset.label}.\n\nIngresa al siguiente enlace, inicia sesión y completa tus datos para solicitar acceso:\n\n${inviteLink}\n\nCuando ${currentBusiness()?.name || 'la empresa'} apruebe tu solicitud podrás acceder únicamente a las funciones asignadas a tu cargo.`;
          const whatsappBtn = $('#whatsappInviteLinkBtn');
          if (whatsappBtn) {
-           const message = `Hola ${name || ''}, te invito a unirte a ${currentBusiness()?.name || 'nuestro negocio'} en CLICK 360 como ${escapeHtml(preset.label)}. Abre este enlace con tu cuenta de Google para aceptar: ${inviteLink}`;
-           whatsappBtn.href = `https://wa.me/?text=${encodeURIComponent(message)}`;
+           whatsappBtn.href = `https://wa.me/?text=${encodeURIComponent(invitationMessage)}`;
+         }
+         const copyInviteTextBtn = $('#copyInviteTextBtn');
+         if (copyInviteTextBtn) {
+           copyInviteTextBtn.onclick = async () => {
+             try { await navigator.clipboard.writeText(invitationMessage); }
+             catch { const el = $('#inviteLinkVal'); if (el) { el.value = invitationMessage; el.select(); document.execCommand('copy'); el.value = inviteLink; } }
+             toast('Invitación completa copiada al portapapeles');
+           };
          }
          const shareBtn = $('#shareInviteLinkBtn');
          if (shareBtn) {
            if (navigator.share) {
              shareBtn.style.display = '';
-             shareBtn.onclick = () => navigator.share({ title: 'Invitación CLICK 360', text: `Te invito a unirte como ${preset.label}.`, url: inviteLink }).catch(() => {});
+             shareBtn.textContent = 'Compartir';
+             shareBtn.onclick = () => navigator.share({ title: 'Invitación CLICK 360', text: invitationMessage }).catch(() => {});
            } else {
-             shareBtn.style.display = 'none';
+             // Fallback when Web Share API is unavailable: same action as
+             // "Copiar invitación" so there is never a dead/hidden button.
+             shareBtn.style.display = '';
+             shareBtn.textContent = 'Compartir (copiar invitación)';
+             shareBtn.onclick = copyInviteTextBtn?.onclick || null;
            }
          }
 
