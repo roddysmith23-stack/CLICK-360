@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>CLICK 360 Golden Owner Red PDF QA</title>
+  <style>body{margin:0;background:#fff}</style>
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../vendor/html2pdf.bundle.min.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+</head>
+<body>
+<div id="printPage" style="width:40mm;height:60mm;position:relative;"></div>
+<script>
+  window.__renderRedDesignToPdf = async function () {
+    const engine = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+    const documentModel = engine.normalizeDocument({
+      schemaVersion: 3,
+      paper: { widthMm: 40, heightMm: 60, columns: 1, rows: 1 },
+      style: { background: '#cc0000', foreground: '#ffffff', border: false, radius: 0 },
+      qrStyle: { foreground: '#ffffff', background: '#cc0000', quietZoneModules: 4, errorCorrection: 'M' },
+      objects: [
+        { id: 'qr-1', type: 'qr', xMm: 3, yMm: 3, widthMm: 20, heightMm: 20 },
+        { id: 'name-1', type: 'name', xMm: 3, yMm: 26, widthMm: 34, heightMm: 8 }
+      ],
+      quantity: 1, startSlot: 1
+    });
+    const canvas = document.createElement('canvas');
+    await engine.renderLabelToCanvas(canvas, documentModel, { product: { name: 'Mi Plantilla QR 1' }, qrPayload: 'CLICK360:MI-PLANTILLA-QR-1' });
+    const page = document.getElementById('printPage');
+    page.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = canvas.toDataURL('image/png');
+    img.style.cssText = 'display:block;width:40mm;height:60mm;';
+    page.appendChild(img);
+    await new Promise((resolve) => { img.onload = resolve; if (img.complete) resolve(); });
+    await window.html2pdf()
+      .set({ margin: 0, filename: 'click360-qa-red.pdf', html2canvas: { scale: 2, backgroundColor: '#ffffff' }, jsPDF: { unit: 'mm', format: [40, 60], orientation: 'portrait' } })
+      .from(page)
+      .save();
+  };
+</script>
+</body>
+</html>
