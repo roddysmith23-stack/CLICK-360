@@ -35,7 +35,7 @@
         </details>
         <section class="ulcCanvasRegion" aria-label="Lienzo de etiquetas">
           <div class="ulcCanvasToolbar"><label>Zoom <input id="ulcZoom" type="range" min="0.5" max="2" step="0.1" value="1"></label><output id="ulcZoomValue">100%</output><label><input id="ulcGrid" type="checkbox" checked> Cuadricula</label><label><input id="ulcSnap" type="checkbox" checked> Ajustar</label><span id="ulcPhysicalSize"></span></div>
-          <div id="ulcViewport" class="ulcViewport"><div id="ulcStage" class="ulcStage" role="application" aria-label="Lienzo de etiqueta en milimetros"></div></div>
+          <div id="ulcViewport" class="ulcViewport" style="position:relative;"><button type="button" class="btn silver" id="ulcFitScreen" style="position:absolute;top:8px;right:8px;z-index:4;padding:4px 9px;font-size:11px;min-height:28px;">Ajustar a pantalla</button><div id="ulcStage" class="ulcStage" role="application" aria-label="Lienzo de etiqueta en milimetros"></div></div>
         </section>
         <details class="ulcPanel ulcRight" aria-label="Propiedades del objeto" open>
           <summary>Propiedades</summary>
@@ -314,6 +314,34 @@
       if (event.target.id === 'ulcSnap') { commit({ ...current(), snap: event.target.checked }); return; }
     });
     $('#ulcZoom').addEventListener('input', (event) => { zoom = n(event.target.value, 1); render(); });
+    // r37.2 (mission item #19, mobile "Ajustar a pantalla" is a required
+    // control, not optional): compute the zoom that makes the CURRENT
+    // paper's full stage fit inside the viewport's real available area
+    // (viewport padding + the rulers' own reserved space), clamped to the
+    // same 0.5-2 range the slider itself allows.
+    $('#ulcFitScreen').onclick = () => {
+      const viewport = $('#ulcViewport');
+      if (!viewport) return;
+      const paper = current().paper;
+      const style = getComputedStyle(viewport);
+      const paddingX = parseFloat(style.paddingLeft || 0) + parseFloat(style.paddingRight || 0);
+      const paddingY = parseFloat(style.paddingTop || 0) + parseFloat(style.paddingBottom || 0);
+      // Measure the rulers' real reserved space directly (they sit outside
+      // the stage's own box via negative offsets) instead of guessing --
+      // more robust across the desktop/mobile CSS variants than a constant.
+      const rulerTop = $('.ulcRulerTop');
+      const rulerLeft = $('.ulcRulerLeft');
+      const rulerReserveX = (rulerLeft?.offsetWidth || 28) + 4;
+      const rulerReserveY = (rulerTop?.offsetHeight || 20) + 4;
+      const safetyFactor = 0.96;
+      const availableWidth = Math.max(40, (viewport.clientWidth - paddingX - rulerReserveX) * safetyFactor);
+      const availableHeight = Math.max(40, (viewport.clientHeight - paddingY - rulerReserveY) * safetyFactor);
+      const mmToPxAt1x = 3.779527559;
+      const fitZoom = Math.min(availableWidth / (paper.widthMm * mmToPxAt1x), availableHeight / (paper.heightMm * mmToPxAt1x));
+      zoom = Math.max(0.5, Math.min(2, Number(fitZoom.toFixed(2)) || 1));
+      $('#ulcZoom').value = zoom;
+      render();
+    };
     $('#ulcAddImage').onclick = () => $('#ulcImageInput').click();
     $('#ulcStage').addEventListener('pointerdown', (event) => {
       const objectElement = event.target.closest('[data-ulc-object]');

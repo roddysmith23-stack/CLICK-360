@@ -62,4 +62,113 @@ assert((app.match(/click360GuardedAction\([^)]*,\s*\(?\)?\s*=>\s*(window\.)?mark
 // them to also route through the generic helper. ──
 assert(app.includes("cashCloseInFlight.has(inFlightKey)"), 'the cash-close-specific in-flight guard (a stronger, session-aware guard than the generic helper) must remain intact');
 
-console.log('PASS r37 Action Guardian harness: a single shared, reusable guardedAction() helper disables the trigger and shows "Procesando..." on the first tap, ignores a repeated tap outright while busy, surfaces a watchdog notice for slow operations instead of an infinite spinner, and the previously-unguarded high-risk triggers (cancel sale, layaway payment, layaway status, delete product, cancel supplier invoice) are now wired through it -- without touching the already-robust cash-close in-flight guard.');
+// ── r37.2 full button sweep (mission section 12+33): every other
+// high-stakes mutation trigger in app.js that is NOT wired through the
+// shared guardedAction() helper must still have its OWN disable-before-await
+// (or equivalent synchronous no-op-on-repeat) protection, so a rapid
+// double-tap never fires the underlying network/state write twice. These
+// were manually audited (see qa/reports/r37-2-action-guardian-button-audit.md)
+// and found already-correct; this section pins that behaviour down
+// structurally so a future edit can't silently regress it. ──
+function blockAt(marker, len = 900) {
+  const at = app.indexOf(marker);
+  assert(at !== -1, `expected marker not found in app.js: ${marker.slice(0, 60)}...`);
+  return app.slice(at, at + len);
+}
+
+// Sale checkout ("Cobrar") -- the single highest-frequency mutation in the
+// whole app. Disabled synchronously before the async chargeCart() call, and
+// re-checked/re-enabled around it.
+{
+  const b = blockAt("$('#chargeBtn').onclick=async()=>{", 300);
+  assert(b.includes('if(chargeBtn.disabled) return;'), 'chargeBtn must bail out immediately if already disabled (blocks a second tap while a sale is being charged)');
+  assert(b.includes('chargeBtn.disabled = true;'), 'chargeBtn must disable itself synchronously before the async chargeCart() call');
+  assert(/finally\s*\{[\s\S]*?chargeBtn\.disabled = false;/.test(b), 'chargeBtn must be re-enabled in a finally block regardless of success/failure');
+}
+
+// Table checkout ("Cobrar mesa") -- same shape as chargeBtn.
+{
+  const b = blockAt("$('#tableCheckoutForm').onsubmit = async (event) => {", 1300);
+  assert(b.includes('if (submitBtn?.disabled) return;'), 'tableCheckoutForm submit must bail out if already disabled');
+  assert(b.includes('if (submitBtn) submitBtn.disabled = true;'), 'tableCheckoutForm submit must disable the submit button synchronously before the async finalizeTableCharge() call');
+  assert(/finally\s*\{[\s\S]*?submitBtn\.disabled = false;/.test(b), 'tableCheckoutForm submit must re-enable the submit button in a finally block');
+}
+
+// Logistics route dispatch ("Despachar ruta") and route settlement close
+// ("Liquidar ruta") -- both disable synchronously before their async work.
+{
+  const b = blockAt("$('#routeDispatchBtn')?.addEventListener('click', async () => {", 400);
+  assert(b.includes('if (btn.disabled) return;'), 'routeDispatchBtn must bail out if already disabled');
+  assert(b.includes('btn.disabled = true;'), 'routeDispatchBtn must disable itself synchronously before dispatching the route');
+}
+{
+  const b = blockAt("$('#settlementCloseBtn')?.addEventListener('click', async () => {", 400);
+  assert(b.includes('if (btn.disabled) return;'), 'settlementCloseBtn must bail out if already disabled');
+  assert(b.includes('btn.disabled = true;'), 'settlementCloseBtn must disable itself synchronously before closing the settlement');
+}
+
+// Worker access requests ("Aprobar"/"Rechazar" a pending worker join
+// request) -- both disable synchronously before their async cloud call.
+{
+  const b = blockAt("requestsList.querySelectorAll('[data-approve-request]').forEach((btn) => btn.onclick = async () => {", 250);
+  assert(b.includes('btn.disabled = true;'), 'the worker access-request "Aprobar" button must disable itself synchronously before the async click360ApproveWorkerAccess() call');
+}
+{
+  const b = blockAt("requestsList.querySelectorAll('[data-reject-request]').forEach((btn) => btn.onclick = async () => {", 300);
+  assert(b.includes('btn.disabled = true;'), 'the worker access-request "Rechazar" button must disable itself synchronously before the async click360RejectWorkerAccess() call');
+}
+
+// Invite a worker ("Invitar") -- disables and shows "Procesando..." before
+// the cloud invitation write.
+{
+  const b = blockAt('addWorkerForm.onsubmit = async (e) => {', 1200);
+  assert(b.includes("submitBtn.textContent = 'Procesando...'; submitBtn.disabled = true;"), 'the worker-invite form must show "Procesando..." and disable its submit button before the async cloud invitation call');
+}
+
+// Revoke a worker ("Eliminar" in the worker list) -- disables before its
+// async cloud revoke call.
+{
+  const b = blockAt('$$(\'[data-del-worker]\').forEach(btn => {', 400);
+  assert(b.includes('btn.disabled = true;'), 'the worker "Eliminar" (revoke) button must disable itself synchronously before the async click360RevokeWorker() call');
+}
+
+// Save own user profile ("Guardar Perfil") and save business settings
+// ("Guardar" in Ajustes del negocio) -- both disable synchronously before
+// their async writes.
+{
+  const b = blockAt("$('#saveUser').onclick = async () => {", 300);
+  assert(b.includes("btn.disabled = true;"), 'saveUser must disable its button synchronously before the async profile save');
+}
+{
+  const b = blockAt("$('#saveBiz').onclick=async ()=>{", 300);
+  assert(b.includes('if (saveBizBtn.disabled) return;'), 'saveBiz must bail out if already disabled');
+  assert(b.includes('saveBizBtn.disabled = true;'), 'saveBiz must disable itself synchronously before the async business-settings save');
+}
+
+// New cash movement ("Nuevo movimiento" -> "Guardar") and supplier invoice
+// registration ("Registrar Factura") and cash-movement edit ("Guardar
+// cambios" on Editar movimiento) -- all three show "Procesando..." and
+// disable their submit button before the async commitCriticalMutation()
+// call, per the explicit r37 anti-double-submit comments already in app.js.
+for (const marker of [
+  "$('#moveForm').onsubmit = async (e) => {",
+  "$('#invoiceForm').onsubmit = async e => {",
+  "$('#editMoveForm').onsubmit = async (e) => {",
+]) {
+  const b = blockAt(marker, 900);
+  assert(b.includes('if (submitBtn?.disabled) return;'), `${marker} must bail out if its submit button is already disabled`);
+  assert(b.includes("submitBtn.disabled = true; submitBtn.textContent = 'Procesando...';"), `${marker} must show "Procesando..." and disable its submit button before the async commit`);
+}
+
+// r37.2 (real gaps found in certification, now fixed): a finance payment
+// status TOGGLE had no guard at all (worse than a terminal write -- a
+// double-tap could race and flip the record back to its pre-click value),
+// worker-permission edits fired a real network write with zero guard, a
+// finance-entry delete and a cash-movement cancel were missing the
+// loading-state consistency every sibling mutation button already has.
+assert(app.includes("$$('[data-finance-toggle]').forEach((button) => button.onclick = () => window.click360GuardedAction(button, async () => {"), 'the finance payment-status toggle must be wrapped in guardedAction() -- a bare async onclick let a double-tap race and silently flip the status back to its pre-click value');
+assert(app.includes("$$('[data-finance-delete]').forEach((button) => button.onclick = () => window.click360GuardedAction(button, async () => {"), 'the finance entry delete must be wrapped in guardedAction(), consistent with every other delete button in the app');
+assert(app.includes("$('#saveWorkerPermissions').onclick = (event) => window.click360GuardedAction(event.currentTarget, async () => {"), 'saveWorkerPermissions must be wrapped in guardedAction() -- a security-relevant permission write with a real network call must never be double-tappable');
+assert(app.includes("onclick=\"window.click360GuardedAction(this, () => window.deleteMovement('${actionId(m.id)}'))\""), 'the cash-movement "Anular" trigger must be wrapped in guardedAction(), consistent with cancelSale/deleteInvoice/deleteProduct');
+
+console.log('PASS r37 Action Guardian harness: a single shared, reusable guardedAction() helper disables the trigger and shows "Procesando..." on the first tap, ignores a repeated tap outright while busy, surfaces a watchdog notice for slow operations instead of an infinite spinner, and the previously-unguarded high-risk triggers (cancel sale, layaway payment, layaway status, delete product, cancel supplier invoice, finance payment-status toggle, finance entry delete, worker-permission save, cash-movement anular) are now wired through it -- without touching the already-robust cash-close in-flight guard.');

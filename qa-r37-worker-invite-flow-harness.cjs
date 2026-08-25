@@ -46,6 +46,23 @@ assert(!/>Worker</.test(workerViewBlock) && !/ Worker /.test(workerViewBlock), '
 assert(workerViewBlock.includes('workerAccessRequestsCard'), 'workersView() must render the pending-access-requests section for the owner');
 assert(workerViewBlock.includes('whatsappInviteLinkBtn'), 'the invite link box must offer a WhatsApp share action');
 assert(workerViewBlock.includes('shareInviteLinkBtn'), 'the invite link box must offer a native "Compartir" (Web Share API) action when available');
+// r37.2 (real Owner evidence): "copié la invitación para WhatsApp y solo
+// obtuve el link" -- Copiar enlace (URL only) and Copiar invitación (full
+// message) must be two clearly distinct, clearly labeled actions, not one
+// button doing double duty.
+assert(workerViewBlock.includes('copyInviteTextBtn'), 'the invite link box must offer a distinct "Copiar invitación" (full message) action, separate from "Copiar enlace" (URL only)');
+assert(/>Copiar invitaci[oó]n</.test(workerViewBlock), 'the full-message copy action must be labeled exactly "Copiar invitación"');
+assert(/>Copiar enlace</.test(workerViewBlock), 'the URL-only copy action must be labeled exactly "Copiar enlace" (not "Copiar Enlace" or ambiguous wording)');
+assert(/copia únicamente el enlace de registro/i.test(workerViewBlock), '"Copiar enlace" must explain in plain language that it copies ONLY the link, not the full invitation');
+
+const inviteMessageFnBlock = app.slice(app.indexOf('const invitationMessage ='), app.indexOf('const invitationMessage =') + 700);
+assert(inviteMessageFnBlock.includes('${currentBusiness()?.name'), 'the shared invitation message must include the real business name dynamically');
+assert(inviteMessageFnBlock.includes('${preset.label}'), 'the shared invitation message must include the real role label dynamically');
+assert(inviteMessageFnBlock.includes('${inviteLink}'), 'the shared invitation message must embed the real invite link, not just be sent alongside it');
+assert(inviteMessageFnBlock.includes('Ingresa al siguiente enlace'), 'the shared invitation message must explain what to do with the link, not just paste a bare URL');
+assert(app.includes("whatsappBtn.href = `https://wa.me/?text=${encodeURIComponent(invitationMessage)}`"), 'the WhatsApp button must prefill the SAME full invitationMessage (business + role + link + explanation), never just the bare link');
+assert(app.includes("copyInviteTextBtn.onclick") || /copyInviteTextBtn\s*=.*\n.*onclick/.test(app), '"Copiar invitación" must have a real click handler writing the full invitationMessage to the clipboard');
+assert(app.includes("shareBtn.onclick = copyInviteTextBtn?.onclick || null"), 'when the Web Share API is unavailable, "Compartir" must fall back to the same "Copiar invitación" full-text action instead of silently hiding with no alternative');
 
 const gateViewBlock = app.slice(app.indexOf('function workerAccessGateView('), app.indexOf('function bindWorkerAccessGate('));
 assert(!/\bWorker\b/.test(gateViewBlock), 'the worker access gate screen must never say "Worker" -- only "Trabajador" family terms');

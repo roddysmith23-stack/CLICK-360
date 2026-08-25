@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-1-label-engine-hotfix';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-mvp-certification';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -134,6 +134,16 @@
     if (reason === 'auth_not_ready') return 'La sesión aún se está verificando. Intenta nuevamente en unos segundos.';
     if (reason === 'tenant_guard_not_ready') return 'La cuenta aún está preparando la protección de datos. Intenta nuevamente en unos segundos.';
     return gate.message || 'No se pudo guardar ahora. Tus datos anteriores siguen intactos.';
+  }
+  // r37.2 (ERROR RECOVERY): a caught error's .message can be a curated
+  // human string WE threw (fine to show as-is) or a raw SDK/network
+  // rejection bubbling straight through (a Firestore/Auth error always
+  // carries a .code; our own curated throws in these flows never set
+  // one). Never show the latter verbatim -- fall back to a human message
+  // instead, same principle as writeBlockMessage() above.
+  function humanizeActionError(err, fallback) {
+    if (err && !err.code && err.message) return err.message;
+    return fallback;
   }
   function clampNumber(value, min, max, fallback = min) {
     const number = Number(value);
@@ -2478,6 +2488,15 @@ function parseMoney(value) {
   }
 
   function inventoryView() {
+    // r37-2 (NO FALSE STATES): same discipline as homeView()/cashView() --
+    // productsForBiz() reads straight off `state`, which is still the empty
+    // seed() set before real data is hydrated. Without this guard, a tenant
+    // with a full catalog would flash "Aún no hay productos" (a false
+    // negative, not a neutral loading state) on every first paint/refresh
+    // that races ahead of the real Firestore pull.
+    if (!tenantDataHydrated) {
+      return `<div class="pageHead"><div><h1>Inventario</h1></div></div>${dataNotReadyCardHtml('Cargando tu inventario desde la nube...')}`;
+    }
     const b=currentBusiness(), v=businessVocabulary(b.type), products=productsForBiz();
     const templates = labelTemplatesForBiz();
 
@@ -2543,6 +2562,15 @@ function parseMoney(value) {
   }
 
   function sellView() {
+    // r37-2 (NO FALSE STATES): isDayStarted()/isDayClosed() below read cash
+    // sessions/movements straight off `state`. Before real data is
+    // hydrated, `state` is still the empty seed -- so a tenant with an
+    // already-open day would flash "Jornada no Iniciada" (the exact
+    // Iniciar-Jornada false state the r36 P0-2 fix eliminated from
+    // cashView()/homeView()) instead of a neutral loading state.
+    if (!tenantDataHydrated) {
+      return `<div class="pageHead"><div><h1>Vender</h1></div></div>${dataNotReadyCardHtml('Cargando el estado de tu jornada y tu inventario...')}`;
+    }
     if (!isDayStarted()) {
       return `<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 20px; text-align:center; min-height:50vh;">
         <div style="font-size:48px; margin-bottom:16px;">🔑</div>
@@ -2718,7 +2746,7 @@ function parseMoney(value) {
               const editDeleteButtons = (authUser().role === 'owner' && !isCancelled) ? `
                 <div style="display:flex; gap:6px; margin-top:6px; justify-content:flex-end;">
                   <button class="btn silver" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.editMovement('${actionId(m.id)}')">✎ Editar</button>
-                  <button class="btn danger" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.deleteMovement('${actionId(m.id)}')">🗑 Anular</button>
+                  <button class="btn danger" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.click360GuardedAction(this, () => window.deleteMovement('${actionId(m.id)}'))">🗑 Anular</button>
                 </div>
               ` : '';
               const cancelledLabel = isCancelled ? `<br><span style="font-size:11px;color:#ff4d4d;font-weight:bold;">🚫 ANULADO por ${escapeHtml(m.cancelledBy || 'owner')} a las ${escapeHtml(m.cancelledAt || '')}</span>` : '';
@@ -2844,6 +2872,13 @@ function parseMoney(value) {
   }
 
 	  function reportsView() {
+	    // r37-2 (NO FALSE STATES): salesForBiz() reads straight off `state`,
+	    // still the empty seed before hydration -- without this guard a
+	    // tenant with real sales history would flash "Sin ventas" and $0.00
+	    // totals as if they were confirmed.
+	    if (!tenantDataHydrated) {
+	      return `<div class="pageHead"><div><h1>Reportes</h1></div></div>${dataNotReadyCardHtml('Cargando tus ventas y reportes desde la nube...')}`;
+	    }
 	    state.reportsFrom = state.reportsFrom || today();
 	    state.reportsTo = state.reportsTo || today();
 	    const allSales = salesForBiz();
@@ -2893,6 +2928,14 @@ function parseMoney(value) {
   }
 
   function debtorsView() {
+    // r37-2 (NO FALSE STATES): salesForBiz()/state.layaways read straight
+    // off `state`, still the empty seed before hydration -- without this
+    // guard a tenant with real, unpaid apartados would flash "Aún no hay
+    // apartados" (a false "no debts" negative) instead of a neutral
+    // loading state.
+    if (!tenantDataHydrated) {
+      return `<div class="pageHead"><div><h1>Apartados</h1></div></div>${dataNotReadyCardHtml('Cargando tus apartados desde la nube...')}`;
+    }
     const businessId = currentBusiness()?.id || '';
     const sales = salesForBiz(businessId).filter((sale) => ['layaway', 'pending_payment', 'paid'].includes(sale.status));
     const layawayBySale = new Map((state.layaways || []).filter((item) => item.businessId === businessId).map((item) => [item.saleId, item]));
@@ -2980,6 +3023,13 @@ function parseMoney(value) {
     return labels[event.action] || `${actor} · ${String(event.action || 'evento').replaceAll('_', ' ')}`;
   }
   function activityView() {
+    // r37-2 (NO FALSE STATES): state.auditLogs is still the empty seed
+    // before hydration -- without this guard a tenant with real activity
+    // history would flash "Aún no hay actividad registrada" as if
+    // confirmed, instead of a neutral loading state.
+    if (!tenantDataHydrated) {
+      return `<div class="pageHead"><div><h1>Actividad</h1></div></div>${dataNotReadyCardHtml('Cargando el historial de actividad desde la nube...')}`;
+    }
     const businessId = currentBusiness()?.id || '';
     const events = (state.auditLogs || []).filter((event) => event.businessId === businessId).slice().reverse();
     const actors = [...new Set(events.map((event) => event.createdBy).filter(Boolean))].sort();
@@ -3715,6 +3765,13 @@ function parseMoney(value) {
         || (!customer.businessId && legacyBusinessId === businessId));
 	  }
 	  function crmView() {
+	    // r37-2 (NO FALSE STATES): crmCustomers() reads state.settings.customers,
+	    // still the empty seed before hydration -- without this guard a
+	    // tenant with a real customer list would flash "Todavia no hay
+	    // clientes registrados" as if confirmed.
+	    if (!tenantDataHydrated) {
+	      return `<div class="pageHead"><div><h1>Clientes</h1></div></div>${dataNotReadyCardHtml('Cargando tus clientes desde la nube...')}`;
+	    }
 	    const customers = crmCustomers();
 	    return `<div class="pageHead"><div><h1>Clientes</h1><p>Seguimiento de clientes y contacto por WhatsApp.</p></div><div class="toolbar"><button class="btn primary" id="newCustomerBtn">Nuevo cliente</button></div></div>
 	      <section class="card sectionCard"><div class="field"><label>Buscar</label><input id="customerSearch" placeholder="Nombre o telefono"></div><div id="customerList">${customerCards(customers)}</div></section>`;
@@ -3807,6 +3864,13 @@ function parseMoney(value) {
 	    });
 	  }
 	  function remindersView() {
+	    // r37-2 (NO FALSE STATES): remindersForBusiness() reads
+	    // state.settings.reminders, still the empty seed before hydration --
+	    // without this guard a tenant with real pending reminders would
+	    // flash "No hay recordatorios pendientes" as if confirmed.
+	    if (!tenantDataHydrated) {
+	      return `<div class="pageHead"><div><h1>Recordatorios</h1></div></div>${dataNotReadyCardHtml('Cargando tus recordatorios desde la nube...')}`;
+	    }
 	    const reminders = remindersForBusiness().slice().sort((a, b) => String(a.dueAt || '').localeCompare(String(b.dueAt || '')));
 	    return `<div class="pageHead"><div><h1>Recordatorios</h1><p>Alertas de seguimiento para clientes y negocio.</p></div><div class="toolbar"><button class="btn primary" id="newReminderBtn">Nuevo recordatorio</button></div></div><section class="card sectionCard"><div id="reminderList">${reminderCards(reminders)}</div></section>`;
 	  }
@@ -4003,6 +4067,19 @@ function parseMoney(value) {
 	  function tableOrderTotal(order) {
 	    return (order?.items || []).reduce((sum, item) => sum + Number(item.price || 0) * Number(item.qty || 0), 0);
 	  }
+	  // r37.2 (real bug found in certification): chargeTableOrder() used to
+	  // display/default/validate against this RAW pre-tax total while
+	  // finalizeTableCharge() actually charged a SEPARATE, tax-inclusive
+	  // calculateCart() total -- when a business has tax enabled with
+	  // priceMode 'excluded', the two diverged and the cashier saw/validated
+	  // a lower number than what actually got booked. One shared helper both
+	  // now call so they can never disagree again.
+	  function tableOrderChargeTotal(order, method = 'Efectivo') {
+	    const tax = businessTaxConfig();
+	    const lines = (order?.items || []).map((item) => ({ ...item, unitPrice: method === 'Tarjeta' ? item.cardPrice : item.price }));
+	    const calculation = window.CLICK360_V16_DOMAIN?.calculateCart(lines, 0, tax);
+	    return { total: Number(calculation?.total ?? tableOrderTotal(order)), calculation };
+	  }
 	  function tableReservedQuantity(productId, excludedOrderId = '') {
 	    return tableOrdersForBiz()
 	      .filter((order) => order.status === 'open' && order.id !== excludedOrderId)
@@ -4083,6 +4160,15 @@ function parseMoney(value) {
 	    </article>`;
 	  }
 	  function tablesView() {
+	    // r37-2 (NO FALSE STATES): before hydration, currentBusiness() is
+	    // still the seed placeholder (type 'ropa'), so restaurantModuleEnabled()
+	    // below would falsely deny a real restaurant tenant ("activate this
+	    // module") instead of showing a neutral loading state -- UNKNOWN !=
+	    // DENIED. Once real data loads, tablesForBiz() would also otherwise
+	    // flash "create your first table" for a tenant with a real floor plan.
+	    if (!tenantDataHydrated) {
+	      return `<div class="pageHead"><div><h1>Mesas</h1></div></div>${dataNotReadyCardHtml('Cargando el plano de mesas desde la nube...')}`;
+	    }
 	    if (!restaurantModuleEnabled()) {
 	      return `<div class="pageHead"><div><h1>Mesas</h1><p>Activa este módulo desde el tipo de negocio.</p></div></div>
 	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">En Ajustes selecciona Restaurante / cafetería / bar para usar Mesas Lite.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
@@ -4365,12 +4451,12 @@ function parseMoney(value) {
 	  }
 	  function chargeTableOrder(table, order) {
 	    if (!isDayStarted() || isDayClosed()) return toast('Abre una caja activa antes de cobrar la mesa.', 'err');
-	    const total = tableOrderTotal(order);
+	    const initialTotal = tableOrderChargeTotal(order, 'Efectivo').total;
 	    showModal(`<div class="modalHeader"><div><h2>Cobrar ${escapeHtml(table.name)}</h2><p class="fieldHint">Usa el mismo cierre claro que una venta normal.</p></div><button class="closeBtn" data-close>×</button></div>
 	      <form id="tableCheckoutForm" class="formGrid">
-	        <section class="card full tableCheckoutSummary"><span>Total a cobrar</span><strong>${fmt(total)}</strong></section>
+	        <section class="card full tableCheckoutSummary"><span>Total a cobrar</span><strong id="tableCheckoutTotal">${fmt(initialTotal)}</strong></section>
 	        <div class="field"><label>Método de pago</label><select id="tableCheckoutMethod"><option value="Efectivo">Efectivo</option><option value="Tarjeta">Tarjeta</option><option value="Transferencia">Transferencia</option></select></div>
-	        <div class="field"><label>Efectivo recibido</label><input id="tableCheckoutTendered" type="number" min="0" step="0.01" inputmode="decimal" value="${numericInputValue(total)}"></div>
+	        <div class="field"><label>Efectivo recibido</label><input id="tableCheckoutTendered" type="number" min="0" step="0.01" inputmode="decimal" value="${numericInputValue(initialTotal)}"></div>
 	        <div class="field"><label>Cliente (opcional)</label><input id="tableCheckoutCustomer" maxlength="100" placeholder="Nombre del cliente"></div>
 	        <div class="field"><label>Cédula/RUC (opcional)</label><input id="tableCheckoutCedula" maxlength="32" inputmode="numeric"></div>
 	        <div class="field full"><label>Teléfono / WhatsApp (opcional)</label><input id="tableCheckoutPhone" maxlength="32" inputmode="tel"></div>
@@ -4379,15 +4465,26 @@ function parseMoney(value) {
 	      </form>`);
 	    const methodInput = $('#tableCheckoutMethod');
 	    const tenderedInput = $('#tableCheckoutTendered');
-	    const updateTendered = () => { tenderedInput.disabled = methodInput.value !== 'Efectivo'; if (tenderedInput.disabled) tenderedInput.value = numericInputValue(total); };
+	    const totalOutput = $('#tableCheckoutTotal');
+	    // r37.2: recompute the REAL (tax-inclusive, method-aware) total on every
+	    // method change so what the cashier sees/validates against always
+	    // matches what finalizeTableCharge() will actually charge -- the two
+	    // can never diverge again since both call tableOrderChargeTotal().
+	    let currentTotal = initialTotal;
+	    const updateTendered = () => {
+	      currentTotal = tableOrderChargeTotal(order, methodInput.value).total;
+	      totalOutput.textContent = fmt(currentTotal);
+	      tenderedInput.disabled = methodInput.value !== 'Efectivo';
+	      if (tenderedInput.disabled) tenderedInput.value = numericInputValue(currentTotal);
+	    };
 	    methodInput.onchange = updateTendered; updateTendered();
 	    $('#tableCheckoutForm').onsubmit = async (event) => {
 	      event.preventDefault();
 	      const submitBtn = event.target.querySelector('button[type="submit"]');
 	      if (submitBtn?.disabled) return;
 	      const method = methodInput.value;
-	      const tendered = method === 'Efectivo' ? Number(tenderedInput.value || 0) : total;
-	      if (!Number.isFinite(tendered) || tendered < total) return toast('El efectivo recibido no cubre el total.', 'err');
+	      const tendered = method === 'Efectivo' ? Number(tenderedInput.value || 0) : currentTotal;
+	      if (!Number.isFinite(tendered) || tendered < currentTotal) return toast('El efectivo recibido no cubre el total.', 'err');
 	      if (submitBtn) submitBtn.disabled = true;
 	      try {
 	        await finalizeTableCharge(table, order, { method, tendered, customer:$('#tableCheckoutCustomer').value.trim(), customerCedula:$('#tableCheckoutCedula').value.trim(), customerPhone:$('#tableCheckoutPhone').value.trim(), print:$('#tableCheckoutPrint').checked });
@@ -4401,10 +4498,8 @@ function parseMoney(value) {
 	    const tendered = Number(checkout.tendered || 0);
 	    const previousState = cloneState(state);
 	    const businessId = currentBusiness().id;
-	    const tax = businessTaxConfig();
+	    const { total, calculation } = tableOrderChargeTotal(order, method);
 	    const lines = order.items.map((item) => ({ ...item, unitPrice: method === 'Tarjeta' ? item.cardPrice : item.price }));
-	    const calculation = window.CLICK360_V16_DOMAIN?.calculateCart(lines, 0, tax);
-	    const total = Number(calculation?.total ?? tableOrderTotal(order));
 	    for (const item of order.items) {
 	      if (item.nonInventory) continue;
 	      const product = productsForBiz().find((candidate) => candidate.id === item.id);
@@ -4481,7 +4576,12 @@ function parseMoney(value) {
 	    $$('[data-table-map-item]').forEach((item) => {
 	      let drag = null;
 	      item.addEventListener('pointerdown', (event) => {
-	        if (!editingLayout || event.target.closest('.tableStyleBtn')) return;
+	        // r37.2 (real bug found in certification): preventDefault() below
+	        // suppresses the browser's synthesized click for THIS pointerdown,
+	        // so the grow/shrink stepper buttons (an explicit tap-to-resize
+	        // alternative to imprecise corner-drag) silently did nothing while
+	        // in layout-edit mode -- their own onclick handlers never fired.
+	        if (!editingLayout || event.target.closest('.tableStyleBtn, [data-table-grow], [data-table-shrink]')) return;
 	        const map = $('#tableMap');
 	        const table = tablesForBiz().find((candidate) => candidate.id === decodeActionId(item.dataset.tableMapItem));
 	        if (!map || !table) return;
@@ -4536,6 +4636,15 @@ function parseMoney(value) {
 	      .sort((a, b) => Number(a.openedAtMs || 0) - Number(b.openedAtMs || 0));
 	  }
 	  function kitchenBoardView(area = 'kitchen') {
+	    // r37-2 (NO FALSE STATES): same reasoning as tablesView() -- before
+	    // hydration, currentBusiness() is still the seed placeholder (type
+	    // 'ropa'), so restaurantModuleEnabled() would falsely deny a real
+	    // restaurant tenant, and kitchenOrders() would flash "No hay pedidos
+	    // pendientes" for a tenant with real open tickets.
+	    if (!tenantDataHydrated) {
+	      const title = area === 'bar' ? 'Barra' : 'Cocina';
+	      return `<div class="pageHead"><div><h1>${title}</h1></div></div>${dataNotReadyCardHtml('Cargando pedidos desde la nube...')}`;
+	    }
 	    if (!restaurantModuleEnabled()) {
 	      return `<div class="pageHead"><div><h1>${area === 'bar' ? 'Barra' : 'Cocina'}</h1><p>Activa Restaurante en Ajustes.</p></div></div>
 	        <section class="card sectionCard"><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
@@ -4587,6 +4696,15 @@ function parseMoney(value) {
 	    return { sales, collections, returns, expenses, sold, collected, returned, spent, expected:Math.max(0, sold + collected - spent) };
 	  }
 	  function logisticsView() {
+	    // r37-2 (NO FALSE STATES): before hydration, currentBusiness() is
+	    // still the seed placeholder (type 'ropa'), so logisticsModuleEnabled()
+	    // below would falsely deny a real logistics tenant ("activate this
+	    // module") instead of showing a neutral loading state -- UNKNOWN !=
+	    // DENIED. Once real data loads, vehicles/routes would also otherwise
+	    // flash as 0/empty for a tenant with a real fleet.
+	    if (!tenantDataHydrated) {
+	      return `<div class="pageHead"><div><h1>Logística y rutas</h1></div></div>${dataNotReadyCardHtml('Cargando tus rutas y vehículos desde la nube...')}`;
+	    }
 	    if (!logisticsModuleEnabled()) {
 	      return `<div class="pageHead"><div><h1>Logística</h1><p>Disponible al configurar el negocio como logística, distribución o transporte.</p></div></div>
 	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">Selecciona Logística / distribución / transporte en Ajustes para activar rutas, vehículos, carga y liquidación.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
@@ -4954,6 +5072,13 @@ function parseMoney(value) {
 	    return entry.status === 'pending' ? 'pendiente' : 'activo';
 	  }
 	  function financeView() {
+	    // r37-2 (NO FALSE STATES): financeForBiz() reads state.finance, still
+	    // the empty seed before hydration -- without this guard a tenant with
+	    // real payments/loans/goals would flash "Sin registros" and $0.00
+	    // totals in every section as if confirmed.
+	    if (!tenantDataHydrated) {
+	      return `<div class="pageHead"><div><h1>Finanzas</h1></div></div>${dataNotReadyCardHtml('Cargando tus finanzas desde la nube...')}`;
+	    }
 	    const sections = Object.entries(FINANCE_CONFIG).map(([kind, config]) => {
 	      const entries = financeForBiz(kind);
 	      const total = entries.reduce((sum, entry) => sum + Number(entry.amount || entry.targetAmount || 0), 0);
@@ -5003,7 +5128,12 @@ function parseMoney(value) {
 	  }
 	  function bindFinance() {
 	    $$('[data-finance-add]').forEach((button) => button.onclick = () => openFinanceModal(button.dataset.financeAdd));
-	    $$('[data-finance-toggle]').forEach((button) => button.onclick = async () => {
+	    // r37.2 (real bug found in certification): a status TOGGLE (unlike a
+	    // terminal delete/cancel) has no idempotency check of its own -- a
+	    // rapid double-tap could race and flip the record back to its
+	    // pre-click value before this had a guard, silently corrupting a
+	    // financial record. Same guardedAction() pattern as deleteProduct.
+	    $$('[data-finance-toggle]').forEach((button) => button.onclick = () => window.click360GuardedAction(button, async () => {
 	      const [kind, encodedId] = button.dataset.financeToggle.split(':');
 	      const entry = financeForBiz(kind).find((item) => item.id === decodeActionId(encodedId));
 	      if (!entry) return;
@@ -5016,8 +5146,8 @@ function parseMoney(value) {
 	        next.finance?.[kind]?.some((item) => item.id === entry.id && item.businessId === businessId && item.status === expectedStatus));
 	      if (!committed.ok) return;
 	      renderApp('finance');
-	    });
-	    $$('[data-finance-delete]').forEach((button) => button.onclick = async () => {
+	    }));
+	    $$('[data-finance-delete]').forEach((button) => button.onclick = () => window.click360GuardedAction(button, async () => {
 	      const [kind, encodedId] = button.dataset.financeDelete.split(':');
 	      const entryId = decodeActionId(encodedId);
 	      if (!FINANCE_CONFIG[kind] || !confirm('¿Eliminar este registro financiero manual?')) return;
@@ -5028,7 +5158,7 @@ function parseMoney(value) {
 	        !next.finance?.[kind]?.some((item) => item.id === entryId && item.businessId === businessId));
 	      if (!committed.ok) return;
 	      renderApp('finance');
-	    });
+	    }));
 	  }
 
 	  function helpView() {
@@ -5784,6 +5914,14 @@ function parseMoney(value) {
 		    return labels[status.state] || 'Sin comprobar';
 		  }
 		  function printingView() {
+		    // r37-2 (NO FALSE STATES): salesForBiz()/productsForBiz() below read
+		    // straight off `state`, still the empty seed before hydration --
+		    // without this guard a tenant with real sales/products would flash
+		    // "Aún no hay ventas" / "Agrega un producto primero" on the quick
+		    // actions as if confirmed.
+		    if (!tenantDataHydrated) {
+		      return `<div class="pageHead"><div><h1>Centro de impresión</h1></div></div>${dataNotReadyCardHtml('Cargando tus ventas y productos desde la nube...')}`;
+		    }
 		    const preferences = printingPreferences();
 		    const statuses = window.CLICK360_PRINTING?.providers?.() || [];
 		    const statusRows = statuses.map((status) => `<div class="printerStatusRow"><span><b>${escapeHtml(status.name)}</b><small>${escapeHtml(printerStateLabel(status))}</small></span><em class="${status.supported ? 'ready' : ''}">${status.supported ? 'Disponible' : 'Alternativa'}</em></div>`).join('');
@@ -5912,10 +6050,17 @@ function parseMoney(value) {
             <small style="color:var(--green); display:block; margin-bottom:6px; font-weight:bold;">Enlace de Invitación:</small>
             <input type="text" id="inviteLinkVal" readonly style="width:100%; font-size:12px; margin-bottom:8px; background:#000; border:1px solid #444; color:#fff; padding:8px; border-radius:8px;">
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-              <a class="btn whatsapp" id="whatsappInviteLinkBtn" target="_blank" rel="noopener noreferrer" href="#">${icon('message-circle')} WhatsApp</a>
+              <a class="btn whatsapp" id="whatsappInviteLinkBtn" target="_blank" rel="noopener noreferrer" href="#">${icon('message-circle')} Enviar por WhatsApp</a>
               <button class="btn silver" id="shareInviteLinkBtn" type="button" style="display:none;">Compartir</button>
             </div>
-            <button class="btn silver block" id="copyInviteLinkBtn" type="button" style="margin-top:8px;">Copiar Enlace</button>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
+              <button class="btn silver" id="copyInviteTextBtn" type="button">Copiar invitación</button>
+              <button class="btn silver" id="copyInviteLinkBtn" type="button">Copiar enlace</button>
+            </div>
+            <p class="fieldHint" style="margin-top:6px;">
+              <b>Copiar invitación</b> copia el mensaje completo con la empresa, el cargo y el enlace, listo para pegar en cualquier chat.
+              <b>Copiar enlace</b> copia únicamente el enlace de registro.
+            </p>
          </div>
       </section>
       <section class="card sectionCard" id="workerAccessRequestsCard" style="margin-top:14px; display:none;">
@@ -6102,6 +6247,10 @@ function parseMoney(value) {
     apply();
   }
   function bindInventory(){
+    // r37-2 (NO FALSE STATES): inventoryView() shows the syncing card (no
+    // #newProduct/#productSearch controls) instead of the real inventory
+    // before hydration.
+    if (!tenantDataHydrated) return;
     $('#newProduct').onclick=()=>openProductModal();
     $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>x.name.toLowerCase().includes(q)||x.code.toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
     $('#productSearch').onkeydown=(event)=>{
@@ -7860,7 +8009,7 @@ function parseMoney(value) {
             if (inviteLinkValEl) inviteLinkValEl.value = link;
             await navigator.clipboard?.writeText(link).catch(() => {});
             toast('Enlace recuperado y listo para compartir');
-          } catch (error) { toast(error.message, 'err'); }
+          } catch (error) { toast(humanizeActionError(error, 'No se pudo recuperar el enlace. Intenta nuevamente.'), 'err'); }
         };
       });
 
@@ -7874,7 +8023,12 @@ function parseMoney(value) {
 	          const workerStatus = worker.status === 'pending' ? 'Pendiente' : worker.status === 'active' ? 'Activo' : worker.status === 'revoked' ? 'Revocado' : 'Bloqueado';
 	          const actionLabels = { read:'Ver', create:'Crear', update:'Editar', delete:'Eliminar', payment:'Registrar abono', close:'Cerrar caja', manage:'Administrar' };
 	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="admin" ${worker.role === 'admin' ? 'selected' : ''}>Administrador</option><option value="supervisor" ${worker.role === 'supervisor' ? 'selected' : ''}>Supervisor</option><option value="seller" ${['worker','seller'].includes(worker.role) ? 'selected' : ''}>Vendedor</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Cajero</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Bodega</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
-          $('#saveWorkerPermissions').onclick = async () => {
+          // r37.2 (real bug found in certification): this fires a real
+          // network write with zero disable-on-click guard -- a double-tap
+          // could send two concurrent permission-update requests with no
+          // ordering guarantee, which can silently revert a security-
+          // relevant permission change.
+          $('#saveWorkerPermissions').onclick = (event) => window.click360GuardedAction(event.currentTarget, async () => {
             const permissions = {};
             $$('[data-permission-module]').forEach((input) => {
               permissions[input.dataset.permissionModule] ||= {};
@@ -7886,8 +8040,8 @@ function parseMoney(value) {
               closeModal();
               await loadWorkers();
               toast('Permisos actualizados');
-            } catch (error) { toast(error.message, 'err'); }
-          };
+            } catch (error) { toast(humanizeActionError(error, 'No se pudo actualizar los permisos. Intenta nuevamente.'), 'err'); }
+          });
         };
       });
 
@@ -7973,18 +8127,36 @@ function parseMoney(value) {
 	         const inviteLink = window.location.origin + window.location.pathname + "?invite=true&ownerId=" + encodeURIComponent(window.click360User.uid) + "&inviteHash=" + encodeURIComponent(inviteMeta.inviteHash) + "&inviteToken=" + encodeURIComponent(inviteMeta.inviteToken);
          const inviteLinkValEl = $('#inviteLinkVal');
          if (inviteLinkValEl) inviteLinkValEl.value = inviteLink;
+         // r37.2 (real Owner evidence): "Copiar Enlace" alone only copies the
+         // raw URL, and a comerciante pasting that bare URL into WhatsApp
+         // looks broken/incomplete -- there is no context. This is the ONE
+         // full invitation message shared by WhatsApp/Compartir/Copiar
+         // invitación, so a comerciante never has to write their own text.
+         const invitationMessage = `${currentBusiness()?.name || 'Tu negocio'} te invita a formar parte de su equipo en CLICK 360 como ${preset.label}.\n\nIngresa al siguiente enlace, inicia sesión y completa tus datos para solicitar acceso:\n\n${inviteLink}\n\nCuando ${currentBusiness()?.name || 'la empresa'} apruebe tu solicitud podrás acceder únicamente a las funciones asignadas a tu cargo.`;
          const whatsappBtn = $('#whatsappInviteLinkBtn');
          if (whatsappBtn) {
-           const message = `Hola ${name || ''}, te invito a unirte a ${currentBusiness()?.name || 'nuestro negocio'} en CLICK 360 como ${escapeHtml(preset.label)}. Abre este enlace con tu cuenta de Google para aceptar: ${inviteLink}`;
-           whatsappBtn.href = `https://wa.me/?text=${encodeURIComponent(message)}`;
+           whatsappBtn.href = `https://wa.me/?text=${encodeURIComponent(invitationMessage)}`;
+         }
+         const copyInviteTextBtn = $('#copyInviteTextBtn');
+         if (copyInviteTextBtn) {
+           copyInviteTextBtn.onclick = async () => {
+             try { await navigator.clipboard.writeText(invitationMessage); }
+             catch { const el = $('#inviteLinkVal'); if (el) { el.value = invitationMessage; el.select(); document.execCommand('copy'); el.value = inviteLink; } }
+             toast('Invitación completa copiada al portapapeles');
+           };
          }
          const shareBtn = $('#shareInviteLinkBtn');
          if (shareBtn) {
            if (navigator.share) {
              shareBtn.style.display = '';
-             shareBtn.onclick = () => navigator.share({ title: 'Invitación CLICK 360', text: `Te invito a unirte como ${preset.label}.`, url: inviteLink }).catch(() => {});
+             shareBtn.textContent = 'Compartir';
+             shareBtn.onclick = () => navigator.share({ title: 'Invitación CLICK 360', text: invitationMessage }).catch(() => {});
            } else {
-             shareBtn.style.display = 'none';
+             // Fallback when Web Share API is unavailable: same action as
+             // "Copiar invitación" so there is never a dead/hidden button.
+             shareBtn.style.display = '';
+             shareBtn.textContent = 'Compartir (copiar invitación)';
+             shareBtn.onclick = copyInviteTextBtn?.onclick || null;
            }
          }
 
@@ -7996,7 +8168,7 @@ function parseMoney(value) {
          $('#workerName').value = '';
          $('#workerEmail').value = '';
       } catch(err) {
-         toast('Error al registrar: ' + err.message, 'err');
+         toast('Error al registrar: ' + humanizeActionError(err, 'no se pudo completar el registro. Verifica tu conexión e inténtalo nuevamente.'), 'err');
       } finally {
          if (submitBtn) { submitBtn.textContent = 'Crear invitacion segura'; submitBtn.disabled = false; }
       }
@@ -8015,6 +8187,9 @@ function parseMoney(value) {
   }
 
   function bindReports(){
+      // r37-2 (NO FALSE STATES): reportsView() shows the syncing card (no
+      // #repFrom/#repTo inputs) instead of the real report before hydration.
+      if (!tenantDataHydrated) return;
       // Report date filters are view state only. Persisting them through save() used to
       // trigger cloud writes/sync gates from Safari just for changing a filter.
       $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; renderApp('reports'); };
@@ -12158,6 +12333,14 @@ function parseMoney(value) {
   }, 30000);
   // --- INVOICES MODULE ---
   function invoicesView() {
+    // r37-2 (NO FALSE STATES): bindInvoices() (called synchronously right
+    // after this render) reads state.invoices straight off `state`, still
+    // the empty seed before hydration -- without this guard a tenant with
+    // real supplier invoices would flash "No se encontraron facturas" as
+    // if confirmed.
+    if (!tenantDataHydrated) {
+      return `<div class="pageHead"><div><h1>Facturas de Proveedores</h1></div></div>${dataNotReadyCardHtml('Cargando tus facturas de proveedores desde la nube...')}`;
+    }
     const biz = currentBusiness();
     const invs = (state.invoices || []).filter(i => i.businessId === biz.id);
 
@@ -12222,6 +12405,10 @@ function parseMoney(value) {
   }
 
   function bindInvoices() {
+    // r37-2 (NO FALSE STATES): invoicesView() shows the syncing card (no
+    // #invoiceList/#newInvoiceBtn controls) instead of the real invoice
+    // list before hydration.
+    if (!tenantDataHydrated) return;
     const list = $('#invoiceList');
     const biz = currentBusiness();
 
