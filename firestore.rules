@@ -254,6 +254,21 @@ service cloud.firestore {
           && member.permissions.get(moduleName, {}).get(action, false) == true);
     }
 
+    // r37.2 (LOGISTICS WORKER PERMISSIONS): the real backend half of "un
+    // Vendedor A solo puede tocar la Ruta A" -- reads the actual route
+    // document and checks the requester's uid against its real assignment
+    // fields. Mirrors p2-logistics-domain.js's canAccessRoute() at the
+    // rules layer so a hand-crafted request (bypassing the app entirely)
+    // is rejected the same way a client-side check would be, not just
+    // hidden from the UI.
+    function logisticsRouteData(ownerUid, businessId, routeId) {
+      return get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/logisticsRoutes/$(routeId)).data;
+    }
+
+    function logisticsAssignedTo(ownerUid, businessId, routeId, field) {
+      return logisticsRouteData(ownerUid, businessId, routeId).get(field, "") == request.auth.uid;
+    }
+
     // P0 commercial rule: every business includes at most 2 active workers
     // (excluding the owner) unless additional paid seats are purchased. This
     // is enforced server-side so it cannot be bypassed by a modified client:
@@ -999,6 +1014,133 @@ service cloud.firestore {
       allow update: if recordId == "main"
         && businessUnitPermission(ownerUid, businessId, "settings", "update")
         && validBoundaryUpdate(ownerUid, businessId, "settings", recordId);
+      allow delete: if false;
+    }
+
+    // r37.2 (LOGISTICS WORKER PERMISSIONS): logisticsVehicles/logisticsRoutes/
+    // logisticsLoadSheets/logisticsRouteSales/logisticsCollections/
+    // logisticsReturns/logisticsSettlements -- the modular per-record
+    // collections a real Worker actually writes through (mirrors the
+    // products/sales/etc. pattern above). Every write additionally
+    // requires the fine-grained "logistics" module permission
+    // (businessUnitPermission(..., "logistics", "<action>")) AND, for the
+    // three personally-assignable capacities (seller/collector/helper),
+    // that the requester is the exact uid assigned on the real route doc
+    // -- "no basta esconder la tarjeta": a modified client cannot forge
+    // its way around this by simply calling the write directly.
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsVehicles/{recordId} {
+      allow read: if businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.read");
+      allow create: if businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsVehicles", recordId);
+      allow update: if businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.write")
+        && validBoundaryUpdate(ownerUid, businessId, "logisticsVehicles", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsRoutes/{recordId} {
+      allow read: if businessUnitPermission(ownerUid, businessId, "logistics", "routes.read")
+        || resource.data.sellerId == request.auth.uid
+        || resource.data.collectorId == request.auth.uid
+        || resource.data.helperId == request.auth.uid;
+      allow create: if businessUnitPermission(ownerUid, businessId, "logistics", "routes.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsRoutes", recordId);
+      allow update: if validBoundaryUpdate(ownerUid, businessId, "logisticsRoutes", recordId)
+        && (
+          businessUnitPermission(ownerUid, businessId, "logistics", "routes.write")
+          || (businessUnitPermission(ownerUid, businessId, "logistics", "routes.assign")
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              "vehicleId", "sellerId", "sellerName", "helperId", "helperName", "collectorId", "collectorName",
+              "status", "auditTrail", "recordVersion", "updatedBy", "updatedAt"
+            ]))
+        );
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsLoadSheets/{recordId} {
+      allow read: if businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "helperId");
+      allow create: if businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsLoadSheets", recordId);
+      allow update: if businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.write")
+        && validBoundaryUpdate(ownerUid, businessId, "logisticsLoadSheets", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsRouteSales/{recordId} {
+      allow read: if businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
+      allow create: if businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.create")
+        && logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "sellerId")
+        && (request.resource.data.discount == 0 || businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.discount"))
+        && validBoundaryCreate(ownerUid, businessId, "logisticsRouteSales", recordId)
+        && request.resource.data.actorUid == request.auth.uid;
+      // Cancellation is the only post-create mutation, and only for
+      // whoever holds routeSales.cancel (never granted by default to any
+      // preset -- see WORKER_ROLE_PRESETS/ROLE_PERMISSIONS comments).
+      allow update: if businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.cancel")
+        && resource.data.status != "cancelled"
+        && request.resource.data.status == "cancelled"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "auditTrail", "recordVersion", "updatedBy", "updatedAt"
+        ])
+        && validBoundaryUpdate(ownerUid, businessId, "logisticsRouteSales", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsCollections/{recordId} {
+      allow read: if businessUnitPermission(ownerUid, businessId, "logistics", "collections.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
+      // Collections are append-only (matches the domain's idempotency-key
+      // contract in recordCollection -- a real duplicate submit is a
+      // no-op resolved client-side against the SAME key, never a second
+      // write) -- no update/delete path at all.
+      allow create: if businessUnitPermission(ownerUid, businessId, "logistics", "collections.write")
+        && logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "collectorId")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsCollections", recordId)
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsReturns/{recordId} {
+      allow read: if businessUnitPermission(ownerUid, businessId, "logistics", "returns.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "helperId");
+      // "delivery" scope: the assigned SELLER or the assigned HELPER
+      // (repartidor) may record a return on their own route -- the exact
+      // real backend enforcement for the repartidor semantics the client
+      // domain layer also implements (assertRouteAccess(route, actor,
+      // 'delivery')).
+      allow create: if businessUnitPermission(ownerUid, businessId, "logistics", "returns.write")
+        && (logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "sellerId")
+          || logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "helperId"))
+        && validBoundaryCreate(ownerUid, businessId, "logisticsReturns", recordId)
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsSettlements/{recordId} {
+      allow read: if businessUnitPermission(ownerUid, businessId, "logistics", "settlements.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
+      allow create: if businessUnitPermission(ownerUid, businessId, "logistics", "settlements.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsSettlements", recordId);
+      allow update: if validBoundaryUpdate(ownerUid, businessId, "logisticsSettlements", recordId)
+        && (
+          // Reopening an approved/closed settlement is Owner-only,
+          // unconditionally -- NOT gated by businessUnitPermission at all,
+          // since 'settlements.reopen' is never a real key in any
+          // member's permissions map to begin with (see
+          // worker-data-boundary.js). This is the belt-and-suspenders
+          // rules-layer twin of p2-logistics-domain.js's hard
+          // isRoutePrivileged(actor) check in reopenSettlement().
+          (resource.data.status in ["approved", "closed"]
+            && request.resource.data.status == "reopened"
+            && businessUnitOwner(ownerUid, businessId))
+          || (request.resource.data.status != "reopened"
+            && businessUnitPermission(ownerUid, businessId, "logistics", "settlements.approve"))
+        );
       allow delete: if false;
     }
 

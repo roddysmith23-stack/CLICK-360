@@ -5,7 +5,11 @@
   const SCHEMA_VERSION = 1;
   const PRODUCTION_PROJECT_ID = 'click-360';
   const DEFAULT_BASE_SEAT_CAP = 2;
-  const MODULES = Object.freeze([
+  // MIGRATABLE_MODULES is the original set: real per-record collections
+  // that the legacy-state->modular migration tool (planMigration/
+  // validateMigrationPlan/compareMigrationPlans below) reads out of a
+  // monolithic state/main snapshot and counts/hashes record-by-record.
+  const MIGRATABLE_MODULES = Object.freeze([
     'members',
     'products',
     'sales',
@@ -14,6 +18,31 @@
     'movements',
     'auditEvents',
     'settings'
+  ]);
+  // MODULES is the full permission-map surface (normalizePermissionMap/
+  // can/businessUnitPermission) -- 'logistics' is a real, independently-
+  // enforced module there, but it is NOT part of the legacy migration
+  // (the logisticsVehicles/logisticsRoutes/... Firestore collections are
+  // additive, never sourced from a monolithic state/main snapshot), so it
+  // is deliberately excluded from MIGRATABLE_MODULES above.
+  const MODULES = Object.freeze([...MIGRATABLE_MODULES, 'logistics']);
+  // r37.2 (LOGISTICS WORKER PERMISSIONS): unlike every other module above
+  // (generic CRUD verbs -- read/create/update/delete/...), 'logistics'
+  // uses the SAME fine-grained action set as p2-logistics-domain.js's
+  // PERMISSIONS enum (vehicles.read, routeSales.create, settlements.
+  // approve, ...) as its action keys, so a Worker's real logistics
+  // entitlements can be read directly as actor.permissions (the "modern
+  // contract" hasPermission() already supports) with zero translation
+  // layer. This is intentionally kept in sync with p2-logistics-domain.js's
+  // PERMISSIONS constant by hand (this file has no module system to
+  // import it) -- LOGISTICS_ACTIONS_HARNESS_CHECK below exists purely so a
+  // qa harness can assert the two lists never drift apart.
+  const LOGISTICS_ACTIONS = Object.freeze([
+    'vehicles.read', 'vehicles.write', 'routes.read', 'routes.write', 'routes.assign',
+    'loadSheets.read', 'loadSheets.write', 'routeSales.read', 'routeSales.create', 'routeSales.discount', 'routeSales.cancel',
+    'collections.read', 'collections.write', 'returns.read', 'returns.write',
+    'settlements.read', 'settlements.write', 'settlements.approve', 'settlements.reopen',
+    'reports.read', 'printing.write'
   ]);
   const CUTOVER_STATUSES = Object.freeze({
     PREPARED: 'PREPARED',
@@ -36,14 +65,39 @@
   const ROLE_PERMISSIONS = Object.freeze({
     owner: '*',
     admin: '*',
+    // r37.2: each baseRole's `logistics` baseline below is deliberately
+    // NEVER given 'settlements.reopen' -- that action stays Owner-only as
+    // a structural fact (also hard-enforced in p2-logistics-domain.js's
+    // reopenSettlement and in firestore.rules), not merely a default-off
+    // toggle a preset could flip on later.
     supervisor: {
       members: ['read'], products: ['read', 'create', 'update'], sales: ['read', 'create', 'update'],
       layaways: ['read', 'create', 'update', 'payment'], cashSessions: ['read', 'create', 'update', 'close'],
-      movements: ['read', 'create'], auditEvents: ['read', 'create'], settings: ['read']
+      movements: ['read', 'create'], auditEvents: ['read', 'create'], settings: ['read'],
+      // Supervisor de logística baseline: everything except settlements.
+      // reopen. 'routeSales.cancel' is included here (so it CAN be granted
+      // later) but every logistics preset built on this baseRole turns it
+      // off by default via overrides -- "puede cancelar únicamente si el
+      // permiso específico existe y queda auditado."
+      logistics: [
+        'vehicles.read', 'vehicles.write', 'routes.read', 'routes.write', 'routes.assign',
+        'loadSheets.read', 'loadSheets.write', 'routeSales.read', 'routeSales.create', 'routeSales.discount', 'routeSales.cancel',
+        'collections.read', 'collections.write', 'returns.read', 'returns.write',
+        'settlements.read', 'settlements.write', 'settlements.approve',
+        'reports.read', 'printing.write'
+      ]
     },
     seller: {
       products: ['read'], sales: ['read', 'create'], layaways: ['read', 'create', 'payment'],
-      cashSessions: ['read'], movements: ['read', 'create'], auditEvents: ['create'], settings: ['read']
+      cashSessions: ['read'], movements: ['read', 'create'], auditEvents: ['create'], settings: ['read'],
+      // Union of Vendedor de ruta + Cobrador needs -- each preset built on
+      // 'seller' restricts down to its own capacity via overrides (the
+      // same restrict-only pattern other 'seller'-based app.js presets
+      // already use).
+      logistics: [
+        'routes.read', 'loadSheets.read', 'routeSales.read', 'routeSales.create', 'routeSales.discount',
+        'returns.read', 'returns.write', 'settlements.read', 'collections.read', 'collections.write', 'printing.write'
+      ]
     },
     cashier: {
       products: ['read'], sales: ['read', 'create'], layaways: ['read', 'create', 'payment'],
@@ -52,7 +106,15 @@
     },
     inventory: {
       products: ['read', 'create', 'update', 'delete'], movements: ['read', 'create'],
-      auditEvents: ['create'], settings: ['read']
+      auditEvents: ['create'], settings: ['read'],
+      // Bodega baseline. Repartidor also builds on 'inventory' and
+      // restricts away loadSheets.write via overrides (a delivery worker
+      // never prepares/confirms loads, only sees them and records
+      // entrega/retorno).
+      logistics: [
+        'vehicles.read', 'routes.read', 'loadSheets.read', 'loadSheets.write',
+        'returns.read', 'returns.write', 'reports.read', 'printing.write'
+      ]
     }
   });
 
@@ -78,7 +140,15 @@
     const baseline = ROLE_PERMISSIONS[normalized];
     const result = {};
     MODULES.forEach((moduleName) => {
-      const allowed = baseline === '*' ? ['read', 'create', 'update', 'delete', 'payment', 'close', 'manage'] : (baseline[moduleName] || []);
+      // 'logistics' uses fine-grained domain-shaped action keys (see
+      // LOGISTICS_ACTIONS above), not the generic CRUD verb list every
+      // other module uses -- 'settlements.reopen' is deliberately excluded
+      // even from the owner/admin '*' expansion; it is enforced as an
+      // unconditional Owner-only check elsewhere, never as a grantable
+      // permission-map entry.
+      const allowed = moduleName === 'logistics'
+        ? (baseline === '*' ? LOGISTICS_ACTIONS.filter((action) => action !== 'settlements.reopen') : (baseline.logistics || []))
+        : (baseline === '*' ? ['read', 'create', 'update', 'delete', 'payment', 'close', 'manage'] : (baseline[moduleName] || []));
       result[moduleName] = {};
       allowed.forEach((action) => {
         result[moduleName][action] = overrides?.[moduleName]?.[action] !== false;
@@ -182,7 +252,12 @@
   }
 
   function collectionPath(ownerUid, businessId, moduleName) {
-    if (!MODULES.includes(moduleName)) throw new Error('Modulo fuera de la frontera autorizada.');
+    // 'logistics' is a permission-map module, not a single migratable
+    // Firestore collection (it spans logisticsVehicles/logisticsRoutes/
+    // logisticsLoadSheets/logisticsRouteSales/logisticsCollections/
+    // logisticsReturns/logisticsSettlements) -- excluded here on purpose,
+    // same reasoning as MIGRATABLE_MODULES above.
+    if (!MIGRATABLE_MODULES.includes(moduleName)) throw new Error('Modulo fuera de la frontera autorizada.');
     return `${boundaryRootPath(ownerUid, businessId)}/${moduleName}`;
   }
 
@@ -287,7 +362,7 @@
       auditEvents: recordsForBusiness(legacyState.auditLogs, businessId).map((item, index) => modularRecord(item, ownerUid, businessId, 'auditEvents', index, generatedAt)),
       settings: [settingsRecord(legacyState, business, ownerUid, businessId, generatedAt)]
     };
-    const counts = Object.fromEntries(MODULES.map((moduleName) => [moduleName, collections[moduleName].length]));
+    const counts = Object.fromEntries(MIGRATABLE_MODULES.map((moduleName) => [moduleName, collections[moduleName].length]));
     const manifest = {
       ...identity(ownerUid, businessId),
       id: businessId,
@@ -310,7 +385,7 @@
     const manifest = plan?.manifest || {};
     const collections = plan?.collections || {};
     const expectedIdentity = identity(manifest.ownerUid, manifest.businessId);
-    MODULES.forEach((moduleName) => {
+    MIGRATABLE_MODULES.forEach((moduleName) => {
       const records = Array.isArray(collections[moduleName]) ? collections[moduleName] : [];
       const ids = new Set();
       records.forEach((record) => {
@@ -342,7 +417,7 @@
     const beforeValidation = validateMigrationPlan(before);
     const afterValidation = validateMigrationPlan(after);
     const mismatches = [];
-    MODULES.forEach((moduleName) => {
+    MIGRATABLE_MODULES.forEach((moduleName) => {
       const beforeRecords = before?.collections?.[moduleName] || [];
       const afterRecords = after?.collections?.[moduleName] || [];
       if (beforeRecords.length !== afterRecords.length) mismatches.push(`${moduleName}:count`);
@@ -696,6 +771,8 @@
     VERSION,
     SCHEMA_VERSION,
     MODULES,
+    MIGRATABLE_MODULES,
+    LOGISTICS_ACTIONS,
     CUTOVER_STATUSES,
     ROLE_PERMISSIONS,
     DEFAULT_BASE_SEAT_CAP,

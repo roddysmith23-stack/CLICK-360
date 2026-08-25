@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-mvp-certification';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-logistics-worker-permissions';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -2038,8 +2038,54 @@ function parseMoney(value) {
   function restaurantActor() {
     return { uid:window.click360User?.uid || 'local-owner', roleId:isOwnerUser() ? 'owner' : 'server', permissions:isOwnerUser() ? undefined : ['tables.read','orders.create','orders.update'] };
   }
+  // r37.2 (LOGISTICS WORKER PERMISSIONS): this used to collapse EVERY
+  // non-owner into a hardcoded 'routeSeller' roleId regardless of their
+  // real assigned permissions -- a Bodega worker (loadSheets-only) would
+  // be treated by the domain as a full route seller. Now a real Worker's
+  // actual logistics permissions (Trabajador -> Rol/Permisos, the SAME
+  // Workers system every other module uses -- see worker-data-boundary.js
+  // MODULES 'logistics') are emitted as an explicit permissions array,
+  // which p2-logistics-domain.js's hasPermission() already treats as the
+  // authoritative modern contract (bypassing the legacy roleId->
+  // rolePermissions() fallback entirely for real Workers).
+  function logisticsPermissionsArray(map) {
+    return Object.keys(map || {}).filter((key) => map[key] === true);
+  }
   function logisticsActor() {
-    return { uid:window.click360User?.uid || 'local-owner', roleId:isOwnerUser() ? 'owner' : 'routeSeller' };
+    const uid = window.click360User?.uid || 'local-owner';
+    if (isOwnerUser()) return { uid, roleId:'owner' };
+    return { uid, permissions:logisticsPermissionsArray(window.click360User?.permissions?.logistics) };
+  }
+  // Human-facing "cargo" label derived FROM the real technical permissions
+  // (never stored separately, so it can never drift out of sync with what
+  // the worker can actually do) -- "el cargo visible al humano y los
+  // permisos técnicos son conceptos separados", but displayRole is always
+  // a pure function of permissions, never a free-standing label.
+  function logisticsDisplayRoleLabel(actor) {
+    if (actor.roleId === 'owner') return 'Propietario';
+    const has = (permission) => Array.isArray(actor.permissions) && actor.permissions.includes(permission);
+    if (has('settlements.approve') || has('routes.assign')) return 'Supervisor de logística';
+    if (has('routeSales.create')) return 'Vendedor de ruta';
+    if (has('collections.write')) return 'Cobrador';
+    if (has('loadSheets.write')) return 'Bodega';
+    if (has('returns.write')) return 'Repartidor';
+    if (has('routes.read')) return 'Logística (solo lectura)';
+    return 'Sin acceso a logística';
+  }
+  // r37.2 (ASIGNACIÓN DE RUTA): the workers a route can be assigned to for
+  // a given capacity -- ONLY active/approved workers of the SAME tenant
+  // (state.settings.workers is already tenant-scoped) who actually hold
+  // the matching logistics permission. This is what the route form/
+  // workspace assignment pickers are built from -- a worker from another
+  // business can never even appear in the dropdown, and the fail-closed
+  // domain/rules check is the real enforcement regardless.
+  function logisticsAssignableWorkers(permission) {
+    const workers = Array.isArray(state.settings?.workers) ? state.settings.workers : [];
+    return workers.filter((worker) =>
+      worker.uid
+      && ['active', 'accepted'].includes(worker.status)
+      && worker.permissions?.logistics?.[permission] === true
+    );
   }
   function saveTableLayoutChange() {
     window.click360ClearStaleSyncGuard?.({ reason:'restaurant_table_layout', force:false });
@@ -2126,6 +2172,16 @@ function parseMoney(value) {
     if (role === 'owner') return true;
 	    if (['home','more','access','legal','printing','help'].includes(section)) return ['worker','seller','cashier','inventory','supervisor','admin'].includes(role);
     const permissions = window.click360User?.permissions || {};
+    // r37.2 (LOGISTICS WORKER PERMISSIONS): 'logistics' uses fine-grained
+    // action-string keys (routes.read, routeSales.create, ...), not the
+    // single view/read flag every other module below checks -- a worker
+    // reaches the nav item if they hold ANY real logistics permission at
+    // all; route-specific fail-closed enforcement happens separately
+    // inside logisticsView()/canAccessRoute(), not here.
+    if (section === 'logistics') {
+      const logisticsPermissions = permissions.logistics || {};
+      return Object.keys(logisticsPermissions).some((key) => logisticsPermissions[key] === true);
+    }
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers', debtors: 'layaways' }[section];
 	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:'settings', reminders:'settings', workers:'members', printing:'settings', debtors:'layaways' }[section];
 	    if (routeModule && Object.keys(permissions).length) {
@@ -4709,22 +4765,31 @@ function parseMoney(value) {
 	      return `<div class="pageHead"><div><h1>Logística</h1><p>Disponible al configurar el negocio como logística, distribución o transporte.</p></div></div>
 	        <section class="card sectionCard"><h3>Configura tu negocio</h3><p class="cloudStatus">Selecciona Logística / distribución / transporte en Ajustes para activar rutas, vehículos, carga y liquidación.</p><button class="btn primary" onclick="window.click360Route('settings')">Ir a Ajustes</button></section>`;
 	    }
-	    const vehicles = logisticsForBiz('vehicles');
-	    const routes = logisticsForBiz('routes').slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+	    // r37.2 (FAIL-CLOSED ROUTE LIST): a Vendedor/Cobrador/Repartidor must
+	    // never even SEE another route in this list -- filtered through the
+	    // exact same canAccessRoute('read') the workspace modal and the
+	    // domain layer use, not a separate/looser list-view rule.
+	    const L = window.CLICK360_P2_LOGISTICS;
+	    const actor = logisticsActor();
+	    const canManageFleet = !!L?.hasPermission(actor, 'vehicles.write') || !!L?.hasPermission(actor, 'routes.write');
+	    const vehicles = canManageFleet || L?.hasPermission(actor, 'vehicles.read') ? logisticsForBiz('vehicles') : [];
+	    const routes = logisticsForBiz('routes')
+	      .filter((route) => L?.canAccessRoute(route, actor, 'read'))
+	      .slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
 	    const openRoutes = routes.filter((route) => !['closed','cancelled'].includes(route.status));
 	    const closedRoutes = routes.length - openRoutes.length;
-	    return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>${escapeHtml(currentBusiness().name)} · transporte, carga, ventas y liquidación</p></div><div class="toolbar"><button class="btn" id="newVehicleBtn">${icon('truck')} Vehículo</button><button class="btn primary" id="newRouteBtn">${icon('map')} Ruta</button></div></div>
+	    return `<div class="pageHead"><div><h1>Logística y rutas</h1><p>${escapeHtml(currentBusiness().name)} · ${escapeHtml(logisticsDisplayRoleLabel(actor))}</p></div><div class="toolbar">${canManageFleet ? `<button class="btn" id="newVehicleBtn">${icon('truck')} Vehículo</button><button class="btn primary" id="newRouteBtn">${icon('map')} Ruta</button>` : ''}</div></div>
 	      <section class="kpiGrid">
 	        <article class="card kpi"><span>Vehículos</span><strong>${vehicles.length}</strong></article>
 	        <article class="card kpi"><span>Rutas abiertas</span><strong>${openRoutes.length}</strong></article>
 	        <article class="card kpi"><span>Rutas cerradas</span><strong>${closedRoutes}</strong></article>
 	      </section>
 	      <section class="logisticsLayout">
-	        <article class="card sectionCard"><h3>Vehículos</h3><div class="logisticsList">${vehicles.length ? vehicles.map((vehicle) => `<div class="logisticsRow"><span><b>${escapeHtml(vehicle.plate)}</b><small>${escapeHtml(vehicle.name || vehicle.driverName || 'Sin conductor')} · ${escapeHtml(vehicle.status || 'active')}</small></span><button class="iconBtn danger" data-logistics-delete-vehicle="${actionId(vehicle.id)}" aria-label="Eliminar vehículo">${icon('trash-2')}</button></div>`).join('') : '<p class="empty">Agrega placas y conductores.</p>'}</div></article>
-	        <article class="card sectionCard"><h3>Rutas</h3><div class="logisticsList">${routes.length ? routes.map((route) => {
+	        ${canManageFleet ? `<article class="card sectionCard"><h3>Vehículos</h3><div class="logisticsList">${vehicles.length ? vehicles.map((vehicle) => `<div class="logisticsRow"><span><b>${escapeHtml(vehicle.plate)}</b><small>${escapeHtml(vehicle.name || vehicle.driverName || 'Sin conductor')} · ${escapeHtml(vehicle.status || 'active')}</small></span><button class="iconBtn danger" data-logistics-delete-vehicle="${actionId(vehicle.id)}" aria-label="Eliminar vehículo">${icon('trash-2')}</button></div>`).join('') : '<p class="empty">Agrega placas y conductores.</p>'}</div></article>` : ''}
+	        <article class="card sectionCard"><h3>${canManageFleet ? 'Rutas' : 'Mi ruta'}</h3><div class="logisticsList">${routes.length ? routes.map((route) => {
 	          const summary = logisticsSummary(route);
 	          return `<button class="logisticsRouteCard" data-route-open="${actionId(route.id)}"><span><b>${escapeHtml(route.name)}</b><small>${escapeHtml(route.zone || 'Sin zona')} · ${escapeHtml(route.date || today())} · ${escapeHtml(route.status || 'draft')}</small></span><strong>${fmt(summary.sold)}</strong></button>`;
-	        }).join('') : '<p class="empty">Crea una ruta para iniciar hoja de carga y liquidación.</p>'}</div></article>
+	        }).join('') : `<p class="empty">${canManageFleet ? 'Crea una ruta para iniciar hoja de carga y liquidación.' : 'No tienes rutas asignadas todavía.'}</p>`}</div></article>
 	      </section>`;
 	  }
 	  function openVehicleModal() {
@@ -4742,19 +4807,38 @@ function parseMoney(value) {
 	      closeModal(); renderApp('logistics'); toast('Vehículo guardado');
 	    };
 	  }
+	  // r37.2 (ASIGNACIÓN DE RUTA): real Worker picker -- shows the human
+	  // name only (never a UID), limited to active/approved workers of THIS
+	  // tenant who actually hold the matching logistics permission. A
+	  // worker from another business can never appear here, and this is
+	  // only a UX convenience: the real fail-closed guarantee is enforced
+	  // by p2-logistics-domain.js's canAccessRoute() + firestore.rules
+	  // regardless of what this dropdown ever offered.
+	  function logisticsWorkerOptionsHtml(permission, emptyLabel, selectedUid = '') {
+	    const options = logisticsAssignableWorkers(permission)
+	      .map((worker) => `<option value="${actionId(worker.uid)}" ${worker.uid === selectedUid ? 'selected' : ''}>${escapeHtml(worker.name || worker.email || 'Trabajador')}</option>`)
+	      .join('');
+	    return `<option value="">${escapeHtml(emptyLabel)}</option>${options}`;
+	  }
 	  function openRouteModal() {
 	    const vehicleOptions = logisticsForBiz('vehicles').map((vehicle) => `<option value="${actionId(vehicle.id)}">${escapeHtml(vehicle.plate)} · ${escapeHtml(vehicle.name || vehicle.driverName || '')}</option>`).join('');
 	    showModal(`<div class="modalHeader"><h2>Nueva ruta</h2><button class="closeBtn" data-close>×</button></div>
-	      <form id="routeForm" class="formGrid"><div class="field"><label>Nombre</label><input id="routeName" required maxlength="70" placeholder="Ruta norte"></div><div class="field"><label>Zona</label><input id="routeZone" maxlength="70" placeholder="Norte / centro"></div><div class="field"><label>Fecha</label><input id="routeDate" type="date" value="${today()}"></div><div class="field"><label>Vehículo</label><select id="routeVehicle"><option value="">Sin vehículo</option>${vehicleOptions}</select></div><div class="field"><label>Vendedor</label><input id="routeSeller" maxlength="80"></div><div class="field"><label>Ayudante</label><input id="routeHelper" maxlength="80"></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Crear ruta</button></form>`);
+	      <form id="routeForm" class="formGrid"><div class="field"><label>Nombre</label><input id="routeName" required maxlength="70" placeholder="Ruta norte"></div><div class="field"><label>Zona</label><input id="routeZone" maxlength="70" placeholder="Norte / centro"></div><div class="field"><label>Fecha</label><input id="routeDate" type="date" value="${today()}"></div><div class="field"><label>Vehículo</label><select id="routeVehicle"><option value="">Sin vehículo</option>${vehicleOptions}</select></div><div class="field"><label>Vendedor de ruta</label><select id="routeSeller">${logisticsWorkerOptionsHtml('routeSales.create', 'Sin asignar')}</select></div><div class="field"><label>Cobrador</label><select id="routeCollector">${logisticsWorkerOptionsHtml('collections.write', 'Sin asignar')}</select></div><div class="field"><label>Repartidor / ayudante</label><select id="routeHelper">${logisticsWorkerOptionsHtml('returns.write', 'Sin asignar')}</select></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Crear ruta</button></form>`);
 	    $('#routeForm').onsubmit = (event) => {
 	      event.preventDefault();
 	      const vehicleId = decodeActionId($('#routeVehicle').value);
-	      const input = { businessId:currentBusiness().id, name:$('#routeName').value.trim(), zone:$('#routeZone').value.trim(), date:$('#routeDate').value || today(), vehicleId, sellerName:$('#routeSeller').value.trim(), helperName:$('#routeHelper').value.trim(), status:'planned' };
+	      const sellerId = decodeActionId($('#routeSeller').value);
+	      const collectorId = decodeActionId($('#routeCollector').value);
+	      const helperId = decodeActionId($('#routeHelper').value);
+	      const seller = sellerId ? logisticsAssignableWorkers('routeSales.create').find((worker) => worker.uid === sellerId) : null;
+	      const collector = collectorId ? logisticsAssignableWorkers('collections.write').find((worker) => worker.uid === collectorId) : null;
+	      const helper = helperId ? logisticsAssignableWorkers('returns.write').find((worker) => worker.uid === helperId) : null;
+	      const input = { businessId:currentBusiness().id, name:$('#routeName').value.trim(), zone:$('#routeZone').value.trim(), date:$('#routeDate').value || today(), vehicleId, sellerId:seller?.uid || '', sellerName:seller?.name || '', collectorId:collector?.uid || '', collectorName:collector?.name || '', helperId:helper?.uid || '', helperName:helper?.name || '', status:'planned' };
 	      let route;
 	      try { route = window.CLICK360_P2_LOGISTICS?.createRoute?.({ input, actor:logisticsActor(), vehicle:logisticsForBiz('vehicles').find((vehicle) => vehicle.id === vehicleId) }) || { id:uid('route'), ...input, createdAt:new Date().toISOString() }; }
 	      catch (error) { return toast(error.message || 'No se pudo crear ruta.', 'err'); }
 	      state.logistics.routes.push(route);
-	      addAudit('logistics_route_created', { routeId:route.id });
+	      addAudit('logistics_route_created', { routeId:route.id, sellerId:route.sellerId, collectorId:route.collectorId, helperId:route.helperId });
 	      if (!save()) return;
 	      closeModal(); renderApp('logistics'); toast('Ruta creada');
 	    };
@@ -4788,24 +4872,42 @@ function parseMoney(value) {
     const dispatched = ['dispatched', 'in_progress', 'settlement_pending'].includes(route.status);
     const productOptions = productsForBiz().map((product) => `<option value="${actionId(product.id)}">${escapeHtml(product.name)} · ${Number(product.stock ?? product.qty ?? 0)} disp.</option>`).join('');
     const L = window.CLICK360_P2_LOGISTICS;
+    // r37.2 (FAIL-CLOSED UI): mirror the REAL domain check (same function,
+    // not a reimplementation) so each role only sees the sections it can
+    // actually act on -- Vendedor only sees venta/retorno on ITS route,
+    // Cobrador only cobranza, Repartidor only retorno, Bodega only carga,
+    // Supervisor/Owner see everything. This is UX only; the actual
+    // enforcement is canAccessRoute()/firestore.rules regardless of what
+    // renders here.
+    const actor = logisticsActor();
+    const canSell = !!L?.canAccessRoute(route, actor, 'seller') && !!L?.hasPermission(actor, 'routeSales.create');
+    const canCollect = !!L?.canAccessRoute(route, actor, 'collector') && !!L?.hasPermission(actor, 'collections.write');
+    const canDeliver = !!L?.canAccessRoute(route, actor, 'delivery') && !!L?.hasPermission(actor, 'returns.write');
+    const canLoad = !!L?.hasPermission(actor, 'loadSheets.write');
+    const canViewSettlement = !!L?.hasPermission(actor, 'settlements.read');
+    const canManageRoute = !!L?.canAccessRoute(route, actor, 'manage');
     showModal(`<div class="modalHeader"><div><h2>${escapeHtml(route.name)}</h2><p class="fieldHint">${escapeHtml(route.zone || 'Ruta')} · ${escapeHtml(route.date || today())} · <span class="badge gold">${escapeHtml(route.status)}</span></p></div><button class="closeBtn" data-close>×</button></div>
       <section class="kpiGrid routeKpis"><article class="card kpi"><span>Venta ruta</span><strong>${fmt(summary.sold)}</strong></article><article class="card kpi"><span>Cobrado</span><strong>${fmt(summary.collected)}</strong></article><article class="card kpi"><span>Retornos</span><strong>${fmt(summary.returned)}</strong></article></section>
-      <section class="card sectionCard"><h3>Hoja de carga <span class="badge">${escapeHtml(LOAD_SHEET_STATUS_LABELS[sheet?.status] || 'Sin carga')}</span></h3>
+      <section class="card sectionCard"><h3>Asignación</h3><p class="cloudStatus">Vendedor: <b>${escapeHtml(route.sellerName || 'Sin asignar')}</b> · Cobrador: <b>${escapeHtml(route.collectorName || 'Sin asignar')}</b> · Repartidor: <b>${escapeHtml(route.helperName || 'Sin asignar')}</b></p>
+        ${canManageRoute && ['draft', 'planned'].includes(route.status) ? `<button type="button" class="btn silver" id="routeReassignBtn">Reasignar trabajadores</button>` : ''}
+      </section>
+      ${(canLoad || canViewSettlement) ? `<section class="card sectionCard"><h3>Hoja de carga <span class="badge">${escapeHtml(LOAD_SHEET_STATUS_LABELS[sheet?.status] || 'Sin carga')}</span></h3>
         <div class="logisticsList">${sheet?.items?.length ? sheet.items.map((item) => `<div class="logisticsRow"><span><b>${escapeHtml(item.name)}</b><small>${item.qty} × ${fmt(item.price)}</small></span><strong>${fmt(item.total)}</strong></div>`).join('') : '<p class="empty">Sin productos cargados.</p>'}</div>
-        ${(!sheet || sheet.status === 'draft') ? `
+        ${canLoad ? ((!sheet || sheet.status === 'draft') ? `
           <form id="routeLoadForm" class="tableAddItem"><div class="field"><label>Producto</label><select id="routeLoadProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeLoadQty" type="number" min="1" value="1"></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Agregar carga</button></form>
           ${sheet?.items?.length ? `<button type="button" class="btn primary block" id="routeDispatchBtn" style="margin-top:10px;">${icon('truck')} Despachar ruta (descuenta inventario)</button><p class="fieldHint">Al despachar, la cantidad cargada se descuenta del inventario del negocio -- ya no está disponible para venta en tienda mientras está en la ruta.</p>` : ''}
-        ` : `<p class="cloudStatus">Ruta despachada el ${escapeHtml(sheet.dispatchedAt ? new Date(sheet.dispatchedAt).toLocaleString('es-EC') : '')}. El inventario ya fue descontado y la carga queda bloqueada.</p>`}
-      </section>
-      <section class="card sectionCard"><h3>Venta, cobranza y retorno</h3>
+        ` : `<p class="cloudStatus">Ruta despachada el ${escapeHtml(sheet.dispatchedAt ? new Date(sheet.dispatchedAt).toLocaleString('es-EC') : '')}. El inventario ya fue descontado y la carga queda bloqueada.</p>`) : ''}
+      </section>` : ''}
+      ${(canSell || canCollect || canDeliver) ? `<section class="card sectionCard"><h3>Venta, cobranza y retorno</h3>
         ${!dispatched ? '<p class="cloudStatus">Despacha la ruta primero para poder registrar ventas, cobros o retornos.</p>' : `
-        <form id="routeSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="routeCustomer" maxlength="80" placeholder="Cliente de ruta"></div><div class="field"><label>Producto vendido</label><select id="routeSaleProduct" ${productOptions ? '' : 'disabled'}><option value="">Venta manual</option>${productOptions}</select></div><div class="field"><label>Cant.</label><input id="routeSaleQty" type="number" min="1" value="1"></div><div class="field"><label>Total venta</label><input id="routeSaleTotal" type="number" min="0" step="0.01" value="0" placeholder="Se calcula si eliges producto"></div><div class="field"><label>Tipo</label><select id="routePaymentType"><option value="cash">Contado</option><option value="credit">Crédito</option><option value="transfer">Transferencia</option></select></div><button class="btn primary" type="submit">Registrar venta</button></form>
-        <form id="routeCollectionForm" class="formGrid">${(() => { const creditSales = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0); return creditSales.length ? `<div class="field full"><label>Venta a crédito</label><select id="routeCollectionSale">${creditSales.map((sale) => `<option value="${actionId(sale.id)}">${escapeHtml(sale.customerName || 'Cliente de ruta')} · Saldo ${fmt(sale.balance)}</option>`).join('')}</select></div>` : '<p class="fieldHint full">No hay ventas a crédito pendientes de cobro en esta ruta.</p>'; })()}<div class="field"><label>Cobranza</label><input id="routeCollectionAmount" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Método</label><select id="routeCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><button class="btn silver" type="submit" ${logisticsForBiz('routeSales').some((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0) ? '' : 'disabled'}>Registrar cobro</button></form>
-        <form id="routeReturnForm" class="formGrid"><div class="field"><label>Producto devuelto</label><select id="routeReturnProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeReturnQty" type="number" min="1" value="1"></div><div class="field"><label>Estado</label><select id="routeReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Registrar retorno</button></form>
+        ${canSell ? `<form id="routeSaleForm" class="formGrid"><div class="field"><label>Cliente</label><input id="routeCustomer" maxlength="80" placeholder="Cliente de ruta"></div><div class="field"><label>Producto vendido</label><select id="routeSaleProduct" ${productOptions ? '' : 'disabled'}><option value="">Venta manual</option>${productOptions}</select></div><div class="field"><label>Cant.</label><input id="routeSaleQty" type="number" min="1" value="1"></div><div class="field"><label>Total venta</label><input id="routeSaleTotal" type="number" min="0" step="0.01" value="0" placeholder="Se calcula si eliges producto"></div><div class="field"><label>Tipo</label><select id="routePaymentType"><option value="cash">Contado</option><option value="credit">Crédito</option><option value="transfer">Transferencia</option></select></div><button class="btn primary" type="submit">Registrar venta</button></form>` : ''}
+        ${canCollect ? `<form id="routeCollectionForm" class="formGrid">${(() => { const creditSales = logisticsForBiz('routeSales').filter((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0); return creditSales.length ? `<div class="field full"><label>Venta a crédito</label><select id="routeCollectionSale">${creditSales.map((sale) => `<option value="${actionId(sale.id)}">${escapeHtml(sale.customerName || 'Cliente de ruta')} · Saldo ${fmt(sale.balance)}</option>`).join('')}</select></div>` : '<p class="fieldHint full">No hay ventas a crédito pendientes de cobro en esta ruta.</p>'; })()}<div class="field"><label>Cobranza</label><input id="routeCollectionAmount" type="number" min="0" step="0.01" value="0"></div><div class="field"><label>Método</label><select id="routeCollectionMethod"><option value="cash">Efectivo</option><option value="transfer">Transferencia</option></select></div><button class="btn silver" type="submit" ${logisticsForBiz('routeSales').some((sale) => sale.routeId === route.id && sale.status !== 'cancelled' && Number(sale.balance || 0) > 0) ? '' : 'disabled'}>Registrar cobro</button></form>` : ''}
+        ${canDeliver ? `<form id="routeReturnForm" class="formGrid"><div class="field"><label>Producto devuelto</label><select id="routeReturnProduct" ${productOptions ? '' : 'disabled'}>${productOptions || '<option>Sin inventario</option>'}</select></div><div class="field"><label>Cant.</label><input id="routeReturnQty" type="number" min="1" value="1"></div><div class="field"><label>Estado</label><select id="routeReturnCondition"><option value="sellable">Vendible</option><option value="damaged">Dañado</option></select></div><button class="btn silver" type="submit" ${productOptions ? '' : 'disabled'}>Registrar retorno</button></form>` : ''}
         <p class="fieldHint">Los retornos vendibles regresan al inventario recién al cerrar la liquidación (evita contarlos dos veces mientras la ruta sigue abierta).</p>`}
-      </section>
-      <section class="card sectionCard"><h3>Liquidación</h3>${routeSettlementSectionHtml(route, sheet, settlement)}</section>
+      </section>` : ''}
+      ${canViewSettlement ? `<section class="card sectionCard"><h3>Liquidación</h3>${routeSettlementSectionHtml(route, sheet, settlement)}</section>` : ''}
       <div class="tableCheckoutActions"><button class="btn" id="routePrintBtn" type="button">${icon('printer')} Imprimir hoja</button></div>`);
+    $('#routeReassignBtn')?.addEventListener('click', () => openRouteReassignModal(route));
     $('#routeLoadForm')?.addEventListener('submit', (event) => {
       event.preventDefault();
       const productId = decodeActionId($('#routeLoadProduct').value);
@@ -5016,8 +5118,38 @@ function parseMoney(value) {
     };
     refreshIcons();
   }
+  // r37.2 (ASIGNACIÓN DE RUTA -- editar): reassignment for an existing
+  // draft/planned route, wired to the domain's real assignRoute() (which
+  // already enforces routes.assign + the draft/planned-only guard).
+  function openRouteReassignModal(route) {
+    showModal(`<div class="modalHeader"><h2>Reasignar trabajadores</h2><button class="closeBtn" data-close>×</button></div>
+      <form id="routeReassignForm" class="formGrid"><div class="field"><label>Vendedor de ruta</label><select id="reassignSeller">${logisticsWorkerOptionsHtml('routeSales.create', 'Sin asignar', route.sellerId)}</select></div><div class="field"><label>Cobrador</label><select id="reassignCollector">${logisticsWorkerOptionsHtml('collections.write', 'Sin asignar', route.collectorId)}</select></div><div class="field"><label>Repartidor / ayudante</label><select id="reassignHelper">${logisticsWorkerOptionsHtml('returns.write', 'Sin asignar', route.helperId)}</select></div><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="submit">Guardar asignación</button></form>`);
+    $('#routeReassignForm').onsubmit = (event) => {
+      event.preventDefault();
+      const sellerId = decodeActionId($('#reassignSeller').value);
+      const collectorId = decodeActionId($('#reassignCollector').value);
+      const helperId = decodeActionId($('#reassignHelper').value);
+      const seller = sellerId ? logisticsAssignableWorkers('routeSales.create').find((worker) => worker.uid === sellerId) : null;
+      const collector = collectorId ? logisticsAssignableWorkers('collections.write').find((worker) => worker.uid === collectorId) : null;
+      const helper = helperId ? logisticsAssignableWorkers('returns.write').find((worker) => worker.uid === helperId) : null;
+      let nextRoute;
+      try {
+        nextRoute = window.CLICK360_P2_LOGISTICS?.assignRoute?.({ route, seller, helper, collector, actor:logisticsActor() });
+      } catch (error) { return toast(error.message || 'No se pudo reasignar la ruta.', 'err'); }
+      const index = state.logistics.routes.findIndex((item) => item.id === route.id);
+      if (index >= 0) state.logistics.routes[index] = nextRoute;
+      addAudit('logistics_route_reassigned', { routeId:route.id, sellerId:nextRoute.sellerId, collectorId:nextRoute.collectorId, helperId:nextRoute.helperId });
+      if (!save()) return;
+      closeModal(); renderApp('logistics'); toast('Asignación actualizada');
+    };
+  }
   function routeSettlementSectionHtml(route, sheet, settlement) {
     const dispatched = ['dispatched', 'in_progress', 'settlement_pending'].includes(route.status);
+    // r37.2: reopening a closed settlement is a structural Owner-only
+    // invariant (see p2-logistics-domain.js reopenSettlement) -- a
+    // Supervisor de logística never sees this button at all, matching the
+    // real permission (no dead button that would just throw).
+    const isOwnerActor = logisticsActor().roleId === 'owner';
     if (!settlement || ['rejected', 'closed', 'reopened'].includes(settlement.status)) {
       if (settlement?.status === 'rejected') {
         return `<p class="cloudStatus" style="color:#ff8d92;">Liquidación anterior observada: "${escapeHtml(settlement.rejectReason || '')}".</p>${dispatched ? routeSettlementFormHtml() : '<p class="cloudStatus">Despacha la ruta antes de liquidar.</p>'}`;
@@ -5025,7 +5157,7 @@ function parseMoney(value) {
       if (settlement?.status === 'closed' && route.status === 'closed') {
         return `<p class="cloudStatus">Ruta liquidada y cerrada el ${escapeHtml(settlement.closedAt ? new Date(settlement.closedAt).toLocaleString('es-EC') : '')}.</p>
           <p class="fieldHint">Esperado: ${fmt(settlement.calculation.expectedCash)} · Recibido: ${fmt(settlement.receivedCash)} · Diferencia: ${fmt(settlement.difference)}</p>
-          <button type="button" class="btn silver block" id="settlementReopenBtn">${icon('rotate-ccw')} Reabrir liquidación (solo dueño)</button>`;
+          ${isOwnerActor ? `<button type="button" class="btn silver block" id="settlementReopenBtn">${icon('rotate-ccw')} Reabrir liquidación (solo dueño)</button>` : '<p class="fieldHint">Solo el propietario puede reabrir una liquidación cerrada.</p>'}`;
       }
       if (settlement?.status === 'reopened') {
         return `<p class="cloudStatus">Liquidación reabierta: "${escapeHtml(settlement.reopenReason || '')}". Aprueba de nuevo para volver a cerrarla.</p>
@@ -6011,12 +6143,51 @@ function parseMoney(value) {
     { id: 'bodega', label: 'Bodega', baseRole: 'inventory', overrides: {} },
     { id: 'mesero', label: 'Mesero', baseRole: 'seller', overrides: { movements: { create: false } } },
     { id: 'cocina', label: 'Cocina', baseRole: 'seller', overrides: { sales: { create: false }, movements: { read: false, create: false }, layaways: { create: false, payment: false } } },
-    { id: 'repartidor', label: 'Repartidor', baseRole: 'inventory', overrides: { products: { create: false, delete: false } } },
+    // r37.2 (LOGISTICS WORKER PERMISSIONS): Repartidor is a delivery-only
+    // role -- it must NEVER pick up routeSales.create/collections.write
+    // just by reusing the 'inventory' baseRole's logistics baseline
+    // (neither is in that baseline to begin with), and it never prepares/
+    // confirms load sheets (loadSheets.write off), only sees them and
+    // records entrega/retorno via returns.write + route-assignment
+    // (helperId) fail-closed checks in p2-logistics-domain.js.
+    { id: 'repartidor', label: 'Repartidor', baseRole: 'inventory', overrides: { products: { create: false, delete: false }, logistics: { 'loadSheets.write': false } } },
     { id: 'administrador_limitado', label: 'Administrador limitado', baseRole: 'supervisor', overrides: {} },
+    // Vendedor de ruta: sells + records returns on the route they are
+    // personally assigned to (sellerId match, fail-closed). Discounts and
+    // collections are explicitly off by default.
+    { id: 'vendedor_ruta', label: 'Vendedor de ruta', baseRole: 'seller', overrides: { logistics: { 'collections.read': false, 'collections.write': false, 'routeSales.discount': false } } },
+    // Cobrador: collects on the route/accounts they are personally
+    // assigned to (collectorId match, fail-closed). Never sells, never
+    // touches inventory.
+    { id: 'cobrador_ruta', label: 'Cobrador', baseRole: 'seller', overrides: { logistics: { 'routeSales.create': false, 'routeSales.discount': false, 'returns.write': false } } },
+    // Supervisor de logística: full route/vehicle/load-sheet/settlement
+    // management EXCEPT settlements.reopen (structurally excluded, not
+    // just default-off -- see worker-data-boundary.js ROLE_PERMISSIONS
+    // comment) and routeSales.cancel (off by default, grantable later).
+    { id: 'supervisor_logistica', label: 'Supervisor de logística', baseRole: 'supervisor', overrides: { logistics: { 'routeSales.cancel': false } } },
+    // Logística (solo lectura): broad visibility across every route,
+    // zero mutations anywhere in the module.
+    { id: 'logistica_lectura', label: 'Logística (solo lectura)', baseRole: 'supervisor', overrides: {
+      products: { create: false, update: false }, sales: { create: false, update: false },
+      layaways: { create: false, update: false, payment: false }, cashSessions: { create: false, update: false, close: false },
+      movements: { create: false },
+      logistics: {
+        'vehicles.write': false, 'routes.write': false, 'routes.assign': false, 'loadSheets.write': false,
+        'routeSales.create': false, 'routeSales.discount': false, 'routeSales.cancel': false,
+        'collections.write': false, 'returns.write': false, 'settlements.write': false, 'settlements.approve': false
+      }
+    } },
     { id: 'personalizado', label: 'Personalizado', baseRole: 'admin', overrides: null }
   ]);
+  const LOGISTICS_ROLE_PRESET_IDS = Object.freeze(['vendedor_ruta', 'cobrador_ruta', 'supervisor_logistica', 'logistica_lectura']);
   function workerRolePresetOptionsHtml(selected = 'vendedor') {
-    return WORKER_ROLE_PRESETS.map((preset) => `<option value="${preset.id}" ${preset.id === selected ? 'selected' : ''}>${escapeHtml(preset.label)}</option>`).join('');
+    // r37.2: the route-execution presets only make sense once Logística
+    // is actually enabled for this business -- keeps the dropdown clean
+    // for every retail/restaurant Owner who will never use them.
+    const showLogisticsPresets = logisticsModuleEnabled();
+    return WORKER_ROLE_PRESETS
+      .filter((preset) => showLogisticsPresets || !LOGISTICS_ROLE_PRESET_IDS.includes(preset.id))
+      .map((preset) => `<option value="${preset.id}" ${preset.id === selected ? 'selected' : ''}>${escapeHtml(preset.label)}</option>`).join('');
   }
   function workerRolePresetPermissions(presetId) {
     const preset = WORKER_ROLE_PRESETS.find((item) => item.id === presetId) || WORKER_ROLE_PRESETS[1];
@@ -8022,7 +8193,24 @@ function parseMoney(value) {
           const actions = ['read','create','update','delete','payment','close','manage'];
 	          const workerStatus = worker.status === 'pending' ? 'Pendiente' : worker.status === 'active' ? 'Activo' : worker.status === 'revoked' ? 'Revocado' : 'Bloqueado';
 	          const actionLabels = { read:'Ver', create:'Crear', update:'Editar', delete:'Eliminar', payment:'Registrar abono', close:'Cerrar caja', manage:'Administrar' };
-	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="admin" ${worker.role === 'admin' ? 'selected' : ''}>Administrador</option><option value="supervisor" ${worker.role === 'supervisor' ? 'selected' : ''}>Supervisor</option><option value="seller" ${['worker','seller'].includes(worker.role) ? 'selected' : ''}>Vendedor</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Cajero</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Bodega</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
+	          // r37.2 (LOGISTICS WORKER PERMISSIONS): fine-grained action keys,
+	          // not the generic verb grid above -- 'settlements.reopen' is
+	          // deliberately never offered here, even as an unchecked box: it
+	          // stays Owner-only as a structural fact (see
+	          // p2-logistics-domain.js reopenSettlement), not a togglable
+	          // permission any worker could ever be granted.
+	          const logisticsPermissionLabels = [
+	            ['vehicles.read', 'Ver vehículos'], ['vehicles.write', 'Administrar vehículos'],
+	            ['routes.read', 'Ver rutas'], ['routes.write', 'Crear/editar rutas'], ['routes.assign', 'Asignar trabajadores a rutas'],
+	            ['loadSheets.read', 'Ver hojas de carga'], ['loadSheets.write', 'Preparar/despachar hojas de carga'],
+	            ['routeSales.read', 'Ver ventas de ruta'], ['routeSales.create', 'Vender en ruta'], ['routeSales.discount', 'Aplicar descuentos en ruta'], ['routeSales.cancel', 'Anular ventas de ruta'],
+	            ['collections.read', 'Ver cobranzas'], ['collections.write', 'Registrar cobranzas'],
+	            ['returns.read', 'Ver retornos'], ['returns.write', 'Registrar entregas/retornos'],
+	            ['settlements.read', 'Ver liquidaciones'], ['settlements.write', 'Crear liquidaciones'], ['settlements.approve', 'Aprobar/cerrar liquidaciones'],
+	            ['reports.read', 'Ver reportes de logística'], ['printing.write', 'Imprimir documentos de logística']
+	          ];
+	          const logisticsSectionHtml = logisticsModuleEnabled() ? `<fieldset class="full"><legend>Logística</legend>${logisticsPermissionLabels.map(([action, label]) => `<label><input type="checkbox" data-permission-module="logistics" data-permission-action="${action}" ${worker.permissions?.logistics?.[action] === true ? 'checked' : ''}><span>${escapeHtml(label)}</span></label>`).join('')}</fieldset>` : '';
+	          showModal(`<div class="modalHeader"><h2>${escapeHtml(worker.name || worker.email)}</h2><button class="closeBtn" data-close>×</button></div><div class="workerMeta"><p>${escapeHtml(worker.email || '')}</p><p>Estado: <b>${escapeHtml(workerStatus)}</b></p><p>Aceptación: ${escapeHtml(worker.acceptedAt?.toDate?.().toLocaleString?.('es-EC') || (worker.acceptedAt ? String(worker.acceptedAt) : 'Pendiente'))}</p><p>Último acceso: ${escapeHtml(worker.lastAccessAt?.toDate?.().toLocaleString?.('es-EC') || 'Sin registro')}</p></div><div class="field"><label for="workerEditRole">Rol</label><select id="workerEditRole"><option value="admin" ${worker.role === 'admin' ? 'selected' : ''}>Administrador</option><option value="supervisor" ${worker.role === 'supervisor' ? 'selected' : ''}>Supervisor</option><option value="seller" ${['worker','seller'].includes(worker.role) ? 'selected' : ''}>Vendedor</option><option value="cashier" ${worker.role === 'cashier' ? 'selected' : ''}>Cajero</option><option value="inventory" ${worker.role === 'inventory' ? 'selected' : ''}>Bodega</option></select></div><div class="permissionMatrix">${modules.map(([module, label]) => `<fieldset><legend>${label}</legend>${actions.map((action) => `<label><input type="checkbox" data-permission-module="${module}" data-permission-action="${action}" ${worker.permissions?.[module]?.[action] === true ? 'checked' : ''}><span>${escapeHtml(actionLabels[action] || action)}</span></label>`).join('')}</fieldset>`).join('')}${logisticsSectionHtml}</div><button type="button" class="btn primary block" id="saveWorkerPermissions">Guardar permisos</button>`);
           // r37.2 (real bug found in certification): this fires a real
           // network write with zero disable-on-click guard -- a double-tap
           // could send two concurrent permission-update requests with no

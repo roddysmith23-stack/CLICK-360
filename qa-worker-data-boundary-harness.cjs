@@ -29,9 +29,13 @@ assert(adminTool.includes("requiredConfirm = `${enabled ? 'ENABLE' : 'DISABLE'}_
 assert(adminTool.includes("requiredConfirm = `SET_SEATS_${isProduction ? 'PRODUCTION' : 'STAGING'}_TENANT`"), 'admin tool must require a distinct confirm string per project for seat changes');
 assert(adminTool.includes('Clients can never write this doc'), 'admin tool must document that the flag doc is never client-writable');
 assert(!adminTool.includes('.delete('), 'admin tool must never delete tenant data, only flip flags and adjust seat counters');
+// r37.2 (LOGISTICS WORKER PERMISSIONS): 'logistics' added -- fine-grained
+// domain-shaped action keys (see LOGISTICS_ACTIONS), not the generic CRUD
+// verb list every other module here uses.
 assert.deepStrictEqual([...api.MODULES], [
-  'members', 'products', 'sales', 'layaways', 'cashSessions', 'movements', 'auditEvents', 'settings'
+  'members', 'products', 'sales', 'layaways', 'cashSessions', 'movements', 'auditEvents', 'settings', 'logistics'
 ]);
+assert(Array.isArray(api.LOGISTICS_ACTIONS) && api.LOGISTICS_ACTIONS.includes('routeSales.create') && api.LOGISTICS_ACTIONS.includes('settlements.reopen'), 'LOGISTICS_ACTIONS must mirror p2-logistics-domain.js PERMISSIONS');
 // Phase 3.3: the gateway now allows production for a flag-enabled tenant
 // (the client can no longer be the sole blocker -- firestore.rules'
 // businessUnitReady() is the authoritative, unbypassable gate). Only an

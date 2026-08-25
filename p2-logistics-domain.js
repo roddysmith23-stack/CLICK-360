@@ -45,16 +45,53 @@
   }
   function actorRole(actor = {}) { return text(actor.roleId || actor.role).toLowerCase(); }
   function isRoutePrivileged(actor = {}) { return ['owner', 'admin'].includes(actorRole(actor)); }
+  // r37.2 (LOGISTICS WORKER PERMISSIONS): route access is FAIL-CLOSED by
+  // scope, not by legacy roleId string. Three capacities are personally
+  // assignment-scoped (a worker must be the exact sellerId/collectorId/
+  // helperId on THIS route to act in that capacity, no matter what raw
+  // permission they hold) -- this is what makes "Vendedor A can only touch
+  // Ruta A" a real guarantee instead of a permission-only check. Every
+  // other scope ('read' for broad oversight -- Bodega/Supervisor/Solo
+  // lectura -- and 'manage' for Supervisor/Owner) stays permission-gated
+  // but NOT route-assignment-scoped, since those roles are explicitly
+  // meant to see/manage every route in the business, not just one.
+  // Anything that falls through matches nothing on purpose: the previous
+  // `return true` fallback here was a real fail-OPEN bug (any actor whose
+  // role wasn't literally 'routeseller'/'collector' -- e.g. a helper, or
+  // any future role -- silently passed every non-read scope check).
   function canAccessRoute(route, actor = {}, scope = 'read') {
     if (!route) return false;
     if (isRoutePrivileged(actor)) return true;
     const uid = text(actor.uid || actor.id);
-    const role = actorRole(actor);
     if (!uid) return false;
-    if (role === 'routeseller') return text(route.sellerId) === uid;
-    if (role === 'collector') return text(route.collectorId) === uid;
-    if (scope === 'read') return hasPermission(actor, 'routes.read');
-    return true;
+    if (scope === 'seller') return text(route.sellerId) === uid;
+    if (scope === 'collector') return text(route.collectorId) === uid;
+    if (scope === 'helper') return text(route.helperId) === uid;
+    // 'delivery': the real repartidor/helper semantics -- either the
+    // assigned seller OR the assigned helper may record a delivery/return
+    // on their own route (recordReturn), but neither gets this simply by
+    // holding the raw returns.write permission on a route they are not
+    // assigned to.
+    if (scope === 'delivery') return text(route.sellerId) === uid || text(route.helperId) === uid;
+    if (scope === 'read') {
+      // Broad oversight roles (Supervisor -- can manage any route; Bodega
+      // -- prepares load sheets across every route) read every route, not
+      // just an assigned one.
+      if (hasPermission(actor, 'routes.write') || hasPermission(actor, 'routes.assign') || hasPermission(actor, 'loadSheets.write')) return true;
+      // Personally assigned to THIS route in any capacity may read it,
+      // even without a broad routes.read-style permission.
+      if (text(route.sellerId) === uid || text(route.collectorId) === uid || text(route.helperId) === uid) return true;
+      // A Vendedor/Cobrador/Repartidor also carries routes.read (needed to
+      // see their OWN route's basic info) but must NOT get broad access to
+      // every other route just because they hold that flag -- only a
+      // genuinely execution-free actor (no routeSales.create/
+      // collections.write/returns.write at all -- e.g. "Logística solo
+      // lectura") gets broad read from routes.read alone.
+      const isRouteExecutionCapable = hasPermission(actor, 'routeSales.create') || hasPermission(actor, 'collections.write') || hasPermission(actor, 'returns.write');
+      return !isRouteExecutionCapable && hasPermission(actor, 'routes.read');
+    }
+    if (scope === 'manage') return hasPermission(actor, 'routes.write') || hasPermission(actor, 'routes.assign');
+    return false;
   }
   function assertRouteAccess(route, actor, scope) {
     if (!canAccessRoute(route, actor, scope)) throw new Error('route_assignment_denied');
@@ -228,7 +265,7 @@
     assertBusinessScope(route, input?.businessId);
     assertBusinessScope(sheet, route.businessId);
     assertRouteSheetScope(route, sheet);
-    assertRouteAccess(route, actor, 'seller');
+    assertRouteAccess(route, actor, 'delivery');
     if (!['dispatched', 'in_progress', 'settlement_pending'].includes(route.status)) throw new Error('route_not_returnable');
     const entry = normalizeReturn({ ...input, businessId:route.businessId, routeId:route.id, loadSheetId:sheet.id, createdBy:text(actor.uid || actor.id) }, now);
     const loaded = loadedQuantity(sheet, entry.productId);
@@ -321,7 +358,15 @@
       route: withAudit({ ...route, status:'in_progress' }, 'route_settlement_rejected', actor, now, { settlementId:settlement.id })
     };
   }
+  // r37.2: reopening a closed/approved settlement stays Owner-only as a
+  // STRUCTURAL invariant, not merely a default-off permission -- even if a
+  // future explicit permissions array somehow granted 'settlements.reopen'
+  // to a non-owner actor, this still refuses. Matches the product
+  // decision: "Owner: puede reabrir, auditado. Owner-only por defecto,
+  // salvo futura autorización explícita" -- no such explicit grant path
+  // exists yet, so this is unconditional today.
   function reopenSettlement({ settlement, route, reason, actor, now = Date.now() } = {}) {
+    if (!isRoutePrivileged(actor)) throw new Error('reopen_owner_only');
     assertPermission(actor, 'settlements.reopen');
     assertBusinessScope(route, settlement.businessId);
     if (!['approved', 'closed'].includes(settlement.status)) throw new Error('settlement_not_reopenable');
