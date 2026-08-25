@@ -70,6 +70,16 @@ async function run() {
       document.getElementById('click360-auth-gate')?.remove();
       window.click360ClearTenantContext = () => {};
       window.click360WriteGate = () => ({ allowed: true, reason: 'ok' });
+      // r37.2: the real (never-signed-in) Firebase Auth SDK's
+      // onAuthStateChanged can resolve to user=null from a local
+      // persistence check alone, and deactivateActiveAccount() sets
+      // window.click360User = null directly -- pin the property (same
+      // pattern as qa/r37-2-restaurant-e2e.mjs).
+      Object.defineProperty(window, 'click360User', {
+        configurable: true,
+        get() { return this.__u; },
+        set(value) { if (value != null) this.__u = value; }
+      });
       const context = { authUid: uid, ownerUid: uid, ownerId: uid, businessId: uid, tenantKey: `owner:${uid}:business:${uid}`, schemaVersion: 10 };
       window.click360SetTenantContext(context, { deferLocalLoad: true });
       window.click360User = { uid, email: 'owner@example.com', role: 'owner', name: 'Owner', photoURL: '', status: 'active', approved: true, businessLimit: 10, workerLimit: 25, ownerId: uid, isOwner: true, source: 'accountAccess' };

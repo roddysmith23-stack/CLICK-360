@@ -47,6 +47,18 @@ async function run() {
 
     const uid = 'test-r37-2-false-states-uid';
     const result = await page.evaluate((uid) => {
+      // r37.2: the real (never-signed-in) Firebase Auth SDK's
+      // onAuthStateChanged can resolve to user=null from a local
+      // persistence check alone, and deactivateActiveAccount() sets
+      // window.click360User = null directly -- pin the property so this
+      // sweep (which spans real async waits per route) can never lose the
+      // synthetic owner session mid-run (same pattern as
+      // qa/r37-2-restaurant-e2e.mjs).
+      Object.defineProperty(window, 'click360User', {
+        configurable: true,
+        get() { return this.__u; },
+        set(value) { if (value != null) this.__u = value; }
+      });
       const context = { authUid: uid, ownerUid: uid, ownerId: uid, businessId: uid, tenantKey: `owner:${uid}:business:${uid}`, schemaVersion: 10 };
       window.click360SetTenantContext(context, { deferLocalLoad: true });
       window.click360User = { uid, email: 'test@example.com', role: 'owner', name: 'Test', photoURL: '', status: 'founder_legacy', approved: true, businessLimit: 10, workerLimit: 25, ownerId: uid, isOwner: true, source: 'accountAccess' };

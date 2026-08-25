@@ -23,7 +23,7 @@ import { chromium } from 'playwright';
  *     the operator's typed data, and must let the SAME action succeed
  *     once connectivity returns -- proving this isn't just a toast, it's
  *     a real recoverable state.
- *  3. Failed asset load (the home banner image request is aborted): the
+ *  3. Failed asset load (the home banner image request returns a real 404): the
  *     real onerror handler on that <img> must hide its frame instead of
  *     leaving a broken-image icon forever, and the rest of the home page
  *     (greeting, KPIs) must stay fully visible -- one broken asset must
@@ -167,14 +167,17 @@ async function scenarioOfflineWriteAttempt(page) {
 
 // ── Scenario 3: failed asset load ────────────────────────────────────────
 async function scenarioFailedAssetLoad(page) {
+  // r37.2: wait for the browser's own network layer to confirm the banner
+  // request actually completed (with its real 404) BEFORE polling the DOM
+  // for the onerror fallout -- decouples "did the request settle" from
+  // "how long does onerror take to run and repaint". Set up the listener
+  // BEFORE navigating so it can't miss the request if it fires immediately.
+  const responsePromise = page.waitForResponse((response) => response.url().includes(BANNER_ASSET_PATH), { timeout: 20000 });
   await page.evaluate(() => window.click360Route('home'));
+  await responsePromise;
   const result = await page.evaluate(async () => {
     await new Promise((resolve, reject) => {
-      // r37.2: 8s was tight enough to flake in a resource-constrained CI
-      // runner (route.abort() + the image's own onerror round-trip can
-      // take longer there than on a local dev machine); 20s matches the
-      // margin already used by the other scenarios in this same file.
-      const deadline = Date.now() + 20000;
+      const deadline = Date.now() + 10000;
       const check = () => {
         const frame = document.querySelector('.homeBannerFrame');
         if (frame && getComputedStyle(frame).display === 'none') return resolve();
@@ -244,7 +247,13 @@ async function run() {
     await page.route('**/*', (route) => {
       const reqUrl = route.request().url();
       // Scenario 3: make the home banner image genuinely fail to load.
-      if (reqUrl.includes(BANNER_ASSET_PATH)) return route.abort('failed');
+      // r37.2: a real HTTP 404 response reliably triggers the <img>'s
+      // onerror handler across browsers; a raw route.abort('failed')
+      // (a network-level ERR_FAILED) turned out to be an intermittently
+      // unreliable way to trigger onerror in Chromium -- the request
+      // itself always failed (confirmed via the 'requestfailed' page
+      // event), but the onerror callback did not always fire from it.
+      if (reqUrl.includes(BANNER_ASSET_PATH)) return route.fulfill({ status: 404, body: '' });
       if (reqUrl.startsWith(`http://127.0.0.1:${port}/`)) return route.continue();
       return route.abort();
     });
@@ -259,6 +268,18 @@ async function run() {
       document.getElementById('click360-auth-gate')?.remove();
       window.click360ClearTenantContext = () => {};
       window.click360WriteGate = () => ({ allowed: true, reason: 'ok' });
+      // r37.2: the real (never-signed-in) Firebase Auth SDK's
+      // onAuthStateChanged listener can resolve to user=null from a local
+      // persistence check alone (no network needed), and
+      // deactivateActiveAccount() sets window.click360User = null directly
+      // -- a plain assignment here loses that race intermittently. Pin the
+      // property instead (same pattern as qa/r37-2-restaurant-e2e.mjs and
+      // qa/r37-2-logistics-e2e.mjs).
+      Object.defineProperty(window, 'click360User', {
+        configurable: true,
+        get() { return this.__u; },
+        set(value) { if (value != null) this.__u = value; }
+      });
       const context = { authUid: uid, ownerUid: uid, ownerId: uid, businessId: uid, tenantKey: `owner:${uid}:business:${uid}`, schemaVersion: 10 };
       window.click360SetTenantContext(context, { deferLocalLoad: true });
       window.click360User = { uid, email: 'owner@example.com', role: 'owner', name: 'Owner', photoURL: '', status: 'active', approved: true, businessLimit: 10, workerLimit: 25, ownerId: uid, isOwner: true, source: 'accountAccess' };
