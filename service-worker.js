@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r37-2-mvp-certification';
+const CACHE = 'click360-commercial-1-0-5-r37-2-logistics-worker-permissions';
 const ASSETS = [
   './',
   './index.html',

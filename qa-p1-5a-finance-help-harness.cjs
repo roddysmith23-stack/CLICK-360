@@ -9,7 +9,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
 const RELEASE = '1.0.5';
-const ASSET = 'commercial-1-0-5-r37-2-mvp-certification';
+const ASSET = 'commercial-1-0-5-r37-2-logistics-worker-permissions';
 
 function addFinanceEntry(state, kind, businessId, entry) {
   assert(['payments', 'loans', 'envelopes', 'goals'].includes(kind), 'finance kind is supported');
