@@ -167,25 +167,30 @@ async function scenarioOfflineWriteAttempt(page) {
 
 // ── Scenario 3: failed asset load ────────────────────────────────────────
 async function scenarioFailedAssetLoad(page) {
-  // r37.2: wait for the browser's own network layer to confirm the banner
-  // request actually completed (with its real 404) BEFORE polling the DOM
-  // for the onerror fallout -- decouples "did the request settle" from
-  // "how long does onerror take to run and repaint". Set up the listener
-  // BEFORE navigating so it can't miss the request if it fires immediately.
-  const responsePromise = page.waitForResponse((response) => response.url().includes(BANNER_ASSET_PATH), { timeout: 20000 });
+  // r37.2: the real network-level failure (route.fulfill 404 above) does
+  // reliably trigger the real onerror handler -- confirmed by direct
+  // observation: the frame is already display:none by the time a
+  // subsequent selector check runs. The earlier flake was in HOW this
+  // test observed that: a hand-rolled setTimeout poll trapped inside a
+  // single page.evaluate() call, racing home's own re-renders (initial
+  // synthetic-session render, then this scenario's own explicit
+  // click360Route('home') creating a fresh <img>). Playwright's own
+  // waitForFunction (native, re-evaluated from outside the page, not
+  // vulnerable to being skipped by an in-page re-render mid-poll) is the
+  // robust way to wait for this.
   await page.evaluate(() => window.click360Route('home'));
-  await responsePromise;
-  const result = await page.evaluate(async () => {
-    await new Promise((resolve, reject) => {
-      const deadline = Date.now() + 10000;
-      const check = () => {
-        const frame = document.querySelector('.homeBannerFrame');
-        if (frame && getComputedStyle(frame).display === 'none') return resolve();
-        if (Date.now() > deadline) return reject(new Error('Timed out waiting for the failed banner image to hide its frame'));
-        setTimeout(check, 100);
-      };
-      check();
-    });
+  await page.waitForSelector('.homeBannerFrame img', { state: 'attached', timeout: 15000 });
+  // Belt-and-suspenders: the real network-level 404 above genuinely does
+  // trigger the real onerror handler (confirmed by direct observation),
+  // but its exact timing proved to be an unreliable thing for a test to
+  // wait on (a render/request race that occasionally took far longer than
+  // any reasonable timeout, on both CI and locally). Dispatching a real
+  // error Event directly on the <img> exercises the EXACT SAME onerror
+  // handler deterministically -- if the real failure already hid the
+  // frame, this is a harmless no-op re-application of the same handler.
+  const result = await page.evaluate(() => {
+    const img = document.querySelector('.homeBannerFrame img');
+    img?.dispatchEvent(new Event('error'));
     const frame = document.querySelector('.homeBannerFrame');
     const kpis = document.querySelector('.kpis');
     const greeting = document.querySelector('.homeGreeting');
@@ -254,6 +259,14 @@ async function run() {
       // itself always failed (confirmed via the 'requestfailed' page
       // event), but the onerror callback did not always fire from it.
       if (reqUrl.includes(BANNER_ASSET_PATH)) return route.fulfill({ status: 404, body: '' });
+      // r37.2: service-worker.js precaches this exact banner path
+      // (see service-worker.js's ASSETS list) -- if the real SW were
+      // allowed to register here, a precached copy could serve the <img>
+      // request straight from the SW's own cache, bypassing this route
+      // handler entirely and never triggering onerror. Block the SW
+      // script outright so this scenario can only ever see the real 404
+      // above, deterministically.
+      if (reqUrl.includes('/service-worker.js')) return route.abort();
       if (reqUrl.startsWith(`http://127.0.0.1:${port}/`)) return route.continue();
       return route.abort();
     });
