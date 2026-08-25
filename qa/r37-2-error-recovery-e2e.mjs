@@ -170,7 +170,11 @@ async function scenarioFailedAssetLoad(page) {
   await page.evaluate(() => window.click360Route('home'));
   const result = await page.evaluate(async () => {
     await new Promise((resolve, reject) => {
-      const deadline = Date.now() + 8000;
+      // r37.2: 8s was tight enough to flake in a resource-constrained CI
+      // runner (route.abort() + the image's own onerror round-trip can
+      // take longer there than on a local dev machine); 20s matches the
+      // margin already used by the other scenarios in this same file.
+      const deadline = Date.now() + 20000;
       const check = () => {
         const frame = document.querySelector('.homeBannerFrame');
         if (frame && getComputedStyle(frame).display === 'none') return resolve();
