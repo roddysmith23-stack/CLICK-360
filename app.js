@@ -10913,8 +10913,21 @@ function parseMoney(value) {
     // blank label to resynchronize. Using `rows * rowAdvanceMm` (instead
     // of `heightMm + (rows-1)*rowAdvanceMm`) gives every row -- including
     // the only row in the common rows:1 case -- its real physical pitch.
-    const naturalHeight = paper.marginTopMm + paper.marginBottomMm
-      + paper.rows * rowAdvanceMm;
+    // r37.2.3 (roll batch physical pitch drift, real SHARY incident): this
+    // naturalHeight becomes the declared physical page height for EVERY
+    // page in a multi-page batch (buildUniversalLabelPrintNode applies the
+    // SAME media.heightMm to each page, and pageCss() emits one @page rule
+    // for the whole job) -- so folding marginTopMm/marginBottomMm in here
+    // compounds them on every page of a continuous/precut roll, which has
+    // no such margin between physical tramos. 1 label per job happened to
+    // look fine (only one page, so no compounding); a batch drifted by
+    // marginTopMm+marginBottomMm per additional page, splitting content
+    // across physical labels. Sheet media (a real page with real margins)
+    // keeps the margin -- only roll/continuous media excludes it.
+    const rollPitchHeight = paper.rows * rowAdvanceMm;
+    const naturalHeight = paper.mediaType === 'sheet'
+      ? paper.marginTopMm + paper.marginBottomMm + rollPitchHeight
+      : rollPitchHeight;
     const width = paper.mediaWidthMm && paper.mediaWidthMm <= naturalWidth * SANITY_FACTOR ? paper.mediaWidthMm : naturalWidth;
     const height = paper.mediaHeightMm && paper.mediaHeightMm <= naturalHeight * SANITY_FACTOR ? paper.mediaHeightMm : naturalHeight;
     return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
