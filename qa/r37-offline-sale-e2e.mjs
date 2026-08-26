@@ -75,6 +75,18 @@ async function run() {
       window.click360SetTenantContext(ctx, { deferLocalLoad: true });
       window.click360User = { uid, email: 'owner@example.com', role: 'owner', name: 'Owner', photoURL: '', status: 'founder_legacy', approved: true, businessLimit: 10, workerLimit: 25, ownerId: uid, isOwner: true, source: 'accountAccess' };
       const nowIso = new Date().toISOString();
+      // The seeded business below has no settings.timeZone, so the real
+      // app's today()/businessTimeZone() resolve to the default
+      // 'America/Guayaquil' -- NOT the CI runner's UTC clock. A cash
+      // session's `date` must be keyed the exact same way the app itself
+      // computes "today" (app.js localDateKey(): Intl.DateTimeFormat
+      // en-CA in the business timezone), or this fixture only agrees with
+      // isDayStarted() during the ~19h/day window where UTC and Ecuador
+      // happen to share the same calendar date -- and fails deterministically
+      // during the other ~5h/day (UTC already next-day, Ecuador not yet).
+      const businessDateKey = (date = new Date(), timeZone = 'America/Guayaquil') =>
+        new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+      const todayBusinessDate = businessDateKey();
       window.click360ApplyTenantState({
         businesses: [{ id: 'biz_main', name: 'Tienda Real', status: 'activo', type: 'ropa', settings: {} }],
         activeBusinessId: 'biz_main',
@@ -88,7 +100,7 @@ async function run() {
           received: 5, tendered: 5, change: 0, balance: 0, payments: [], user: 'Owner',
           createdAt: nowIso, createdAtMs: Date.now(), updatedAt: nowIso, updatedAtMs: Date.now(), createdBy: 'Owner', operationId: 'op-preexisting-1'
         }],
-        movements: [], cashSessions: [{ id: 'cs1', businessId: 'biz_main', date: nowIso.slice(0, 10), status: 'open', openedBy: 'Owner', openedAt: nowIso }],
+        movements: [], cashSessions: [{ id: 'cs1', businessId: 'biz_main', date: todayBusinessDate, status: 'open', openedBy: 'Owner', openedAt: nowIso }],
         dailyReports: [], deletedProducts: [], auditLogs: [], layaways: [], invoices: [],
         tables: [], tableOrders: [], restaurantPayments: [], restaurantPrintHistory: [],
         restaurantEvents: [], restaurantRecipes: [], labelPrintHistory: [], notifications: [],
@@ -149,9 +161,88 @@ async function run() {
   }
 }
 
+// r37.2.2 (P0, real SHARY incident -- fixture bug, not a product bug):
+// this scenario proves the fixture's own commercial-date construction
+// above stays correct regardless of the CI runner's real wall-clock time,
+// by pinning the BROWSER's clock (via Playwright's page.clock, so the
+// app's own `new Date()` calls -- not just this test's -- see the pinned
+// instant) to four moments straddling Ecuador midnight: 23:59 the day
+// before, and 00:01 the day after, in both directions of the boundary.
+// Before the fixture fix (raw `nowIso.slice(0, 10)`, i.e. the UTC
+// calendar date), this would have failed deterministically for any pinned
+// instant where UTC's calendar date differs from Ecuador's (UTC already
+// past midnight, Ecuador not yet) -- exactly the real CI failure window.
+async function runMidnightBoundaryScenario() {
+  // Ecuador is UTC-5 year-round (no DST): 05:00:00Z is exactly midnight
+  // Ecuador. Both cases below have UTC already on 2026-08-26 -- only
+  // Ecuador's own calendar date differs between them (Aug 25 vs Aug 26).
+  const CASES = [
+    { label: '23:59:00 Ecuador on 2026-08-25 (UTC already 2026-08-26T04:59:00Z)', utcIso: '2026-08-26T04:59:00.000Z' },
+    { label: '00:01:00 Ecuador on 2026-08-26 (UTC already 2026-08-26T05:01:00Z)', utcIso: '2026-08-26T05:01:00.000Z' }
+  ];
+  const browser = await chromium.launch();
+  try {
+    for (const testCase of CASES) {
+      const context = await browser.newContext({ timezoneId: 'UTC' });
+      const page = await context.newPage();
+      const pageErrors = [];
+      page.on('pageerror', (error) => pageErrors.push(error.message));
+      // pauseAt (not install/setFixedTime) genuinely freezes the clock --
+      // install() lets simulated time keep ticking forward in real
+      // wall-clock time from the installed instant, which ate the
+      // 1-second buffer on the tightest boundary case during real test
+      // runs and produced a false failure unrelated to the actual fix.
+      await page.clock.pauseAt(new Date(testCase.utcIso));
+      await page.goto(url, { waitUntil: 'networkidle' });
+      await page.waitForFunction(() => typeof window.click360SetTenantContext === 'function' && typeof window.click360Route === 'function', { timeout: 15000 });
+      await page.addStyleTag({ content: '#click360-auth-gate{display:none!important;pointer-events:none!important;} #app{pointer-events:auto!important;filter:none!important;opacity:1!important;}' });
+
+      const uid = `test-r37-midnight-${CASES.indexOf(testCase)}`;
+      const hasChargeBtn = await page.evaluate(({ uid, utcIso }) => {
+        window.click360ClearTenantContext = () => {};
+        const ctx = { authUid: uid, ownerUid: uid, ownerId: uid, businessId: uid, tenantKey: `owner:${uid}:business:${uid}`, schemaVersion: 10 };
+        window.click360SetTenantContext(ctx, { deferLocalLoad: true });
+        window.click360User = { uid, email: 'owner@example.com', role: 'owner', name: 'Owner', photoURL: '', status: 'founder_legacy', approved: true, businessLimit: 10, workerLimit: 25, ownerId: uid, isOwner: true, source: 'accountAccess' };
+        const nowIso = new Date(utcIso).toISOString();
+        const businessDateKey = (date, timeZone = 'America/Guayaquil') =>
+          new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+        const todayBusinessDate = businessDateKey(new Date(utcIso));
+        window.click360ApplyTenantState({
+          businesses: [{ id: 'biz_main', name: 'Tienda Real', status: 'activo', type: 'ropa', settings: {} }],
+          activeBusinessId: 'biz_main',
+          products: [{ id: 'p1', businessId: 'biz_main', code: 'P1', name: 'Producto offline', qty: 10, stock: 10, price: 5, cardPrice: 5, taxMode: 'inherit' }],
+          sales: [], movements: [],
+          cashSessions: [{ id: 'cs1', businessId: 'biz_main', date: todayBusinessDate, status: 'open', openedBy: 'Owner', openedAt: nowIso }],
+          dailyReports: [], deletedProducts: [], auditLogs: [], layaways: [], invoices: [],
+          tables: [], tableOrders: [], restaurantPayments: [], restaurantPrintHistory: [],
+          restaurantEvents: [], restaurantRecipes: [], labelPrintHistory: [], notifications: [],
+          legalAcceptances: [{ id: 'legal1', businessId: 'biz_main', uid, termsVersion: window.CLICK360_V16_DOMAIN?.TERMS_VERSION, privacyVersion: window.CLICK360_V16_DOMAIN?.PRIVACY_VERSION, acceptedAt: nowIso, source: 'onboarding' }],
+          finance: {}, logistics: {},
+          settings: { onboarding: { completedAt: nowIso, operationId: 'x', version: 16.2, checklist: {} } },
+          updatedAtMs: Date.now(), updatedAt: nowIso
+        }, ctx);
+        document.getElementById('click360-auth-gate')?.remove();
+        window.click360Route('sell');
+        return true;
+      }, { uid, utcIso: testCase.utcIso });
+      assert(hasChargeBtn === true, `[${testCase.label}] seeding failed`);
+
+      await page.waitForSelector('#chargeBtn', { timeout: 10000 })
+        .catch(() => { throw new Error(`[${testCase.label}] #chargeBtn never appeared -- an open cash session dated in the business's own Ecuador "today" was not recognized as the day being started, regardless of the CI runner's real wall-clock time.`); });
+
+      if (pageErrors.length) throw new Error(`[${testCase.label}] unexpected page errors: ${JSON.stringify(pageErrors)}`);
+      console.log(`CLICK 360 r37 offline-sale midnight-boundary PASS: ${testCase.label}`);
+      await context.close();
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
 try {
   await waitForServer();
   await run();
+  await runMidnightBoundaryScenario();
 } finally {
   server.kill('SIGTERM');
 }

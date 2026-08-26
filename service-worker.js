@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r37-2-1-live-client-hotfix';
+const CACHE = 'click360-commercial-1-0-5-r37-2-2-shary-cloud-hydration-fix';
 const ASSETS = [
   './',
   './index.html',

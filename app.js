@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-1-live-client-hotfix';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-2-shary-cloud-hydration-fix';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -8784,6 +8784,17 @@ function parseMoney(value) {
 		      const products = (state?.products || []).filter(p => p.businessId === bizId).length;
 		      const sales = (state?.sales || []).filter(s => s.businessId === bizId).length;
 		      const movements = (state?.movements || []).filter(m => m.businessId === bizId).length;
+		      // `meaningful` must stay a RAW-COUNT read, nothing else: it is what
+		      // click360ResolveSyncConflict('keep_local') (firebase-service.js)
+		      // checks to refuse ever pushing an empty local device over real
+		      // cloud data. Widening it (e.g. to also be true whenever a remote
+		      // snapshot was hydrated this session) silently disables that
+		      // data-loss guard on the SAME device class it exists to protect --
+		      // confirmed by reproduction: doing so let 'keep_local' erase a real
+		      // 24-product cloud document down to 0. Any "don't show the empty-
+		      // device modal for an already-hydrated session" logic belongs at
+		      // the specific UI call site that decides to show that modal, not
+		      // here.
 		      return { businessId: bizId || '', products, sales, movements, meaningful: products > 0 || sales > 0 || movements > 0 };
 		    } catch (error) {
 		      console.warn('sync local stats:', error);
@@ -8801,7 +8812,13 @@ function parseMoney(value) {
 
 		    // A brand-new/empty device is not a real conflict. Never offer a destructive
 		    // "keep local" path when it would mean pushing an empty tenant over cloud data.
-		    if (localStats.meaningful === false) {
+		    // r37.2.2 (P0, real SHARY incident): scoped narrowly to THIS decision
+		    // (show the empty-device modal vs. treat it as a real conflict) --
+		    // a session that already hydrated a real remote snapshot must never
+		    // loop back into "this device is empty", even if these specific
+		    // counts happen to momentarily read as zero. Deliberately does NOT
+		    // touch localStats.meaningful itself (see localBusinessSyncStats).
+		    if (localStats.meaningful === false && tenantDataHydrated !== true) {
 		      if (window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE) return;
 		      window.__CLICK360_EMPTY_LOCAL_RECOVERY_ACTIVE = true;
 		      toast('Sincronizando los datos de tu negocio desde la nube...');
