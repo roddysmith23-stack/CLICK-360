@@ -2958,7 +2958,16 @@
 	      safeStorageSet(tenantStorageKey('REMOTE_REVISION'), String(remoteRevision));
       tenantGuard.allow(context);
 	      PULL_COMPLETE = true;
-	      if (pendingLocalRecovery) {
+	      // r37.2.2 (P0, real SHARY incident): pendingLocalRecovery used to be
+	      // resolved unconditionally, before `force` was ever consulted below --
+	      // an explicit "Reintentar desde nube" (force:true) re-armed the exact
+	      // conflict marker it had just cleared and returned false, forever. A
+	      // background/automatic pull must still respect the conflict guard
+	      // (never silently discard a real pending local change), but an
+	      // explicit, user-initiated force refresh IS the customer resolving
+	      // that conflict in favor of the cloud -- let it fall through to the
+	      // real hydrate branch below instead of being swallowed here.
+	      if (pendingLocalRecovery && !force) {
 	        const baseRevision = Number(recoveryMeta.baseRevision || 0);
 	        const recoverySource = String(recoveryMeta.source || '').toLowerCase();
 	        if (shouldTreatAsNonMaterial(recoverySource) || localMaterialHash === remoteMaterialHash) {
@@ -2989,6 +2998,12 @@
         setSyncStatus('pending', 'Copia offline verificada. Se sincronizará antes de permitir nuevos cambios.', { revision: remoteRevision });
         return false;
       }
+	      if (pendingLocalRecovery && force) {
+	        // Explicit force resolved the conflict in favor of the cloud --
+	        // never fall through to hydrate with the stale marker still armed.
+	        quarantineIncident('forced_remote_refresh_over_pending_local', { path: stateDoc.path, remoteRevision, baseRevision: Number(recoveryMeta.baseRevision || 0) });
+	        clearSyncConflict();
+	      }
 		    if (force || remoteMustHydrate || (remoteMaterialHash && remoteMaterialHash !== localMaterialHash && remoteMaterialHash !== alreadyAppliedMaterial)) {
 	      if (localChanged && !force) {
 	          markSyncConflict({ path: stateDoc.path, remoteRevision, localUpdatedAtMs: localPayloadUpdatedAtMs(), source: 'pull' });
@@ -3002,7 +3017,9 @@
 		        setSyncStatus(storageMode === 'online_only_safe' ? 'online_only_safe' : 'synced', storageMode === 'online_only_safe'
 		          ? 'Tus datos estan seguros en la nube. Este dispositivo no pudo activar el modo sin conexion.'
 		          : 'Datos actualizados desde la nube.', { revision: remoteRevision });
-	        if (window.click360ReloadState) window.click360ReloadState();
+        // r37.2.2 (P0, real SHARY incident): see the identical note on the
+        // listener path below -- click360ReloadState() here could silently wipe
+        // the just-hydrated in-memory state on a local-persist failure. Removed.
 	        if (reload && window.click360Route) window.click360Route(window.location.hash.replace('#','') || 'home');
 	      return true;
 	    }
@@ -3085,7 +3102,14 @@
 		        setSyncStatus("synced", "Cambios remotos aplicados.", { revision: LAST_REMOTE_REVISION });
 	        console.log("CLICK360 recibió cambios remotos.");
 
-        if (window.click360ReloadState) window.click360ReloadState();
+        // r37.2.2 (P0, real SHARY incident): click360ReloadState() used to run
+        // right after applyRemotePayload() -- it re-reads state from localStorage
+        // ONLY (loadState()), so if the local persist inside applyRemotePayload had
+        // silently failed (quota, etc.) this call would overwrite the correctly-
+        // hydrated in-memory state with an empty seed, discarding a successful
+        // remote fetch. applyRemotePayload -> click360ApplyTenantState already sets
+        // `state` in memory (with an IndexedDB fallback queued) regardless of the
+        // localStorage outcome, so nothing here needs to re-read it.
 
         const hasOpenModal = !!document.querySelector('#modalRoot .modalOverlay.show');
         const hasActiveInput = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);

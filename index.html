@@ -250,10 +250,24 @@
       try { alreadyHealed = sessionStorage.getItem(AUTO_HEAL_SESSION_KEY) === '1'; } catch { alreadyHealed = true; }
       const noModalOpen = !document.body.classList.contains('has-modal');
       const onNeutralRoute = location.hash === '' || location.hash === '#home';
-      if (!alreadyHealed && noModalOpen && onNeutralRoute) {
+      // r37.2.2 (P0, real SHARY incident): a cloud hydration retry closes
+      // any open modal and lands on #home right as this listener's safety
+      // conditions (no modal, neutral route) become true -- this auto-heal
+      // reload used to fire in that exact window, restarting boot mid-sync
+      // and throwing the customer back to the public access gate. Never
+      // reload while a sync/hydration is actively in flight; defer briefly
+      // and only reload once it's genuinely idle (or give up quietly and
+      // fall back to the passive "apply on next open" toast).
+      const isSyncBusy = () => window.click360SyncStatus?.status === 'syncing';
+      const attemptHeal = (attemptsLeft) => {
+        if (isSyncBusy() && attemptsLeft > 0) { setTimeout(() => attemptHeal(attemptsLeft - 1), 1000); return; }
+        if (isSyncBusy()) return;
         try { sessionStorage.setItem(AUTO_HEAL_SESSION_KEY, '1'); } catch {}
         if (toast) { toast.textContent = 'Actualizando CLICK 360...'; toast.className = 'toast show ok'; }
         setTimeout(() => window.location.reload(), 900);
+      };
+      if (!alreadyHealed && noModalOpen && onNeutralRoute) {
+        attemptHeal(10);
         return;
       }
       if (!toast) return;

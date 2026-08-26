@@ -104,7 +104,7 @@ assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is curr
 assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-1-live-client-hotfix'"), 'app asset version matches recovery release');
 assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r37-2-1-live-client-hotfix'"), 'service worker cache matches recovery release');
 assert(app.includes('window.click360GetLocalBusinessSyncStats = localBusinessSyncStats'), 'app exposes local business sync stats');
-assert(app.includes('if (localStats.meaningful === false)'), 'empty local device auto-recovers from cloud');
+assert(app.includes('if (localStats.meaningful === false && tenantDataHydrated !== true)'), 'empty local device auto-recovers from cloud, but never loops a session that already hydrated a real remote snapshot back into that path');
 assert(firebase.includes('preventedEmptyOverwrite: true'), 'firebase layer blocks empty local overwrite');
 assert(firebase.includes("reason: 'manual_keep_local_after_readback'"), 'manual keep-local requires remote readback');
 
