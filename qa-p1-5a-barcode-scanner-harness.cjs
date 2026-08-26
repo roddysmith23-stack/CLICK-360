@@ -10,7 +10,7 @@ const worker = fs.readFileSync('service-worker.js', 'utf8');
 const publicBundle = `${app}\n${styles}\n${html}\n${worker}`;
 
 const RELEASE = '1.0.5';
-const ASSET = 'commercial-1-0-5-r37-2-1-live-client-hotfix';
+const ASSET = 'commercial-1-0-5-r37-2-2-shary-cloud-hydration-fix';
 const BARCODE_FORMATS = ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
 
 function normalizeCode(value) {
