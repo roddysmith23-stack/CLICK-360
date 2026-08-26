@@ -385,9 +385,15 @@
     const requiredWidth = paper.marginLeftMm + paper.marginRightMm
       + paper.columns * paper.labelWidthMm
       + Math.max(0, paper.columns - 1) * paper.gapHorizontalMm;
-    const requiredHeight = paper.marginTopMm + paper.marginBottomMm
-      + paper.rows * paper.labelHeightMm
-      + Math.max(0, paper.rows - 1) * paper.gapVerticalMm;
+    // r37.2.3: see the matching comment in buildSheetPlan() -- marginTopMm/
+    // marginBottomMm only represent a real, once-per-page outer margin for
+    // sheet media. For roll/continuous media this value becomes the
+    // declared physical height of EVERY page in a multi-page batch, so
+    // folding the margins in here compounds across pages.
+    const rollPitchHeight = paper.rows * paper.labelHeightMm + Math.max(0, paper.rows - 1) * paper.gapVerticalMm;
+    const requiredHeight = paper.mediaType === 'sheet'
+      ? paper.marginTopMm + paper.marginBottomMm + rollPitchHeight
+      : rollPitchHeight;
 
     if (paper.labelWidthMm < 10 || paper.labelHeightMm < 10) errors.push('Cada sticker debe medir al menos 10 mm por lado.');
     if (paper.columns > 1 && paper.mediaWidthMm <= 0) errors.push('Confirma el ancho total del rollo u hoja para usar varias columnas.');
@@ -497,8 +503,19 @@
           column: column + 1,
           status: used ? 'used' : item ? 'filled' : 'empty',
           item,
+          // r37.2.3 (roll batch physical pitch drift, real SHARY incident): on a
+          // continuous/precut roll, marginTopMm/marginBottomMm are sheet-style
+          // outer-page margins -- meaningless per row, and every page in a
+          // multi-page batch gets the SAME declared page height (see
+          // universalMediaSize()/pageCss()). Folding marginTopMm into every
+          // page's cell Y (as if each page were its own mini-sheet) compounds
+          // with the SAME margin baked into every page's declared physical
+          // height, so a real precut roll -- which has no such margin between
+          // tramos -- drifts by marginTopMm+marginBottomMm on every page after
+          // the first: content starts landing mid-label on the physical roll.
+          // Sheet media (a real page with real outer margins) is unaffected.
           xMm: Number((paper.marginLeftMm + column * (paper.labelWidthMm + paper.gapHorizontalMm) + paper.xOffsetMm).toFixed(3)),
-          yMm: Number((paper.marginTopMm + row * (paper.labelHeightMm + paper.gapVerticalMm) + paper.yOffsetMm).toFixed(3))
+          yMm: Number(((paper.mediaType === 'sheet' ? paper.marginTopMm : 0) + row * (paper.labelHeightMm + paper.gapVerticalMm) + paper.yOffsetMm).toFixed(3))
         });
       }
       if (firstPage && items.length > 0 && cells.every((cell) => cell.status !== 'filled')) {
