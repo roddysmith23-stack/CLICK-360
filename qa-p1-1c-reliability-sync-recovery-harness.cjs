@@ -172,8 +172,8 @@ assert(app.includes('window.click360GetReliabilityDiagnostics'), 'UI exposes saf
 assert(runtime.includes('reliability:') && runtime.includes('lockAgeMs') && runtime.includes('hasDirtyFields'), 'runtime reports sanitized reliability fields');
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');
 assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is current candidate');
-assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-2-shary-cloud-hydration-fix'"), 'app asset version is current recovery release');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r37-2-2-shary-cloud-hydration-fix'"), 'service worker cache is current recovery release');
+assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-real-customer-journey'"), 'app asset version is current recovery release');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r37-2-4-real-customer-journey'"), 'service worker cache is current recovery release');
 assert(app.includes('Este dispositivo está vacío y no reemplazará los datos de la nube.'), 'empty device receives safe cloud-recovery UX');
 assert(firebase.includes("action: 'refresh_cloud_empty_local'"), 'empty keep-local is reclassified to cloud refresh');
 assert(firebase.includes('preventedEmptyOverwrite: true'), 'empty overwrite is explicitly prevented');
