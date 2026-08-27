@@ -10930,7 +10930,11 @@ function parseMoney(value) {
       : rollPitchHeight;
     const width = paper.mediaWidthMm && paper.mediaWidthMm <= naturalWidth * SANITY_FACTOR ? paper.mediaWidthMm : naturalWidth;
     const height = paper.mediaHeightMm && paper.mediaHeightMm <= naturalHeight * SANITY_FACTOR ? paper.mediaHeightMm : naturalHeight;
-    return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
+    // A physical page must contain every configured column. An undersized
+    // mediaWidthMm previously kept a one-label page while the plan still
+    // positioned later columns outside it, where overflow:hidden clipped them.
+    // Keep the height contract unchanged: roll height is the physical pitch.
+    return { widthMm: Math.max(naturalWidth, width), heightMm: Math.max(paper.heightMm, height) };
   }
   function legacyPaperProfileToUniversal(paper = {}) {
     return {
