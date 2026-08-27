@@ -185,6 +185,13 @@ async function newAppContext(browser) {
 async function openSignedIn(browser) {
   const context = await newAppContext(browser);
   const page = await context.newPage();
+  // Belt-and-suspenders on top of each call's own explicit timeout: this
+  // page-level default overrides Playwright's built-in 30s default for
+  // every wait on this page, so a slow CI runner (many prior sub-tests
+  // already run in this same job, real browser + real Firestore emulator
+  // round trips) has real headroom before any of this session's own waits
+  // can time out.
+  page.setDefaultTimeout(60000);
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
@@ -195,12 +202,15 @@ async function openSignedIn(browser) {
       || requestUrl.startsWith(`http://127.0.0.1:${authPort}/`);
     return local ? route.continue() : route.abort();
   });
-  await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 });
-  await page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password });
-  await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', { timeout: 60000 });
-  await page.evaluate(() => window.click360Route('inventory'));
-  await page.waitForSelector('#newProduct', { timeout: 45000 });
+  const step = async (label, fn) => {
+    try { return await fn(); } catch (error) { throw new Error(`openSignedIn step "${label}" failed: ${error.message}`); }
+  };
+  await step('goto', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }));
+  await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 }));
+  await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
+  await step('hydrated-and-synced', () => page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', { timeout: 60000 }));
+  await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
+  await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };
 }
 
