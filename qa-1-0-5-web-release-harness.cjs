@@ -80,6 +80,9 @@ for (const asset of ['p2-restaurant-domain.js', 'p2-logistics-domain.js', 'unive
 assert.match(build, new RegExp(`'${asset.replace('.', '\\.')}'`));
 }
 assert.doesNotMatch(build, /node_modules|tools\/admin|functions\//);
+assert.match(build, /process\.env\.CLICK360_BUILD_TIME/, 'CI can supply an immutable release time');
+assert.match(build, /git', \['show', '-s', '--format=%cI', 'HEAD'\]/, 'local builds derive time from the immutable commit');
+assert.doesNotMatch(build, /generatedAt\s*=\s*new Date\(\)\.toISOString\(\)/, 'release manifest must be reproducible');
 assert.match(app, /runTemplateOutput/);
 assert.match(app, /Elegir producto para esta plantilla/);
 assert.doesNotMatch(app, /openLabelModal\(labelSample,\s*tplId/);
