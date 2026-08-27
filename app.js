@@ -6684,27 +6684,70 @@ function parseMoney(value) {
 	          && Number(remoteProduct.stock) === qty
 	          && Number(remoteProduct.updatedAtMs || 0) >= minimumUpdatedAtMs;
 	      };
-	      let committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
+	      // r37.2.5 (P0, real SHARY incident): a revision A -> revision B race
+      // between two devices editing the SAME product must never resolve by
+      // trusting a scheduler flag, a timeout elapsing, or a merely-cached
+      // local read. "Confirmed" here always means: an authoritative
+      // server-sourced snapshot (revision + this exact product's fields)
+      // was actually observed. A bounded wait loop only keeps waiting while
+      // each tick's authoritative read shows real progress (a changed
+      // revision or a changed target-product fingerprint) -- if two
+      // consecutive reads are identical, further waiting cannot help and
+      // the loop gives up honestly instead of spinning to a timeout. An
+      // automatic retry after a real conflict is allowed ONLY when an
+      // authoritative read proves the TARGET product itself is still
+      // exactly the pre-edit baseline (some unrelated field elsewhere in
+      // the tenant document caused the conflict) -- if the target product
+      // was genuinely touched remotely, this never auto-overwrites it; it
+      // surfaces the conflict for the user instead. See qa/r37-2-5-two-device-same-product-conflict-e2e.mjs.
+      const diagnostics = { revisionAtStart:Number(window.click360DebugSyncIdentity?.().revision || 0), conflictDetected:false, targetChangedRemotely:null, retryAttempted:false, stalled:false, outcome:'pending' };
+      window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS = diagnostics;
+      const targetSnapshot = async () => {
+        try { await window.click360RefreshNow?.(); } catch {}
+        const remoteProduct = state.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
+        return { atMs:Date.now(), revision:Number(window.click360DebugSyncIdentity?.().revision || 0), fingerprint:productFingerprint(remoteProduct), product:remoteProduct };
+      };
+      const waitForVerifiableConfirmation = async (verifier, deadlineMs, priorSnapshot) => {
+        let last = priorSnapshot;
+        let stallTicks = 0;
+        const STALL_LIMIT = 3;
+        while (Date.now() < deadlineMs && !remoteApplied(state, verifier) && stallTicks < STALL_LIMIT) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const next = await targetSnapshot();
+          const progressed = next.revision !== last.revision || next.fingerprint !== last.fingerprint;
+          stallTicks = progressed ? 0 : stallTicks + 1;
+          last = next;
+        }
+        return { confirmed:remoteApplied(state, verifier) && last.revision > 0, last, stalled:stallTicks >= STALL_LIMIT };
+      };
+      let committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
 	      if (!committed.ok && navigator.onLine) {
 	        const failedSyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_prepare' });
-	        if (failedSyncState?.status === 'real_conflict' && typeof window.click360ResolveSyncConflict === 'function') {
+	        diagnostics.conflictDetected = failedSyncState?.status === 'real_conflict';
+	        if (diagnostics.conflictDetected && typeof window.click360ResolveSyncConflict === 'function') {
 	          await window.click360ResolveSyncConflict('refresh_cloud').catch(() => null);
 	        }
-	        const quietDeadline = Date.now() + 8000;
-	        while (Date.now() < quietDeadline) {
-	          const retrySyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_wait' });
-	          if (!retrySyncState?.blocking && !['loading', 'pending_write'].includes(retrySyncState?.status)) break;
-	          await new Promise((resolve) => setTimeout(resolve, 100));
-	        }
-	        if (remoteApplied(state, updatedAtMs)) committed = { ok:true, pending:false, recovered:true };
+	        const initialSnapshot = await targetSnapshot();
+	        diagnostics.revisionAfterConflictResolve = initialSnapshot.revision;
+	        diagnostics.targetChangedRemotely = productFingerprint(baselineProduct) !== initialSnapshot.fingerprint;
+	        const wait = await waitForVerifiableConfirmation(updatedAtMs, Date.now() + 15000, initialSnapshot);
+	        diagnostics.stalled = wait.stalled;
+	        if (wait.confirmed) committed = { ok:true, pending:false, recovered:true };
 	      }
 	      if (!committed.ok && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
 	        const refreshedProduct = state.products.find((candidate) => candidate.id === desiredProduct.id && candidate.businessId === b.id) || null;
 	        const codeTakenByAnotherProduct = state.products.some((candidate) => candidate.businessId === b.id && candidate.id !== desiredProduct.id && normalizeCode(candidate.code) === normalizeCode(desiredProduct.code));
+	        // The ONLY safe automatic retry: the target product, per an
+	        // authoritative read, is still byte-for-byte the pre-edit
+	        // baseline. Anything else (someone else genuinely changed THIS
+	        // product) falls through untouched to the conflict message below
+	        // -- never silently overwritten.
 	        const retrySafe = product
 	          ? productFingerprint(refreshedProduct) === productFingerprint(baselineProduct)
 	          : !refreshedProduct && !codeTakenByAnotherProduct;
 	        if (retrySafe) {
+	          diagnostics.retryAttempted = true;
+	          diagnostics.retryRevisionBefore = Number(window.click360DebugSyncIdentity?.().revision || 0);
 	          const retryPreviousState = cloneState(state);
 	          const retryUpdatedAtMs = Date.now();
 	          const retryProduct = { ...desiredProduct, updatedAt:new Date(retryUpdatedAtMs).toISOString(), updatedAtMs:retryUpdatedAtMs };
@@ -6721,18 +6764,26 @@ function parseMoney(value) {
 	            before:product ? { stock:previousProductStock } : {},
 	            after:{ stock:Number(retryProduct.stock ?? retryProduct.qty ?? 0) }
 	          });
+	          // Exactly one automatic retry -- never a loop of retries.
 	          committed = await commitCriticalMutation(retryPreviousState, 'product_saved_retry', (next) => remoteApplied(next, retryUpdatedAtMs), { suppressFailureToast:true });
 	          if (!committed.ok) {
-	            const retryDeadline = Date.now() + 8000;
-	            while (Date.now() < retryDeadline) {
-	              const retrySyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_confirm' });
-	              if (!retrySyncState?.blocking && !['loading', 'pending_write'].includes(retrySyncState?.status)) break;
-	              await new Promise((resolve) => setTimeout(resolve, 100));
-	            }
-	            if (remoteApplied(state, retryUpdatedAtMs)) committed = { ok:true, pending:false, recovered:true };
+	            const retrySnapshot = await targetSnapshot();
+	            const retryWait = await waitForVerifiableConfirmation(retryUpdatedAtMs, Date.now() + 15000, retrySnapshot);
+	            diagnostics.stalled = diagnostics.stalled || retryWait.stalled;
+	            diagnostics.revisionAfterRetry = retryWait.last.revision;
+	            if (retryWait.confirmed) committed = { ok:true, pending:false, recovered:true };
+	          } else {
+	            diagnostics.revisionAfterRetry = Number(window.click360DebugSyncIdentity?.().revision || 0);
 	          }
 	        }
 	      }
+	      diagnostics.confirmedAtMs = committed.ok ? Date.now() : null;
+	      diagnostics.outcome = committed.ok ? 'confirmed' : (diagnostics.targetChangedRemotely ? 'safe_conflict' : 'not_confirmed');
+	      // A detected, safe conflict (the target product genuinely changed
+	      // remotely, so we correctly declined to auto-retry) must surface
+	      // its own explicit, recoverable message -- never the generic
+	      // "not confirmed" fallback, which reads as an unexplained failure.
+	      if (!committed.ok && diagnostics.targetChangedRemotely && !committed.reason) committed = { ...committed, reason:'sync_conflict' };
 	      if (!committed.ok) {
 	        if (committed.reason || lastWriteBlock?.reason) {
 	          const failureGate = { ...(lastWriteBlock || {}), reason:committed.reason || lastWriteBlock.reason };
