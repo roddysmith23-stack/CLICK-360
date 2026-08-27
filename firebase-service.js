@@ -11,7 +11,7 @@
     return;
   }
 
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-real-customer-journey';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-cloud-confirmed-r2';
 	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
   // r37.2.1 (LIVE CLIENT RECOVERY -- real SHARY incident): this used to also
   // delete every stale click360- cache here, unconditionally, on every page
@@ -2820,10 +2820,14 @@
 	        nextReason = result ? scheduler.queuedReason : null;
 	      }
 	      return result;
-	    })();
+	    })().finally(() => {
+	      // Keep cleanup in the scheduler promise itself. A caller must never
+	      // observe a fulfilled promise that is still registered and mistake
+	      // an older successful push for confirmation of its newer mutation.
+	      if (PUSH_SCHEDULERS.get(schedulerKey) === scheduler) PUSH_SCHEDULERS.delete(schedulerKey);
+	    });
 	    PUSH_SCHEDULERS.set(schedulerKey, scheduler);
-	    try { return await scheduler.promise; }
-	    finally { PUSH_SCHEDULERS.delete(schedulerKey); }
+	    return scheduler.promise;
 	  }
 
 		  async function pullRemoteOnce({ force = false, reload = false } = {}) {

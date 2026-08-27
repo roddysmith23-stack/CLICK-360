@@ -136,7 +136,7 @@ assert.equal(incompleteResult.ok, true, 'incomplete but normalized state can clo
 
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'candidate app version is current');
 assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime candidate version is current');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r37-2-4-real-customer-journey'"), 'service worker cache is current');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r37-2-4-cloud-confirmed-r2'"), 'service worker cache is current');
 assert(firebase.includes('window.click360WriteGate = writeGateStatus'), 'cash close still uses the existing client write gate');
 for (const stage of [
   'cash_close_validate_access',

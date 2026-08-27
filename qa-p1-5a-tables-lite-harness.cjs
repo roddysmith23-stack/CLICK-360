@@ -9,7 +9,7 @@ const html = fs.readFileSync('index.html', 'utf8');
 const worker = fs.readFileSync('service-worker.js', 'utf8');
 
 const RELEASE = '1.0.5';
-const ASSET = 'commercial-1-0-5-r37-2-4-real-customer-journey';
+const ASSET = 'commercial-1-0-5-r37-2-4-cloud-confirmed-r2';
 
 function tablesForBusiness(state, businessId) {
   return state.tables.filter((table) => table.businessId === businessId);

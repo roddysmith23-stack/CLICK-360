@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r37-2-4-real-customer-journey';
+const CACHE = 'click360-commercial-1-0-5-r37-2-4-cloud-confirmed-r2';
 const ASSETS = [
   './',
   './index.html',
