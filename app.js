@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-real-customer-journey';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-cloud-confirmed-r2';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -941,13 +941,17 @@ function parseMoney(value) {
     }
     const synced = await window.click360SyncNow();
     if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
-    if (synced) return { ok: true, pending: false };
+    // A scheduler-level success confirms that a push completed, but not by
+    // itself that THIS mutation was the payload written. Critical callers
+    // provide remoteApplied precisely so their success message can require a
+    // server readback of the expected material state.
+    if (synced && typeof remoteApplied !== 'function') return { ok: true, pending: false };
 
     let refreshed = false;
     try { refreshed = await window.click360RefreshNow?.() === true; } catch {}
     if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
     if (typeof remoteApplied === 'function' && remoteApplied(state)) {
-      return { ok: true, pending: false, recovered: true };
+      return { ok: true, pending: false, recovered: !synced, readbackConfirmed: true };
     }
     if (!refreshed) restoreCriticalSnapshot(previousState);
     if (!options.suppressFailureToast) toast('El cambio no fue confirmado y no se registró como completado.', 'err');
