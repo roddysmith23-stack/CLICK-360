@@ -60,13 +60,21 @@ await writeFile(appPath, appSource.replace(
 ));
 
 // r37.1 (P0-A safe update): release-manifest.json (a real, tracked source
-// file -- see build note below) is stamped with the real buildSha and a
-// fresh generatedAt so repair.html's {cache:'no-store'} reachability probe
-// also proves it isn't looking at a stale copy served from somewhere odd.
+// file -- see build note below) is stamped with the real buildSha. Use an
+// explicit CI build time or the immutable commit time so identical source
+// produces byte-for-byte identical artifacts.
 const manifestPath = join(output, 'release-manifest.json');
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 manifest.buildSha = shortSha;
-manifest.generatedAt = new Date().toISOString();
+let generatedAt = process.env.CLICK360_BUILD_TIME || '';
+if (!generatedAt) {
+  try {
+    generatedAt = execFileSync('git', ['show', '-s', '--format=%cI', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  } catch {
+    generatedAt = new Date(0).toISOString();
+  }
+}
+manifest.generatedAt = new Date(generatedAt).toISOString();
 await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
 console.log(`CLICK 360 static release: ${files.length} allowlisted entries copied to dist/, release-manifest.json stamped (version=${manifest.version})`);

@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-2-shary-cloud-hydration-fix';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-real-customer-journey';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -901,6 +901,7 @@ function parseMoney(value) {
     return true;
   }
   async function commitCriticalMutation(previousState, reason, remoteApplied) {
+    const options = arguments[3] || {};
     const context = activeTenantContext;
     const actionLock = acquireCriticalAction(reason);
     if (!actionLock.acquired) {
@@ -949,7 +950,7 @@ function parseMoney(value) {
       return { ok: true, pending: false, recovered: true };
     }
     if (!refreshed) restoreCriticalSnapshot(previousState);
-    toast('El cambio no fue confirmado y no se registró como completado.', 'err');
+    if (!options.suppressFailureToast) toast('El cambio no fue confirmado y no se registró como completado.', 'err');
     return { ok: false, pending: false };
     } finally {
       actionLock.release();
@@ -6608,7 +6609,7 @@ function parseMoney(value) {
     const cardPriceIn = $('#pCardPrice');
     if (cardPriceIn) cardPriceIn.oninput = () => { cardPriceIn.value = cardPriceIn.value.replace(/[^0-9.,]/g, ''); };
 
-    $('#productForm').onsubmit=e=>{
+    $('#productForm').onsubmit=async e=>{
       e.preventDefault();
       const name=$('#pName').value.trim();
       const qty=parseInt($('#pQty').value||'0',10);
@@ -6640,6 +6641,7 @@ function parseMoney(value) {
           if (storageQuota?.blocked) { beep('err'); return toast('Tu plan de almacenamiento de imagenes alcanzo el limite. Puedes guardar el producto sin imagen, o mejorar tu plan / solicitar mas capacidad desde "Mi plan".', 'err'); }
         }
       }
+	      const previousState = cloneState(state);
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
 	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
@@ -6661,7 +6663,84 @@ function parseMoney(value) {
 	        before:product ? { stock:previousProductStock } : {},
 	        after:{ stock:Number(savedProduct.stock ?? savedProduct.qty ?? 0) }
 	      });
-	      if(!save()) return; closeModal(); renderApp('inventory'); toast(product?'Producto actualizado con éxito':'Producto creado con éxito', 'ok');
+	      const desiredProduct = cloneState(savedProduct);
+	      const desiredRecipe = cloneState(state.restaurantRecipes.find((recipe) => recipe.productId === savedProduct.id && recipe.businessId === b.id) || null);
+	      const baselineProduct = previousState.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
+	      const productFingerprint = (candidate) => candidate ? JSON.stringify({
+	        id:candidate.id, businessId:candidate.businessId, code:candidate.code,
+	        category:candidate.category || '', name:candidate.name || '',
+	        qty:Number(candidate.qty ?? candidate.stock ?? 0), stock:Number(candidate.stock ?? candidate.qty ?? 0),
+	        cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
+	        taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
+	      }) : '';
+	      const remoteApplied = (next, minimumUpdatedAtMs) => {
+	        const remoteProduct = next.products?.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id);
+	        return remoteProduct
+	          && Number(remoteProduct.qty) === qty
+	          && Number(remoteProduct.stock) === qty
+	          && Number(remoteProduct.updatedAtMs || 0) >= minimumUpdatedAtMs;
+	      };
+	      let committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
+	      if (!committed.ok && navigator.onLine) {
+	        const failedSyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_prepare' });
+	        if (failedSyncState?.status === 'real_conflict' && typeof window.click360ResolveSyncConflict === 'function') {
+	          await window.click360ResolveSyncConflict('refresh_cloud').catch(() => null);
+	        }
+	        const quietDeadline = Date.now() + 8000;
+	        while (Date.now() < quietDeadline) {
+	          const retrySyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_wait' });
+	          if (!retrySyncState?.blocking && !['loading', 'pending_write'].includes(retrySyncState?.status)) break;
+	          await new Promise((resolve) => setTimeout(resolve, 100));
+	        }
+	        if (remoteApplied(state, updatedAtMs)) committed = { ok:true, pending:false, recovered:true };
+	      }
+	      if (!committed.ok && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
+	        const refreshedProduct = state.products.find((candidate) => candidate.id === desiredProduct.id && candidate.businessId === b.id) || null;
+	        const codeTakenByAnotherProduct = state.products.some((candidate) => candidate.businessId === b.id && candidate.id !== desiredProduct.id && normalizeCode(candidate.code) === normalizeCode(desiredProduct.code));
+	        const retrySafe = product
+	          ? productFingerprint(refreshedProduct) === productFingerprint(baselineProduct)
+	          : !refreshedProduct && !codeTakenByAnotherProduct;
+	        if (retrySafe) {
+	          const retryPreviousState = cloneState(state);
+	          const retryUpdatedAtMs = Date.now();
+	          const retryProduct = { ...desiredProduct, updatedAt:new Date(retryUpdatedAtMs).toISOString(), updatedAtMs:retryUpdatedAtMs };
+	          const retryIndex = state.products.findIndex((candidate) => candidate.id === retryProduct.id && candidate.businessId === b.id);
+	          if (retryIndex >= 0) state.products[retryIndex] = retryProduct;
+	          else state.products.push(retryProduct);
+	          state.restaurantRecipes = state.restaurantRecipes.filter((recipe) => !(recipe.productId === retryProduct.id && recipe.businessId === b.id));
+	          if (desiredRecipe) state.restaurantRecipes.push({ ...desiredRecipe, updatedAtMs:retryUpdatedAtMs });
+	          addAudit(product ? 'product_updated' : 'product_created', {
+	            productId:retryProduct.id,
+	            entityType:'product',
+	            entityId:retryProduct.id,
+	            retryAfterRevisionRefresh:true,
+	            before:product ? { stock:previousProductStock } : {},
+	            after:{ stock:Number(retryProduct.stock ?? retryProduct.qty ?? 0) }
+	          });
+	          committed = await commitCriticalMutation(retryPreviousState, 'product_saved_retry', (next) => remoteApplied(next, retryUpdatedAtMs), { suppressFailureToast:true });
+	          if (!committed.ok) {
+	            const retryDeadline = Date.now() + 8000;
+	            while (Date.now() < retryDeadline) {
+	              const retrySyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_confirm' });
+	              if (!retrySyncState?.blocking && !['loading', 'pending_write'].includes(retrySyncState?.status)) break;
+	              await new Promise((resolve) => setTimeout(resolve, 100));
+	            }
+	            if (remoteApplied(state, retryUpdatedAtMs)) committed = { ok:true, pending:false, recovered:true };
+	          }
+	        }
+	      }
+	      if (!committed.ok) {
+	        if (committed.reason || lastWriteBlock?.reason) {
+	          const failureGate = { ...(lastWriteBlock || {}), reason:committed.reason || lastWriteBlock.reason };
+	          toast(writeBlockMessage(failureGate), failureGate.reason === 'pending_remote_sync' ? 'ok' : 'err');
+	        } else {
+	          toast('El cambio no fue confirmado y no se registró como completado.', 'err');
+	        }
+	        return;
+	      }
+	      closeModal();
+	      renderApp('inventory');
+	      if (!committed.pending) toast(product ? 'Producto actualizado y confirmado en la nube' : 'Producto creado y confirmado en la nube', 'ok');
 	    };
 	  }
 	  async function deleteProduct(id){
@@ -10930,7 +11009,11 @@ function parseMoney(value) {
       : rollPitchHeight;
     const width = paper.mediaWidthMm && paper.mediaWidthMm <= naturalWidth * SANITY_FACTOR ? paper.mediaWidthMm : naturalWidth;
     const height = paper.mediaHeightMm && paper.mediaHeightMm <= naturalHeight * SANITY_FACTOR ? paper.mediaHeightMm : naturalHeight;
-    return { widthMm: Math.max(paper.widthMm, width), heightMm: Math.max(paper.heightMm, height) };
+    // A physical page must contain every configured column. An undersized
+    // mediaWidthMm previously kept a one-label page while the plan still
+    // positioned later columns outside it, where overflow:hidden clipped them.
+    // Keep the height contract unchanged: roll height is the physical pitch.
+    return { widthMm: Math.max(naturalWidth, width), heightMm: Math.max(paper.heightMm, height) };
   }
   function legacyPaperProfileToUniversal(paper = {}) {
     return {

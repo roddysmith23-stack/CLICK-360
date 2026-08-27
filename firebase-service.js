@@ -11,7 +11,7 @@
     return;
   }
 
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-2-shary-cloud-hydration-fix';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-real-customer-journey';
 	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
   // r37.2.1 (LIVE CLIENT RECOVERY -- real SHARY incident): this used to also
   // delete every stale click360- cache here, unconditionally, on every page
