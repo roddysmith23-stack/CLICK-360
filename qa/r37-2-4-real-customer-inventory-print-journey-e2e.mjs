@@ -278,6 +278,7 @@ async function submitProductOnce(page, values) {
     syncStatus: window.click360SyncStatus?.status || '',
     syncError: window.click360SyncStatus?.error || null,
     gate: window.click360WriteGate?.() || null,
+    confirmation: window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS || null,
     runtimeError: window.CLICK360_LAST_RUNTIME_ERROR || null
   }));
 }

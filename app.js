@@ -6748,12 +6748,31 @@ function parseMoney(value) {
 	        cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
 	        taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
 	      }) : '';
-	      const remoteApplied = (next, minimumUpdatedAtMs) => {
+	      const remoteApplied = (next) => {
 	        const remoteProduct = next.products?.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id);
-	        return remoteProduct
-	          && Number(remoteProduct.qty) === qty
-	          && Number(remoteProduct.stock) === qty
-	          && Number(remoteProduct.updatedAtMs || 0) >= minimumUpdatedAtMs;
+	        const fieldMatches = remoteProduct ? {
+	          id:remoteProduct.id === desiredProduct.id,
+	          businessId:remoteProduct.businessId === desiredProduct.businessId,
+	          code:remoteProduct.code === desiredProduct.code,
+	          category:(remoteProduct.category || '') === (desiredProduct.category || ''),
+	          name:(remoteProduct.name || '') === (desiredProduct.name || ''),
+	          qty:Number(remoteProduct.qty ?? remoteProduct.stock ?? 0) === Number(desiredProduct.qty ?? desiredProduct.stock ?? 0),
+	          stock:Number(remoteProduct.stock ?? remoteProduct.qty ?? 0) === Number(desiredProduct.stock ?? desiredProduct.qty ?? 0),
+	          cost:Number(remoteProduct.cost || 0) === Number(desiredProduct.cost || 0),
+	          price:Number(remoteProduct.price || 0) === Number(desiredProduct.price || 0),
+	          cardPrice:Number(remoteProduct.cardPrice ?? remoteProduct.price ?? 0) === Number(desiredProduct.cardPrice ?? desiredProduct.price ?? 0),
+	          taxMode:(remoteProduct.taxMode || 'inherit') === (desiredProduct.taxMode || 'inherit'),
+	          notes:(remoteProduct.notes || '') === (desiredProduct.notes || ''),
+	          imageData:(remoteProduct.imageData || '') === (desiredProduct.imageData || '')
+	        } : { missing:true };
+	        diagnostics.remoteFieldMatches = fieldMatches;
+	        // Confirmation comes from click360RefreshNow()'s server-sourced
+	        // snapshot. Compare the complete commercial fingerprint instead of
+	        // a client-clock timestamp: WebKit can legitimately observe the
+	        // exact committed product while updatedAtMs is a few milliseconds
+	        // behind the initiating device clock, which used to report a false
+	        // failure even though Firestore already held the requested change.
+	        return !!remoteProduct && productFingerprint(remoteProduct) === productFingerprint(desiredProduct);
 	      };
 	      // r37.2.5 (P0, real SHARY incident): a revision A -> revision B race
       // between two devices editing the SAME product must never resolve by
