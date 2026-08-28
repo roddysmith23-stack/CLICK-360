@@ -25,7 +25,13 @@ assert(modeBlock.includes('DEVICE_INACTIVITY_ALLOWED_MINUTES = Object.freeze([3,
 
 // ── Never abandon a draft or a pending critical operation ──
 assert(modeBlock.includes('function hasActiveDraftOrPendingOperation()'), 'a draft/pending-operation check must exist');
-assert(/criticalActionGate\?\.size\?\.\(\)\s*\|\|\s*0\)\s*>\s*0\)\s*return true/.test(modeBlock), 'any in-flight critical mutation (criticalActionGate) must count as "do not log out yet"');
+// FIX #3 (SHARY P0 recovery, 2026-08-28) changed the static `criticalActionGate`
+// module-load capture to a lazily-resolved `resolveCriticalActionGate()` call
+// (so a v16-domain.js load failure degrades gracefully instead of blocking
+// every save) -- the literal source shape here changed accordingly. The real
+// invariant this regex checks (an in-flight critical mutation must count as
+// "do not log out yet") is unchanged and still enforced.
+assert(/resolveCriticalActionGate\(\)\?\.size\?\.\(\)\s*\|\|\s*0\)\s*>\s*0\)\s*return true/.test(modeBlock), 'any in-flight critical mutation (criticalActionGate) must count as "do not log out yet"');
 assert(/click360SellCartCount\?\.\(\)\s*\|\|\s*0\)\s*>\s*0\)\s*return true/.test(modeBlock), 'a non-empty sell cart (an in-progress sale draft) must count as "do not log out yet"');
 
 const scheduleBlock = app.slice(app.indexOf('function scheduleInactivityCheck()'), app.indexOf('function scheduleInactivityCheck()') + 900);

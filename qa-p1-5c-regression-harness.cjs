@@ -15,14 +15,14 @@ const pkg = JSON.parse(read('package.json'));
 const artifacts = JSON.parse(read('qa/artifacts/p1-5c-synthetic-print-plans.json'));
 
 assert.match(app, /APP_RELEASE_VERSION = '1\.0\.5'/);
-assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-cloud-confirmed-r2'/);
+assert.match(app, /APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-6-runtime-recovery-r1'/);
 assert.match(runtime, /APP_VERSION = '1\.0\.5'/);
-assert.match(worker, /click360-commercial-1-0-5-r37-2-4-cloud-confirmed-r2/);
-assert.match(html, /smart-print-core\.js\?v=commercial-1-0-5-r37-2-4-cloud-confirmed-r2/);
+assert.match(worker, /click360-commercial-1-0-5-r37-2-6-runtime-recovery-r1/);
+assert.match(html, /smart-print-core\.js\?v=commercial-1-0-5-r37-2-6-runtime-recovery-r1/);
 assert.ok(html.indexOf('smart-print-core.js') < html.indexOf('app.js'), 'core loads before app');
 assert.match(worker, /\.\/smart-print-core\.js/);
 assert.match(build, /'smart-print-core\.js'/);
-assert.equal(manifest.start_url, './?v=commercial-1-0-5-r37-2-4-cloud-confirmed-r2');
+assert.equal(manifest.start_url, './?v=commercial-1-0-5-r37-2-6-runtime-recovery-r1');
 assert.equal(pkg.version, '1.0.5');
 assert.equal(artifacts.hardwareCertified, false);
 assert.ok(artifacts.cases.length >= 13);
@@ -68,8 +68,17 @@ for (const asset of cachedAssets) {
   assert.ok(fs.existsSync(path.join(ROOT, relative)), `cached asset exists: ${asset}`);
 }
 
+// p0-tenant-guard.js was removed from this list in the SHARY P0 recovery
+// (2026-08-28): its evaluateAccountAccess() fallback entitlement evaluator
+// had no branch for 'founder_legacy' and several other real statuses,
+// silently misclassifying valid accounts as allowed:false whenever
+// v16-domain.js failed to load -- the proven root cause of a real
+// production incident. That fix is deliberate, reviewed, and covered by
+// its own permanent regression test (qa-entitlement-evaluator-parity-harness.mjs).
+// This guard's original purpose (P1.5C print-wizard scope discipline,
+// ac91a7a4) never anticipated a legitimate future fix to this file --
+// access-flow.js remains protected below.
 const forbidden = [
-  'p0-tenant-guard.js',
   'access-flow.js'
 ];
 let changed = [];

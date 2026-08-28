@@ -97,19 +97,71 @@
     try { return JSON.parse(value); } catch { return null; }
   }
 
+  // Standalone timestamp coercion for this module -- deliberately duplicated
+  // from v16-domain.js's timestampMs() rather than imported, because this
+  // whole function exists precisely for the case where v16-domain.js is NOT
+  // yet available (see accessStateFromData() in firebase-service.js). It
+  // must have zero dependency on that module.
+  function normalizeAccessEpochMs(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return 0;
+    if (number < 100_000_000_000) return Math.round(number * 1000);
+    if (number > 100_000_000_000_000) return Math.round(number / 1000);
+    return Math.round(number);
+  }
+
+  function accessTimestampMs(value) {
+    if (typeof value?.toMillis === 'function') return normalizeAccessEpochMs(value.toMillis());
+    if (Number.isFinite(Number(value?.seconds))) {
+      return normalizeAccessEpochMs(Number(value.seconds) * 1000 + Number(value?.nanoseconds || 0) / 1_000_000);
+    }
+    if (Number.isFinite(Number(value))) return normalizeAccessEpochMs(value);
+    const parsed = Date.parse(String(value || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function normalizeAccessPlan(value) {
+    const plan = String(value || '').trim().toLowerCase();
+    if (['normal', 'base', 'basic', 'paid_base'].includes(plan)) return 'base';
+    if (['pro', 'paid_pro', 'pro_lifetime'].includes(plan)) return 'pro';
+    if (['business', 'paid_business'].includes(plan)) return 'business';
+    if (['enterprise', 'paid_enterprise'].includes(plan)) return 'enterprise';
+    if (plan === 'founder_legacy') return 'founder_legacy';
+    if (['founder', 'founder_unlimited'].includes(plan)) return 'founder';
+    if (plan === 'lifetime') return 'lifetime';
+    return 'base';
+  }
+
   // Both timestamps come from Firestore. Device time is never used to decide
   // whether a trial can write data.
+  //
+  // This function is the fallback entitlement evaluator used only when
+  // v16-domain.js's evaluateEntitlement() has not yet registered on
+  // window.CLICK360_V16_DOMAIN (see accessStateFromData() in
+  // firebase-service.js). It MUST produce the same allowed/readOnly
+  // commercial decision as evaluateEntitlement() for every status that
+  // function currently recognizes -- see qa/entitlement-evaluator-parity.mjs,
+  // a permanent regression test asserting exactly that. A prior version of
+  // this function had no branch for 'founder_legacy' at all (silently
+  // falling through to allowed:false for a real, valid, permanent-access
+  // customer -- the proven root cause of the 2026-08-25/26
+  // AUTH_ACCOUNT_ACCESS_REJECTED incident), read the wrong trial-start field
+  // name (trialStartedAtMs instead of the real trialStartedAt Timestamp,
+  // always treating trial users as expired), never applied the
+  // subscription-expiry check to paid statuses, and did not recognize
+  // paid_business/paid_enterprise or member at all.
   function evaluateAccountAccess(data = {}, serverNowMs = 0, trialDays = 7) {
     const status = String(data.status || '').toLowerCase();
-    const rawPlan = String(data.planCode || data.plan || 'normal').toLowerCase();
-    const plan = ['normal', 'base', 'paid_base'].includes(rawPlan) ? 'base'
-      : ['pro', 'paid_pro', 'pro_lifetime'].includes(rawPlan) ? 'pro'
-      : ['founder', 'founder_unlimited'].includes(rawPlan) ? 'founder'
-      : rawPlan;
+    const rawPlan = String(data.planCode || data.plan || '').trim().toLowerCase();
+    const plan = normalizeAccessPlan(data.planCode || data.plan);
     const billingStatus = String(data.billingStatus || '').toLowerCase();
-    const startedAtMs = Number(data.trialStartedAtMs || 0);
-    const now = Number(serverNowMs || 0);
+    // trialStartedAt is the real field (a Firestore Timestamp, see
+    // resolveAccountAccess()'s new-tenant creation in firebase-service.js).
+    // trialStartedAtMs is kept as a legacy/back-compat fallback only.
+    const startedAtMs = accessTimestampMs(data.trialStartedAt) || Number(data.trialStartedAtMs || 0);
+    const now = accessTimestampMs(serverNowMs || data.lastSeenAt || data.serverNow);
     const trialEndsAtMs = startedAtMs ? startedAtMs + Number(trialDays || 7) * 24 * 60 * 60 * 1000 : 0;
+    const expiresAtMs = accessTimestampMs(data.expiresAt);
     if (status === 'active' && rawPlan === 'pro_lifetime') {
       const activeLifetime = data.lifetime === true && billingStatus === 'lifetime';
       return activeLifetime
@@ -122,12 +174,19 @@
     }
     if (status === 'expired' || status === 'trial_expired') return { allowed: true, readOnly: true, mode: 'trial_expired', plan: 'base', trialEndsAtMs };
     if (status === 'founder' || plan === 'founder') return { allowed: true, readOnly: false, mode: 'founder', plan: 'founder', trialEndsAtMs };
+    // Real commercial tier for historical customers (SHARY, Lia): permanent,
+    // never expires, no billing -- mirrors v16-domain.js's evaluateEntitlement()
+    // exactly. Must never depend on expiresAt/clock/grace/trial state.
+    if (status === 'founder_legacy' || plan === 'founder_legacy') return { allowed: true, readOnly: false, mode: 'founder_legacy', plan: 'founder_legacy', trialEndsAtMs };
     if (status === 'lifetime' || plan === 'lifetime') return { allowed: true, readOnly: false, mode: 'lifetime', plan: 'base', trialEndsAtMs };
-    if (['active', 'paid_base', 'paid_pro'].includes(status) && ['base', 'pro'].includes(plan)) {
-      const activePlan = status === 'paid_pro' ? 'pro' : status === 'paid_base' ? 'base' : plan;
-      return { allowed: true, readOnly: false, mode: `paid_${activePlan}`, plan: activePlan, trialEndsAtMs };
+    if (['active', 'paid_base', 'paid_pro', 'paid_business', 'paid_enterprise'].includes(status) && ['base', 'pro', 'business', 'enterprise'].includes(plan)) {
+      const statusPlanMap = { paid_base: 'base', paid_pro: 'pro', paid_business: 'business', paid_enterprise: 'enterprise' };
+      const activePlan = statusPlanMap[status] || plan;
+      const readOnly = !!expiresAtMs && !!now && now >= expiresAtMs;
+      return { allowed: true, readOnly, mode: readOnly ? 'subscription_expired' : `paid_${activePlan}`, plan: activePlan, trialEndsAtMs };
     }
-    return { allowed: false, readOnly: true, mode: status || 'pending', plan, trialEndsAtMs };
+    if (status === 'member') return { allowed: true, readOnly: false, mode: 'member', plan, trialEndsAtMs };
+    return { allowed: false, readOnly: true, mode: status || 'pending_activation', plan, trialEndsAtMs };
   }
 
   // Old CLICK 360 builds used several marker shapes. Only remove a marker when

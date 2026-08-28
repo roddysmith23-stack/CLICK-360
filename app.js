@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-4-cloud-confirmed-r2';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-6-runtime-recovery-r1';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -22,7 +22,75 @@
   const LEGACY_PROFILE_CACHE_PREFIX = 'CLICK360_USER_PROFILE_';
   const LEGACY_PROFILE_PENDING_PREFIX = 'CLICK360_PROFILE_PENDING:';
   const tenantRuntime = window.CLICK360_P0_TENANT_GUARD;
-  const criticalActionGate = window.CLICK360_V16_DOMAIN?.createOperationGate?.();
+  // r37.2.6 (P0, real SHARY incident, FIX #3): criticalActionGate used to be
+  // captured ONCE here from window.CLICK360_V16_DOMAIN at module load. If
+  // v16-domain.js failed to load entirely, that reference stayed undefined
+  // for the whole session and EVERY critical mutation was rejected with a
+  // misleading "La operacion ya se esta procesando" toast -- even though
+  // this gate performs pure in-memory duplicate-submission dedup with zero
+  // entitlement/authorization logic (verified directly in v16-domain.js's
+  // createOperationGate(): a Map-based begin/end/clear/size utility, no
+  // domain/commercial decision anywhere in it). Its absence is a
+  // reliability concern, never a security one -- real write authorization
+  // is enforced separately and unconditionally by writeGateStatus(),
+  // unaffected by any of this. resolveCriticalActionGate() re-checks at the
+  // moment of each mutation instead of a stale module-load capture, and
+  // falls back to a behaviorally-identical LOCAL gate (same contract, zero
+  // cross-module dependency) so a genuine total load failure of
+  // v16-domain.js degrades this one mechanism gracefully instead of
+  // blocking every save. Once resolved, the SAME gate instance is reused
+  // for the rest of the session so in-flight tracking is never reset or
+  // lost -- a fallback session may still upgrade to the real v16-domain
+  // gate later, but only while nothing is currently in flight.
+  let resolvedCriticalActionGate = null;
+  let criticalActionGateIsFallback = false;
+  function createLocalOperationGateFallback() {
+    const inFlight = new Map();
+    return Object.freeze({
+      begin(key, snapshot = null) {
+        const normalizedKey = String(key || '');
+        if (!normalizedKey) return { acquired: false, snapshot: null, token: null };
+        const current = inFlight.get(normalizedKey);
+        if (current) return { acquired: false, snapshot: current.snapshot, token: null };
+        const token = Symbol(normalizedKey);
+        inFlight.set(normalizedKey, { token, snapshot });
+        return { acquired: true, snapshot, token };
+      },
+      end(key, token) {
+        const normalizedKey = String(key || '');
+        const current = inFlight.get(normalizedKey);
+        if (!current || current.token !== token) return false;
+        inFlight.delete(normalizedKey);
+        return true;
+      },
+      clear() { inFlight.clear(); },
+      size() { return inFlight.size; }
+    });
+  }
+  function resolveCriticalActionGate() {
+    const domainAvailable = typeof window.CLICK360_V16_DOMAIN?.createOperationGate === 'function';
+    if (!resolvedCriticalActionGate) {
+      if (domainAvailable) {
+        resolvedCriticalActionGate = window.CLICK360_V16_DOMAIN.createOperationGate();
+        criticalActionGateIsFallback = false;
+      } else {
+        resolvedCriticalActionGate = createLocalOperationGateFallback();
+        criticalActionGateIsFallback = true;
+      }
+    } else if (criticalActionGateIsFallback && domainAvailable && resolvedCriticalActionGate.size() === 0) {
+      resolvedCriticalActionGate = window.CLICK360_V16_DOMAIN.createOperationGate();
+      criticalActionGateIsFallback = false;
+    }
+    return resolvedCriticalActionGate;
+  }
+  // Read-only diagnostic, same convention as window.click360DebugSyncIdentity
+  // -- lets QA/regression tests observe gate resolution state directly
+  // instead of only inferring it from save-toast side effects.
+  window.click360DebugCriticalActionGate = () => ({
+    resolved: !!resolvedCriticalActionGate,
+    isFallback: criticalActionGateIsFallback,
+    size: resolvedCriticalActionGate ? resolvedCriticalActionGate.size() : null
+  });
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
   const LOCAL_BACKUP_RETENTION = 3;
@@ -704,12 +772,15 @@ function parseMoney(value) {
   function acquireCriticalAction(reason) {
     const scope = contextScope();
     const key = scope && reason ? `${scope}:${reason}` : '';
-    if (!key || !criticalActionGate) return { acquired: false, snapshot: null, release() {} };
-    const entry = criticalActionGate.begin(key, cloneState(state));
+    const gate = resolveCriticalActionGate();
+    // null/missing never means allowed -- fail closed, exactly like the
+    // pre-FIX#3 behavior, if resolution somehow still yields nothing.
+    if (!key || !gate) return { acquired: false, snapshot: null, release() {} };
+    const entry = gate.begin(key, cloneState(state));
     return {
       acquired: entry.acquired,
       snapshot: cloneState(entry.snapshot),
-      release() { if (entry.acquired) criticalActionGate.end(key, entry.token); }
+      release() { if (entry.acquired) gate.end(key, entry.token); }
     };
   }
   function queueIndexedSnapshot(snapshot, metadata = {}) {
@@ -1025,7 +1096,7 @@ function parseMoney(value) {
     try { localStorage.setItem(DEVICE_INACTIVITY_MINUTES_KEY, String(value)); } catch {}
   }
   function hasActiveDraftOrPendingOperation() {
-    if ((criticalActionGate?.size?.() || 0) > 0) return true;
+    if ((resolveCriticalActionGate()?.size?.() || 0) > 0) return true;
     if (Number(window.click360SellCartCount?.() || 0) > 0) return true;
     return false;
   }
@@ -1100,7 +1171,7 @@ function parseMoney(value) {
       assetVersion: String(APP_ASSET_VERSION || ''),
       isOnline: navigator.onLine !== false,
       tenantDataHydrated: tenantDataHydrated === true,
-      pendingOperations: Number(criticalActionGate?.size?.() || 0),
+      pendingOperations: Number(resolveCriticalActionGate()?.size?.() || 0),
       syncStatus: String(syncState.status || ''),
       syncReason: String(syncState.reason || ''),
       localHash: String(syncState.localHash || ''),
@@ -1284,7 +1355,7 @@ function parseMoney(value) {
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
     onlineOnlyCommitCheckpoints.clear();
-    criticalActionGate?.clear();
+    resolveCriticalActionGate()?.clear?.();
     window.CLICK360_RUNTIME_GUARD?.setContext(activeTenantContext);
     onboardingPrompted = false;
     window.click360TenantContext = activeTenantContext;
@@ -1396,7 +1467,7 @@ function parseMoney(value) {
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
     onlineOnlyCommitCheckpoints.clear();
-    criticalActionGate?.clear();
+    resolveCriticalActionGate()?.clear?.();
     lastAutoSaveHash = '';
     session = null;
     route = 'home';
