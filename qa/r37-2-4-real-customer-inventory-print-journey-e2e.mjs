@@ -221,10 +221,15 @@ async function openSignedIn(browser) {
 // ONE real conflict and retries once, exactly as a real user would after
 // reading "Hay un conflicto..." and clicking save again. A second
 // consecutive conflict, or any other unexplained outcome, still fails hard.
-async function submitProduct(page, values, { allowOneConflictRetry = true } = {}) {
-  const result = await submitProductOnce(page, values);
+async function submitProduct(page, values, { allowOneConflictRetry = true, beforeUnconfirmedRetry = null } = {}) {
+  let result = await submitProductOnce(page, values);
   if (allowOneConflictRetry && /Hay un conflicto de sincronizaci.n pendiente/.test(result.message)) {
-    return submitProductOnce(page, values);
+    result = await submitProductOnce(page, values);
+  }
+  if (/El cambio no fue confirmado/.test(result.message) && typeof beforeUnconfirmedRetry === 'function') {
+    const retrySafe = await beforeUnconfirmedRetry(result);
+    assert(retrySafe === true, `Unconfirmed retry was not safe: ${JSON.stringify(result)}`);
+    result = await submitProductOnce(page, values);
   }
   assert(/Producto (creado|actualizado) y confirmado en la nube/.test(result.message), `Product submit failed: ${JSON.stringify(result)}`);
   return result;
@@ -273,6 +278,7 @@ async function submitProductOnce(page, values) {
     syncStatus: window.click360SyncStatus?.status || '',
     syncError: window.click360SyncStatus?.error || null,
     gate: window.click360WriteGate?.() || null,
+    confirmation: window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS || null,
     runtimeError: window.CLICK360_LAST_RUNTIME_ERROR || null
   }));
 }
@@ -453,7 +459,20 @@ async function run() {
     await deviceB.page.waitForFunction((id) => window.click360GetTenantState().products.some((product) => product.id === id && product.qty === 17 && product.stock === 17), created.id);
     await captureProductEvidence(deviceB.page, 'inventory-device2.png', created.id);
     const revisionBeforeDeviceB = Number((await readCloud(testEnv, uid)).revision);
-    await submitProduct(deviceB.page, { id: created.id, code: 'TEST-PERSIST-001', name: 'Producto persistencia QA', stock: 21 });
+    await submitProduct(
+      deviceB.page,
+      { id: created.id, code: 'TEST-PERSIST-001', name: 'Producto persistencia QA', stock: 21 },
+      {
+        beforeUnconfirmedRetry: async (failedAttempt) => {
+          const remote = await readCloud(testEnv, uid);
+          const remoteProduct = remote.payload.data.products.find((candidate) => candidate.id === created.id);
+          const targetUnchanged = Number(remoteProduct?.stock ?? remoteProduct?.qty) === 17;
+          const diagnosticAllowsRetry = failedAttempt.runtimeError?.message !== 'click360/revision-conflict'
+            && failedAttempt.gate?.allowed === true;
+          return targetUnchanged && diagnosticAllowsRetry;
+        }
+      }
+    );
     const afterDeviceB = await readCloud(testEnv, uid);
     assertProduct(afterDeviceB, created.id, 21, 'Device B update');
     assert(Number(afterDeviceB.revision) > revisionBeforeDeviceB, 'Device B update must advance cloud revision');

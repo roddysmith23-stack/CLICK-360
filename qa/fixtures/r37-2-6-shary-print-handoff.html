@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>CLICK 360 r37.2.6 print handoff QA</title>
+  <link rel="stylesheet" href="../../styles.css">
+  <script src="../../vendor/qrcode-generator.js"></script>
+  <script src="../../vendor/jsbarcode.min.js"></script>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="../../printing-service.js"></script>
+  <script src="generated/print-handoff.bundle.js"></script>
+</head>
+<body>
+  <div id="modalRoot"></div>
+  <script>
+    (() => {
+      const handoff = window.__CLICK360_PRINT_HANDOFF__;
+      const canvas = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
+      const product = { id:'qa-product', name:'Producto QA', code:'QA-001', price:12.5, cardPrice:13, stock:20, qty:20 };
+      const persistedDocument = canvas.normalizeDocument({
+        schemaVersion:2,
+        paper:{
+          id:'roll-2-customer', mediaType:'roll-2', widthMm:40, heightMm:60,
+          mediaWidthMm:800, mediaHeightMm:0, columns:2, rows:1,
+          gapXmm:4, gapYmm:4, marginTopMm:13, marginRightMm:2,
+          marginBottomMm:2, marginLeftMm:6, pitchMm:0, dpi:203,
+          orientation:'portrait', contentRotation:0
+        },
+        objects:[
+          { id:'qr', type:'qr', xMm:0.79, yMm:0.96, widthMm:22.97, heightMm:23.58, visible:true },
+          { id:'name', type:'name', xMm:24, yMm:6, widthMm:14, heightMm:7, visible:true },
+          { id:'price', type:'price', xMm:24, yMm:50, widthMm:14, heightMm:7, visible:true }
+        ],
+        quantity:1,
+        startSlot:1,
+        priceFormat:'short'
+      });
+
+      const mm = (px) => Number(((px / 96) * 25.4).toFixed(2));
+      let capture = null;
+      window.print = () => {
+        window.__PRINT_CALLS__ = (window.__PRINT_CALLS__ || 0) + 1;
+        const portal = document.getElementById('click360PrintPortal');
+        capture = {
+          pageCss:document.getElementById('click360-print-page-style')?.textContent || '',
+          pages:[...portal.querySelectorAll('.labelPrintPage')].map((page) => ({
+            widthMm:mm(page.getBoundingClientRect().width),
+            heightMm:mm(page.getBoundingClientRect().height),
+            cells:[...page.querySelectorAll('.labelPrintCell')].map((cell) => ({
+              status:cell.classList.contains('filled') ? 'filled' : 'empty',
+              leftMm:mm(cell.getBoundingClientRect().left - page.getBoundingClientRect().left),
+              topMm:mm(cell.getBoundingClientRect().top - page.getBoundingClientRect().top),
+              widthMm:mm(cell.getBoundingClientRect().width),
+              heightMm:mm(cell.getBoundingClientRect().height),
+              imageWidthMm:cell.querySelector('img') ? mm(cell.querySelector('img').getBoundingClientRect().width) : 0
+            }))
+          }))
+        };
+      };
+      window.__CLICK360_FINISH_PRINT__ = () => window.dispatchEvent(new Event('afterprint'));
+      window.__CLICK360_RUN_SHARY_HANDOFF__ = async (quantity) => {
+        window.__PRINT_CALLS__ = 0;
+        capture = null;
+        const documentModel = canvas.normalizeDocument({ ...persistedDocument, quantity, startSlot:1 });
+        const qr = documentModel.objects.find((object) => object.type === 'qr');
+        const prepared = { product, document:documentModel, quantity:{ count:quantity }, fingerprint:`qa-${quantity}` };
+        const job = await handoff.executeCanonicalLabelPrint(prepared, 'system');
+        return {
+          quantity,
+          printCalls:window.__PRINT_CALLS__,
+          media:job.media,
+          patterns:job.plan.pages.map((page) => page.cells.map((cell) => cell.status === 'filled' ? 'X' : ' ').join('')),
+          qrSquare:Math.abs(qr.widthMm - qr.heightMm) < 0.001,
+          ...capture
+        };
+      };
+      document.documentElement.dataset.ready = 'true';
+    })();
+  </script>
+</body>
+</html>
