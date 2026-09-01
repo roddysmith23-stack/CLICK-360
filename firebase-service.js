@@ -3772,13 +3772,22 @@
 	  }, (err) => console.warn("No se pudo escuchar estado de usuario:", err.message));
   }
 
-  function listenAccountAccess(user, expectedEpoch = AUTH_EPOCH) {
+	  function listenAccountAccess(user, expectedEpoch = AUTH_EPOCH) {
     if (ACCESS_UNSUBSCRIBE) return;
     const context = ACTIVE_CONTEXT;
     const ref = accountAccessRef(user.uid);
     if (!ref) return;
-    ACCESS_UNSUBSCRIBE = ref.onSnapshot((snap) => {
-      if (!AUTH_APPROVED || !isCurrentAuthEpoch(user, expectedEpoch) || ACTIVE_CONTEXT !== context) return;
+	    ACCESS_UNSUBSCRIBE = ref.onSnapshot((snap) => {
+	      if (!AUTH_APPROVED || !isCurrentAuthEpoch(user, expectedEpoch) || ACTIVE_CONTEXT !== context) return;
+	      // A fresh browser (notably WebKit) can emit an empty cache snapshot
+	      // before the authoritative accountAccess document arrives. Absence
+	      // from cache is not evidence that access was revoked: keep the
+	      // already-verified session read-only at the write gate until the
+	      // server snapshot follows, instead of falsely invalidating AUTH_APPROVED.
+	      if (snap.metadata?.fromCache === true && !snap.exists) {
+	        setSyncStatus('syncing', 'Verificando acceso con el servidor.');
+	        return;
+	      }
 	      const data = snap.exists ? (snap.data() || {}) : null;
 	      if (data && !accountAccessIdentityValid(user, data)) {
 	        AUTH_APPROVED = false;

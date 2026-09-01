@@ -187,7 +187,7 @@ async function openSignedIn(browser, email, password_) {
 // a CLOSED set of acceptable outcomes -- anything outside that set (a
 // generic crash toast, a timeout, an unrecognized message) is itself a
 // hard failure, not something to shrug off as "probably fine".
-async function submitAndClassify(page, productId, stock) {
+async function prepareProductSubmit(page, productId, stock) {
   await page.evaluate(({ id, stockValue }) => {
     const trigger = document.querySelector(`[data-edit="${CSS.escape(id)}"]`);
     if (!(trigger instanceof HTMLElement)) throw new Error('Missing product edit trigger');
@@ -197,10 +197,15 @@ async function submitAndClassify(page, productId, stock) {
     input.value = String(stockValue);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { id: productId, stockValue: stock });
+}
+
+async function submitPreparedAndClassify(page, stock) {
+  await page.evaluate(() => {
     const form = document.getElementById('productForm');
     if (!(form instanceof HTMLFormElement)) throw new Error('Missing product form');
     form.requestSubmit();
-  }, { id: productId, stockValue: stock });
+  });
 
   await page.waitForFunction(() => {
     const toast = document.getElementById('toast');
@@ -275,9 +280,19 @@ async function runOnce(iteration) {
     // other's form submit fires -- to force a genuine Firestore-level race
     // on the SAME product, not a sequential happy path.
     stage = 'concurrent product edit and terminal outcome';
+    // Arm both forms first. Promise.all(page.evaluate(click+submit)) was not a
+    // real barrier across two browser engines: on a loaded CI runner Chromium
+    // could finish its complete cloud commit before WebKit even opened the
+    // modal, turning the supposed race into two legitimate sequential edits.
+    // Both devices now capture the same pre-edit state before either submit is
+    // released; only then do the two real Firestore transactions race.
+    await Promise.all([
+      prepareProductSubmit(deviceA.page, productId, 15),
+      prepareProductSubmit(deviceB.page, productId, 25)
+    ]);
     const [resultA, resultB] = await Promise.all([
-      submitAndClassify(deviceA.page, productId, 15),
-      submitAndClassify(deviceB.page, productId, 25)
+      submitPreparedAndClassify(deviceA.page, 15),
+      submitPreparedAndClassify(deviceB.page, 25)
     ]);
 
     stage = 'authoritative post-race invariants';
