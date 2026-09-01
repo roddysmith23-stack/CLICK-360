@@ -164,6 +164,7 @@ async function openSignedIn(browser, email, password_) {
   const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (msg) => pageErrors.push(`console:${msg.type()}:${msg.text()}`));
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
   await page.route('**/*', (route) => {
     const requestUrl = route.request().url();
@@ -203,7 +204,15 @@ async function prepareProductSubmit(page, productId, stock) {
 async function submitPreparedAndClassify(page, stock) {
   await page.evaluate(() => {
     const form = document.getElementById('productForm');
-    if (!(form instanceof HTMLFormElement)) throw new Error('Missing product form');
+    if (!(form instanceof HTMLFormElement)) {
+      const modalRoots = document.querySelectorAll('#modalRoot').length;
+      const overlays = document.querySelectorAll('#modalRoot .modalOverlay').length;
+      const shown = document.querySelectorAll('#modalRoot .modalOverlay.show').length;
+      const heading = document.querySelector('#modalRoot h1,#modalRoot h2,#modalRoot h3')?.textContent || null;
+      const toastText = document.getElementById('toast')?.textContent || null;
+      const lastRuntimeError = window.CLICK360_LAST_RUNTIME_ERROR || null;
+      throw new Error(`Missing product form -- modalRoots=${modalRoots} overlays=${overlays} shown=${shown} hash=${location.hash} heading=${JSON.stringify(heading)} toast=${JSON.stringify(toastText)} lastRuntimeError=${JSON.stringify(lastRuntimeError)}`);
+    }
     form.requestSubmit();
   });
 
@@ -246,6 +255,8 @@ function writeEmulatorConfig() {
 
 async function runOnce(iteration) {
   let stage = 'startup';
+  let debugResultA = null;
+  let debugResultB = null;
   mkdirSync(outputDir, { recursive: true });
   const emulatorConfig = writeEmulatorConfig();
   const emulators = spawn(path.join(root, 'node_modules/.bin/firebase'), [
@@ -253,6 +264,8 @@ async function runOnce(iteration) {
   ], { cwd: path.dirname(emulatorConfig), detached: true, stdio: 'ignore', env: { ...process.env, PATH: `${javaDirs.join(':')}:${process.env.PATH}` } });
   const server = spawn(process.execPath, [path.join(root, 'node_modules/http-server/bin/http-server'), '.', '-p', String(port), '-c-1'], { cwd: root, detached: true, stdio: 'ignore' });
   let testEnv;
+  let deviceA;
+  let deviceB;
   let chromiumBrowser;
   let webkitBrowser;
   const email = `owner-r37-2-5-${iteration}-${Date.now().toString(36)}@example.test`;
@@ -272,9 +285,9 @@ async function runOnce(iteration) {
     chromiumBrowser = await chromium.launch();
     webkitBrowser = await webkit.launch();
     stage = 'chromium authoritative hydration';
-    const deviceA = await openSignedIn(chromiumBrowser, email, password);
+    deviceA = await openSignedIn(chromiumBrowser, email, password);
     stage = 'webkit authoritative hydration';
-    const deviceB = await openSignedIn(webkitBrowser, email, password);
+    deviceB = await openSignedIn(webkitBrowser, email, password);
 
     // Fire both edits concurrently -- neither await completes before the
     // other's form submit fires -- to force a genuine Firestore-level race
@@ -294,6 +307,8 @@ async function runOnce(iteration) {
       submitPreparedAndClassify(deviceA.page, 15),
       submitPreparedAndClassify(deviceB.page, 25)
     ]);
+    debugResultA = resultA;
+    debugResultB = resultB;
 
     stage = 'authoritative post-race invariants';
     const cloudAfter = await readCloud(testEnv, uid);
@@ -330,7 +345,10 @@ async function runOnce(iteration) {
       diagnosticsA: resultA.diagnostics, diagnosticsB: resultB.diagnostics
     };
   } catch (error) {
-    return { ok: false, iteration, stage, error: error.message, stack:error.stack };
+    return {
+      ok: false, iteration, stage, error: error.message, stack:error.stack, debugResultA, debugResultB,
+      pageErrorsA: deviceA?.pageErrors, pageErrorsB: deviceB?.pageErrors
+    };
   } finally {
     await chromiumBrowser?.close().catch(() => {});
     await webkitBrowser?.close().catch(() => {});
@@ -347,6 +365,17 @@ async function main() {
     results.push(result);
     const label = result.ok ? `A=${result.outcomeA} B=${result.outcomeB} cloudStock=${result.cloudStock}` : `ERROR: ${result.error}`;
     console.log(`[r37-2-5 two-device race ${i}/${RUNS}] ${result.ok ? 'PASS' : 'FAIL'} -- ${label}`);
+    if (process.env.CLICK360_R3725_VERBOSE === '1') {
+      console.log('  DEBUG A:', JSON.stringify(result.debugResultA ?? result.diagnosticsA ?? null));
+      console.log('  DEBUG B:', JSON.stringify(result.debugResultB ?? result.diagnosticsB ?? null));
+    } else if (!result.ok && (result.debugResultA || result.debugResultB)) {
+      console.log('  DEBUG A:', JSON.stringify(result.debugResultA));
+      console.log('  DEBUG B:', JSON.stringify(result.debugResultB));
+    }
+    if (!result.ok) {
+      console.log('  PAGE ERRORS A:', JSON.stringify(result.pageErrorsA));
+      console.log('  PAGE ERRORS B:', JSON.stringify(result.pageErrorsB));
+    }
     // Let the previous iteration's emulator/server fully release their
     // ports before the next spawn -- back-to-back spawns can otherwise
     // race a not-yet-freed port (an infra flake, not a product bug).

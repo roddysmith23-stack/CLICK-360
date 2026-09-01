@@ -3123,7 +3123,16 @@
         // r37.2.2 (P0, real SHARY incident): see the identical note on the
         // listener path below -- click360ReloadState() here could silently wipe
         // the just-hydrated in-memory state on a local-persist failure. Removed.
-	        if (reload && window.click360Route) window.click360Route(window.location.hash.replace('#','') || 'home');
+        // r37.2.5 (P0, real SHARY incident): a forced refresh mid-edit (this
+        // exact device's own conflict-recovery calling click360RefreshNow()
+        // while its product-edit modal is still open) used to route/re-render
+        // unconditionally here, unlike the realtime listener path below which
+        // already guards against clobbering an open modal or a focused input.
+        // That inconsistency could destroy the very form the user (or an
+        // in-flight save handler) was still using. Apply the same guard.
+        const hasOpenModalOnRefresh = !!document.querySelector('#modalRoot .modalOverlay.show');
+        const hasActiveInputOnRefresh = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+	        if (reload && window.click360Route && !hasOpenModalOnRefresh && !hasActiveInputOnRefresh) window.click360Route(window.location.hash.replace('#','') || 'home');
 	      return true;
 	    }
 			    if (force || remoteHash === localHash || remoteMaterialHash === localMaterialHash) {
@@ -3184,6 +3193,27 @@
 	        quarantineIncident("blocked_listener_identity", { path: stateDoc.path });
 	        setSyncStatus("error", "Cambio remoto de otro tenant bloqueado.");
 		        showGate('Se detectó un cambio remoto de otra cuenta. La operación fue bloqueada para proteger los datos.', ACCESS_UI_STATES.BLOCKED, { reason: 'remote_identity_mismatch' });
+	        return;
+	      }
+	      // r37.2.5 (P0, real SHARY incident): a real Firestore revision
+	      // conflict between two devices editing the SAME product is only
+	      // detected correctly if THIS device's own view of "what the server
+	      // had before my edit" (LAST_REMOTE_REVISION, and the target
+	      // product's baseline fingerprint captured from `state` at submit
+	      // time) is not silently fast-forwarded by this background listener
+	      // while an edit is in progress. Applying the remote update here
+	      // (even just bumping LAST_REMOTE_REVISION) would let this device's
+	      // OWN later save silently believe "nothing changed since my
+	      // baseline" and overwrite -- or cleanly out-race -- another
+	      // device's already-confirmed write, exactly the stale-confirmation
+	      // failure qa/r37-2-5-two-device-same-product-conflict-e2e.mjs
+	      // guards against. Treat an open modal or a focused input the same
+	      // way a pending local write is already treated below: defer the
+	      // whole snapshot, don't just skip the re-render. The user's own
+	      // eventual save still gets a fully authoritative, on-demand
+	      // conflict check via commitCriticalMutation regardless.
+	      if (document.querySelector('#modalRoot .modalOverlay.show')
+	        || (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName))) {
 	        return;
 	      }
 	      const remotePayload = remoteData.payload;
@@ -3822,7 +3852,17 @@
 	      window.click360User.access = publishAccessState(next);
 	      scheduleAccessExpiry(user, window.click360User.access, expectedEpoch);
       if (next.readOnly) setSyncStatus('read_only', 'La prueba terminó. Tus datos permanecen disponibles en modo lectura.');
-      window.click360Route?.(window.location.hash.replace('#', '') || 'home');
+      // r37.2.5 (P0, real SHARY incident): this listener's cache-then-server
+      // double delivery is normal Firestore behavior even when accountAccess
+      // never changes -- the server snapshot can arrive well after hydration,
+      // while the user (or an in-flight save handler) is mid-edit. Unlike its
+      // sibling listeners (listenUserApproval, listenRemoteChanges), this call
+      // had no open-modal/active-input guard and could destroy the form out
+      // from under a real edit. Match the existing guard pattern.
+      const accessEditing = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+      if (!accessEditing && !document.querySelector('#modalRoot .modalOverlay.show')) {
+        window.click360Route?.(window.location.hash.replace('#', '') || 'home');
+      }
     }, (error) => console.warn('No se pudo escuchar el acceso de cuenta:', error.message));
   }
 

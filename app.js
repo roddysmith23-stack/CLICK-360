@@ -3577,6 +3577,7 @@ function parseMoney(value) {
 	    return Math.max(0, Math.ceil((LEGAL_GRACE_MS - (Date.now() - presentedAtMs)) / (24 * 60 * 60 * 1000)));
 	  }
 	  function renderLegalGraceBannerModal() {
+	    if (document.querySelector('#modalRoot .modalOverlay.show') || ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)) return;
 	    const status = legalAcceptanceStatus();
 	    const termsVersion = escapeHtml(window.CLICK360_V16_DOMAIN?.TERMS_VERSION || '2026-07-14');
 	    const daysLeft = legalGraceDaysRemaining();
