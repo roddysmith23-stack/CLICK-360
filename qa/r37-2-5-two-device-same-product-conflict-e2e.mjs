@@ -173,9 +173,11 @@ async function openSignedIn(browser, email, password_) {
     return local ? route.continue() : route.abort();
   });
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 30000 });
+  await page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', null, { timeout: 30000 });
   await page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password_ });
-  await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', { timeout: 60000 });
+  // waitForFunction's second parameter is the page argument, NOT options.
+  // Previously the intended hydration timeout was ignored (default 30s).
+  await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', null, { timeout: 60000 });
   await page.evaluate(() => window.click360Route('inventory'));
   await page.waitForSelector('#newProduct', { timeout: 30000 });
   return { context, page, pageErrors };
@@ -208,7 +210,7 @@ async function submitAndClassify(page, productId, stock) {
       || /Hay un conflicto de sincronizaci.n pendiente/.test(message)
       || /El cambio no fue confirmado y no se registr. como completado/.test(message)
       || (toast?.classList.contains('err') && !/Sincronizando cambios/.test(message));
-  }, { timeout: 25000 });
+  }, null, { timeout: 30000 });
 
   return page.evaluate((targetStock) => {
     const toastEl = document.getElementById('toast');
@@ -232,16 +234,18 @@ function writeEmulatorConfig() {
   writeFileSync(path.join(dir, 'firestore.rules'), rules);
   writeFileSync(path.join(dir, 'firebase.json'), JSON.stringify({
     firestore: { rules: 'firestore.rules' },
-    emulators: { auth: { host: '127.0.0.1', port: authPort }, firestore: { host: '127.0.0.1', port: firestorePort }, ui: { enabled: false } }
+    emulators: { auth: { host: '127.0.0.1', port: authPort }, firestore: { host: '127.0.0.1', port: firestorePort,websocketPort:authPort+101 },hub:{host:'127.0.0.1',port:authPort+100},logging:{host:'127.0.0.1',port:authPort+102},ui: { enabled: false } }
   }, null, 2));
   return path.join(dir, 'firebase.json');
 }
 
 async function runOnce(iteration) {
+  let stage = 'startup';
   mkdirSync(outputDir, { recursive: true });
+  const emulatorConfig = writeEmulatorConfig();
   const emulators = spawn(path.join(root, 'node_modules/.bin/firebase'), [
-    'emulators:start', '--only', 'firestore,auth', '--project', projectId, '--config', writeEmulatorConfig()
-  ], { cwd: root, detached: true, stdio: 'ignore', env: { ...process.env, PATH: `${javaDirs.join(':')}:${process.env.PATH}` } });
+    'emulators:start', '--only', 'firestore,auth', '--project', projectId, '--config', emulatorConfig
+  ], { cwd: path.dirname(emulatorConfig), detached: true, stdio: 'ignore', env: { ...process.env, PATH: `${javaDirs.join(':')}:${process.env.PATH}` } });
   const server = spawn(process.execPath, [path.join(root, 'node_modules/http-server/bin/http-server'), '.', '-p', String(port), '-c-1'], { cwd: root, detached: true, stdio: 'ignore' });
   let testEnv;
   let chromiumBrowser;
@@ -262,17 +266,21 @@ async function runOnce(iteration) {
 
     chromiumBrowser = await chromium.launch();
     webkitBrowser = await webkit.launch();
+    stage = 'chromium authoritative hydration';
     const deviceA = await openSignedIn(chromiumBrowser, email, password);
+    stage = 'webkit authoritative hydration';
     const deviceB = await openSignedIn(webkitBrowser, email, password);
 
     // Fire both edits concurrently -- neither await completes before the
     // other's form submit fires -- to force a genuine Firestore-level race
     // on the SAME product, not a sequential happy path.
+    stage = 'concurrent product edit and terminal outcome';
     const [resultA, resultB] = await Promise.all([
       submitAndClassify(deviceA.page, productId, 15),
       submitAndClassify(deviceB.page, productId, 25)
     ]);
 
+    stage = 'authoritative post-race invariants';
     const cloudAfter = await readCloud(testEnv, uid);
     const cloudProduct = cloudAfter?.payload?.data?.products?.find((p) => p.id === productId);
     assert(cloudProduct, 'target product must still exist in cloud after the race');
@@ -307,7 +315,7 @@ async function runOnce(iteration) {
       diagnosticsA: resultA.diagnostics, diagnosticsB: resultB.diagnostics
     };
   } catch (error) {
-    return { ok: false, iteration, error: error.message };
+    return { ok: false, iteration, stage, error: error.message, stack:error.stack };
   } finally {
     await chromiumBrowser?.close().catch(() => {});
     await webkitBrowser?.close().catch(() => {});

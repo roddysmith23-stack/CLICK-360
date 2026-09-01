@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-6-runtime-recovery-r1';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r38-mvp-candidate';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -280,6 +280,11 @@
 
   // No business state is loaded until Firebase resolves an authenticated tenant.
   let activeTenantContext = null;
+  // An access/profile/remote-snapshot refresh can legitimately rebuild the
+  // current route. Keep the in-memory checkout draft outside bindSell() so
+  // such a render cannot discard a cart between "Agregar" and "Cobrar".
+  // The key prevents any draft from crossing a tenant or business boundary.
+  let activeSellDraft = { key:'', cart:[] };
   let state = seed();
   let lastPersistedState = null;
   let session = null;
@@ -305,8 +310,10 @@
   // views MUST check tenantDataHydrated() before trusting `state` for
   // anything that gates a financial action or displays a total as final.
   let tenantDataHydrated = false;
+  let tenantStateProvenance = 'seed';
   function tenantDataHydratedState() { return tenantDataHydrated ? 'ready' : 'loading'; }
   window.click360IsTenantDataHydrated = () => tenantDataHydrated;
+  window.click360GetTenantStateProvenance = () => tenantStateProvenance;
   let onboardingPrompted = false;
   let clockTimer = null;
   let modalReturnFocus = null;
@@ -1021,10 +1028,13 @@ function parseMoney(value) {
     let refreshed = false;
     try { refreshed = await window.click360RefreshNow?.() === true; } catch {}
     if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
-    if (typeof remoteApplied === 'function' && remoteApplied(state)) {
+    if (refreshed && typeof remoteApplied === 'function' && remoteApplied(state)) {
       return { ok: true, pending: false, recovered: !synced, readbackConfirmed: true };
     }
-    if (!refreshed) restoreCriticalSnapshot(previousState);
+    // A successful push followed by a failed read is unconfirmed, not undone.
+    // Keep its local candidate: rolling back here could later replace an
+    // already-committed product/sale with the pre-operation state.
+    if (!refreshed && !synced) restoreCriticalSnapshot(previousState);
     if (!options.suppressFailureToast) toast('El cambio no fue confirmado y no se registró como completado.', 'err');
     return { ok: false, pending: false };
     } finally {
@@ -1351,6 +1361,7 @@ function parseMoney(value) {
     if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
       throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
     }
+    if (activeTenantContext?.tenantKey !== context.tenantKey) activeSellDraft = { key:'', cart:[] };
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
@@ -1366,6 +1377,7 @@ function parseMoney(value) {
       lastPersistedState = null;
       lastAutoSaveHash = '';
       tenantDataHydrated = false;
+      tenantStateProvenance = 'seed';
     } else {
       state = loadState();
       rememberPersistedState();
@@ -1373,6 +1385,7 @@ function parseMoney(value) {
       // A real, validated local cache was found (lastLoadStateWasRealCache)
       // -- trust it as a real (if possibly stale) snapshot, not the seed.
       tenantDataHydrated = lastLoadStateWasRealCache;
+      tenantStateProvenance = lastLoadStateWasRealCache ? 'verified_cache' : 'fallback';
     }
     session = loadSession();
     publishStorageState({ mode: 'checking', tenantKey: activeTenantContext.tenantKey, message: 'Comprobando almacenamiento seguro.' });
@@ -1445,6 +1458,7 @@ function parseMoney(value) {
 
     state = snapshot;
     tenantStateDeferred = false;
+    tenantStateProvenance = 'explicit_initial';
     if (localPersisted || indexedPersisted) rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
     return {
@@ -1458,11 +1472,13 @@ function parseMoney(value) {
   window.click360ClearTenantContext = function() {
     stopScanner();
     activeTenantContext = null;
+    activeSellDraft = { key:'', cart:[] };
     window.CLICK360_RUNTIME_GUARD?.clearContext();
     onboardingPrompted = false;
     window.click360TenantContext = null;
     state = seed();
     tenantDataHydrated = false;
+    tenantStateProvenance = 'seed';
     lastPersistedState = null;
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
@@ -1482,6 +1498,7 @@ function parseMoney(value) {
     state = loadState();
     tenantStateDeferred = false;
     tenantDataHydrated = lastLoadStateWasRealCache;
+    tenantStateProvenance = lastLoadStateWasRealCache ? 'verified_cache' : 'fallback';
     rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
     return true;
@@ -1508,6 +1525,7 @@ function parseMoney(value) {
       };
       tenantStateDeferred = false;
       tenantDataHydrated = true;
+      tenantStateProvenance = 'verified_cache';
       rememberPersistedState();
       lastAutoSaveHash = JSON.stringify(state);
       publishStorageState({ mode: 'indexeddb_cache', indexedDbReady: true, message: 'Copia sin conexion cargada.' });
@@ -1631,6 +1649,7 @@ function parseMoney(value) {
     state = next;
     tenantStateDeferred = false;
     tenantDataHydrated = true;
+    tenantStateProvenance = 'remote';
     rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
     queueIndexedSnapshot(state, { source: 'remote_applied', pendingRemoteSync: false, localPersisted });
@@ -1818,6 +1837,8 @@ function parseMoney(value) {
 
   window.click360ReloadState = () => {
     state = loadState();
+    tenantDataHydrated = lastLoadStateWasRealCache;
+    tenantStateProvenance = lastLoadStateWasRealCache ? 'verified_cache' : 'fallback';
     rememberPersistedState();
     lastAutoSaveHash = JSON.stringify(state);
   };
@@ -2417,7 +2438,7 @@ function parseMoney(value) {
 	      </div>`;
 
     const b=currentBusiness();
-	    const businessName = b?.name || 'Seleccionar negocio';
+	    const businessName = tenantDataHydrated ? (b?.name || 'Seleccionar negocio') : 'Cargando negocio…';
 	    const businessSwitcher = (id, className = '') => `<button type="button" id="${id}" class="businessSwitchButton ${className}" title="Cambiar negocio"><span>${escapeHtml(businessName)}</span>${icon('chevrons-up-down')}</button>`;
     const businessLogo = safeImageSrc(b?.settings?.logoUrl);
     const profilePhoto = safeImageSrc(authUser().photoURL);
@@ -2543,16 +2564,50 @@ function parseMoney(value) {
   }
 	  function renderApp(r='home') {
 	    try {
-	      if(!checkAuth('business')) return;
-	      if(!can(r)) r='home';
-	      if (r !== 'legal' && requiresLegalHardGate()) r = 'legalGate';
-	      else if (r !== 'legal' && requiresWorkerAccessGate()) r = 'workerAccessGate';
+          if(!checkAuth('business')) return;
+          if(!can(r)) r='home';
+          if (r !== 'legal' && requiresLegalHardGate()) r = 'legalGate';
+          else if (r !== 'legal' && requiresWorkerAccessGate()) r = 'workerAccessGate';
+      const activeModal = arguments[1]?.preserveActiveModal === true && r === route
+        ? $('#modalRoot .modalOverlay.show') : null;
+      if (activeModal && activeModal.dataset.businessId === currentBusiness()?.id
+          && tenantDataHydrated && !['legalGate','workerAccessGate'].includes(r)) return;
+      const inventorySearch = r === 'inventory' && route === 'inventory' ? $('#productSearch') : null;
+      const inventorySearchState = inventorySearch && inventorySearch.dataset.businessId === currentBusiness()?.id
+        ? {value:inventorySearch.value,focused:document.activeElement === inventorySearch,start:inventorySearch.selectionStart,end:inventorySearch.selectionEnd} : null;
+      const cashOpening = r === 'cash' && route === 'cash' ? $('#apertureAmountInput') : null;
+      const cashOpeningState = cashOpening && cashOpening.dataset.businessId === currentBusiness()?.id
+        ? {value:cashOpening.value,focused:document.activeElement === cashOpening} : null;
+      // Access/snapshot refreshes must not destroy the active checkout closure
+      // (cart, tender inputs and the in-flight button lock). Auth/legal gates
+      // above still take precedence; a different tenant or closed day renders.
+      const checkout = r === 'sell' && route === 'sell' ? $('#payMethod') : null;
+      const focusedSellField = checkout && document.activeElement?.closest?.('#app')
+        && ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName);
+      const typedSellDraft = checkout && [
+        $('#manualCode')?.value, $('#sellSearch')?.value, $('#cashReceived')?.value,
+        $('#customer')?.value, $('#customerCedula')?.value, $('#customerPhone')?.value
+      ].some((value) => String(value || '').trim() !== '');
+      if (checkout && checkout.dataset.businessId === currentBusiness()?.id
+          && tenantDataHydrated && isDayStarted() && !isDayClosed()
+          && (focusedSellField || typedSellDraft || checkout.value !== 'Efectivo'
+            || Number(window.click360SellCartCount?.() || 0) > 0 || $('#chargeBtn')?.disabled)) {
+        markAppReady('route:sell');
+        return;
+      }
 	      stopScanner(); closeModal(); route=r;
       clearInterval(clockTimer);
       history.replaceState(null, '', '#' + r);
 	      const views={home:homeView,inventory:inventoryView,sell:sellView,cash:cashView,more:moreView,reports:reportsView,settings:settingsView,workers:workersView,backup:backupView,debtors:debtorsView,activity:activityView,invoices:invoicesView,crm:crmView,reminders:remindersView,access:accessView,legal:legalView,legalGate:legalAcceptanceGateView,workerAccessGate:workerAccessGateView,printing:printingView,tables:tablesView,kitchen:kitchenView,bar:barView,logistics:logisticsView,finance:financeView,help:helpView,ceoAdmin:ceoAdminView};
       app.innerHTML=shell((views[r]||homeView)(), r);
+      if (inventorySearchState && $('#productSearch')) $('#productSearch').value = inventorySearchState.value;
+      if (cashOpeningState && $('#apertureAmountInput')) $('#apertureAmountInput').value = cashOpeningState.value;
       bindShell(); bindView(r);
+      if (cashOpeningState?.focused && $('#apertureAmountInput')) $('#apertureAmountInput').focus({preventScroll:true});
+      if (inventorySearchState?.focused && $('#productSearch')) {
+        $('#productSearch').focus({preventScroll:true});
+        $('#productSearch').setSelectionRange(inventorySearchState.start, inventorySearchState.end);
+      }
       checkDueReminders();
       if (r === 'home') setTimeout(showOnboardingForNewAccount, 0);
       if (r !== 'legalGate') setTimeout(maybeShowLegalGraceBanner, 0);
@@ -2668,7 +2723,7 @@ function parseMoney(value) {
 
     return `<div class="pageHead"><div><h1>Inventario</h1><p>Registra, controla y genera etiquetas.</p></div><div class="toolbar"><button class="btn silver" id="openCamera">${icon('scan-line')} Escanear</button><button class="btn primary" id="newProduct">＋ Nuevo</button></div></div>
       <div class="searchBox" style="display:flex; gap:10px;">
-         <input id="productSearch" data-scanner-input placeholder="Buscar por nombre o código..." style="flex:1;" />
+         <input id="productSearch" data-business-id="${escapeHtml(currentBusiness()?.id || '')}" data-scanner-input placeholder="Buscar por nombre o código..." style="flex:1;" />
       </div>
       <div id="cameraPanel" class="cameraPanel" style="margin-bottom:14px;"><video id="scanVideo" playsinline muted></video><div id="cameraStatus" class="cameraStatus">Listo para cámara.</div></div>
       <section id="productList" class="productList" style="margin-top:14px">${productList(products,v)}</section>
@@ -2829,7 +2884,7 @@ function parseMoney(value) {
          <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">Ingresa el monto de caja inicial con el que ingresa el negocio.</p>
          <div style="max-width:240px; margin: 0 auto 16px;">
             <label style="display:block; text-align:left; font-size:12px; margin-bottom:4px; font-weight:bold;">Monto de Apertura ($)</label>
-            <input type="text" id="apertureAmountInput" class="full" style="text-align:center; font-size:18px; font-weight:bold;" placeholder="0.00" value="0.00">
+            <input type="text" id="apertureAmountInput" data-business-id="${escapeHtml(currentBusiness()?.id || '')}" class="full" style="text-align:center; font-size:18px; font-weight:bold;" placeholder="0.00" value="0.00">
          </div>
          <button class="btn primary block" id="startDayBtnCash" style="width:100%;">Iniciar Día (Apertura)</button>
        </div>
@@ -3069,8 +3124,12 @@ function parseMoney(value) {
       return `<div class="pageHead"><div><h1>Apartados</h1></div></div>${dataNotReadyCardHtml('Cargando tus apartados desde la nube...')}`;
     }
     const businessId = currentBusiness()?.id || '';
-    const sales = salesForBiz(businessId).filter((sale) => ['layaway', 'pending_payment', 'paid'].includes(sale.status));
     const layawayBySale = new Map((state.layaways || []).filter((item) => item.businessId === businessId).map((item) => [item.saleId, item]));
+    // A paid retail sale is not an apartado. Linked records and the original
+    // tender retain the apartado history even after payment or cancellation.
+    const sales = salesForBiz(businessId).filter((sale) => layawayBySale.has(sale.id)
+      || ['Apartado', 'Pendiente'].includes(sale.method)
+      || ['layaway', 'pending_payment'].includes(sale.status));
     const records = sales.map((sale) => {
       const layaway = layawayBySale.get(sale.id) || { id:sale.id, saleId:sale.id, businessId, status:sale.status, total:sale.total, paid:sale.received, balance:sale.balance, payments:sale.payments || [], customerSnapshot:{ name:sale.customer, phone:sale.customerPhone }, itemsSnapshot:saleItems(sale), pickupDueAt:sale.dueDate, createdAt:sale.createdAt || sale.when };
       return { sale, layaway, status:window.CLICK360_V16_DOMAIN?.layawayStatus(layaway) || layaway.status };
@@ -3082,7 +3141,8 @@ function parseMoney(value) {
       <section class="grid cashGrid"><div class="card kpi"><small>Saldo pendiente</small><strong class="goldText">${fmt(totalPending)}</strong></div><div class="card kpi"><small>Apartados activos</small><strong>${active.length}</strong></div></section>
       <section class="card sectionCard layawayFilterCard">
         <div class="field"><label>Buscar</label><input id="layawaySearch" type="search" placeholder="Nombre, teléfono o # de apartado" autocomplete="off"></div>
-        <div class="field"><label>Estado</label><select id="layawayStatusFilter"><option value="active">Activos primero</option><option value="all">Todos</option><option value="paid">Pagados</option><option value="ready_for_pickup">Listos para retiro</option><option value="picked_up">Entregados</option><option value="cancelled">Cancelados</option></select></div>
+        <div class="layawayQuickFilters" role="group" aria-label="Filtrar apartados">${[['pending','Pendientes'],['paid','Pagados'],['ready_for_pickup','Listos'],['picked_up','Entregados'],['all','Todos']].map(([value,label]) => `<button type="button" class="btn silver" data-layaway-filter="${value}" aria-pressed="${value === 'pending'}">${label}</button>`).join('')}</div>
+        <div class="field"><label>Estado</label><select id="layawayStatusFilter"><option value="pending">Pendientes</option><option value="active">Activos primero</option><option value="all">Todos</option><option value="paid">Pagados</option><option value="ready_for_pickup">Listos para retiro</option><option value="picked_up">Entregados</option><option value="cancelled">Cancelados</option></select></div>
       </section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial de apartados</h3><div id="layawayList">${records.map(({ sale, layaway, status }) => {
         const items = (layaway.itemsSnapshot || saleItems(sale) || []).map((item) => `${escapeHtml(item.name || item.code || 'Producto')} × ${Number(item.qty || 1)}`).join(', ');
@@ -6475,8 +6535,13 @@ function parseMoney(value) {
     const select = $('#layawayStatusFilter');
     const search = $('#layawaySearch');
     const apply = () => {
-      const value = select?.value || 'active';
+      const value = select?.value || 'pending';
       const query = (search?.value || '').trim().toLowerCase();
+      $$('[data-layaway-filter]').forEach((button) => {
+        const selected = !query && button.dataset.layawayFilter === value;
+        button.setAttribute('aria-pressed', String(selected));
+        button.classList.toggle('primary', selected);
+      });
       $$('.layawayRow').forEach((row) => {
         // A search always looks across every status: the point is finding
         // ONE specific Apartado the worker already knows the customer/phone
@@ -6486,11 +6551,18 @@ function parseMoney(value) {
           row.hidden = !(row.dataset.layawaySearch || '').includes(query);
           return;
         }
-        row.hidden = value === 'active' ? row.dataset.layawayActive !== 'true' : value !== 'all' && row.dataset.layawayStatus !== value;
+        row.hidden = value === 'pending'
+          ? !['active','partially_paid','expired','pending_payment','layaway'].includes(row.dataset.layawayStatus)
+          : value === 'active' ? row.dataset.layawayActive !== 'true' : value !== 'all' && row.dataset.layawayStatus !== value;
       });
     };
     select?.addEventListener('change', apply);
     search?.addEventListener('input', apply);
+    $$('[data-layaway-filter]').forEach((button) => button.addEventListener('click', () => {
+      if (select) select.value = button.dataset.layawayFilter;
+      if (search) search.value = '';
+      apply();
+    }));
     apply();
   }
   function bindInventory(){
@@ -6499,7 +6571,8 @@ function parseMoney(value) {
     // before hydration.
     if (!tenantDataHydrated) return;
     $('#newProduct').onclick=()=>openProductModal();
-    $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>x.name.toLowerCase().includes(q)||x.code.toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
+    $('#productSearch').oninput=()=>{ const q=$('#productSearch').value.toLowerCase(); const p=productsForBiz().filter(x=>String(x.name || '').toLowerCase().includes(q)||String(x.code || '').toLowerCase().includes(q)); $('#productList').innerHTML=productList(p,businessVocabulary(currentBusiness().type)); bindInventoryActions(); };
+    if ($('#productSearch').value) $('#productSearch').oninput();
     $('#productSearch').onkeydown=(event)=>{
       if(event.key!=='Enter') return;
       event.preventDefault();
@@ -6618,6 +6691,9 @@ function parseMoney(value) {
     bindInventoryActions();
   }
   function bindInventoryActions(){
+    // Search replaces productList.innerHTML; its new icon placeholders need
+    // hydration just like the initial route, alongside rebinding the actions.
+    refreshIcons($('#productList'));
     $$('[data-edit]').forEach(b=>b.onclick=()=>openProductModal(state.products.find(p=>p.id===b.dataset.edit && p.businessId===currentBusiness()?.id)));
     $$('[data-del]').forEach(b=>b.onclick=()=>window.click360GuardedAction(b, ()=>deleteProduct(b.dataset.del)));
     $$('[data-label]').forEach(b=>b.onclick=()=>openLabelModal(state.products.find(p=>p.id===b.dataset.label && p.businessId===currentBusiness()?.id)));
@@ -6793,22 +6869,23 @@ function parseMoney(value) {
       const diagnostics = { revisionAtStart:Number(window.click360DebugSyncIdentity?.().revision || 0), conflictDetected:false, targetChangedRemotely:null, retryAttempted:false, stalled:false, outcome:'pending' };
       window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS = diagnostics;
       const targetSnapshot = async () => {
-        try { await window.click360RefreshNow?.(); } catch {}
+        let authoritative = false;
+        try { authoritative = await window.click360RefreshNow?.() === true; } catch {}
         const remoteProduct = state.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
-        return { atMs:Date.now(), revision:Number(window.click360DebugSyncIdentity?.().revision || 0), fingerprint:productFingerprint(remoteProduct), product:remoteProduct };
+        return { authoritative, atMs:Date.now(), revision:Number(window.click360DebugSyncIdentity?.().revision || 0), fingerprint:productFingerprint(remoteProduct), product:remoteProduct };
       };
       const waitForVerifiableConfirmation = async (verifier, deadlineMs, priorSnapshot) => {
         let last = priorSnapshot;
         let stallTicks = 0;
         const STALL_LIMIT = 3;
-        while (Date.now() < deadlineMs && !remoteApplied(state, verifier) && stallTicks < STALL_LIMIT) {
+        while (Date.now() < deadlineMs && !(last.authoritative && remoteApplied(state, verifier)) && stallTicks < STALL_LIMIT) {
           await new Promise((resolve) => setTimeout(resolve, 500));
           const next = await targetSnapshot();
           const progressed = next.revision !== last.revision || next.fingerprint !== last.fingerprint;
           stallTicks = progressed ? 0 : stallTicks + 1;
           last = next;
         }
-        return { confirmed:remoteApplied(state, verifier) && last.revision > 0, last, stalled:stallTicks >= STALL_LIMIT };
+        return { confirmed:last.authoritative && remoteApplied(state, verifier) && last.revision > 0, last, stalled:stallTicks >= STALL_LIMIT };
       };
       let committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
 	      if (!committed.ok && navigator.onLine) {
@@ -6819,12 +6896,13 @@ function parseMoney(value) {
 	        }
 	        const initialSnapshot = await targetSnapshot();
 	        diagnostics.revisionAfterConflictResolve = initialSnapshot.revision;
-	        diagnostics.targetChangedRemotely = productFingerprint(baselineProduct) !== initialSnapshot.fingerprint;
+        diagnostics.targetChangedRemotely = initialSnapshot.authoritative ? productFingerprint(baselineProduct) !== initialSnapshot.fingerprint : null;
 	        const wait = await waitForVerifiableConfirmation(updatedAtMs, Date.now() + 15000, initialSnapshot);
-	        diagnostics.stalled = wait.stalled;
+        diagnostics.stalled = wait.stalled;
+        diagnostics.retryBaselineAuthoritative = wait.last.authoritative;
 	        if (wait.confirmed) committed = { ok:true, pending:false, recovered:true };
 	      }
-	      if (!committed.ok && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
+      if (!committed.ok && diagnostics.retryBaselineAuthoritative === true && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
 	        const refreshedProduct = state.products.find((candidate) => candidate.id === desiredProduct.id && candidate.businessId === b.id) || null;
 	        const codeTakenByAnotherProduct = state.products.some((candidate) => candidate.businessId === b.id && candidate.id !== desiredProduct.id && normalizeCode(candidate.code) === normalizeCode(desiredProduct.code));
 	        // The ONLY safe automatic retry: the target product, per an
@@ -6910,7 +6988,11 @@ function parseMoney(value) {
 
 	  function bindSell(){
 	    if(!$('#payMethod')) return;
-	    let cart=[];
+      $('#payMethod').dataset.businessId = currentBusiness()?.id || '';
+	    const sellDraftKey = `${activeTenantContext?.tenantKey || ''}:${currentBusiness()?.id || ''}`;
+      if (activeSellDraft.key !== sellDraftKey) activeSellDraft = { key:sellDraftKey, cart:[] };
+	    let cart=activeSellDraft.cart;
+	    const replaceCart = (next) => { cart = next; activeSellDraft = { key:sellDraftKey, cart }; };
 	    window.click360SellCartCount = () => cart.length;
 	    const currentTax = businessTaxConfig();
 	    $('#calculatorSellBtn')?.addEventListener('click', () => openCalculator({ base: parseMoney($('#cartTotal')?.textContent || 0), preferredTarget: 'cashReceived' }));
@@ -6977,7 +7059,6 @@ function parseMoney(value) {
       if (method === 'Efectivo') {
         recF.style.display = 'grid'; chgF.style.display = 'grid';
 	      const rec = parseMoney($('#cashReceived').value);
-	      const layawayInitialMethod = method === 'Apartado' ? ($('#layawayInitialMethod')?.value || 'Efectivo') : method;
         if(Number.isFinite(rec) && rec >= total) {
            if ($('#cashChange')) $('#cashChange').value = fmt(rec - total);
         } else {
@@ -7001,6 +7082,7 @@ function parseMoney(value) {
     };
 
     $('#payMethod').onchange = renderCart;
+    renderCart();
 
     const discIn = $('#discount'), cashRecIn = $('#cashReceived');
     if (discIn) { discIn.oninput = () => { discIn.value = discIn.value.replace(/[^0-9.,]/g, ''); renderCart(); }; }
@@ -7030,7 +7112,7 @@ function parseMoney(value) {
        $('#clearCartBtn').onclick = () => {
           if(!cart.length) return;
           if(confirm('¿Limpiar todo el carrito?')) {
-             cart = [];
+             replaceCart([]);
              $('#discount').value = '0';
              $('#cashReceived').value = '';
              $('#customer').value = '';
@@ -7091,6 +7173,12 @@ function parseMoney(value) {
       }
 
       const rec = parseMoney($('#cashReceived').value);
+	      // Resolve the tender inside the mutation, never through the browser's
+	      // named window property for the <select id="layawayInitialMethod">.
+	      const layawayInitialMethod = method === 'Apartado' ? ($('#layawayInitialMethod')?.value || 'Efectivo') : method;
+	      if (method === 'Apartado' && !['Efectivo', 'Tarjeta', 'Transferencia'].includes(layawayInitialMethod)) {
+	        beep('err'); return toast('Selecciona un método válido para el abono.', 'err');
+	      }
 	      let received = 0; let tendered = 0; let change = 0; let balance = 0;
       let status = "paid";
 
@@ -7207,8 +7295,15 @@ function parseMoney(value) {
 	      addAudit(method === 'Apartado' ? 'layaway_created' : 'sale_created', { saleId: sale.id, total: sale.total, method: sale.method, paymentMethod:layawayInitialMethod, status: sale.status, operationId:sale.operationId, entityType:method === 'Apartado' ? 'layaway' : 'sale', entityId:sale.id });
       const committed = await commitCriticalMutation(previousState, 'sale_created', (next) =>
         next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId));
-      if(!committed.ok) { renderApp('sell'); return; }
-      cart=[];
+      if(!committed.ok) {
+        // Confirmation failure may follow an already-committed write. Do not
+        // leave this cart chargeable under a new sale operation ID.
+        replaceCart([]);
+        chargeBtn.disabled = false;
+        renderApp('sell');
+        return;
+      }
+      replaceCart([]);
       $('#cashReceived').value='';
       $('#discount').value='0';
       $('#customer').value = '';
@@ -8876,7 +8971,7 @@ function parseMoney(value) {
 	    let root = $('#modalRoot');
 	    if (!root) { root = document.createElement('div'); root.id = 'modalRoot'; document.body.appendChild(root); }
 	    modalReturnFocus = returnFocus;
-	    root.innerHTML = `<div class="modalOverlay show"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
+	    root.innerHTML = `<div class="modalOverlay show" data-business-id="${escapeHtml(currentBusiness()?.id || '')}"><div class="modal" role="dialog" aria-modal="true">${html}</div></div>`;
 	    document.body.classList.add('has-modal');
 	    const dialog = $('.modal', root);
 	    $$('.field label:not([for])', dialog).forEach((label) => {
@@ -11102,63 +11197,14 @@ function parseMoney(value) {
     });
     return normalizedLabelLayout(layout);
   }
-  // r33 fix: mediaWidthMm/mediaHeightMm are the physical @page size handed straight to the
-  // browser's print dialog (see pageCss() in printing-service.js). A saved profile can end up
-  // with a STALE, inconsistent value here — e.g. a user explores an A4/sheet preset (which sets
-  // mediaWidthMm=210/mediaHeightMm=297), then edits "Ancho/Alto de cada sticker" directly to a
-  // real 60x40mm roll label WITHOUT re-selecting a roll preset (only the paper-type <select>'s
-  // onchange resets mediaWidth/mediaHeight — see applyPaperType()) — the stale 210x297 gets saved
-  // into the profile untouched and, at print time, becomes the literal @page size while the label
-  // itself correctly renders at 60x40mm: a small, correctly-sized label in the corner of a large
-  // blank page. Root cause of a real production incident (60x40mm label printing inside an
-  // effective A4 page).
-  //
-  // SANITY_FACTOR gives real physical slack: a label's backing/liner is legitimately often wider
-  // than the sticker itself (a few extra mm), so a plausible mediaWidthMm up to ~60% larger than
-  // what the configured columns/rows need is trusted as-is. Beyond that, it is almost certainly a
-  // leftover sheet/A4 value, not a real liner width, so the natural size computed from the
-  // label's own dimensions is used instead — this is the one place @page size is computed for
-  // every print/PDF path (buildUniversalLabelPrintNode -> handoffPrint -> printing-service.js).
+  // All entry points use the same carrier geometry: r33 stale-size protection,
+  // r37.2.1 row pitch, r37.2.3 roll margins and PR79 full-column bounds.
+  // This never edits artwork or persisted profiles. Catalog printing shares the
+  // resolver while retaining its per-product rendering for variant/stock/tax.
   function universalMediaSize(document) {
-    const paper = document.paper;
-    const SANITY_FACTOR = 1.6;
-    const rowAdvanceMm = paper.pitchMm > paper.heightMm ? paper.pitchMm : paper.heightMm + paper.gapYmm;
-    const naturalWidth = paper.marginLeftMm + paper.marginRightMm
-      + paper.columns * paper.widthMm + Math.max(0, paper.columns - 1) * paper.gapXmm;
-    // r37.2.1 (SHARY physical print -- blank rows between printed groups):
-    // each "page" this system emits is one physical row (or, for
-    // multi-row sheets, `paper.rows` rows) of a continuously-fed roll --
-    // the real distance the printer advances per page must include the
-    // gap to the NEXT row, or every page is emitted `gapYmm` short. With
-    // the shipped roll presets (rows:1, so the old `(rows-1)*rowAdvanceMm`
-    // term was always 0), the entire gap was silently dropped from every
-    // single page, so the printed pitch drifted from the true physical
-    // pitch on every row until the printer's gap sensor had to eject a
-    // blank label to resynchronize. Using `rows * rowAdvanceMm` (instead
-    // of `heightMm + (rows-1)*rowAdvanceMm`) gives every row -- including
-    // the only row in the common rows:1 case -- its real physical pitch.
-    // r37.2.3 (roll batch physical pitch drift, real SHARY incident): this
-    // naturalHeight becomes the declared physical page height for EVERY
-    // page in a multi-page batch (buildUniversalLabelPrintNode applies the
-    // SAME media.heightMm to each page, and pageCss() emits one @page rule
-    // for the whole job) -- so folding marginTopMm/marginBottomMm in here
-    // compounds them on every page of a continuous/precut roll, which has
-    // no such margin between physical tramos. 1 label per job happened to
-    // look fine (only one page, so no compounding); a batch drifted by
-    // marginTopMm+marginBottomMm per additional page, splitting content
-    // across physical labels. Sheet media (a real page with real margins)
-    // keeps the margin -- only roll/continuous media excludes it.
-    const rollPitchHeight = paper.rows * rowAdvanceMm;
-    const naturalHeight = paper.mediaType === 'sheet'
-      ? paper.marginTopMm + paper.marginBottomMm + rollPitchHeight
-      : rollPitchHeight;
-    const width = paper.mediaWidthMm && paper.mediaWidthMm <= naturalWidth * SANITY_FACTOR ? paper.mediaWidthMm : naturalWidth;
-    const height = paper.mediaHeightMm && paper.mediaHeightMm <= naturalHeight * SANITY_FACTOR ? paper.mediaHeightMm : naturalHeight;
-    // A physical page must contain every configured column. An undersized
-    // mediaWidthMm previously kept a one-label page while the plan still
-    // positioned later columns outside it, where overflow:hidden clipped them.
-    // Keep the height contract unchanged: roll height is the physical pitch.
-    return { widthMm: Math.max(naturalWidth, width), heightMm: Math.max(paper.heightMm, height) };
+    const paper = window.CLICK360_UNIVERSAL_LABEL_CANVAS.toPrintPaper(document);
+    const media = window.CLICK360_SMART_PRINT.resolvePhysicalMedia(paper);
+    return { widthMm:media.widthMm, heightMm:media.heightMm };
   }
   function legacyPaperProfileToUniversal(paper = {}) {
     return {
@@ -11335,9 +11381,14 @@ function parseMoney(value) {
     if (!resolvedTemplate && !sourceDocument) {
       throw Object.assign(new Error('Plantilla no encontrada. Guarda un diseño primero.'), { code:'label-template-missing' });
     }
-    const profile = resolveLabelPrintProfile(businessId, resolvedTemplate || {}, paperProfileId);
-    // If no saved profile found, fall back to the template/sourceDocument paper itself.
-    // This ensures print still works even without an explicit profile saved.
+    const quantityResult = resolveLabelCopyResult(quantity, product.qty, useStock);
+    if (!quantityResult.valid || quantityResult.count < 1) {
+      throw Object.assign(new Error(quantityResult.error || 'La cantidad debe ser un número entero válido.'), { code:'label-quantity-invalid' });
+    }
+    let profile = resolveLabelPrintProfile(businessId, resolvedTemplate || {}, paperProfileId);
+    // Inline paper is a provisional profile, not a separate unchecked pipeline.
+    // Previously count||1 printed one label for invalid quantities and bypassed
+    // physical validation whenever only a source document was provided.
     if (!profile?.universalPaper) {
       const fallbackDoc = sourceDocument
         ? canvasApi.normalizeDocument(sourceDocument)
@@ -11345,23 +11396,10 @@ function parseMoney(value) {
       const fallbackPaper = fallbackDoc?.paper;
       if (fallbackPaper?.widthMm > 0 && fallbackPaper?.heightMm > 0) {
         console.warn('[CLICK360] No saved profile — using document paper as provisional profile');
-        // Use document paper directly, skip profile merge step
-        let documentModel = fallbackDoc;
-        const resolvedFallbackPriceFormat = priceFormat || resolvedTemplate?.priceFormat || 'full';
-        documentModel = { ...canvasApi.normalizeDocument({ ...documentModel, quantity: resolveLabelCopyResult(quantity, product.qty, useStock).count || 1, startSlot: Math.max(1, Number(startSlot) || 1) }), priceFormat:resolvedFallbackPriceFormat };
-        const qty = resolveLabelCopyResult(quantity, product.qty, useStock);
-        const groups = [{ product, copies: qty.count || 1 }];
-        const plan = canvasApi.buildPrintPlan(groups, documentModel, { startSlot: documentModel.startSlot, usedSlots });
-        if (!plan.valid || !plan.count || !plan.pages?.length) {
-          throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas. Verifica la plantilla.'), { code:'label-plan-invalid' });
-        }
-        return { product, template:resolvedTemplate, profile:{ id:'inline-paper', universalPaper:fallbackPaper, name:'Papel de plantilla' }, document:documentModel, plan, groups, quantity:qty, media:universalMediaSize(documentModel), fingerprint:canvasApi.planFingerprint(plan) };
+        profile = { id:'inline-paper', universalPaper:fallbackPaper, name:'Papel de plantilla', status:'provisional' };
+      } else {
+        throw Object.assign(new Error('Selecciona o configura un perfil de papel antes de imprimir. Abre el botón QR dorado y elige un perfil.'), { code:'label-profile-missing' });
       }
-      throw Object.assign(new Error('Selecciona o configura un perfil de papel antes de imprimir. Abre el botón QR dorado y elige un perfil.'), { code:'label-profile-missing' });
-    }
-    const quantityResult = resolveLabelCopyResult(quantity, product.qty, useStock);
-    if (!quantityResult.valid || quantityResult.count < 1) {
-      throw Object.assign(new Error(quantityResult.error || 'La cantidad debe ser un número entero válido.'), { code:'label-quantity-invalid' });
     }
     let documentModel = sourceDocument
       ? canvasApi.normalizeDocument(sourceDocument)
@@ -11449,7 +11487,7 @@ function parseMoney(value) {
         </div>
         <div class="labelPrimaryActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn primary" id="quickLabelConfirm">${isPdf ? `${icon('file-down')} Guardar PDF` : `${icon('printer')} Imprimir`}</button></div>`);
       $('#quickLabelConfirm').onclick = () => {
-        const confirmedQuantity = Math.max(1, Number($('#quickLabelQuantity')?.value || 1));
+        const confirmedQuantity = Number($('#quickLabelQuantity')?.value ?? 1);
         const confirmedStartSlot = Math.max(1, Number($('#quickLabelStartSlot')?.value || 1));
         closeModal();
         resolve({
@@ -11647,7 +11685,7 @@ function parseMoney(value) {
       if (busy) return;
       const { template } = currentSetup();
       if (!template) return toast('Primero guarda una plantilla de etiquetas.', 'err');
-      const quantity = Math.max(1, Number(quantityInput?.value || 1));
+      const quantity = Number(quantityInput?.value ?? 1);
       const startSlot = Math.max(1, Number(startInput?.value || 1));
       busy = true;
       printButton.disabled = true;
@@ -11833,7 +11871,8 @@ function parseMoney(value) {
       columns:options.columns,
       rows:options.rows,
       gapHorizontalMm:options.gapXmm,
-      gapVerticalMm:options.gapYmm,
+      gapVerticalMm:Number(options.pitchMm) > Number(options.heightMm)
+        ? Number(options.pitchMm) - Number(options.heightMm) : options.gapYmm,
       marginTopMm:options.marginTopMm,
       marginRightMm:options.marginRightMm,
       marginBottomMm:options.marginBottomMm,
@@ -11891,8 +11930,9 @@ function parseMoney(value) {
     const paper = paperValidation.paper;
     const widthMm = paper.labelWidthMm;
     const heightMm = paper.labelHeightMm;
-    const mediaWidthMm = paper.mediaWidthMm || paperValidation.requiredWidthMm;
-    const mediaHeightMm = paper.mediaHeightMm || paperValidation.requiredHeightMm;
+    const physicalMedia = window.CLICK360_SMART_PRINT.resolvePhysicalMedia(paper);
+    const mediaWidthMm = physicalMedia.widthMm;
+    const mediaHeightMm = physicalMedia.heightMm;
     const wrap=document.createElement('div');
     wrap.className='printLabels';
     wrap.dataset.paper = String(options.paperType || 'custom');
@@ -12399,10 +12439,21 @@ function parseMoney(value) {
   function requestLayawayPayment(sale) {
     return new Promise((resolve) => {
       showModal(`<div class="modalHeader"><div><h2>Registrar abono</h2><p class="fieldHint">Saldo pendiente: ${fmt(sale.balance || 0)}</p></div><button class="closeBtn" data-close>×</button></div><div class="formGrid"><div class="field"><label>Monto</label><input id="layawayPaymentAmount" inputmode="decimal" autocomplete="off"></div><div class="field"><label>Método</label><select id="layawayPaymentMethod"><option value="Efectivo">Efectivo</option><option value="Tarjeta">Tarjeta</option><option value="Transferencia">Transferencia</option></select></div></div><div class="modalActions"><button class="btn silver" id="cancelLayawayPayment">Cancelar</button><button class="btn primary" id="confirmLayawayPayment">Registrar abono</button></div>`);
-      const finish = (value) => { closeModal(); resolve(value); };
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        closeModal();
+        resolve(value);
+      };
       $('#cancelLayawayPayment').onclick = () => finish(null);
       $('[data-close]').onclick = () => finish(null);
-      $('#confirmLayawayPayment').onclick = () => finish({ amount:parseMoney($('#layawayPaymentAmount').value), method:$('#layawayPaymentMethod').value, operationId:uid('laypay') });
+      $('#confirmLayawayPayment').onclick = () => {
+        // A queued click can still target the detached button after closeModal.
+        // Settle once before reading fields or allocating another operation ID.
+        if (settled) return;
+        finish({ amount:parseMoney($('#layawayPaymentAmount').value), method:$('#layawayPaymentMethod').value, operationId:uid('laypay') });
+      };
       $('#layawayPaymentAmount').focus();
     });
   }
@@ -12771,7 +12822,7 @@ function parseMoney(value) {
 	    if (detail) detail.textContent = info.detail;
 	  });
 		  window.addEventListener('click360-access-changed', () => {
-		    if (currentUser()) renderApp(route);
+		    if (currentUser()) renderApp(route, {preserveActiveModal:true});
 		  });
 		  window.addEventListener('click360-online-only-commit', (event) => {
         const key = commitCheckpointKey(event.detail || {});

@@ -3,7 +3,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { chromium } from 'playwright';
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, getDocFromServer } from 'firebase/firestore';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
@@ -159,7 +159,7 @@ function emptyDeviceData(businessId, nowIso) {
   };
 }
 
-const CLOUD_PRODUCT_COUNT = 24;
+const CLOUD_PRODUCT_COUNT = 436;
 
 function fullCloudData(businessId, nowIso) {
   const base = emptyDeviceData(businessId, nowIso);
@@ -721,6 +721,77 @@ async function scenarioKeepLocalNeverOverwritesCloud(browser, testEnv) {
   }
 }
 
+// Real writer safety, independent of the conflict-resolution UI: after a
+// material remote hydration, a storage fault falls back to seed with the SAME
+// revision still in memory. The server must remain byte-for-byte unchanged.
+async function scenarioFallbackNeverOverwritesCloud(browser, testEnv) {
+  const email = `synthetic-fallback-guard-${RUN_ID}@example.test`;
+  const uid = await createEmulatorUser(email, PASSWORD);
+  const fullDocument = stateDocument(uid, 1_700_000_000_040, fullCloudData(uid, new Date().toISOString()));
+  await seed(testEnv, async db => {
+    await setDoc(doc(db, 'accountAccess', uid), accountAccessDocument(uid, email));
+    await setDoc(doc(db, 'businesses', uid, 'state', 'main'), fullDocument);
+  });
+  const context = await newAppContext(browser);
+  try {
+    const { page, pageErrors } = await openApp(context, { email, password: PASSWORD });
+    await waitForBoot(page);
+    await page.waitForFunction(count => window.click360IsTenantDataHydrated?.() === true
+      && window.click360GetTenantState?.()?.products?.length === count, CLOUD_PRODUCT_COUNT);
+    let before;
+    await seed(testEnv, async db => { before = (await getDocFromServer(doc(db, 'businesses', uid, 'state', 'main'))).data(); });
+    const result = await page.evaluate(async () => {
+      const originalGet = Storage.prototype.getItem;
+      Storage.prototype.getItem = function(key) {
+        if (String(key).includes('STATE:') || String(key).startsWith('CLICK360_TENANT:')) throw new Error('Synthetic storage acquisition fault');
+        return originalGet.call(this, key);
+      };
+      try { window.click360ReloadState(); } finally { Storage.prototype.getItem = originalGet; }
+      const immediately = { hydrated: window.click360IsTenantDataHydrated(), provenance: window.click360GetTenantStateProvenance(),
+        products: window.click360GetTenantState().products.length };
+      const pushed = await window.click360SyncNow();
+      return { ...immediately, pushed };
+    });
+    assert(result.hydrated === false && result.provenance === 'fallback' && result.products === 0,
+      `[F] fault must reproduce real fallback, got ${JSON.stringify(result)}`);
+    assert(result.pushed === false, '[F] manual writer must refuse an unhydrated fallback even at the current revision');
+    let after;
+    await seed(testEnv, async db => { after = (await getDocFromServer(doc(db, 'businesses', uid, 'state', 'main'))).data(); });
+    assert(JSON.stringify(after) === JSON.stringify(before), '[F] authoritative server document must remain byte-for-byte unchanged');
+    assert(after.payload.data.products.length === 436, '[F] all 436 synthetic products stay authoritative');
+    await page.evaluate(() => window.click360RefreshNow());
+    await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true
+      && window.click360GetTenantState?.()?.products?.length === 436);
+    assert(!pageErrors.length, `[F] page errors: ${JSON.stringify(pageErrors)}`);
+    console.log('CLICK 360 r38 scenario F PASS: real storage fallback -> seed0 -> direct sync denied; independent server read retains exact 436-product document; cloud retry recovers.');
+  } finally { await context.close(); }
+}
+
+async function scenarioExplicitNewTenantStillBootstraps(browser, testEnv) {
+  const email = `synthetic-new-tenant-${RUN_ID}@example.test`;
+  const uid = await createEmulatorUser(email, PASSWORD);
+  await seed(testEnv, async db => {
+    await setDoc(doc(db, 'accountAccess', uid), accountAccessDocument(uid, email));
+    const missing = await getDocFromServer(doc(db, 'businesses', uid, 'state', 'main'));
+    assert(!missing.exists(), '[G] new tenant must truly have no remote state');
+  });
+  const context = await newAppContext(browser);
+  try {
+    const { page, pageErrors } = await openApp(context, { email, password: PASSWORD });
+    await waitForBoot(page);
+    await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true);
+    let created;
+    await seed(testEnv, async db => { created = (await getDocFromServer(doc(db, 'businesses', uid, 'state', 'main'))).data(); });
+    assert(created?.ownerUid === uid && created?.businessId === uid, '[G] seeded identity must match exactly');
+    assert(created?.reason === 'initial_tenant_seed' && created?.revision > 0, '[G] only explicit bootstrap creates the first revision');
+    assert(created?.payload?.data?.products?.length === 0, '[G] empty new business is legitimate');
+    const provenance = await page.evaluate(() => window.click360GetTenantStateProvenance());
+    assert(provenance === 'remote', '[G] seed becomes hydrated only after the cloud transaction commits');
+    assert(!pageErrors.length, `[G] page errors: ${JSON.stringify(pageErrors)}`);
+    console.log('CLICK 360 r38 scenario G PASS: truly new tenant -> explicit seed -> authoritative matching identity/revision -> hydrated onboarding, with no weakening of existing-tenant protection.');
+  } finally { await context.close(); }
+}
+
 // ── Runner ─────────────────────────────────────────────────────────────────
 async function isUp(target) {
   try { return (await fetch(target)).ok; } catch { return false; }
@@ -773,6 +844,8 @@ async function run() {
     await scenarioIdempotentRetry(browser, testEnv);
     await scenarioReconnectAfterNetworkCut(browser, testEnv);
     await scenarioKeepLocalNeverOverwritesCloud(browser, testEnv);
+    await scenarioFallbackNeverOverwritesCloud(browser, testEnv);
+    await scenarioExplicitNewTenantStillBootstraps(browser, testEnv);
 
     console.log('CLICK 360 r37.2.2 empty-device cloud recovery E2E PASS.');
   } finally {

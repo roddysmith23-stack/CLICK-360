@@ -73,7 +73,11 @@ async function run() {
         businesses: [{ id: 'biz_main', name: 'Restaurante Real', status: 'activo', type: 'restaurante', settings: { tax: { enabled: true, rate: 12, priceMode: 'excluded' } } }],
         activeBusinessId: 'biz_main',
         products: [{ id: 'p1', businessId: 'biz_main', code: 'P1', name: 'Plato Real', qty: 20, stock: 20, price: 10, cardPrice: 10, taxMode: 'inherit' }],
-        sales: [], movements: [], cashSessions: [{ id: 'cs1', businessId: 'biz_main', date: new Date().toISOString().slice(0, 10), status: 'open', openedBy: 'Owner', openedAt: new Date().toISOString() }],
+        sales: [], movements: [], cashSessions: [{
+          id: 'cs1', businessId: 'biz_main',
+          date: new Intl.DateTimeFormat('en-CA', { timeZone:'America/Guayaquil', year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date()),
+          status: 'open', openedBy: 'Owner', openedAt: new Date().toISOString()
+        }],
         dailyReports: [], deletedProducts: [], auditLogs: [], layaways: [], invoices: [],
         tables: [{ id: 'table1', businessId: 'biz_main', name: 'Mesa 1', status: 'free', layout: { x: 10, y: 10, width: 18, height: 18 } }],
         tableOrders: [], restaurantPayments: [], restaurantPrintHistory: [],
@@ -85,6 +89,12 @@ async function run() {
       }, context);
       window.click360Route('tables');
     }, uid);
+
+    // This fixture has no authenticated Firestore server (all outbound
+    // requests above are blocked). Model that honestly as offline, just like
+    // the companion Restaurant E2E, instead of inspecting an optimistic sale
+    // while an unauthenticated online commit is still destined to roll back.
+    await context.setOffline(true);
 
     await page.waitForSelector('#tableMap [data-table-open="table1"]', { timeout: 15000 });
 
@@ -115,12 +125,16 @@ async function run() {
 
     await page.fill('#tableCheckoutTendered', '11.20');
     await page.click('#tableCheckoutForm button[type="submit"]');
-    await page.waitForFunction(() => location.hash === '#tables', { timeout: 15000 });
+    await page.waitForFunction(() => window.click360GetTenantState().sales.some(s=>s.tableId==='table1')
+      && Number(window.click360DebugCriticalActionGate?.().size||0)===0, null, { timeout: 15000 });
 
     const finalState = await page.evaluate(() => window.click360GetTenantState());
     const sale = finalState.sales.find((s) => s.tableId === 'table1');
     assert(sale, 'the table charge must have produced a real sale');
     assert(Math.abs(Number(sale.total) - 11.2) < 0.001, `the actual recorded sale must total $11.20 (matching what was displayed/validated), got ${sale.total}`);
+    assert(finalState.sales.length===1&&finalState.products[0].stock===19&&finalState.products[0].qty===19,'offline table charge is one sale and one canonical stock decrement');
+    const movement=finalState.movements.filter(m=>m.saleId===sale.id);
+    assert(movement.length===1&&Math.abs(movement[0].amount-11.2)<0.001,'offline movement matches exact tax-inclusive tender');
 
     // ── Bug #2 (RESIZE STEPPER): a real click on the grow button while in
     // Editar plano mode must now actually resize the table. ──

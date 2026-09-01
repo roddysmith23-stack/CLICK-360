@@ -130,7 +130,12 @@ async function run() {
       window.click360ClearTenantContext = () => {};
       window.click360WriteGate = () => ({ allowed: true, reason: 'ok' });
       const nowIso = new Date().toISOString();
-      const today = nowIso.slice(0, 10);
+      // Cash-session dates are business-local, never UTC. The old UTC slice
+      // crossed to tomorrow at 19:00 Ecuador and made this deterministic E2E
+      // claim there was no open cash session even though one was seeded.
+      const today = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Guayaquil', year: 'numeric', month: '2-digit', day: '2-digit'
+      }).format(new Date());
       const businessCtx = { authUid: uid, ownerUid: uid, ownerId: uid, businessId: uid, tenantKey: `owner:${uid}:business:${uid}`, schemaVersion: 10 };
       window.click360SetTenantContext(businessCtx, { deferLocalLoad: true });
       // Pinned against the real onAuthStateChanged(null) race -- see the
@@ -233,7 +238,20 @@ async function run() {
     await page.click('#tableMap [data-table-open="table1"]');
     await page.waitForSelector('#tableChargeBtn:not([disabled])', { timeout: 10000 });
     await page.click('#tableChargeBtn');
-    await page.waitForSelector('#tableCheckoutForm', { timeout: 10000 });
+    try {
+      await page.waitForSelector('#tableCheckoutForm', { timeout: 10000 });
+    } catch (error) {
+      const diagnostics = await page.evaluate((expectedOrderId) => ({
+        hash: location.hash,
+        online: navigator.onLine,
+        hydrated: window.click360IsTenantDataHydrated?.(),
+        modalText: document.querySelector('#modalRoot')?.textContent?.slice(0, 500) || '',
+        toast: document.querySelector('#toast')?.textContent || '',
+        openCash: window.click360GetTenantState?.().cashSessions?.filter((item) => item.status === 'open') || [],
+        order: window.click360GetTenantState?.().tableOrders?.find((item) => item.id === expectedOrderId) || null
+      }), orderIdAfterSend);
+      throw new Error(`table checkout did not open: ${JSON.stringify(diagnostics)}; ${error.message}`);
+    }
     const checkoutTotalText = await page.$eval('.tableCheckoutSummary strong', (el) => el.textContent);
     assert(checkoutTotalText === '$21.00', `the checkout modal must show the same real total ($21.00), got ${checkoutTotalText}`);
 

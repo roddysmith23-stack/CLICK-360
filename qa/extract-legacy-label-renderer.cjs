@@ -68,7 +68,11 @@ const FUNCTIONS = [
   'drawLabelOnCanvas',
   'fmt',
   'labelFmt',
-  'roundRect'
+  'roundRect',
+  'printPaperFromOptions',
+  'buildLabelSheetPlan',
+  'buildLabelPrintPlan',
+  'printLabels'
 ];
 
 const pieces = [
@@ -77,8 +81,9 @@ const pieces = [
   '// straight out of app.js so this fixture exercises the real production renderer.',
   "'use strict';",
   extractConst('QR'),
+  'function $(selector) { return document.querySelector(selector); }',
   ...FUNCTIONS.map(extractFunction),
-  'window.__CLICK360_LEGACY_RENDERER__ = { drawLabelOnCanvas, normalizedLabelLayout, defaultLabelLayout, productPayload, labelFmt, fmt };'
+  'window.__CLICK360_LEGACY_RENDERER__ = { drawLabelOnCanvas, normalizedLabelLayout, defaultLabelLayout, productPayload, labelFmt, fmt, printLabels };'
 ];
 
 const outDir = path.join(__dirname, 'fixtures', 'generated');

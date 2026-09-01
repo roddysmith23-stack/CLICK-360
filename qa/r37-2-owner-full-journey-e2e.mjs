@@ -65,6 +65,11 @@ async function run() {
       document.getElementById('click360-auth-gate')?.remove();
       window.click360ClearTenantContext = () => {};
       window.click360WriteGate = () => ({ allowed: true, reason: 'ok' });
+      // The journey is intentionally network-blocked. Model a successful
+      // cloud commit plus authoritative readback so every critical action
+      // still has to satisfy its real remoteApplied material predicate.
+      window.click360SyncNow = async () => true;
+      window.click360RefreshNow = async () => true;
       // Same auth-race defense proven across every other r37.2 test this
       // session: the real (never-signed-in) Firebase Auth SDK can resolve
       // onAuthStateChanged(null) from local persistence alone and

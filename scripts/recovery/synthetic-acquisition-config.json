@@ -1,0 +1,7 @@
+{
+  "ownerUid": "synthetic_owner",
+  "businessId": "synthetic_business",
+  "tenantKey": "owner:synthetic_owner:business:synthetic_business",
+  "origins": ["https://synthetic.invalid"],
+  "operationId": "SYNTHETIC_ACQUISITION_TEST_ONLY"
+}

@@ -378,25 +378,49 @@
     }, businessId);
   }
 
+  // Shared physical page contract for editor, saved-profile print and catalog.
+  // Artwork stays in sticker millimeters; this function changes only the carrier
+  // page. A roll page advances whole row pitches, never sheet margins or a stale
+  // saved mediaHeight. Explicit pitch is bridged to gapVerticalMm by the canvas.
+  function resolvePhysicalMedia(input = {}) {
+    const paper = normalizePaperProfile(input, input.businessId);
+    const SANITY_FACTOR = 1.6; // r33: discard stale A4/800mm carrier dimensions.
+    const rowPitchMm = paper.labelHeightMm + paper.gapVerticalMm;
+    const naturalWidthMm = paper.marginLeftMm + paper.marginRightMm
+      + paper.columns * paper.labelWidthMm + Math.max(0, paper.columns - 1) * paper.gapHorizontalMm;
+    const naturalHeightMm = paper.mediaType === 'sheet'
+      ? paper.marginTopMm + paper.marginBottomMm + paper.rows * paper.labelHeightMm
+        + Math.max(0, paper.rows - 1) * paper.gapVerticalMm
+      : paper.rows * rowPitchMm;
+    const declaredWidth = paper.mediaWidthMm > 0 && paper.mediaWidthMm <= naturalWidthMm * SANITY_FACTOR
+      ? paper.mediaWidthMm : naturalWidthMm;
+    const declaredHeight = paper.mediaType === 'sheet' && paper.mediaHeightMm > 0
+      && paper.mediaHeightMm <= naturalHeightMm * SANITY_FACTOR ? paper.mediaHeightMm : naturalHeightMm;
+    return {
+      widthMm: Number(Math.max(naturalWidthMm, declaredWidth).toFixed(3)),
+      heightMm: Number(Math.max(naturalHeightMm, declaredHeight).toFixed(3)),
+      naturalWidthMm: Number(naturalWidthMm.toFixed(3)),
+      naturalHeightMm: Number(naturalHeightMm.toFixed(3)),
+      rowPitchMm: Number(rowPitchMm.toFixed(3))
+    };
+  }
+
   function validatePaperProfile(input = {}) {
     const paper = normalizePaperProfile(input, input.businessId);
     const errors = [];
     const warnings = [];
-    const requiredWidth = paper.marginLeftMm + paper.marginRightMm
-      + paper.columns * paper.labelWidthMm
-      + Math.max(0, paper.columns - 1) * paper.gapHorizontalMm;
-    // r37.2.3: see the matching comment in buildSheetPlan() -- marginTopMm/
-    // marginBottomMm only represent a real, once-per-page outer margin for
-    // sheet media. For roll/continuous media this value becomes the
-    // declared physical height of EVERY page in a multi-page batch, so
-    // folding the margins in here compounds across pages.
-    const rollPitchHeight = paper.rows * paper.labelHeightMm + Math.max(0, paper.rows - 1) * paper.gapVerticalMm;
-    const requiredHeight = paper.mediaType === 'sheet'
-      ? paper.marginTopMm + paper.marginBottomMm + rollPitchHeight
-      : rollPitchHeight;
+    const media = resolvePhysicalMedia(paper);
+    const requiredWidth = media.naturalWidthMm;
+    const requiredHeight = media.naturalHeightMm;
 
     if (paper.labelWidthMm < 10 || paper.labelHeightMm < 10) errors.push('Cada sticker debe medir al menos 10 mm por lado.');
-    if (paper.columns > 1 && paper.mediaWidthMm <= 0) errors.push('Confirma el ancho total del rollo u hoja para usar varias columnas.');
+    if (paper.columns > 1 && paper.mediaWidthMm <= 0) {
+      if (paper.mediaType === 'sheet') errors.push('Confirma el ancho total de la hoja para usar varias columnas.');
+      else warnings.push(`Ancho automatico del rollo: ${requiredWidth.toFixed(1)} mm. Confirma el soporte con una prueba fisica.`);
+    }
+    if (paper.mediaWidthMm > media.widthMm + 0.01) {
+      warnings.push(`Se omitio un ancho de soporte incompatible; el trabajo usa ${media.widthMm.toFixed(1)} mm.`);
+    }
     if (paper.mediaWidthMm > 0 && requiredWidth > paper.mediaWidthMm + 0.01) {
       errors.push(`Las columnas, gaps y margenes requieren ${requiredWidth.toFixed(1)} mm, pero el soporte mide ${paper.mediaWidthMm.toFixed(1)} mm.`);
     }
@@ -404,11 +428,14 @@
       || (paper.mediaWidthMm > 0 && requiredWidth + paper.xOffsetMm > paper.mediaWidthMm + 0.01)) {
       warnings.push('La calibracion X alcanza el borde del soporte; confirma con una prueba fisica.');
     }
-    if (paper.mediaHeightMm > 0 && requiredHeight > paper.mediaHeightMm + 0.01) {
+    if (paper.mediaType === 'sheet' && paper.mediaHeightMm > 0 && requiredHeight > paper.mediaHeightMm + 0.01) {
       errors.push(`Las filas, gaps y margenes requieren ${requiredHeight.toFixed(1)} mm, pero el soporte mide ${paper.mediaHeightMm.toFixed(1)} mm.`);
     }
-    if (paper.marginTopMm + paper.yOffsetMm < -0.01
-      || (paper.mediaHeightMm > 0 && requiredHeight + paper.yOffsetMm > paper.mediaHeightMm + 0.01)) {
+    if (paper.mediaType !== 'sheet' && paper.mediaHeightMm > 0 && Math.abs(paper.mediaHeightMm - media.heightMm) > 0.01) {
+      warnings.push(`El avance del rollo usa ${media.rowPitchMm.toFixed(1)} mm por fila (sticker + separacion), sin repetir margenes de hoja.`);
+    }
+    if ((paper.mediaType === 'sheet' ? paper.marginTopMm : 0) + paper.yOffsetMm < -0.01
+      || requiredHeight + paper.yOffsetMm > media.heightMm + 0.01) {
       warnings.push('La calibracion Y alcanza el borde del soporte; confirma con una prueba fisica.');
     }
     if (paper.shape === 'circle' && Math.abs(paper.labelWidthMm - paper.labelHeightMm) > 0.1) {
@@ -979,6 +1006,7 @@
     normalizeDesignProfile,
     normalizePrintProfile,
     normalizeLegacyTemplate,
+    resolvePhysicalMedia,
     validatePaperProfile,
     resolveCopies,
     buildSheetPlan,

@@ -101,8 +101,8 @@ assert(storage.includes('materialHash: String(metadata.materialHash'), 'IndexedD
 assert(storage.includes('pendingCreatedAtMs: Number(metadata.pendingCreatedAtMs'), 'IndexedDB snapshot stores pending creation time');
 assert(app.includes("const APP_RELEASE_VERSION = '1.0.5'"), 'app version is current candidate');
 assert(runtime.includes("const APP_VERSION = '1.0.5'"), 'runtime version is current candidate');
-assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-6-runtime-recovery-r1'"), 'app asset version matches recovery release');
-assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r37-2-6-runtime-recovery-r1'"), 'service worker cache matches recovery release');
+assert(app.includes("const APP_ASSET_VERSION = 'commercial-1-0-5-r38-mvp-candidate'"), 'app asset version matches recovery release');
+assert(worker.includes("const CACHE = 'click360-commercial-1-0-5-r38-mvp-candidate'"), 'service worker cache matches recovery release');
 assert(app.includes('window.click360GetLocalBusinessSyncStats = localBusinessSyncStats'), 'app exposes local business sync stats');
 assert(app.includes('if (localStats.meaningful === false && tenantDataHydrated !== true)'), 'empty local device auto-recovers from cloud, but never loops a session that already hydrated a real remote snapshot back into that path');
 assert(firebase.includes('preventedEmptyOverwrite: true'), 'firebase layer blocks empty local overwrite');

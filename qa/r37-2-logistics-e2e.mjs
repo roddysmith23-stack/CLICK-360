@@ -26,7 +26,8 @@ import { chromium } from 'playwright';
  *  - window.click360WriteGate is overridden to report allowed:true -- this
  *    is the CLIENT-SIDE "still verifying session" UX gate only; real
  *    enforcement is firestore.rules, server-side, untouched.
- *  - window.click360SyncNow is overridden to resolve true -- dispatch and
+ *  - window.click360SyncNow is overridden to resolve true and
+ *    window.click360RefreshNow confirms the unchanged synthetic snapshot -- dispatch and
  *    settlement-close go through the real commitCriticalMutation() (real
  *    save() -> real localStorage/IndexedDB persistence, real optimistic
  *    state mutation, real rollback-on-failure logic); only the final
@@ -103,6 +104,11 @@ async function setupSession(page, { uid, role, isOwner, logistics = {} }) {
     window.click360ClearTenantContext = () => {};
     window.click360WriteGate = () => ({ allowed: true, reason: 'ok' });
     window.click360SyncNow = async () => true;
+    // Critical commerce mutations now require an authoritative readback in
+    // addition to a successful push. This fully local harness has no cloud,
+    // so model that successful readback explicitly while retaining the real
+    // remoteApplied predicate against the current tenant state.
+    window.click360RefreshNow = async () => true;
     // A non-owner worker session is otherwise fail-closed by the (correct, separately-tested -- see
     // qa/r37-worker-access-gate-e2e.mjs) worker access gate, which defaults to blocking until a real
     // Firestore-backed access-request status resolves. This harness has no real Firestore, so report the
