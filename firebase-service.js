@@ -3195,27 +3195,6 @@
 		        showGate('Se detectó un cambio remoto de otra cuenta. La operación fue bloqueada para proteger los datos.', ACCESS_UI_STATES.BLOCKED, { reason: 'remote_identity_mismatch' });
 	        return;
 	      }
-	      // r37.2.5 (P0, real SHARY incident): a real Firestore revision
-	      // conflict between two devices editing the SAME product is only
-	      // detected correctly if THIS device's own view of "what the server
-	      // had before my edit" (LAST_REMOTE_REVISION, and the target
-	      // product's baseline fingerprint captured from `state` at submit
-	      // time) is not silently fast-forwarded by this background listener
-	      // while an edit is in progress. Applying the remote update here
-	      // (even just bumping LAST_REMOTE_REVISION) would let this device's
-	      // OWN later save silently believe "nothing changed since my
-	      // baseline" and overwrite -- or cleanly out-race -- another
-	      // device's already-confirmed write, exactly the stale-confirmation
-	      // failure qa/r37-2-5-two-device-same-product-conflict-e2e.mjs
-	      // guards against. Treat an open modal or a focused input the same
-	      // way a pending local write is already treated below: defer the
-	      // whole snapshot, don't just skip the re-render. The user's own
-	      // eventual save still gets a fully authoritative, on-demand
-	      // conflict check via commitCriticalMutation regardless.
-	      if (document.querySelector('#modalRoot .modalOverlay.show')
-	        || (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName))) {
-	        return;
-	      }
 	      const remotePayload = remoteData.payload;
 	      rememberTenantMaterialEvidence(context, remotePayload);
 	      LAST_REMOTE_REVISION = Number(remoteData.revision || remoteData.updatedAtMs || LAST_REMOTE_REVISION || 0);

@@ -6797,6 +6797,14 @@ function parseMoney(value) {
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
 	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
+	      // r37.2.5 (P0, real SHARY incident): `product` is the same object
+	      // reference this modal opened with. Snapshot it before the mutation
+	      // below -- a background remote update while the modal was open
+	      // replaces `state` wholesale but never touches this object, so this
+	      // is the true pre-edit value the user actually saw, unlike
+	      // re-deriving "baseline" from a fresh clone of the (possibly
+	      // already-rebased) current `state` at submit time.
+	      const editOpenBaseline = product ? cloneState(product) : null;
 	      let savedProduct = product;
 	      // Write both 'stock' (canonical, read by modular gateway) and 'qty' (legacy UI field) so both paths stay in sync.
 	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
@@ -6817,7 +6825,7 @@ function parseMoney(value) {
 	      });
 	      const desiredProduct = cloneState(savedProduct);
 	      const desiredRecipe = cloneState(state.restaurantRecipes.find((recipe) => recipe.productId === savedProduct.id && recipe.businessId === b.id) || null);
-	      const baselineProduct = previousState.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
+	      const baselineProduct = editOpenBaseline || previousState.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
 	      const productFingerprint = (candidate) => candidate ? JSON.stringify({
 	        id:candidate.id, businessId:candidate.businessId, code:candidate.code,
 	        category:candidate.category || '', name:candidate.name || '',
