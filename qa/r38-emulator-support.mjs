@@ -104,7 +104,13 @@ function largeTenantData(uid) {
     restaurantPayments: [], restaurantPrintHistory: [], restaurantEvents: [], restaurantRecipes: [],
     labelPrintHistory: [],
     notifications: Array.from({ length: 377 }, (_, index) => ({ id: `notice-${index}`, businessId: uid, type: 'fixture', createdAtMs: now - index })),
-    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding' }],
+    // r37.2.5: current termsVersion/privacyVersion so this already-onboarded
+    // fixture never qualifies for the legal-grace banner (a real, dismissible
+    // page-covering modal) -- these commerce/restaurant tests are not
+    // exercising the legal-gate flow (see qa/r37-legal-acceptance-gate-e2e.mjs
+    // for that) and an unrelated banner popping up mid-test intercepts clicks
+    // on whatever it happens to cover, exactly like any other real modal.
+    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding', termsVersion: '2026-07-14', privacyVersion: '2026-07-14' }],
     finance: { payments: [], loans: [], envelopes: [], goals: [] },
     logistics: {},
     settings: {

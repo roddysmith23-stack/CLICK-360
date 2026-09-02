@@ -6896,7 +6896,14 @@ function parseMoney(value) {
         }
         return { confirmed:last.authoritative && remoteApplied(state, verifier) && last.revision > 0, last, stalled:stallTicks >= STALL_LIMIT };
       };
-      let committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
+      // r37.2.5 (P0, real SHARY incident): protect this whole CAS-dependent
+      // conflict-retry window from a background listener silently
+      // fast-forwarding LAST_REMOTE_REVISION out from under it (see
+      // firebase-service.js listenRemoteChanges for the full contract).
+      window.click360SetCriticalWriteGuard?.(true);
+      let committed;
+      try {
+      committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
 	      if (!committed.ok && navigator.onLine) {
 	        const failedSyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_prepare' });
 	        diagnostics.conflictDetected = failedSyncState?.status === 'real_conflict';
@@ -6953,6 +6960,9 @@ function parseMoney(value) {
 	            diagnostics.revisionAfterRetry = Number(window.click360DebugSyncIdentity?.().revision || 0);
 	          }
 	        }
+	      }
+	      } finally {
+	        window.click360SetCriticalWriteGuard?.(false);
 	      }
 	      diagnostics.confirmedAtMs = committed.ok ? Date.now() : null;
 	      diagnostics.outcome = committed.ok ? 'confirmed' : (diagnostics.targetChangedRemotely ? 'safe_conflict' : 'not_confirmed');

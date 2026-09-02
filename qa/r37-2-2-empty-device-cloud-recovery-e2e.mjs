@@ -147,7 +147,7 @@ function emptyDeviceData(businessId, nowIso) {
     auditLogs: [], layaways: [], cashSessions: [], tables: [], tableOrders: [],
     restaurantPayments: [], restaurantPrintHistory: [], restaurantEvents: [], restaurantRecipes: [],
     labelPrintHistory: [], notifications: [],
-    legalAcceptances: [{ id: 'legal1', businessId, uid: businessId, acceptedAt: nowIso, source: 'onboarding' }],
+    legalAcceptances: [{ id: 'legal1', businessId, uid: businessId, acceptedAt: nowIso, source: 'onboarding', termsVersion: '2026-07-14', privacyVersion: '2026-07-14' }],
     finance: { payments: [], loans: [], envelopes: [], goals: [] },
     logistics: {},
     settings: {

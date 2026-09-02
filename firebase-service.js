@@ -45,6 +45,14 @@
 	  const tenantGuard = window.CLICK360_P0_TENANT_GUARD.createSyncGate();
 
   let AUTH_APPROVED = false;
+  // r37.2.5 (P0, real SHARY incident): set true only around the exact
+  // CAS-dependent window of a same-entity conflict-retry (see
+  // window.click360SetCriticalWriteGuard below) -- NOT a generic "any modal
+  // is open" flag, which was tried first and broke unrelated flows
+  // (qa/r37-2-2-empty-device-cloud-recovery-e2e.mjs) that rightly expect
+  // background convergence to keep working while some other modal happens
+  // to be open.
+  let CRITICAL_WRITE_GUARD_ACTIVE = false;
   let PULL_COMPLETE = false;
   let IS_RESTORING_REMOTE = false;
   let INITIAL_TENANT_SEED_REQUIRED = false;
@@ -3195,6 +3203,20 @@
 		        showGate('Se detectó un cambio remoto de otra cuenta. La operación fue bloqueada para proteger los datos.', ACCESS_UI_STATES.BLOCKED, { reason: 'remote_identity_mismatch' });
 	        return;
 	      }
+	      // r37.2.5 (P0, real SHARY incident): a same-product two-device race
+	      // where the loser's own CAS check (pushLocalToFirestoreOnce's
+	      // expectedRevision vs. a fresh transaction read) is the ONLY thing
+	      // standing between "safely detected conflict" and "silently
+	      // overwrote the winner's already-confirmed write". That check only
+	      // works if expectedRevision (LAST_REMOTE_REVISION) still reflects
+	      // what this device knew before ITS OWN retry-safety comparison ran
+	      // -- if this listener silently fast-forwards it first, the loser's
+	      // very next push sees no conflict at all and commits cleanly,
+	      // reporting its own true "confirmed" after the winner already
+	      // reported theirs. Deferring here doesn't lose data: the guarded
+	      // caller's own explicit, authoritative refresh (targetSnapshot /
+	      // click360RefreshNow) still runs the moment the guard clears.
+	      if (CRITICAL_WRITE_GUARD_ACTIVE) return;
 	      const remotePayload = remoteData.payload;
 	      rememberTenantMaterialEvidence(context, remotePayload);
 	      LAST_REMOTE_REVISION = Number(remoteData.revision || remoteData.updatedAtMs || LAST_REMOTE_REVISION || 0);
@@ -3664,6 +3686,11 @@
 
 	  window.click360SyncNow = () => MODULAR_MODE ? pushModularState("manual") : pushLocalToFirestore("manual");
 	  window.click360RefreshNow = () => MODULAR_MODE ? pullModularState() : pullRemoteOnce({ force: true, reload: true });
+	  // r37.2.5 (P0, real SHARY incident): a caller with an active
+	  // conflict-retry CAS window (see listenRemoteChanges below) sets this
+	  // so a same-tick background snapshot can't silently fast-forward
+	  // LAST_REMOTE_REVISION out from under it.
+	  window.click360SetCriticalWriteGuard = (active) => { CRITICAL_WRITE_GUARD_ACTIVE = !!active; };
 	  window.click360ClearLocalRecoveryState = async function() {
 	    const before = getSyncState({ cleanup: false, reason: 'manual_local_recovery_before' });
 	    maybeClearStaleSyncGuard({ reason: 'manual_local_recovery', force: true });

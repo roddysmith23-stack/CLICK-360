@@ -87,7 +87,10 @@ function tenantData(uid, productId) {
     auditLogs: [], layaways: [], cashSessions: [], tables: [], tableOrders: [],
     restaurantPayments: [], restaurantPrintHistory: [], restaurantEvents: [], restaurantRecipes: [],
     labelPrintHistory: [], notifications: [],
-    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding' }],
+    // r37.2.5: current termsVersion/privacyVersion -- an already-onboarded
+    // fixture must never qualify for the legal-grace banner (a real,
+    // page-covering modal unrelated to this race) mid-race.
+    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding', termsVersion: '2026-07-14', privacyVersion: '2026-07-14' }],
     finance: { payments: [], loans: [], envelopes: [], goals: [] },
     logistics: {},
     settings: { workers: [], labelTemplates: [], labelProfiles: [], customers: [], reminders: [], onboarding: { completedAt: new Date().toISOString(), operationId: 'qa-onboarding', version: 16.2, checklist: {} } },
