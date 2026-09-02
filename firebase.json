@@ -21,15 +21,15 @@
         "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
       },
       {
+        "source": "/release-manifest.json",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+      },
+      {
         "source": "/terms.html",
         "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
       },
       {
         "source": "/privacy.html",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
-      },
-      {
-        "source": "/service-worker.js",
         "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
       },
       {
@@ -39,6 +39,10 @@
       {
         "source": "/*.css",
         "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
+      },
+      {
+        "source": "/service-worker.js",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
       },
       {
         "source": "/assets/**",

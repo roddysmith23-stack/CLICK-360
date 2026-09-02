@@ -11,7 +11,7 @@
     return;
   }
 
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r37-2-6-runtime-recovery-r1';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r38-mvp-candidate';
 	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
   // r37.2.1 (LIVE CLIENT RECOVERY -- real SHARY incident): this used to also
   // delete every stale click360- cache here, unconditionally, on every page
@@ -45,9 +45,18 @@
 	  const tenantGuard = window.CLICK360_P0_TENANT_GUARD.createSyncGate();
 
   let AUTH_APPROVED = false;
+  // r37.2.5 (P0, real SHARY incident): set true only around the exact
+  // CAS-dependent window of a same-entity conflict-retry (see
+  // window.click360SetCriticalWriteGuard below) -- NOT a generic "any modal
+  // is open" flag, which was tried first and broke unrelated flows
+  // (qa/r37-2-2-empty-device-cloud-recovery-e2e.mjs) that rightly expect
+  // background convergence to keep working while some other modal happens
+  // to be open.
+  let CRITICAL_WRITE_GUARD_ACTIVE = false;
   let PULL_COMPLETE = false;
   let IS_RESTORING_REMOTE = false;
   let INITIAL_TENANT_SEED_REQUIRED = false;
+  const TENANT_MATERIAL_EVIDENCE = new Set();
   let REMOTE_UNSUBSCRIBE = null;
   let USER_STATUS_UNSUBSCRIBE = null;
 		  let ACCESS_UNSUBSCRIBE = null;
@@ -1045,6 +1054,7 @@
 		  }
 
 		  function rememberAppliedRemotePayload(context, payload, revision, metadata = {}) {
+		    rememberTenantMaterialEvidence(context, payload);
 		    const payloadHash = snapshotString(payload);
 		    const materialHash = materialPayloadHash(payload);
 		    safeStorageSet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'), payloadHash);
@@ -2674,6 +2684,81 @@
 	    return error;
 	  }
 
+  // A matching revision is concurrency control, not evidence that this device
+  // actually hydrated the tenant. Fail closed even for an explicit keep-local.
+  // Run again INSIDE the transaction after the authoritative read, because
+  // hydration/context can change while a network request is in flight.
+  function tenantMaterialCount(payload, commerceOnly = false) {
+    const data = payload?.data || payload || {};
+    const groups = ['products', 'sales', 'movements', 'dailyReports', 'invoices',
+      'deletedProducts', 'layaways', 'cashSessions', 'tables', 'tableOrders',
+      'restaurantPayments', 'restaurantPrintHistory', 'restaurantEvents',
+      'restaurantRecipes'];
+    const size = value => Array.isArray(value) ? value.length : 0;
+    return groups.reduce((sum, key) => sum + size(data[key]), 0)
+      + Object.values(data.logistics || {}).reduce((sum, value) => sum + size(value), 0)
+      + Object.values(data.finance || {}).reduce((sum, value) => sum + size(value), 0)
+      + (commerceOnly ? 0 : ['labelTemplates', 'labelProfiles', 'customers'].reduce((sum, key) => sum + size(data.settings?.[key]), 0));
+  }
+
+  function rememberTenantMaterialEvidence(context, payload) {
+    if (!context?.tenantKey || tenantMaterialCount(payload, true) === 0) return;
+    const key = tenantStorageKeyFor(context, 'REMOTE_MATERIAL_SEEN');
+    TENANT_MATERIAL_EVIDENCE.add(key);
+    safeStorageSet(key, '1');
+  }
+
+  function assertTenantReplacementSafe(payload, remote, context, reason, remoteChecked = false) {
+    const identity = payload?.identity;
+    const identityConfirmed = !!context?.authUid && !!context?.ownerUid && !!context?.ownerId
+      && !!context?.businessId && context.tenantKey === `owner:${context.ownerId}:business:${context.businessId}`
+      && activeIdentityIsValid()
+      && ['ownerUid', 'ownerId', 'businessId', 'tenantKey'].every(key => identity?.[key] === context[key]);
+    const explicitInitial = reason === 'initial_tenant_seed' && INITIAL_TENANT_SEED_REQUIRED === true
+      && Number(LAST_REMOTE_REVISION || 0) === 0 && !remote;
+    const hydrated = window.click360IsTenantDataHydrated?.() === true;
+    const provenance = window.click360GetTenantStateProvenance?.() || 'unknown';
+    let blockedReason = !identityConfirmed ? 'identity_unresolved' : '';
+    if (!blockedReason && !explicitInitial && (!hydrated || !['remote', 'verified_cache'].includes(provenance))) {
+      blockedReason = 'local_state_not_hydrated';
+    }
+    if (!blockedReason && remoteChecked && !remote && !explicitInitial) blockedReason = 'initial_seed_not_authorized';
+    if (!blockedReason && remote) {
+      const remotePayload = remote.payload || remote;
+      rememberTenantMaterialEvidence(context, remotePayload);
+      const remoteData = remotePayload.data || remotePayload;
+      const localData = payload.data || payload;
+      const coreCount = data => ['products', 'sales', 'movements'].reduce((n, key) => n + (Array.isArray(data[key]) ? data[key].length : 0), 0);
+      // A leftover cash session/table is not proof that the catalog and sales
+      // hydrated. A legitimate deletion records a movement and a tombstone;
+      // a 0/0/0 replacement has neither evidence of that operation.
+      const emptiedCoreDomain = ['products', 'sales', 'movements'].find(key =>
+        Array.isArray(remoteData[key]) && remoteData[key].length > 0
+        && (!Array.isArray(localData[key]) || localData[key].length === 0));
+      // Check every irreducible commerce ledger independently. A surviving
+      // movement (or any other single array) must not disguise that the
+      // catalog or sales ledger vanished during a partial hydration failure.
+      if (emptiedCoreDomain || (coreCount(remoteData) > 0 && coreCount(localData) === 0)) {
+        blockedReason = 'unexpected_empty_core_replacement';
+      }
+      if ((tenantMaterialCount(remotePayload, true) > 0 && tenantMaterialCount(payload, true) === 0)
+        || (tenantMaterialCount(remotePayload) > 0 && tenantMaterialCount(payload) === 0)) {
+        blockedReason = 'unexpected_empty_replacement';
+      }
+    }
+    const materialEvidenceKey = tenantStorageKeyFor(context, 'REMOTE_MATERIAL_SEEN');
+    if (!blockedReason && tenantMaterialCount(payload, true) === 0
+      && (TENANT_MATERIAL_EVIDENCE.has(materialEvidenceKey) || safeStorageGet(materialEvidenceKey) === '1')) {
+      blockedReason = 'previous_material_tenant_now_empty';
+    }
+    if (blockedReason) {
+      throw syncError('click360/unsafe-tenant-replacement',
+        'Se protegieron tus datos: esta copia no está lista para reemplazar la nube. Vuelve a cargar los datos verificados; no se borró ninguna versión.',
+        { reason: blockedReason });
+    }
+    return true;
+  }
+
 	  async function pushLocalToFirestoreOnce(reason = 'auto', forceWrite = false) {
 	    const user = auth.currentUser;
 	    const context = ACTIVE_CONTEXT;
@@ -2701,6 +2786,11 @@
 	      setSyncStatus('error', 'Se bloqueó una escritura porque la identidad o el contenido del tenant no coincide.');
 	      return false;
 		    }
+        try { assertTenantReplacementSafe(payload, null, context, reason); }
+        catch (error) {
+          setSyncStatus('error', error.message, { reason: error.details?.reason });
+          return false;
+        }
 		    const payloadHash = snapshotString(payload);
 		    const materialHash = materialPayloadHash(payload);
 		    const lastAppliedHash = safeStorageGet(tenantStorageKeyFor(context, 'LAST_APPLIED_REMOTE_HASH'));
@@ -2730,6 +2820,7 @@
 	          if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) throw syncError('click360/stale-auth', 'La cuenta cambió durante la sincronización.');
 	          if (!current.exists) {
 	            if (expectedRevision !== 0) throw syncError('click360/revision-conflict', 'El documento remoto fue reemplazado.', { expectedRevision, remoteRevision: null });
+	            assertTenantReplacementSafe(payload, null, context, reason, true);
 	          } else {
 	            const remote = current.data() || {};
 	            const remoteRevision = Number(remote.revision || remote.updatedAtMs || 0);
@@ -2738,6 +2829,7 @@
 	              existingInitialRemote = remote;
 	              return;
 	            }
+                assertTenantReplacementSafe(payload, remote, context, reason, true);
 		            if (remoteRevision !== expectedRevision) {
 		              const remoteMaterialHash = materialPayloadHash(remote.payload);
 		              if (remoteMaterialHash && remoteMaterialHash === materialHash) {
@@ -2779,6 +2871,9 @@
 			        return true;
 			      }
 			      LAST_REMOTE_REVISION = documentData.revision;
+          // Initial seed is not a hydrated tenant until its guarded cloud
+          // creation commits. Mark it real only now so onboarding can proceed.
+          if (reason === 'initial_tenant_seed') applyRemotePayload(payload);
 		      rememberAppliedRemotePayload(context, payload, documentData.revision, { reason });
 			      LOCAL_WRITE_PENDING_UNTIL = 0;
 		      setSyncStatus('synced', 'Datos guardados en la nube.', { reason, revision: documentData.revision, payloadBytes });
@@ -2830,6 +2925,17 @@
 	    return scheduler.promise;
 	  }
 
+  async function readAuthoritativeTenantSnapshot(stateDoc) {
+    let snap = await stateDoc.get({ source: 'server' });
+    const stale = snapshot => snapshot.metadata?.fromCache === true || snapshot.metadata?.hasPendingWrites === true
+      || (snapshot.exists && Number(snapshot.data()?.revision || snapshot.data()?.updatedAtMs || 0) < Number(LAST_REMOTE_REVISION || 0));
+    // A server-source listen read can still expose an older SDK view directly
+    // after a transaction in WebKit. Re-read via the transaction RPC (no writes)
+    // instead of applying that view over the revision we just committed.
+    if (stale(snap)) snap = await db.runTransaction(transaction => transaction.get(stateDoc));
+    if (stale(snap)) throw syncError('click360/stale-server-read', 'La lectura aún no confirma la última revisión. Tus datos actuales se conservaron; vuelve a intentar la sincronización.');
+    return snap;
+  }
 		  async function pullRemoteOnce({ force = false, reload = false } = {}) {
 	    const user = auth.currentUser;
 	    const context = ACTIVE_CONTEXT;
@@ -2869,7 +2975,7 @@
 	        return false;
 	      }
 	      setSyncStatus('syncing', 'Comprobando los datos guardados.');
-	      const snap = await stateDoc.get({ source: 'server' });
+	      const snap = await readAuthoritativeTenantSnapshot(stateDoc);
 	      if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return false;
 		    if (!snap.exists) {
 		      // A new entitled tenant can start without localStorage. Before doing so,
@@ -2926,6 +3032,7 @@
 	        return false;
 	      }
 	      const reconciliation = reconcileLocalStateWithRemoteV10(remoteData, context);
+          rememberTenantMaterialEvidence(context, remoteData.payload);
 	      if (!reconciliation.reconciled) {
 	        tenantGuard.block();
 	        PULL_COMPLETE = false;
@@ -3024,7 +3131,16 @@
         // r37.2.2 (P0, real SHARY incident): see the identical note on the
         // listener path below -- click360ReloadState() here could silently wipe
         // the just-hydrated in-memory state on a local-persist failure. Removed.
-	        if (reload && window.click360Route) window.click360Route(window.location.hash.replace('#','') || 'home');
+        // r37.2.5 (P0, real SHARY incident): a forced refresh mid-edit (this
+        // exact device's own conflict-recovery calling click360RefreshNow()
+        // while its product-edit modal is still open) used to route/re-render
+        // unconditionally here, unlike the realtime listener path below which
+        // already guards against clobbering an open modal or a focused input.
+        // That inconsistency could destroy the very form the user (or an
+        // in-flight save handler) was still using. Apply the same guard.
+        const hasOpenModalOnRefresh = !!document.querySelector('#modalRoot .modalOverlay.show');
+        const hasActiveInputOnRefresh = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+	        if (reload && window.click360Route && !hasOpenModalOnRefresh && !hasActiveInputOnRefresh) window.click360Route(window.location.hash.replace('#','') || 'home');
 	      return true;
 	    }
 			    if (force || remoteHash === localHash || remoteMaterialHash === localMaterialHash) {
@@ -3064,7 +3180,10 @@
 	    REMOTE_UNSUBSCRIBE = stateDoc.onSnapshot((snap) => {
 	      if (!AUTH_APPROVED || !PULL_COMPLETE || !snap.exists || !isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return;
 
+          if (snap.metadata?.fromCache === true || snap.metadata?.hasPendingWrites === true) return;
+
 	      const remoteData = snap.data() || {};
+          if (Number(remoteData.revision || remoteData.updatedAtMs || 0) < Number(LAST_REMOTE_REVISION || 0)) return;
 	      if (remoteData.schemaVersion !== SCHEMA_VERSION) {
 	        tenantGuard.requireLegacy(context, { document: remoteData, path: stateDoc.path });
 	        safeStorageSet(legacyMigrationMarkerKey(), '1');
@@ -3084,7 +3203,22 @@
 		        showGate('Se detectó un cambio remoto de otra cuenta. La operación fue bloqueada para proteger los datos.', ACCESS_UI_STATES.BLOCKED, { reason: 'remote_identity_mismatch' });
 	        return;
 	      }
+	      // r37.2.5 (P0, real SHARY incident): a same-product two-device race
+	      // where the loser's own CAS check (pushLocalToFirestoreOnce's
+	      // expectedRevision vs. a fresh transaction read) is the ONLY thing
+	      // standing between "safely detected conflict" and "silently
+	      // overwrote the winner's already-confirmed write". That check only
+	      // works if expectedRevision (LAST_REMOTE_REVISION) still reflects
+	      // what this device knew before ITS OWN retry-safety comparison ran
+	      // -- if this listener silently fast-forwards it first, the loser's
+	      // very next push sees no conflict at all and commits cleanly,
+	      // reporting its own true "confirmed" after the winner already
+	      // reported theirs. Deferring here doesn't lose data: the guarded
+	      // caller's own explicit, authoritative refresh (targetSnapshot /
+	      // click360RefreshNow) still runs the moment the guard clears.
+	      if (CRITICAL_WRITE_GUARD_ACTIVE) return;
 	      const remotePayload = remoteData.payload;
+	      rememberTenantMaterialEvidence(context, remotePayload);
 	      LAST_REMOTE_REVISION = Number(remoteData.revision || remoteData.updatedAtMs || LAST_REMOTE_REVISION || 0);
 		      safeStorageSet(tenantStorageKey("REMOTE_REVISION"), String(LAST_REMOTE_REVISION || 0));
 		      const remoteHash = snapshotString(remotePayload);
@@ -3462,6 +3596,7 @@
 	    if (!MODULAR_MODE || !MODULAR_GATEWAY || !ACTIVE_CONTEXT || !navigator.onLine) return false;
 	    const next = await MODULAR_GATEWAY.pull();
 	    next.identity = activeIdentity();
+        rememberTenantMaterialEvidence(ACTIVE_CONTEXT, next);
 	    window.click360ApplyTenantState(next, ACTIVE_CONTEXT);
 	    MODULAR_BASELINE = JSON.parse(JSON.stringify(next));
 	    LOCAL_WRITE_PENDING_UNTIL = 0;
@@ -3478,6 +3613,7 @@
 	    const next = window.click360GetTenantState?.();
 	    if (!next || !MODULAR_BASELINE) return false;
 	    try {
+          assertTenantReplacementSafe({ identity: next.identity, data: next }, MODULAR_BASELINE, ACTIVE_CONTEXT, reason, true);
 	      setSyncStatus('syncing', 'Confirmando cambio modular...', { reason });
 	      await MODULAR_GATEWAY.commit(MODULAR_BASELINE, next);
 	      await pullModularState();
@@ -3550,6 +3686,11 @@
 
 	  window.click360SyncNow = () => MODULAR_MODE ? pushModularState("manual") : pushLocalToFirestore("manual");
 	  window.click360RefreshNow = () => MODULAR_MODE ? pullModularState() : pullRemoteOnce({ force: true, reload: true });
+	  // r37.2.5 (P0, real SHARY incident): a caller with an active
+	  // conflict-retry CAS window (see listenRemoteChanges below) sets this
+	  // so a same-tick background snapshot can't silently fast-forward
+	  // LAST_REMOTE_REVISION out from under it.
+	  window.click360SetCriticalWriteGuard = (active) => { CRITICAL_WRITE_GUARD_ACTIVE = !!active; };
 	  window.click360ClearLocalRecoveryState = async function() {
 	    const before = getSyncState({ cleanup: false, reason: 'manual_local_recovery_before' });
 	    maybeClearStaleSyncGuard({ reason: 'manual_local_recovery', force: true });
@@ -3667,13 +3808,22 @@
 	  }, (err) => console.warn("No se pudo escuchar estado de usuario:", err.message));
   }
 
-  function listenAccountAccess(user, expectedEpoch = AUTH_EPOCH) {
+	  function listenAccountAccess(user, expectedEpoch = AUTH_EPOCH) {
     if (ACCESS_UNSUBSCRIBE) return;
     const context = ACTIVE_CONTEXT;
     const ref = accountAccessRef(user.uid);
     if (!ref) return;
-    ACCESS_UNSUBSCRIBE = ref.onSnapshot((snap) => {
-      if (!AUTH_APPROVED || !isCurrentAuthEpoch(user, expectedEpoch) || ACTIVE_CONTEXT !== context) return;
+	    ACCESS_UNSUBSCRIBE = ref.onSnapshot((snap) => {
+	      if (!AUTH_APPROVED || !isCurrentAuthEpoch(user, expectedEpoch) || ACTIVE_CONTEXT !== context) return;
+	      // A fresh browser (notably WebKit) can emit an empty cache snapshot
+	      // before the authoritative accountAccess document arrives. Absence
+	      // from cache is not evidence that access was revoked: keep the
+	      // already-verified session read-only at the write gate until the
+	      // server snapshot follows, instead of falsely invalidating AUTH_APPROVED.
+	      if (snap.metadata?.fromCache === true && !snap.exists) {
+	        setSyncStatus('syncing', 'Verificando acceso con el servidor.');
+	        return;
+	      }
 	      const data = snap.exists ? (snap.data() || {}) : null;
 	      if (data && !accountAccessIdentityValid(user, data)) {
 	        AUTH_APPROVED = false;
@@ -3699,6 +3849,18 @@
 	        next = { ...next, readOnly: true, clockVerificationRequired: true };
 	      }
       if (!next.allowed) {
+        // r37.2.5 (P0, real SHARY incident): same principle as the
+        // cache-miss guard above, extended to a cache snapshot that DOES
+        // exist but computes not-allowed -- under heavy concurrent write
+        // activity (e.g. a same-product conflict-retry race) a fresh
+        // browser (notably WebKit) can deliver a transient/stale cached
+        // read here before the authoritative server snapshot follows. Do
+        // not revoke a real, already-approved session on a cache-only
+        // read; wait for the server-confirmed delivery to actually decide.
+        if (snap.metadata?.fromCache === true) {
+          setSyncStatus('syncing', 'Verificando acceso con el servidor.');
+          return;
+        }
         AUTH_APPROVED = false;
         PULL_COMPLETE = false;
         if (REMOTE_UNSUBSCRIBE) { REMOTE_UNSUBSCRIBE(); REMOTE_UNSUBSCRIBE = null; }
@@ -3708,7 +3870,17 @@
 	      window.click360User.access = publishAccessState(next);
 	      scheduleAccessExpiry(user, window.click360User.access, expectedEpoch);
       if (next.readOnly) setSyncStatus('read_only', 'La prueba terminó. Tus datos permanecen disponibles en modo lectura.');
-      window.click360Route?.(window.location.hash.replace('#', '') || 'home');
+      // r37.2.5 (P0, real SHARY incident): this listener's cache-then-server
+      // double delivery is normal Firestore behavior even when accountAccess
+      // never changes -- the server snapshot can arrive well after hydration,
+      // while the user (or an in-flight save handler) is mid-edit. Unlike its
+      // sibling listeners (listenUserApproval, listenRemoteChanges), this call
+      // had no open-modal/active-input guard and could destroy the form out
+      // from under a real edit. Match the existing guard pattern.
+      const accessEditing = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+      if (!accessEditing && !document.querySelector('#modalRoot .modalOverlay.show')) {
+        window.click360Route?.(window.location.hash.replace('#', '') || 'home');
+      }
     }, (error) => console.warn('No se pudo escuchar el acceso de cuenta:', error.message));
   }
 
@@ -3854,6 +4026,19 @@
 
 
 	    auth.onAuthStateChanged(async user => {
+	      // r37.2.5 (P0, real SHARY incident): the Firebase Auth SDK can
+	      // re-fire onAuthStateChanged for the SAME already-approved user --
+	      // not a real login/logout transition -- under heavy concurrent
+	      // Firestore activity (observed reliably on WebKit during a
+	      // same-product two-device conflict-retry race). Unconditionally
+	      // deactivating here tore down the entire session (unsubscribed
+	      // every listener, cleared ACTIVE_CONTEXT/click360User/STATE_DOC,
+	      // reset LAST_REMOTE_REVISION) and forced a full async
+	      // re-resolution, opening a real window where any in-flight write
+	      // saw AUTH_APPROVED === false ("La sesión aún se está
+	      // verificando"). A redundant re-fire for the same uid, while
+	      // already approved, is a no-op.
+	      if (user && AUTH_APPROVED && window.click360User?.uid === user.uid) return;
 	      const epoch = AUTH_EPOCH + 1;
 	      deactivateActiveAccount();
 	      if (!user) {

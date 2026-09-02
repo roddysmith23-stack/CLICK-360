@@ -68,11 +68,13 @@ try {
       assertPageSize(scenario, results[scenario].pageStyleText, EXPECT_60x40);
     }
 
-    // D) Two-column roll with no configured media width must be BLOCKED with a clear message
-    // (the existing, correct behavior) — not silently produce a wrong physical page.
-    if (!results.legacy_profile_2col.prepareError) {
-      throw new Error('legacy_profile_2col: expected prepareLabelPrintJob to require an explicit media width for multi-column paper, but it succeeded silently');
+    // D) Legacy roll width=0 explicitly means automatic carrier width. It must
+    // preserve BOTH columns using their natural width; physical verification is
+    // still advisory and an explicitly undersized measured width stays blocked.
+    if (results.legacy_profile_2col.prepareError || results.legacy_profile_2col.printError) {
+      throw new Error(`legacy_profile_2col: auto-width roll failed ${results.legacy_profile_2col.prepareError || results.legacy_profile_2col.printError}`);
     }
+    assertPageSize('legacy_profile_2col', results.legacy_profile_2col.pageStyleText, { widthMm:82, heightMm:60 });
 
     // E) THE REPRODUCED BUG: a stale mediaWidthMm/mediaHeightMm (210x297, i.e. A4) left over on
     // a single-column/single-row profile must NOT become the printed page size — the label's own

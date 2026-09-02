@@ -103,7 +103,7 @@ function largeTenantData(uid) {
     restaurantPayments: [], restaurantPrintHistory: [], restaurantEvents: [], restaurantRecipes: [],
     labelPrintHistory: [],
     notifications: Array.from({ length: 377 }, (_, index) => ({ id: `notice-${index}`, businessId: uid, type: 'fixture', createdAtMs: now - index })),
-    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding' }],
+    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding', termsVersion: '2026-07-14', privacyVersion: '2026-07-14' }],
     finance: { payments: [], loans: [], envelopes: [], goals: [] },
     logistics: {},
     settings: {

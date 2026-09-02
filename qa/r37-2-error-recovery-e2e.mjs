@@ -281,6 +281,12 @@ async function run() {
       document.getElementById('click360-auth-gate')?.remove();
       window.click360ClearTenantContext = () => {};
       window.click360WriteGate = () => ({ allowed: true, reason: 'ok' });
+      // This scenario validates the write-gate recovery UX, not Firebase.
+      // Once the gate is reopened, model both halves of the modern critical
+      // mutation contract so success still requires the real product
+      // fingerprint predicate after an explicit authoritative readback.
+      window.click360SyncNow = async () => true;
+      window.click360RefreshNow = async () => true;
       // r37.2: the real (never-signed-in) Firebase Auth SDK's
       // onAuthStateChanged listener can resolve to user=null from a local
       // persistence check alone (no network needed), and

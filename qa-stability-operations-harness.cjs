@@ -26,7 +26,7 @@ assert.equal(domain.cashAmountForPayment(25, 'Tarjeta'), 0);
 assert.match(app, /data-quick-print=/, 'inventory exposes quick print per product');
 assert.match(app, /function prepareLabelPrintJob\(/, 'quick print prepares a canonical job');
 assert.match(app, /function executeCanonicalLabelPrint\(/, 'quick print has one canonical execution path');
-assert.match(app, /const confirmedQuantity = Math\.max\(1, Number\(\$\('#quickLabelQuantity'\)[\s\S]*closeModal\(\)/, 'quick print reads inputs before closing the modal');
+assert.match(app, /const confirmedQuantity = Number\(\$\('#quickLabelQuantity'\)[\s\S]*closeModal\(\)/, 'quick print reads inputs before closing the modal (invalid quantities are rejected, never clamped)');
 assert.match(app, /id="quickLabelConfirm"/, 'quick print confirm dialog has a single action-aware button');
 assert.match(app, /isPdf \? `\$\{icon\('file-down'\)\} Guardar PDF` : `\$\{icon\('printer'\)\} Imprimir`/, 'PDF remains distinct from device printing');
 assert.match(app, /function receiptFlowSegments\(/, 'fixed paper receipts use semantic pagination');

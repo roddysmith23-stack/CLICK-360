@@ -69,6 +69,7 @@ const pieces = [
   'function labelProfilesForBiz() { return window.__CLICK360_TEST_PROFILES__ || []; }',
   'function loadPrintDeviceState() { return window.__CLICK360_TEST_DEVICE_STATE__ || {}; }',
   extractFunction('resolveLabelCopyResult'),
+  extractFunction('safeColor'),
   extractFunction('defaultLabelLayout'),
   extractFunction('normalizedLabelLayout'),
   extractConstStatement('LABEL_PAPER_PRESETS'),

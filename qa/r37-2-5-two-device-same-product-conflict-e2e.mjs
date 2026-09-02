@@ -87,7 +87,10 @@ function tenantData(uid, productId) {
     auditLogs: [], layaways: [], cashSessions: [], tables: [], tableOrders: [],
     restaurantPayments: [], restaurantPrintHistory: [], restaurantEvents: [], restaurantRecipes: [],
     labelPrintHistory: [], notifications: [],
-    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding' }],
+    // r37.2.5: current termsVersion/privacyVersion -- an already-onboarded
+    // fixture must never qualify for the legal-grace banner (a real,
+    // page-covering modal unrelated to this race) mid-race.
+    legalAcceptances: [{ id: 'legal-qa', businessId: uid, uid, acceptedAt: new Date().toISOString(), source: 'onboarding', termsVersion: '2026-07-14', privacyVersion: '2026-07-14' }],
     finance: { payments: [], loans: [], envelopes: [], goals: [] },
     logistics: {},
     settings: { workers: [], labelTemplates: [], labelProfiles: [], customers: [], reminders: [], onboarding: { completedAt: new Date().toISOString(), operationId: 'qa-onboarding', version: 16.2, checklist: {} } },
@@ -164,6 +167,7 @@ async function openSignedIn(browser, email, password_) {
   const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (msg) => pageErrors.push(`console:${msg.type()}:${msg.text()}`));
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
   await page.route('**/*', (route) => {
     const requestUrl = route.request().url();
@@ -173,9 +177,17 @@ async function openSignedIn(browser, email, password_) {
     return local ? route.continue() : route.abort();
   });
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 30000 });
+  await page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', null, { timeout: 30000 });
   await page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password_ });
-  await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', { timeout: 60000 });
+  // waitForFunction's second parameter is the page argument, NOT options.
+  // Previously the intended hydration timeout was ignored (default 30s).
+  // r37.2.5: hydration + synced status can both be true before
+  // enterApprovedApp()'s own unlockApp() has actually flipped the write
+  // gate open -- under load that gap can be a real (if usually brief)
+  // window. A submit fired inside it fails closed with "auth_not_ready",
+  // exactly the failure this harness exists to never produce a false
+  // reading from. Wait for the write gate itself, not a proxy for it.
+  await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true, null, { timeout: 60000 });
   await page.evaluate(() => window.click360Route('inventory'));
   await page.waitForSelector('#newProduct', { timeout: 30000 });
   return { context, page, pageErrors };
@@ -185,7 +197,7 @@ async function openSignedIn(browser, email, password_) {
 // a CLOSED set of acceptable outcomes -- anything outside that set (a
 // generic crash toast, a timeout, an unrecognized message) is itself a
 // hard failure, not something to shrug off as "probably fine".
-async function submitAndClassify(page, productId, stock) {
+async function prepareProductSubmit(page, productId, stock) {
   await page.evaluate(({ id, stockValue }) => {
     const trigger = document.querySelector(`[data-edit="${CSS.escape(id)}"]`);
     if (!(trigger instanceof HTMLElement)) throw new Error('Missing product edit trigger');
@@ -195,10 +207,23 @@ async function submitAndClassify(page, productId, stock) {
     input.value = String(stockValue);
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    const form = document.getElementById('productForm');
-    if (!(form instanceof HTMLFormElement)) throw new Error('Missing product form');
-    form.requestSubmit();
   }, { id: productId, stockValue: stock });
+}
+
+async function submitPreparedAndClassify(page, stock) {
+  await page.evaluate(() => {
+    const form = document.getElementById('productForm');
+    if (!(form instanceof HTMLFormElement)) {
+      const modalRoots = document.querySelectorAll('#modalRoot').length;
+      const overlays = document.querySelectorAll('#modalRoot .modalOverlay').length;
+      const shown = document.querySelectorAll('#modalRoot .modalOverlay.show').length;
+      const heading = document.querySelector('#modalRoot h1,#modalRoot h2,#modalRoot h3')?.textContent || null;
+      const toastText = document.getElementById('toast')?.textContent || null;
+      const lastRuntimeError = window.CLICK360_LAST_RUNTIME_ERROR || null;
+      throw new Error(`Missing product form -- modalRoots=${modalRoots} overlays=${overlays} shown=${shown} hash=${location.hash} heading=${JSON.stringify(heading)} toast=${JSON.stringify(toastText)} lastRuntimeError=${JSON.stringify(lastRuntimeError)}`);
+    }
+    form.requestSubmit();
+  });
 
   await page.waitForFunction(() => {
     const toast = document.getElementById('toast');
@@ -207,8 +232,9 @@ async function submitAndClassify(page, productId, stock) {
     return /Producto (creado|actualizado) y confirmado en la nube/.test(message)
       || /Hay un conflicto de sincronizaci.n pendiente/.test(message)
       || /El cambio no fue confirmado y no se registr. como completado/.test(message)
+      || /La sesi.n a.n se est. verificando/.test(message)
       || (toast?.classList.contains('err') && !/Sincronizando cambios/.test(message));
-  }, { timeout: 25000 });
+  }, null, { timeout: 30000 });
 
   return page.evaluate((targetStock) => {
     const toastEl = document.getElementById('toast');
@@ -218,6 +244,14 @@ async function submitAndClassify(page, productId, stock) {
     if (/Producto (creado|actualizado) y confirmado en la nube/.test(message)) outcome = 'confirmed';
     else if (/Hay un conflicto de sincronizaci.n pendiente/.test(message)) outcome = 'safe_conflict';
     else if (/El cambio no fue confirmado y no se registr. como completado/.test(message)) outcome = 'not_confirmed';
+    // r37.2.5: a write-gate refusal because THIS device's own session is
+    // still (re-)verifying (auth_not_ready) is the same safety contract as
+    // not_confirmed for this harness's purposes: the write demonstrably did
+    // NOT reach the cloud (no data was risked), and the user got an
+    // accurate, actionable message instead of a false "confirmed". It is a
+    // distinct product state from a target-product revision conflict, so it
+    // is classified separately here rather than folded into safe_conflict.
+    else if (/La sesi.n a.n se est. verificando/.test(message)) outcome = 'not_confirmed';
     return {
       outcome, message, targetStock,
       diagnostics,
@@ -232,18 +266,24 @@ function writeEmulatorConfig() {
   writeFileSync(path.join(dir, 'firestore.rules'), rules);
   writeFileSync(path.join(dir, 'firebase.json'), JSON.stringify({
     firestore: { rules: 'firestore.rules' },
-    emulators: { auth: { host: '127.0.0.1', port: authPort }, firestore: { host: '127.0.0.1', port: firestorePort }, ui: { enabled: false } }
+    emulators: { auth: { host: '127.0.0.1', port: authPort }, firestore: { host: '127.0.0.1', port: firestorePort,websocketPort:authPort+101 },hub:{host:'127.0.0.1',port:authPort+100},logging:{host:'127.0.0.1',port:authPort+102},ui: { enabled: false } }
   }, null, 2));
   return path.join(dir, 'firebase.json');
 }
 
 async function runOnce(iteration) {
+  let stage = 'startup';
+  let debugResultA = null;
+  let debugResultB = null;
   mkdirSync(outputDir, { recursive: true });
+  const emulatorConfig = writeEmulatorConfig();
   const emulators = spawn(path.join(root, 'node_modules/.bin/firebase'), [
-    'emulators:start', '--only', 'firestore,auth', '--project', projectId, '--config', writeEmulatorConfig()
-  ], { cwd: root, detached: true, stdio: 'ignore', env: { ...process.env, PATH: `${javaDirs.join(':')}:${process.env.PATH}` } });
+    'emulators:start', '--only', 'firestore,auth', '--project', projectId, '--config', emulatorConfig
+  ], { cwd: path.dirname(emulatorConfig), detached: true, stdio: 'ignore', env: { ...process.env, PATH: `${javaDirs.join(':')}:${process.env.PATH}` } });
   const server = spawn(process.execPath, [path.join(root, 'node_modules/http-server/bin/http-server'), '.', '-p', String(port), '-c-1'], { cwd: root, detached: true, stdio: 'ignore' });
   let testEnv;
+  let deviceA;
+  let deviceB;
   let chromiumBrowser;
   let webkitBrowser;
   const email = `owner-r37-2-5-${iteration}-${Date.now().toString(36)}@example.test`;
@@ -262,17 +302,33 @@ async function runOnce(iteration) {
 
     chromiumBrowser = await chromium.launch();
     webkitBrowser = await webkit.launch();
-    const deviceA = await openSignedIn(chromiumBrowser, email, password);
-    const deviceB = await openSignedIn(webkitBrowser, email, password);
+    stage = 'chromium authoritative hydration';
+    deviceA = await openSignedIn(chromiumBrowser, email, password);
+    stage = 'webkit authoritative hydration';
+    deviceB = await openSignedIn(webkitBrowser, email, password);
 
     // Fire both edits concurrently -- neither await completes before the
     // other's form submit fires -- to force a genuine Firestore-level race
     // on the SAME product, not a sequential happy path.
-    const [resultA, resultB] = await Promise.all([
-      submitAndClassify(deviceA.page, productId, 15),
-      submitAndClassify(deviceB.page, productId, 25)
+    stage = 'concurrent product edit and terminal outcome';
+    // Arm both forms first. Promise.all(page.evaluate(click+submit)) was not a
+    // real barrier across two browser engines: on a loaded CI runner Chromium
+    // could finish its complete cloud commit before WebKit even opened the
+    // modal, turning the supposed race into two legitimate sequential edits.
+    // Both devices now capture the same pre-edit state before either submit is
+    // released; only then do the two real Firestore transactions race.
+    await Promise.all([
+      prepareProductSubmit(deviceA.page, productId, 15),
+      prepareProductSubmit(deviceB.page, productId, 25)
     ]);
+    const [resultA, resultB] = await Promise.all([
+      submitPreparedAndClassify(deviceA.page, 15),
+      submitPreparedAndClassify(deviceB.page, 25)
+    ]);
+    debugResultA = resultA;
+    debugResultB = resultB;
 
+    stage = 'authoritative post-race invariants';
     const cloudAfter = await readCloud(testEnv, uid);
     const cloudProduct = cloudAfter?.payload?.data?.products?.find((p) => p.id === productId);
     assert(cloudProduct, 'target product must still exist in cloud after the race');
@@ -307,7 +363,10 @@ async function runOnce(iteration) {
       diagnosticsA: resultA.diagnostics, diagnosticsB: resultB.diagnostics
     };
   } catch (error) {
-    return { ok: false, iteration, error: error.message };
+    return {
+      ok: false, iteration, stage, error: error.message, stack:error.stack, debugResultA, debugResultB,
+      pageErrorsA: deviceA?.pageErrors, pageErrorsB: deviceB?.pageErrors
+    };
   } finally {
     await chromiumBrowser?.close().catch(() => {});
     await webkitBrowser?.close().catch(() => {});
@@ -324,6 +383,17 @@ async function main() {
     results.push(result);
     const label = result.ok ? `A=${result.outcomeA} B=${result.outcomeB} cloudStock=${result.cloudStock}` : `ERROR: ${result.error}`;
     console.log(`[r37-2-5 two-device race ${i}/${RUNS}] ${result.ok ? 'PASS' : 'FAIL'} -- ${label}`);
+    if (process.env.CLICK360_R3725_VERBOSE === '1') {
+      console.log('  DEBUG A:', JSON.stringify(result.debugResultA ?? result.diagnosticsA ?? null));
+      console.log('  DEBUG B:', JSON.stringify(result.debugResultB ?? result.diagnosticsB ?? null));
+    } else if (!result.ok && (result.debugResultA || result.debugResultB)) {
+      console.log('  DEBUG A:', JSON.stringify(result.debugResultA));
+      console.log('  DEBUG B:', JSON.stringify(result.debugResultB));
+    }
+    if (!result.ok) {
+      console.log('  PAGE ERRORS A:', JSON.stringify(result.pageErrorsA));
+      console.log('  PAGE ERRORS B:', JSON.stringify(result.pageErrorsB));
+    }
     // Let the previous iteration's emulator/server fully release their
     // ports before the next spawn -- back-to-back spawns can otherwise
     // race a not-yet-freed port (an infra flake, not a product bug).

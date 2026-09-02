@@ -23,7 +23,10 @@ const fs = require('fs');
 const index = fs.readFileSync('index.html', 'utf8');
 const app = fs.readFileSync('app.js', 'utf8');
 
-const controllerChangeBlock = index.slice(index.indexOf("addEventListener('controllerchange'"), index.indexOf("addEventListener('controllerchange'") + 1800);
+const controllerChangeStart = index.indexOf("addEventListener('controllerchange'");
+const controllerChangeEnd = index.indexOf('</script>', controllerChangeStart);
+assert(controllerChangeStart > 0 && controllerChangeEnd > controllerChangeStart, 'complete controllerchange script must be present');
+const controllerChangeBlock = index.slice(controllerChangeStart, controllerChangeEnd);
 assert(controllerChangeBlock.includes('AUTO_HEAL_SESSION_KEY'), 'the controllerchange handler must track auto-heal state to cap it at one attempt');
 assert(/sessionStorage\.(get|set)Item\(AUTO_HEAL_SESSION_KEY/.test(controllerChangeBlock), 'the auto-heal cap must use sessionStorage (resets per real session), never localStorage (which would leave it stuck forever after one use, or never reset)');
 assert(controllerChangeBlock.includes("document.body.classList.contains('has-modal')"), 'auto-heal must never reload while a modal is open (risk of an unsaved draft/dialog in progress)');

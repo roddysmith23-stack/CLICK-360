@@ -103,6 +103,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - run: npm ci
       - name: Install PDF rendering tools
         run: brew install poppler
@@ -118,6 +122,45 @@ jobs:
         run: |
           echo "Administrative changes are outside this web-only release."
           exit 1
+
+  inventory-conflict-e2e:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npx --no-install playwright install chromium webkit
+      - name: Thirty real same-product races, independent server verification
+        run: node qa/r37-2-5-two-device-same-product-conflict-e2e.mjs
+
+  recovery-tooling:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build isolated Windows acquisition package (synthetic identity only)
+        run: python scripts/recovery/build_acquisition_package.py --config scripts/recovery/synthetic-acquisition-config.json --output recovery-package-ci
+      - name: Run packaged parser against synthetic evidence on Windows
+        run: recovery-package-ci/SHARY_PC_ACQUISITION_PACKAGE/runtime/python.exe recovery-package-ci/SHARY_PC_ACQUISITION_PACKAGE/test_acquisition.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install playwright install chromium
+      - name: Verify real Chromium serialization and external blobs with packaged runtime
+        env:
+          CLICK360_RECOVERY_PYTHON: ${{ github.workspace }}/recovery-package-ci/SHARY_PC_ACQUISITION_PACKAGE/runtime/python.exe
+        run: node qa/recovery-parser-browser-e2e.mjs
 
   functions-jobs:
     needs: changes
@@ -137,6 +180,8 @@ jobs:
       - web-rules-qa
       - web-simulators
       - labels-e2e
+      - recovery-tooling
+      - inventory-conflict-e2e
     runs-on: ubuntu-latest
     steps:
       - name: Emit release decision
@@ -146,9 +191,11 @@ jobs:
           RULES_QA: ${{ needs.web-rules-qa.result }}
           SIMULATORS: ${{ needs.web-simulators.result }}
           LABELS: ${{ needs.labels-e2e.result }}
+          RECOVERY: ${{ needs.recovery-tooling.result }}
+          CONFLICTS: ${{ needs.inventory-conflict-e2e.result }}
         run: |
-          results="$WEB_RUNTIME $WEB_AUDIT $RULES_QA $SIMULATORS $LABELS"
-          if [ "$results" != "success success success success success" ]; then
+          results="$WEB_RUNTIME $WEB_AUDIT $RULES_QA $SIMULATORS $LABELS $RECOVERY $CONFLICTS"
+          if [ "$results" != "success success success success success success success" ]; then
             echo "NO_GO"
             echo "Required web checks: $results"
             exit 1
