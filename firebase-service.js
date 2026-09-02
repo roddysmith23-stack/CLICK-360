@@ -3849,6 +3849,18 @@
 	        next = { ...next, readOnly: true, clockVerificationRequired: true };
 	      }
       if (!next.allowed) {
+        // r37.2.5 (P0, real SHARY incident): same principle as the
+        // cache-miss guard above, extended to a cache snapshot that DOES
+        // exist but computes not-allowed -- under heavy concurrent write
+        // activity (e.g. a same-product conflict-retry race) a fresh
+        // browser (notably WebKit) can deliver a transient/stale cached
+        // read here before the authoritative server snapshot follows. Do
+        // not revoke a real, already-approved session on a cache-only
+        // read; wait for the server-confirmed delivery to actually decide.
+        if (snap.metadata?.fromCache === true) {
+          setSyncStatus('syncing', 'Verificando acceso con el servidor.');
+          return;
+        }
         AUTH_APPROVED = false;
         PULL_COMPLETE = false;
         if (REMOTE_UNSUBSCRIBE) { REMOTE_UNSUBSCRIBE(); REMOTE_UNSUBSCRIBE = null; }
