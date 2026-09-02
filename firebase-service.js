@@ -4026,6 +4026,19 @@
 
 
 	    auth.onAuthStateChanged(async user => {
+	      // r37.2.5 (P0, real SHARY incident): the Firebase Auth SDK can
+	      // re-fire onAuthStateChanged for the SAME already-approved user --
+	      // not a real login/logout transition -- under heavy concurrent
+	      // Firestore activity (observed reliably on WebKit during a
+	      // same-product two-device conflict-retry race). Unconditionally
+	      // deactivating here tore down the entire session (unsubscribed
+	      // every listener, cleared ACTIVE_CONTEXT/click360User/STATE_DOC,
+	      // reset LAST_REMOTE_REVISION) and forced a full async
+	      // re-resolution, opening a real window where any in-flight write
+	      // saw AUTH_APPROVED === false ("La sesión aún se está
+	      // verificando"). A redundant re-fire for the same uid, while
+	      // already approved, is a no-op.
+	      if (user && AUTH_APPROVED && window.click360User?.uid === user.uid) return;
 	      const epoch = AUTH_EPOCH + 1;
 	      deactivateActiveAccount();
 	      if (!user) {

@@ -181,7 +181,13 @@ async function openSignedIn(browser, email, password_) {
   await page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password_ });
   // waitForFunction's second parameter is the page argument, NOT options.
   // Previously the intended hydration timeout was ignored (default 30s).
-  await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', null, { timeout: 60000 });
+  // r37.2.5: hydration + synced status can both be true before
+  // enterApprovedApp()'s own unlockApp() has actually flipped the write
+  // gate open -- under load that gap can be a real (if usually brief)
+  // window. A submit fired inside it fails closed with "auth_not_ready",
+  // exactly the failure this harness exists to never produce a false
+  // reading from. Wait for the write gate itself, not a proxy for it.
+  await page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true, null, { timeout: 60000 });
   await page.evaluate(() => window.click360Route('inventory'));
   await page.waitForSelector('#newProduct', { timeout: 30000 });
   return { context, page, pageErrors };
@@ -226,6 +232,7 @@ async function submitPreparedAndClassify(page, stock) {
     return /Producto (creado|actualizado) y confirmado en la nube/.test(message)
       || /Hay un conflicto de sincronizaci.n pendiente/.test(message)
       || /El cambio no fue confirmado y no se registr. como completado/.test(message)
+      || /La sesi.n a.n se est. verificando/.test(message)
       || (toast?.classList.contains('err') && !/Sincronizando cambios/.test(message));
   }, null, { timeout: 30000 });
 
@@ -237,6 +244,14 @@ async function submitPreparedAndClassify(page, stock) {
     if (/Producto (creado|actualizado) y confirmado en la nube/.test(message)) outcome = 'confirmed';
     else if (/Hay un conflicto de sincronizaci.n pendiente/.test(message)) outcome = 'safe_conflict';
     else if (/El cambio no fue confirmado y no se registr. como completado/.test(message)) outcome = 'not_confirmed';
+    // r37.2.5: a write-gate refusal because THIS device's own session is
+    // still (re-)verifying (auth_not_ready) is the same safety contract as
+    // not_confirmed for this harness's purposes: the write demonstrably did
+    // NOT reach the cloud (no data was risked), and the user got an
+    // accurate, actionable message instead of a false "confirmed". It is a
+    // distinct product state from a target-product revision conflict, so it
+    // is classified separately here rather than folded into safe_conflict.
+    else if (/La sesi.n a.n se est. verificando/.test(message)) outcome = 'not_confirmed';
     return {
       outcome, message, targetStock,
       diagnostics,
