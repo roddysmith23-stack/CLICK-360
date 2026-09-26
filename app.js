@@ -2235,12 +2235,18 @@ function parseMoney(value) {
     { id:'support', category:'Soporte', title:'¿Cómo contactar soporte?', keywords:'whatsapp ayuda contacto', steps:['Toca Contactar soporte por WhatsApp.','Describe la pantalla y el código de error.','Nunca compartas contraseñas ni códigos de acceso.'] }
   ]);
   function latestCashSession(businessId = currentBusiness()?.id, date = today()) {
+    const reconciled = globalThis.CLICK360_CASH_RECONCILIATION?.latestCashSession?.(state.cashSessions || [], businessId, date);
+    if (reconciled) return reconciled;
     return (state.cashSessions || []).slice().reverse().find((session) =>
       session.businessId === businessId && session.date === date) || null;
   }
   function currentOpenCashSession(businessId = currentBusiness()?.id, date = today()) {
-    const session = latestCashSession(businessId, date);
-    return session?.status === 'open' ? session : null;
+    const reconciler = globalThis.CLICK360_CASH_RECONCILIATION?.currentOpenCashSession;
+    if (reconciler) return reconciler(state.cashSessions || [], state.dailyReports || [], businessId, date);
+    return (state.cashSessions || []).slice().reverse().find((session) =>
+      session.businessId === businessId && session.date === date && session.status === 'open'
+      && !(state.dailyReports || []).some((report) => report.businessId === businessId && report.date === date
+        && report.cashSessionId === session.id && report.status === 'closed')) || null;
   }
   function isCashIncomeMovement(m) {
     if (!m || m.kind !== 'ingreso' || m.status === 'cancelled') return false;
@@ -2261,8 +2267,15 @@ function parseMoney(value) {
 	    return isBusinessDateClosed(today(), bid);
 	  }
   function isBusinessDateClosed(date, businessId = currentBusiness()?.id) {
+    const reconciler = globalThis.CLICK360_CASH_RECONCILIATION?.isBusinessDateClosed;
+    if (reconciler) return reconciler(state.dailyReports || [], state.cashSessions || [], date, businessId);
+    const unresolvedOpen = (state.cashSessions || []).some((session) =>
+      session.businessId === businessId && session.date === date && session.status === 'open'
+      && !(state.dailyReports || []).some((report) => report.businessId === businessId && report.date === date
+        && report.cashSessionId === session.id && report.status === 'closed'));
+    if (unresolvedOpen) return false;
     return !!businessId && (state.dailyReports || []).some((report) =>
-      report.businessId === businessId && report.date === date && report.status !== 'reopened');
+      report.businessId === businessId && report.date === date && report.status === 'closed');
   }
   function can(section) {
     const role = authUser().role;
@@ -2853,11 +2866,12 @@ function parseMoney(value) {
     }
     const openSession = currentOpenCashSession();
     const latestSession = latestCashSession();
+    const displaySession = openSession || latestSession;
     const allMov = movementsForBiz().filter(m=>m.date===today());
-    const hasSessionTaggedMovements = !!latestSession
-      && allMov.some((movement) => movement.cashSessionId === latestSession.id);
+    const hasSessionTaggedMovements = !!displaySession
+      && allMov.some((movement) => movement.cashSessionId === displaySession.id);
     const mov = hasSessionTaggedMovements
-      ? allMov.filter((movement) => movement.cashSessionId === latestSession.id)
+      ? allMov.filter((movement) => movement.cashSessionId === displaySession.id)
       : allMov;
     const aperture=mov.slice().reverse().find(m=>m.kind==='apertura')?.amount || 0;
     const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
@@ -7799,23 +7813,31 @@ function parseMoney(value) {
 	  let cashCloseSessionOverride = null;
 	  function staleOpenCashSession(businessId = currentBusiness()?.id) {
 	    if (!businessId) return null;
+	    const reconciler = globalThis.CLICK360_CASH_RECONCILIATION?.staleOpenCashSession;
+	    if (reconciler) return reconciler(state.cashSessions || [], state.dailyReports || [], businessId, today());
 	    return (state.cashSessions || [])
-	      .filter((session) => session.businessId === businessId && session.status === 'open' && session.date !== today())
+	      .filter((session) => session.businessId === businessId && session.status === 'open' && session.date !== today()
+	        && !(state.dailyReports || []).some((report) => report.businessId === businessId && report.date === session.date
+	          && report.cashSessionId === session.id && report.status === 'closed'))
 	      .sort((a, b) => String(a.date).localeCompare(String(b.date)))[0] || null;
 	  }
 	  function cashCloseBasis() {
 	    const business = currentBusiness();
 	    const businessId = business?.id || '';
-	    const overrideSession = cashCloseSessionOverride && cashCloseSessionOverride.businessId === businessId ? cashCloseSessionOverride : null;
-	    const date = overrideSession ? overrideSession.date : today();
+	    const requestedOverride = cashCloseSessionOverride && cashCloseSessionOverride.businessId === businessId ? cashCloseSessionOverride : null;
+	    const overrideSession = requestedOverride
+	      ? (state.cashSessions || []).find((session) => session.id === requestedOverride.id && session.businessId === businessId) || null
+	      : null;
+	    const date = overrideSession?.date || requestedOverride?.date || today();
 	    const activeSession = overrideSession || currentOpenCashSession(businessId, date);
-	    const allMovements = Array.isArray(state.movements) ? state.movements.filter(m => m.businessId === businessId && m.date === date) : [];
-	    const closeMovements = activeSession && allMovements.some((movement) => movement.cashSessionId === activeSession.id)
-	      ? allMovements.filter((movement) => movement.cashSessionId === activeSession.id)
-	      : allMovements;
+	    const recordsForSession = globalThis.CLICK360_CASH_RECONCILIATION?.recordsForCashSession;
+	    const closeMovements = recordsForSession
+	      ? recordsForSession(state.movements || [], activeSession, businessId, date)
+	      : (state.movements || []).filter((movement) => movement.businessId === businessId && movement.date === date
+	        && (!activeSession?.id || movement.cashSessionId === activeSession.id));
 	    const apertureMov = closeMovements.slice().reverse().find((movement) => movement.kind === 'apertura');
 	    const lastCash = apertureMov ? Number(apertureMov.amount || 0) : Number(business?.lastCashBalance || 0);
-	    return { business, businessId, date, activeSession, closeMovements, apertureMov, lastCash };
+	    return { business, businessId, date, activeSession, closeMovements, apertureMov, lastCash, overrideRequested: !!requestedOverride };
 	  }
 	  function buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId }) {
 	    updateCashCloseDiagnostic('cash_close_calculate_totals', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
@@ -7823,10 +7845,12 @@ function parseMoney(value) {
 	    const out = basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura').reduce((a, m) => a + Number(m.amount || 0), 0);
 	    const balanceCalculado = cInicial + income - out;
 	    const diferencia = eFisico - balanceCalculado;
-	    const allSales = Array.isArray(state.sales) ? state.sales.filter(s => s.businessId === basis.businessId && s.date === basis.date && s.status !== 'cancelled') : [];
-	    const sales = basis.activeSession && allSales.some((sale) => sale.cashSessionId === basis.activeSession.id)
-	      ? allSales.filter((sale) => sale.cashSessionId === basis.activeSession.id)
-	      : allSales;
+	    const recordsForSession = globalThis.CLICK360_CASH_RECONCILIATION?.recordsForCashSession;
+	    const sales = (recordsForSession
+	      ? recordsForSession(state.sales || [], basis.activeSession, basis.businessId, basis.date)
+	      : (state.sales || []).filter((sale) => sale.businessId === basis.businessId && sale.date === basis.date
+	        && (!basis.activeSession?.id || sale.cashSessionId === basis.activeSession.id)))
+	      .filter((sale) => sale.status !== 'cancelled');
 	    const salesEfectivo = sales.filter(s => s.method === 'Efectivo').reduce((a, s) => a + Number(s.total || 0), 0);
 	    const salesTarjeta = sales.filter(s => s.method === 'Tarjeta').reduce((a, s) => a + Number(s.total || 0), 0);
 	    const salesTransf = sales.filter(s => s.method === 'Transferencia').reduce((a, s) => a + Number(s.total || 0), 0);
@@ -7907,7 +7931,10 @@ function parseMoney(value) {
 	    if (!accessStatus.allowed) return showCashCloseAccessBlocked(accessStatus);
 	    const basis = cashCloseBasis();
 	    if (!basis.businessId) return toast('No se encontró el negocio activo.', 'err');
-	    if (isBusinessDateClosed(basis.date, basis.businessId)) return toast(cashCloseSessionOverride ? 'Esa caja ya está cerrada.' : 'La caja de hoy ya está cerrada.', 'ok');
+	    if (basis.overrideRequested && !basis.activeSession) return toast('Esta sesión de caja ya no está disponible. Actualiza la vista.', 'err');
+	    const closeEligibility = globalThis.CLICK360_CASH_RECONCILIATION?.cashCloseEligibility?.(basis.activeSession, state.dailyReports || []);
+	    if (basis.activeSession && closeEligibility?.allowed === false) return toast('Esa sesión de caja ya está cerrada.', 'ok');
+	    if (!basis.activeSession && isBusinessDateClosed(basis.date, basis.businessId)) return toast(cashCloseSessionOverride ? 'Esa caja ya está cerrada.' : 'La caja de hoy ya está cerrada.', 'ok');
 	    updateCashCloseDiagnostic('cash_close_open_modal', { business: basis.business, cashSessionId: basis.activeSession?.id || '' });
 	    showModal(`<div class="modalHeader"><h2>${cashCloseSessionOverride ? `Cerrar caja del ${escapeHtml(basis.date)}` : 'Cerrar día'}</h2><button class="closeBtn" data-close>×</button></div>
 	      <form id="closeDayForm" class="formGrid">
@@ -7928,7 +7955,8 @@ function parseMoney(value) {
 	    const retryOptions = {
 	      cajaInicial: $('#cajaInicial')?.value || '',
 	      efectivoFisico: $('#efectivoFisico')?.value || '',
-	      observations: $('#cierreObs')?.value || ''
+	      observations: $('#cierreObs')?.value || '',
+	      session: cashCloseSessionOverride
 	    };
 	    let stage = 'cash_close_validate_access';
 	    let previousState = null;
@@ -7951,8 +7979,16 @@ function parseMoney(value) {
 	        error.code = 'cash_close_no_active_business';
 	        throw error;
 	      }
-	      if (isBusinessDateClosed(basis.date, basis.businessId)) {
-	        toast('La caja de hoy ya está cerrada.', 'ok');
+	      if (basis.overrideRequested && !basis.activeSession) {
+	        toast('Esta sesión de caja ya no está disponible. Actualiza la vista.', 'err');
+	        closeModal();
+	        renderApp('cash');
+	        return;
+	      }
+	      const closeEligibility = globalThis.CLICK360_CASH_RECONCILIATION?.cashCloseEligibility?.(basis.activeSession, state.dailyReports || []);
+	      if ((basis.activeSession && closeEligibility?.allowed === false)
+	        || (!basis.activeSession && isBusinessDateClosed(basis.date, basis.businessId))) {
+	        toast('Esa sesión de caja ya está cerrada.', 'ok');
 	        closeModal();
 	        renderApp('cash');
 	        return;
@@ -7981,7 +8017,7 @@ function parseMoney(value) {
 	      state.cashSessions ||= [];
 	      const existingClosedReport = state.dailyReports.find((report) =>
 	        report.businessId === basis.businessId && report.date === basis.date && report.status === 'closed'
-	        && (basis.activeSession?.id ? report.cashSessionId === basis.activeSession.id : true));
+	        && (basis.activeSession?.id ? report.cashSessionId === basis.activeSession.id : !report.cashSessionId));
 	      if (existingClosedReport) {
 	        toast('La caja ya estaba cerrada. Puedes ver el cierre en el historial.', 'ok');
 	        closeModal();
@@ -8056,56 +8092,60 @@ function parseMoney(value) {
 	    }
 	  }
 
+	  async function reopenCashDay(reason) {
+	    const bid = currentBusiness()?.id;
+	    if (!bid) return false;
+	    if (currentOpenCashSession(bid, today())) {
+	      toast('Ya existe una sesión de caja pendiente. Ciérrala antes de reabrir otra.', 'err');
+	      return false;
+	    }
+	    const previousState = cloneState(state);
+	    const operationId = uid('cashreopen');
+	    const closedReport = globalThis.CLICK360_CASH_RECONCILIATION?.latestClosedCashReport?.(state.dailyReports || [], bid, today())
+	      || (state.dailyReports || []).slice().reverse().find((report) => report.businessId === bid && report.date === today() && report.status === 'closed');
+	    if (!closedReport) {
+	      toast('No se encontró un cierre vigente para reabrir.', 'err');
+	      return false;
+	    }
+	    closedReport.status = 'reopened';
+	    closedReport.reopenedAt = new Date().toISOString();
+	    closedReport.reopenedBy = authUser().name;
+	    closedReport.reopenReason = reason;
+	    state.movements.push({
+	      id: uid('mov'), operationId, businessId: bid, date: today(), when: nowLabel(), kind: 'apertura',
+	      amount: currentBusiness().lastCashBalance || 0, note: `Reapertura de caja: ${reason}`,
+	      createdBy: authUser().name, reopened: true, cashSessionId: operationId, createdAtMs: Date.now()
+	    });
+	    state.cashSessions ||= [];
+	    state.cashSessions.push({
+	      id: operationId, operationId, businessId: bid, registerName: 'Caja principal', date: today(), status: 'open',
+	      openedByUid: window.click360User?.uid || '', openedBy: authUser().name, openedByRole: authUser().role || 'owner',
+	      openedAt: new Date().toISOString(), openingAmount: currentBusiness().lastCashBalance || 0,
+	      reopened: true, reopenReason: reason, notes: ''
+	    });
+	    addAudit('cash_reopened', { businessId: bid, date: today(), reason, reports: [closedReport.id] });
+	    const committed = await commitCriticalMutation(previousState, 'cash_reopened', (next) =>
+	      next.movements.some((movement) => movement.operationId === operationId && movement.businessId === bid));
+	    renderApp('cash');
+	    if (committed.ok) toast(committed.pending ? 'Reapertura guardada; sincronización pendiente.' : 'Caja reabierta con auditoría');
+	    return committed.ok;
+	  }
+
 		  function bindCash(){
 	    $('#calculatorCashBtn')?.addEventListener('click', () => openCalculator({ preferredTarget: isDayStarted() ? '' : 'apertureAmountInput' }));
     const btnReopenCash = $('#reopenCashBtn');
 	    if (btnReopenCash) {
 	      btnReopenCash.onclick = async () => {
 	        if (!isOwnerUser()) return toast('Solo el dueño puede reabrir una caja cerrada.', 'err');
-	        if (!confirm('¿Deseas reabrir la caja de hoy?\nEl cierre anterior NO se borrará; quedará guardado como historial y se registrará la reapertura.')) return;
-	        const reason = prompt('Escribe el motivo de reapertura de caja:');
-	        if (!reason || reason.trim().length < 4) return toast('Motivo requerido para reabrir caja', 'err');
 	        if (btnReopenCash.disabled) return;
 	        btnReopenCash.disabled = true;
 	        try {
-	        const bid = currentBusiness()?.id;
-	        if (bid) {
-	          const previousState = cloneState(state);
-	          const operationId = uid('cashreopen');
-	          const closedReports = (state.dailyReports || []).filter(r => r.businessId === bid && r.date === today() && r.status !== 'reopened');
-	          closedReports.forEach(r => {
-	            r.status = 'reopened';
-	            r.reopenedAt = new Date().toISOString();
-	            r.reopenedBy = authUser().name;
-	            r.reopenReason = reason.trim();
-	          });
-	          state.movements.push({
-	            id: uid('mov'),
-	            operationId,
-	            businessId: bid,
-	            date: today(),
-	            when: nowLabel(),
-	            kind: 'apertura',
-	            amount: currentBusiness().lastCashBalance || 0,
-	            note: `Reapertura de caja: ${reason.trim()}`,
-	            createdBy: authUser().name,
-	            reopened: true,
-	            cashSessionId: operationId,
-	            createdAtMs: Date.now()
-	          });
-	          state.cashSessions ||= [];
-	          state.cashSessions.push({
-	            id: operationId, operationId, businessId: bid, registerName: 'Caja principal', date: today(), status: 'open',
-	            openedByUid: window.click360User?.uid || '', openedBy: authUser().name, openedByRole: authUser().role || 'owner',
-	            openedAt: new Date().toISOString(), openingAmount: currentBusiness().lastCashBalance || 0,
-	            reopened: true, reopenReason: reason.trim(), notes: ''
-	          });
-	          addAudit('cash_reopened', { businessId: bid, date: today(), reason: reason.trim(), reports: closedReports.map(r => r.id) });
-	          const committed = await commitCriticalMutation(previousState, 'cash_reopened', (next) =>
-	            next.movements.some((movement) => movement.operationId === operationId && movement.businessId === bid));
-	          renderApp('cash');
-	          if (committed.ok) toast(committed.pending ? 'Reapertura guardada; sincronización pendiente.' : 'Caja reabierta con auditoría');
-	        }
+	          const bid = currentBusiness()?.id;
+	          if (bid && currentOpenCashSession(bid, today())) return toast('Ya existe una sesión de caja pendiente. Ciérrala antes de reabrir otra.', 'err');
+	          if (!confirm('¿Deseas reabrir la caja de hoy?\nEl cierre anterior NO se borrará; quedará guardado como historial y se registrará la reapertura.')) return;
+	          const reason = prompt('Escribe el motivo de reapertura de caja:');
+	          if (!reason || reason.trim().length < 4) return toast('Motivo requerido para reabrir caja', 'err');
+	          await reopenCashDay(reason.trim());
 	        } finally {
 	          btnReopenCash.disabled = false;
 	        }

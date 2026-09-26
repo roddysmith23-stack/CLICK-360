@@ -18,6 +18,7 @@ const ASSETS = [
   './p2-web-safe-flags.js',
   './p2-restaurant-domain.js',
   './p2-logistics-domain.js',
+  './cash-session-reconciliation.js',
   './universal-label-canvas.js',
   './universal-label-editor.js',
   './manifest.webmanifest',
