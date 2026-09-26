@@ -1970,10 +1970,20 @@ function parseMoney(value) {
   // { productsActive, storageBytes, workerSeats, businesses } -> each an
   // evaluateQuota() result. UI reads .level for notice/warning/critical
   // styling; creation flows read .blocked to gate NEW-resource creation only.
+  function tenantLimitOverrides() {
+    const overrides = window.click360User?.manualLimitOverrides;
+    return overrides && typeof overrides === 'object' ? overrides : null;
+  }
+  function tenantPlanEntitlements() {
+    const domain = window.CLICK360_V16_DOMAIN;
+    if (!domain) return null;
+    return window.CLICK360_TENANT_QUOTA?.planEntitlements?.(domain, tenantAccountPlan(), tenantLimitOverrides())
+      || domain.planEntitlements(tenantAccountPlan());
+  }
   function tenantQuotaStatus() {
     const domain = window.CLICK360_V16_DOMAIN;
     if (!domain) return null;
-    const entitlements = domain.planEntitlements(tenantAccountPlan());
+    const entitlements = tenantPlanEntitlements();
     const usage = tenantUsageSnapshot();
     return {
       plan: entitlements,
@@ -6801,7 +6811,7 @@ function parseMoney(value) {
         }
         if (addingOrGrowingImage) {
           const domain = window.CLICK360_V16_DOMAIN;
-          const entitlements = domain?.planEntitlements(tenantAccountPlan());
+          const entitlements = tenantPlanEntitlements();
           const projected = tenantUsageSnapshot().storageBytes - previousImageBytes + nextImageBytes;
           const storageQuota = domain?.evaluateQuota(projected, entitlements?.limits?.storageBytes);
           if (storageQuota?.blocked) { beep('err'); return toast('Tu plan de almacenamiento de imagenes alcanzo el limite. Puedes guardar el producto sin imagen, o mejorar tu plan / solicitar mas capacidad desde "Mi plan".', 'err'); }

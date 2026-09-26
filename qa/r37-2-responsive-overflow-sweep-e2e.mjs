@@ -39,6 +39,7 @@ const url = `http://127.0.0.1:${port}/index.html`;
 const output = path.join(root, 'output/playwright/r37-2-responsive');
 const widths = [320, 360, 375, 390, 430, 768, 1024, 1280, 1440];
 const SCREENSHOT_WIDTHS = new Set([390, 1440]);
+const BUSINESS_TIME_ZONE = 'America/Guayaquil';
 
 const server = spawn(process.execPath, [path.join(root, 'node_modules/http-server/bin/http-server'), '.', '-p', String(port), '-c-1'], { cwd: root, stdio: 'ignore' });
 
@@ -57,13 +58,17 @@ const CEO_ADMIN_EMAIL = 'roddysmithceo@gmail.com';
 
 function fixtureState() {
   const now = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const todayStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BUSINESS_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
   const nowIso = now.toISOString();
   return {
     todayStr,
     state: {
-      businesses: [{ id: 'biz_main', name: 'Tienda Real', status: 'activo', type: 'ropa', settings: {} }],
+      businesses: [{ id: 'biz_main', name: 'Tienda Real', status: 'activo', type: 'ropa', settings: { timeZone: BUSINESS_TIME_ZONE } }],
       activeBusinessId: 'biz_main',
       products: [
         { id: 'p1', businessId: 'biz_main', code: 'P1', name: 'Producto Responsive de Prueba con Nombre Largo', qty: 25, stock: 25, price: 12.5, cardPrice: 13.25, category: 'General' },
