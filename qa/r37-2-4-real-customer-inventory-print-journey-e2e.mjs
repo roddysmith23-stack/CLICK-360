@@ -208,7 +208,15 @@ async function openSignedIn(browser) {
   await step('goto', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }));
   await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 }));
   await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
-  await step('hydrated-and-synced', () => page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', { timeout: 60000 }));
+  // Hydration and a green sync badge can settle one tick before the auth
+  // write gate is approved on a loaded CI runner. The application correctly
+  // fails closed during that interval, so do not race a product submit into
+  // it: wait for the same public gate a real mutation must pass.
+  await step('hydrated-synced-and-write-ready', () => page.waitForFunction(() =>
+    window.click360IsTenantDataHydrated?.() === true
+      && window.click360SyncStatus?.status === 'synced'
+      && window.click360WriteGate?.().allowed === true,
+  { timeout: 60000 }));
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };
