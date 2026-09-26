@@ -182,6 +182,14 @@ async function newAppContext(browser) {
   return context;
 }
 
+async function waitForWriteReady(page) {
+  await page.waitForFunction(() =>
+    window.click360IsTenantDataHydrated?.() === true
+      && window.click360SyncStatus?.status === 'synced'
+      && window.click360WriteGate?.().allowed === true,
+  { timeout: 60000 });
+}
+
 async function openSignedIn(browser) {
   const context = await newAppContext(browser);
   const page = await context.newPage();
@@ -212,11 +220,7 @@ async function openSignedIn(browser) {
   // write gate is approved on a loaded CI runner. The application correctly
   // fails closed during that interval, so do not race a product submit into
   // it: wait for the same public gate a real mutation must pass.
-  await step('hydrated-synced-and-write-ready', () => page.waitForFunction(() =>
-    window.click360IsTenantDataHydrated?.() === true
-      && window.click360SyncStatus?.status === 'synced'
-      && window.click360WriteGate?.().allowed === true,
-  { timeout: 60000 }));
+  await step('hydrated-synced-and-write-ready', () => waitForWriteReady(page));
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };
@@ -229,8 +233,22 @@ async function openSignedIn(browser) {
 // ONE real conflict and retries once, exactly as a real user would after
 // reading "Hay un conflicto..." and clicking save again. A second
 // consecutive conflict, or any other unexplained outcome, still fails hard.
-async function submitProduct(page, values, { allowOneConflictRetry = true, beforeUnconfirmedRetry = null } = {}) {
+// A transient same-user Auth-emulator re-fire is also retried at most once,
+// only after an independent server read proves the target was not written and
+// the real application write gate returns to its fully approved state.
+async function submitProduct(page, values, {
+  allowOneConflictRetry = true,
+  beforeTransientAuthRetry = null,
+  beforeUnconfirmedRetry = null
+} = {}) {
   let result = await submitProductOnce(page, values);
+  if (/La sesi.n a.n se est. verificando/.test(result.message)) {
+    assert(typeof beforeTransientAuthRetry === 'function', `Transient auth retry requires an independent server check: ${JSON.stringify(result)}`);
+    const retrySafe = await beforeTransientAuthRetry(result);
+    assert(retrySafe === true, `Transient auth retry was not safe: ${JSON.stringify(result)}`);
+    await waitForWriteReady(page);
+    result = await submitProductOnce(page, values);
+  }
   if (allowOneConflictRetry && /Hay un conflicto de sincronizaci.n pendiente/.test(result.message)) {
     result = await submitProductOnce(page, values);
   }
@@ -442,7 +460,16 @@ async function run() {
 
     const deviceA = await openSignedIn(chromiumBrowser);
     await captureAppEvidence(deviceA.page, 'inventory-before.png');
-    await submitProduct(deviceA.page, { code: 'TEST-PERSIST-001', name: 'Producto persistencia QA', stock: 17 });
+    await submitProduct(
+      deviceA.page,
+      { code: 'TEST-PERSIST-001', name: 'Producto persistencia QA', stock: 17 },
+      {
+        beforeTransientAuthRetry: async () => {
+          const remote = await readCloud(testEnv, uid);
+          return !remote.payload.data.products.some((product) => product.code === 'TEST-PERSIST-001');
+        }
+      }
+    );
     const afterSave = await readCloud(testEnv, uid);
     const created = afterSave.payload.data.products.find((product) => product.code === 'TEST-PERSIST-001');
     assert(created, 'Device A product must exist in cloud after the success message');
@@ -471,6 +498,11 @@ async function run() {
       deviceB.page,
       { id: created.id, code: 'TEST-PERSIST-001', name: 'Producto persistencia QA', stock: 21 },
       {
+        beforeTransientAuthRetry: async () => {
+          const remote = await readCloud(testEnv, uid);
+          const remoteProduct = remote.payload.data.products.find((candidate) => candidate.id === created.id);
+          return Number(remoteProduct?.stock ?? remoteProduct?.qty) === 17;
+        },
         beforeUnconfirmedRetry: async (failedAttempt) => {
           const remote = await readCloud(testEnv, uid);
           const remoteProduct = remote.payload.data.products.find((candidate) => candidate.id === created.id);
