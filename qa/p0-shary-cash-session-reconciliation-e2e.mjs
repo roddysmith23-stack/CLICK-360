@@ -28,10 +28,10 @@ async function run() {
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
     await page.clock.pauseAt(new Date('2026-09-26T02:30:00.000Z'));
-    await page.goto(url, { waitUntil:'networkidle' });
+    await page.goto(url, { waitUntil:'domcontentloaded' });
     await page.waitForFunction(() => typeof window.click360SetTenantContext === 'function' && !!window.CLICK360_CASH_RECONCILIATION, { timeout:15000 });
 
-    await page.evaluate(() => {
+    const rendered = await page.evaluate(() => {
       const uid = 'synthetic-shary-owner';
       const businessId = 'synthetic-shary-business';
       const context = { authUid:uid, ownerUid:uid, ownerId:uid, businessId:uid, tenantKey:`owner:${uid}:business:${uid}`, schemaVersion:10 };
@@ -69,16 +69,21 @@ async function run() {
       }, context);
       window.click360Route('cash');
       document.getElementById('click360-auth-gate')?.remove();
+      const button = document.getElementById('closeStaleCashBtn');
+      if (!button) throw new Error('The exact unresolved synthetic cash session was not rendered.');
+      const renderedCash = document.getElementById('app')?.innerHTML || '';
+      button.click();
+      const closeForm = document.getElementById('closeDayForm');
+      if (!closeForm) throw new Error('The exact unresolved synthetic cash session did not open its close form.');
+      return {
+        cashHtml:renderedCash,
+        modalText:document.querySelector('#modalRoot .modal')?.innerText || ''
+      };
     });
 
-    await page.locator('#closeStaleCashBtn').waitFor({ state:'visible' });
-    const cashHtml = await page.locator('#app').innerHTML();
-    assert(cashHtml.includes('Caja del 2026-09-02 sin cerrar'), 'the unresolved exact session must be visible despite a different closed report on the date');
-    await page.locator('#closeStaleCashBtn').dispatchEvent('click');
-    await page.locator('#closeDayForm').waitFor({ state:'visible' });
-    const modalText = await page.locator('#modalRoot .modal').innerText();
-    assert(modalText.includes('Cerrar caja del 2026-09-02'), 'the old exact session must open the close form instead of showing "Esa caja ya está cerrada"');
-    assert(!modalText.includes('Esa caja ya está cerrada'), 'date-level closed status must not block a different open session');
+    assert(rendered.cashHtml.includes('Caja del 2026-09-02 sin cerrar'), 'the unresolved exact session must be visible despite a different closed report on the date');
+    assert(rendered.modalText.includes('Cerrar caja del 2026-09-02'), 'the old exact session must open the close form instead of showing "Esa caja ya está cerrada"');
+    assert(!rendered.modalText.includes('Esa caja ya está cerrada'), 'date-level closed status must not block a different open session');
     await mkdir(path.join(root, 'output/playwright'), { recursive:true });
     await page.screenshot({ path:path.join(root, 'output/playwright/shary-cash-session-reconciliation.png'), fullPage:true });
 

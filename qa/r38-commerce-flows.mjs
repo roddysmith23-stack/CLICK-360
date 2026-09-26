@@ -141,7 +141,9 @@ async function commerce(page,label){
   assert(report.expectedCash===62&&report.countedCash===62&&report.difference===0,'cash reconciliation authoritative: '+JSON.stringify({expected:report.expectedCash,counted:report.countedCash,difference:report.difference,opening:report.openingAmount,movements:closed.movements}));
   assert(session.expectedCash===62&&session.countedCash===62&&session.difference===0,'cash session matches voucher');
   assert(report.paymentTotals.cash===12&&report.paymentTotals.card===12.5&&report.paymentTotals.transfer===12&&report.paymentTotals.layawayPayments===12,'voucher separate tender totals');
-  for(const [label,amount]of [['Efectivo','12.00'],['Tarjeta','12.50'],['Transferencia','12.00'],['Abonos Apartado','12.00']])assert(report.html.includes(`<span>${label}:</span><span>$${amount}</span>`),'voucher '+label);
+  assert(!Object.hasOwn(report,'html')&&report.renderVersion==='cash-close-structured-v1','new cash reports persist structured fields without redundant printable HTML');
+  const voucherHtml=await page.locator('#pdfContentPreview').innerHTML();
+  for(const [label,amount]of [['Efectivo','12.00'],['Tarjeta','12.50'],['Transferencia','12.00'],['Abonos Apartado','12.00']])assert(voucherHtml.includes(`<span>${label}:</span><span>$${amount}</span>`),'reconstructed voucher '+label);
   results.push({label,sales:4,newMovements:6,layaway:'picked_up',physicalIncome,expectedCash:62,stock:27});
 }
 

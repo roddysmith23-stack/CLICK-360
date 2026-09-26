@@ -92,6 +92,31 @@
       .at(-1)?.report || null;
   }
 
+  function cashCloseTargetMatches(report = {}, target = {}) {
+    if (!report || report.status !== 'closed') return false;
+    if (!target.businessId || !target.date) return false;
+    if (report.businessId !== target.businessId || report.date !== target.date) return false;
+    const sessionId = String(target.cashSessionId || '');
+    return sessionId ? report.cashSessionId === sessionId : !report.cashSessionId;
+  }
+
+  function closedCashReportForTarget(reports = [], target = {}) {
+    return (Array.isArray(reports) ? reports : [])
+      .filter((report) => cashCloseTargetMatches(report, target))
+      .sort((a, b) => cashRecordTime(a, ['closedAt', 'createdAtMs']) - cashRecordTime(b, ['closedAt', 'createdAtMs']))
+      .at(-1) || null;
+  }
+
+  // The printable HTML is a derived view, not accounting data. Keeping a
+  // copy inside every historical report caused near-limit tenants to exceed
+  // the guarded 850 KB payload on cash close. New reports persist only the
+  // structured source fields and rebuild the printable view on demand.
+  function compactCashCloseReport(report = {}) {
+    const compact = { ...report, renderVersion: report.renderVersion || 'cash-close-structured-v1' };
+    delete compact.html;
+    return compact;
+  }
+
   const api = Object.freeze({
     latestCashSession,
     cashReportsForSession,
@@ -102,7 +127,10 @@
     isBusinessDateClosed,
     cashCloseEligibility,
     recordsForCashSession,
-    latestClosedCashReport
+    latestClosedCashReport,
+    cashCloseTargetMatches,
+    closedCashReportForTarget,
+    compactCashCloseReport
   });
 
   root.CLICK360_CASH_RECONCILIATION = api;
