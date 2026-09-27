@@ -111,4 +111,4 @@ El cierre compacto cabe bajo el guard actual, pero el tenant sigue cerca del lí
 - Producción: sin cambios.
 - Firestore de SHARY: solo lectura; sin cambios.
 - Merge: no realizado.
-- Staging independiente inicial: `https://click360-staging-7620168025--shary-save-rejected-kr7fzzx1.web.app` (canal Hosting aislado; se actualizará al commit final revisado antes de aprobación).
+- Staging independiente: `https://click360-staging-7620168025--shary-save-rejected-kr7fzzx1.web.app` (canal Hosting aislado, validado con la regresión sintética completa; expira el 2026-10-04).
