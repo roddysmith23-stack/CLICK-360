@@ -106,13 +106,12 @@ async function createPage(browser) {
   const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
-  if (externalUrl) {
-    // This cash-close fixture supplies its own synthetic tenant identity and
-    // does not exercise Google sign-in. Isolate the unrelated cross-origin
-    // Firebase Auth iframe so taking the fixture offline cannot manufacture
-    // a `fireauth` ReferenceError inside that third-party frame.
-    await page.route('**/__/auth/iframe**', (route) => route.abort('blockedbyclient'));
-  }
+  // This cash-close fixture supplies its own synthetic tenant identity and
+  // does not exercise Google sign-in. Isolate the unrelated cross-origin
+  // Firebase Auth iframe for both a local server and a published staging URL:
+  // otherwise runner network variance can manufacture an AuthError (or a
+  // `fireauth` ReferenceError while offline) outside the operation under test.
+  await page.route('**/__/auth/iframe**', (route) => route.abort('blockedbyclient'));
   await page.goto(url, { waitUntil:'domcontentloaded', timeout:externalUrl ? 60000 : 30000 });
   await page.waitForFunction(() => typeof window.click360SetTenantContext === 'function' && !!window.CLICK360_CASH_RECONCILIATION, { timeout:uiTimeout });
   await page.waitForFunction(() => {

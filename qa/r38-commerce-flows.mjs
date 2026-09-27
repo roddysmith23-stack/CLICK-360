@@ -31,7 +31,12 @@ async function searchAndEdit(page,code,expectedName){
       assert(geometry.x>=0&&geometry.y>=0&&geometry.right<=geometry.w+1&&geometry.bottom<=geometry.h,`no manual scroll required ${attribute}: ${JSON.stringify(geometry)}`);
       assert(geometry.svg,'action icon rendered (not blank)');
     }
-    await cards.locator('[data-edit]').click();
+    // The synthetic access refresh above intentionally replaces productList's
+    // innerHTML. On a long WebKit run the node can be replaced between the
+    // pointer down/up phases of Playwright's physical click, losing only the
+    // test gesture. Dispatch on the currently attached button atomically; the
+    // real bound handler and every editor assertion below remain exercised.
+    await cards.locator('[data-edit]').evaluate((button) => button.click());
     assert(await page.locator('#pCode').inputValue()===code,'correct edit product code');
     assert(await page.locator('#pName').inputValue()===expectedName,'correct edit product name');
     await page.evaluate(()=>window.dispatchEvent(new CustomEvent('click360-access-changed')));

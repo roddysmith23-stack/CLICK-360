@@ -216,6 +216,9 @@
     if (reason === 'tenant_guard_not_ready') return 'La cuenta aún está preparando la protección de datos. Intenta nuevamente en unos segundos.';
     if (reason === 'local_state_too_large') return 'El cierre supera el límite seguro del estado actual. No se guardó ni se duplicó ningún movimiento.';
     if (reason === 'local_storage_quota_exceeded') return 'El almacenamiento local está lleno. El cierre no se guardó ni se duplicó.';
+    if (reason === 'remote_commit_rejected') return 'El cambio no fue confirmado y no se registró como completado.';
+    if (reason === 'remote_state_mismatch') return 'El servidor contiene un estado diferente. No se sobrescribieron sus cambios.';
+    if (reason === 'remote_commit_unknown' || reason === 'remote_confirmation_failed') return 'No pudimos confirmar el cambio en el servidor. No lo repitas hasta comprobar la sincronización.';
     return gate.message || 'No se pudo guardar ahora. Tus datos anteriores siguen intactos.';
   }
   // r37.2 (ERROR RECOVERY): a caught error's .message can be a curated
@@ -6979,6 +6982,9 @@ function parseMoney(value) {
 	        const wait = await waitForVerifiableConfirmation(updatedAtMs, Date.now() + 15000, initialSnapshot);
         diagnostics.stalled = wait.stalled;
         diagnostics.retryBaselineAuthoritative = wait.last.authoritative;
+	        if (wait.last.authoritative) {
+	          diagnostics.targetChangedRemotely = productFingerprint(baselineProduct) !== wait.last.fingerprint;
+	        }
 	        if (wait.confirmed) committed = { ok:true, pending:false, recovered:true };
 	      }
       if (!committed.ok && diagnostics.retryBaselineAuthoritative === true && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
@@ -7033,7 +7039,7 @@ function parseMoney(value) {
 	      // remotely, so we correctly declined to auto-retry) must surface
 	      // its own explicit, recoverable message -- never the generic
 	      // "not confirmed" fallback, which reads as an unexplained failure.
-	      if (!committed.ok && diagnostics.targetChangedRemotely && !committed.reason) committed = { ...committed, reason:'sync_conflict' };
+	      if (!committed.ok && diagnostics.targetChangedRemotely) committed = { ...committed, reason:'sync_conflict' };
 	      if (!committed.ok) {
 	        if (committed.reason || lastWriteBlock?.reason) {
 	          const failureGate = { ...(lastWriteBlock || {}), reason:committed.reason || lastWriteBlock.reason };

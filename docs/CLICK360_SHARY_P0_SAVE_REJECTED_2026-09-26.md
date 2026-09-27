@@ -4,10 +4,10 @@ Este documento registra la segunda incidencia de cierre histórico observada en 
 
 ## Resultado de la lectura remota
 
-Lectura autorizada capturada el `2026-09-26T17:34:36.760Z`:
+Última lectura autorizada capturada el `2026-09-27T00:10:04.196Z`:
 
-- revisión remota: `1790438675932`;
-- hash SHA-256 de los campos nativos: `41a56a752ced2ec94eee2fccd83dcf3481ec0947fcfc497505cab9b099807bf3`;
+- revisión remota: `1790446720233`;
+- hash SHA-256 de los campos nativos: `55e330e76c8dc91c3cd15f97b513f76880cd6830cc25d59efac0df1fcbaa28ae`;
 - 463 productos, 30 ventas, 107 movimientos, 24 sesiones de caja, 21 reportes diarios y 271 entradas de auditoría del estado monolítico;
 - la única venta con fecha comercial `2026-09-03` está confirmada en el servidor: total `$30`, estado pagado, transferencia, una línea de producto;
 - la venta tiene `operationId`, `saleId` y `cashSessionId` explícitos. El hash anonimizado del identificador de sesión es `b211ea756f44c29fc8f096085cae455e1dcaabcdef15e423bff816a413897144`;
@@ -24,17 +24,18 @@ El fingerprint material remoto actual calculado con el algoritmo productivo es `
 
 ## Respaldo verificable
 
-El respaldo nuevo conserva los tipos nativos de Firestore y está fuera de Git en:
+El respaldo vigente conserva los tipos nativos de Firestore y está fuera de Git en:
 
-`artifacts/private/shary-incident-20260926-cash-close-save-rejected/`
+`artifacts/private/shary-incident-20260927-cash-close-final-read/`
 
 Archivos:
 
-- `firestore-native-backup.private.json` — 2.433.731 bytes — SHA-256 `feba0cbabbd9d1bb18569e25b642acce38049307e315945b68ae9f8e9feb760c`;
-- `manifest.private.json` — SHA-256 `c51ca3cc9d68995bd6d558efb17d121a9f2e49aba55c5ddfbe4d5072065fb4b0`;
-- `reconciliation-2026-09-03.private.json` — SHA-256 `1babd4e531f03be01b414e4d02fdd78731bb46bc120e68cea071a4fc9ef9b65e`.
+- `firestore-native-backup.private.json` — 2.433.731 bytes — SHA-256 `c47527ed9ad6a7ee7e9dfaea95437ba204a312ee8b81fc4e1bbdc982830dfe31`;
+- `manifest.private.json` — SHA-256 `2d1adf47f45eb4a2599aaf4811496730da9e0e825f50dea36b7431e1560fbf13`;
+- `reconciliation-2026-09-03.private.json` — SHA-256 `d9532c2a85ccc37fd3088a19fa84b6c0273fb01ff6935e939a93bc5c22002035`;
+- `comparison-preview.private.json` — SHA-256 `883a99a79eb422d8b2ff3d68908d15843358fe579e8780df208ed6e2a85e488f`.
 
-El manifiesto fue contrastado nuevamente contra el archivo de respaldo y coincide. El respaldo anterior se conserva, pero no es candidato de restauración sobre este estado más reciente.
+El manifiesto fue contrastado nuevamente contra el archivo de respaldo y coincide. Frente a la captura anterior cambiaron la revisión, `baseRevision`, `updatedAt` y `updatedAtMs`, pero no cambió el payload comercial ni ninguno de sus conteos. Por lo tanto, la captura anterior queda obsoleta para una comparación CAS y se conserva solamente como evidencia; no es candidata de restauración. La venta, el movimiento, el stock, la sesión abierta y la ausencia de reporte del `2026-09-03` permanecen iguales en la captura vigente.
 
 ## Causa exacta
 
@@ -83,6 +84,9 @@ La diferencia del artefacto productivo frente a `main` ya quedó reconciliada en
 - Regresión específica WebKit/iPhone standalone: rechazo real a 850.947 bytes sin mutación; cierre compacto a 848.247 bytes; doble toque, cierre ya confirmado en servidor, fallback IndexedDB y offline pendiente cubiertos.
 - Arnés universal: PASS para cinco planes, seis roles, tres tenants sintéticos aislados, negocios con identificadores coincidentes bajo propietarios distintos, sesiones actuales/retroactivas/cerradas/reabiertas, efectivo/tarjeta/transferencia y transición de fecha `America/Guayaquil`.
 - Matriz automatizada de cierre: PASS en ocho perfiles: motor WebKit iPhone navegador, WebKit iPhone PWA, Chromium Android navegador, Chromium Android PWA, Chromium escritorio, WebKit escritorio, Firefox escritorio y emulación compatible con Edge. Todos comprobaron rechazo seguro cerca del límite y cierre compacto único sin cambiar conteos de ventas, movimientos o stock.
+- Conflicto de inventario con dos dispositivos: PASS 30/30; un solo stock autoritativo, cero confirmaciones falsas, cero sobrescrituras silenciosas y cero actualizaciones perdidas. Los motivos específicos de rechazo/estado desconocido vuelven a producir mensajes terminales claros en vez del fallback genérico.
+- El fallo CI de la matriz de caja se aisló a la carga ajena de Firebase Auth dentro de un fixture que aporta identidad sintética propia. El iframe se aísla tanto contra servidor local como staging; los errores reales de la página continúan siendo aserciones bloqueantes y no se omitió ningún escenario.
+- El E2E comercial WebKit conserva todas sus aserciones, pero dispara el botón actualmente conectado de forma atómica después de forzar el reemplazo sintético de `productList`; así evita perder el gesto de Playwright entre `pointerdown` y `pointerup` sin saltarse el handler real ni las comprobaciones posteriores de producto, venta, stock y caja.
 - Google Chrome instalado en macOS: PASS adicional ejecutado contra el binario local.
 
 La matriz automatizada no sustituye hardware ni navegadores propietarios. Siguen pendientes para aceptación física: iPhone Safari real, PWA instalada real de SHARY, Android real, Edge real en Windows y Safari real en macOS. Los perfiles WebKit/Chromium y los dispositivos Playwright se reportan como automatización, no como certificación física.
