@@ -56,7 +56,11 @@ Por eso `cashSessionId:""` y `writeGate:null` en el diagnóstico original no des
 - Si el servidor marca la sesión cerrada pero no existe su reporte, el flujo falla cerrado para investigación.
 - `save()` conserva el motivo real (`local_state_too_large`, cuota local u otro código), etapa, bytes intentados y límite.
 - El diagnóstico de cierre conserva el gate evaluado y la sesión objetivo aun después de una excepción.
+- Si la respuesta de persistencia falla, el sistema relee el servidor antes de habilitar un reintento. Un reporte ya confirmado se reconoce como éxito sin una segunda escritura.
+- La interfaz distingue cuatro resultados: `confirmed`, `pending`, `rejected` y `unknown`. El estado desconocido solo permite comprobar el servidor; nunca ofrece reintento directo.
 - No se cambia el límite de 850.000 bytes. No se eliminan ventas, movimientos, productos, sesiones, reportes ni auditoría.
+
+La corrección vive en la arquitectura compartida. No contiene identificadores, correos, hashes ni condiciones particulares de SHARY. Se ejerce con la misma conciliación por negocio, fecha y sesión para Basic, Pro, Business, Enterprise y Founder Legacy, y respeta el mapa común de permisos de caja.
 
 ## Cuota Founder Legacy conservada
 
@@ -77,6 +81,11 @@ La diferencia del artefacto productivo frente a `main` ya quedó reconciliada en
 - R38 comercio autoritativo: PASS en Chromium y WebKit, 1280 px y 390 px; el comprobante reconstruido conserva todos los totales.
 - R38 Restaurant, matriz de fallos de arranque, contrato de impresión y smoke del artefacto construido: PASS.
 - Regresión específica WebKit/iPhone standalone: rechazo real a 850.947 bytes sin mutación; cierre compacto a 848.247 bytes; doble toque, cierre ya confirmado en servidor, fallback IndexedDB y offline pendiente cubiertos.
+- Arnés universal: PASS para cinco planes, seis roles, tres tenants sintéticos aislados, negocios con identificadores coincidentes bajo propietarios distintos, sesiones actuales/retroactivas/cerradas/reabiertas, efectivo/tarjeta/transferencia y transición de fecha `America/Guayaquil`.
+- Matriz automatizada de cierre: PASS en ocho perfiles: motor WebKit iPhone navegador, WebKit iPhone PWA, Chromium Android navegador, Chromium Android PWA, Chromium escritorio, WebKit escritorio, Firefox escritorio y emulación compatible con Edge. Todos comprobaron rechazo seguro cerca del límite y cierre compacto único sin cambiar conteos de ventas, movimientos o stock.
+- Google Chrome instalado en macOS: PASS adicional ejecutado contra el binario local.
+
+La matriz automatizada no sustituye hardware ni navegadores propietarios. Siguen pendientes para aceptación física: iPhone Safari real, PWA instalada real de SHARY, Android real, Edge real en Windows y Safari real en macOS. Los perfiles WebKit/Chromium y los dispositivos Playwright se reportan como automatización, no como certificación física.
 
 ## Recuperación operativa propuesta
 
@@ -102,4 +111,4 @@ El cierre compacto cabe bajo el guard actual, pero el tenant sigue cerca del lí
 - Producción: sin cambios.
 - Firestore de SHARY: solo lectura; sin cambios.
 - Merge: no realizado.
-- Staging independiente: pendiente de publicar desde el commit revisado de este hotfix.
+- Staging independiente inicial: `https://click360-staging-7620168025--shary-save-rejected-kr7fzzx1.web.app` (canal Hosting aislado; se actualizará al commit final revisado antes de aprobación).

@@ -1072,7 +1072,10 @@ function parseMoney(value) {
     // already-committed product/sale with the pre-operation state.
     if (!refreshed && !synced) restoreCriticalSnapshot(previousState);
     if (!options.suppressFailureToast) toast('El cambio no fue confirmado y no se registró como completado.', 'err');
-    return { ok: false, pending: false };
+    const reason = !synced
+      ? (refreshed ? 'remote_commit_rejected' : 'remote_commit_unknown')
+      : (refreshed ? 'remote_state_mismatch' : 'remote_confirmation_failed');
+    return { ok: false, pending: false, reason };
     } finally {
       actionLock.release();
     }
@@ -7794,7 +7797,7 @@ function parseMoney(value) {
 	      ...details,
 	      error,
 	      errorCode: details.errorCode || error?.code || error?.name || 'cash_close_error',
-	      status: 'error'
+	      status: details.status || 'error'
 	    });
 	    window.CLICK360_RUNTIME_GUARD?.record?.({
 	      message: `Cash close failed at ${diagnostic.stage}`,
@@ -7830,8 +7833,30 @@ function parseMoney(value) {
 	      </div>`);
 	    toast('No se cerró la caja.', 'err');
 	  }
-	  function showCashCloseError(stage, diagnostic, retryOptions = {}) {
-	    showModal(`<div class="modalHeader"><div><h2>No pudimos cerrar la caja</h2><p class="fieldHint">El cierre no se guardó. Tus datos anteriores siguen intactos.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	  function bindCashCloseDiagnosticCopy(diagnostic) {
+	    $('#copyCashCloseDiagnosticBtn')?.addEventListener('click', async () => {
+	      await navigator.clipboard?.writeText(JSON.stringify(diagnostic, null, 2)).catch(() => null);
+	      toast('Diagnóstico copiado');
+	    });
+	  }
+	  function showCashCloseConfirmed(diagnostic) {
+	    showModal(`<div class="modalHeader"><div><h2>Cierre confirmado</h2><p class="fieldHint">El servidor ya contiene este cierre. No se creó un reporte adicional.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <div class="cashCloseIssuePanel">
+	        ${cashCloseDiagnosticRows(diagnostic)}
+	        <div class="cashCloseActions">
+	          <button type="button" class="btn silver block" id="copyCashCloseDiagnosticBtn">Copiar diagnóstico</button>
+	        </div>
+	        <button type="button" class="btn primary block" data-close style="margin-top:10px;">Entendido</button>
+	      </div>`);
+	    bindCashCloseDiagnosticCopy(diagnostic);
+	    toast('Cierre confirmado en el servidor.', 'ok');
+	  }
+	  function showCashCloseRejected(stage, diagnostic, retryOptions = {}) {
+	    const localFailure = ['local_state_too_large', 'local_storage_quota_exceeded'].includes(diagnostic.saveFailure?.code || diagnostic.errorCode);
+	    const message = localFailure
+	      ? 'El cierre fue rechazado antes de enviarse al servidor. No se duplicó ningún dato.'
+	      : 'El servidor fue comprobado y este cierre no quedó aplicado. Puedes corregir la causa y reintentar.';
+	    showModal(`<div class="modalHeader"><div><h2>Cierre rechazado</h2><p class="fieldHint">${escapeHtml(message)}</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
 	      <div class="cashCloseIssuePanel">
 	        ${cashCloseDiagnosticRows(diagnostic)}
 	        <div class="cashCloseActions">
@@ -7844,11 +7869,62 @@ function parseMoney(value) {
 	      closeModal(false);
 	      openCashCloseDialog(retryOptions);
 	    });
-	    $('#copyCashCloseDiagnosticBtn')?.addEventListener('click', async () => {
-	      await navigator.clipboard?.writeText(JSON.stringify(diagnostic, null, 2)).catch(() => null);
-	      toast('Diagnóstico copiado');
+	    bindCashCloseDiagnosticCopy(diagnostic);
+	    toast(`Cierre rechazado. Código: ${stage}`, 'err');
+	  }
+	  function showCashCloseUnknown(stage, diagnostic, recovery = {}) {
+	    showModal(`<div class="modalHeader"><div><h2>Estado del cierre sin confirmar</h2><p class="fieldHint">No vuelvas a cerrar todavía. Primero comprobaremos el servidor para evitar un reporte duplicado.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <div class="cashCloseIssuePanel">
+	        ${cashCloseDiagnosticRows(diagnostic)}
+	        <div class="cashCloseActions">
+	          <button type="button" class="btn primary block" id="verifyCashCloseStatusBtn">Comprobar servidor</button>
+	          <button type="button" class="btn silver block" id="copyCashCloseDiagnosticBtn">Copiar diagnóstico</button>
+	        </div>
+	        <button type="button" class="btn block" data-close style="margin-top:10px;">Cerrar sin reintentar</button>
+	      </div>`);
+	    bindCashCloseDiagnosticCopy(diagnostic);
+	    $('#verifyCashCloseStatusBtn')?.addEventListener('click', async () => {
+	      const button = $('#verifyCashCloseStatusBtn');
+	      button?.setAttribute('disabled', 'disabled');
+	      try {
+	        const verifyServerClose = window.click360VerifyCashCloseOnServer;
+	        const serverCheck = typeof verifyServerClose === 'function'
+	          ? await verifyServerClose(recovery.target || {})
+	          : { ok:false, errorCode:'cash_close_server_preflight_unavailable' };
+	        if (serverCheck?.ok && serverCheck.closed) {
+	          const confirmed = updateCashCloseDiagnostic('cash_close_confirmed_after_recheck', {
+	            ...recovery.diagnosticContext,
+	            reportId:serverCheck.reportId || '',
+	            status:'confirmed'
+	          });
+	          showCashCloseConfirmed(confirmed);
+	          return;
+	        }
+	        if (serverCheck?.ok) {
+	          const rejected = updateCashCloseDiagnostic('cash_close_not_applied_server', {
+	            ...recovery.diagnosticContext,
+	            status:'rejected',
+	            errorCode:'cash_close_not_applied_server'
+	          });
+	          showCashCloseRejected('cash_close_not_applied_server', rejected, recovery.retryOptions || {});
+	          return;
+	        }
+	        const unknown = updateCashCloseDiagnostic(stage, {
+	          ...recovery.diagnosticContext,
+	          status:'unknown',
+	          errorCode:serverCheck?.errorCode || 'cash_close_server_recheck_failed'
+	        });
+	        showCashCloseUnknown(stage, unknown, recovery);
+	      } catch (error) {
+	        const unknown = recordCashCloseIssue(stage, error, {
+	          ...recovery.diagnosticContext,
+	          status:'unknown',
+	          errorCode:error?.code || 'cash_close_server_recheck_failed'
+	        });
+	        showCashCloseUnknown(stage, unknown, recovery);
+	      }
 	    });
-	    toast(`No se cerró la caja. Código: ${stage}`, 'err');
+	    toast('Estado del cierre sin confirmar. No reintentes todavía.', 'err');
 	  }
 	  function showCashCloseExportIssue(stage, diagnostic) {
 	    showModal(`<div class="modalHeader"><div><h2>Caja cerrada</h2><p class="fieldHint">El cierre quedó guardado, pero la exportación no se pudo completar en este dispositivo.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
@@ -7997,7 +8073,7 @@ function parseMoney(value) {
 	    updateCashCloseDiagnostic('cash_close_export_ready', {
 	      closeDetails,
 	      reportId: closeDetails.id,
-	      status: committed.pending ? 'pending' : 'closed'
+	      status: committed.pending ? 'pending' : 'confirmed'
 	    });
 	    showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
 	      <div class="cashClosePreview">
@@ -8010,7 +8086,9 @@ function parseMoney(value) {
 	          <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
 	          <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
 	      </div>
-	      <p class="fieldHint">El cierre ya quedó guardado. Si una exportación falla, puedes volver a abrir este resumen desde el historial.</p>
+	      <p class="fieldHint">${committed.pending
+	        ? 'El cierre quedó guardado en este dispositivo y está pendiente de sincronización. No lo repitas.'
+	        : 'Cierre confirmado. Si una exportación falla, puedes volver a abrir este resumen desde el historial.'}</p>
 	    `);
 	    const runExport = async (stage, job) => {
 	      updateCashCloseDiagnostic(stage, { closeDetails, reportId: closeDetails.id });
@@ -8066,6 +8144,7 @@ function parseMoney(value) {
 	    let reportId = '';
 	    let evaluatedGate = null;
 	    let diagnosticContext = {};
+	    let cashCloseTarget = null;
 	    const submitButton = $('#closeDaySubmitBtn');
 	    try {
 	      submitButton?.setAttribute('disabled', 'disabled');
@@ -8079,6 +8158,11 @@ function parseMoney(value) {
 	      stage = 'cash_close_load_session';
 	      const basis = cashCloseBasis();
 	      diagnosticContext = { business:basis.business, cashSessionId:basis.activeSession?.id || '', gate:evaluatedGate };
+	      cashCloseTarget = {
+	        businessId:basis.businessId,
+	        date:basis.date,
+	        cashSessionId:basis.activeSession?.id || ''
+	      };
 	      if (!basis.businessId) {
 	        const error = new Error('No active business for cash close.');
 	        error.code = 'cash_close_no_active_business';
@@ -8104,27 +8188,25 @@ function parseMoney(value) {
 	        if (typeof verifyServerClose !== 'function') {
 	          const error = new Error('Server cash-close verification is unavailable.');
 	          error.code = 'cash_close_server_preflight_unavailable';
+	          error.outcome = 'unknown';
 	          throw error;
 	        }
-	        const serverCheck = await verifyServerClose({
-	          businessId:basis.businessId,
-	          date:basis.date,
-	          cashSessionId:basis.activeSession?.id || ''
-	        });
+	        const serverCheck = await verifyServerClose(cashCloseTarget);
 	        if (!serverCheck?.ok) {
 	          const error = new Error('Server cash-close verification failed.');
 	          error.code = serverCheck?.errorCode || 'cash_close_server_preflight_failed';
+	          error.outcome = 'unknown';
 	          throw error;
 	        }
 	        if (serverCheck.closed) {
-	          updateCashCloseDiagnostic('cash_close_already_confirmed_server', {
+	          const confirmed = updateCashCloseDiagnostic('cash_close_already_confirmed_server', {
 	            ...diagnosticContext,
 	            reportId:serverCheck.reportId || '',
-	            status:'closed'
+	            status:'confirmed'
 	          });
-	          toast('La caja ya está cerrada en el servidor. No se creó otro cierre.', 'ok');
-	          closeModal();
+	          closeModal(false);
 	          renderApp('cash');
+	          showCashCloseConfirmed(confirmed);
 	          return;
 	        }
 	        stage = 'cash_close_load_session';
@@ -8206,9 +8288,35 @@ function parseMoney(value) {
 	        const error = new Error(writeBlockMessage(window.click360LastWriteBlock || { reason: committed.reason || 'cash_close_commit_not_confirmed' }));
 	        error.code = committed.reason || 'cash_close_commit_not_confirmed';
 	        error.saveFailure = committed.saveFailure || window.click360LastSaveFailure || null;
+	        const classifyOutcome = globalThis.CLICK360_CASH_RECONCILIATION?.cashCloseOutcomeFromEvidence
+	          || ((evidence = {}) => evidence.pending ? 'pending' : evidence.localRejected ? 'rejected' : evidence.serverCheck?.ok ? (evidence.serverCheck.closed ? 'confirmed' : 'rejected') : 'unknown');
+	        if (error.saveFailure || window.click360LastWriteBlock) {
+	          error.outcome = classifyOutcome({ localRejected:true });
+	          throw error;
+	        }
+	        if (navigator.onLine !== false && typeof window.click360VerifyCashCloseOnServer === 'function') {
+	          stage = 'cash_close_verify_server_after_failure';
+	          const serverCheck = await window.click360VerifyCashCloseOnServer(cashCloseTarget);
+	          if (serverCheck?.ok && serverCheck.closed) {
+	            const confirmed = updateCashCloseDiagnostic('cash_close_confirmed_after_response_failure', {
+	              ...diagnosticContext,
+	              closeDetails,
+	              reportId:serverCheck.reportId || reportId,
+	              status:'confirmed'
+	            });
+	            closeModal(false);
+	            renderApp('cash');
+	            showCashCloseConfirmed(confirmed);
+	            return;
+	          }
+	          error.outcome = classifyOutcome({ serverCheck });
+	          if (!serverCheck?.ok) error.code = serverCheck?.errorCode || 'cash_close_server_recheck_failed';
+	        } else {
+	          error.outcome = 'unknown';
+	        }
 	        throw error;
 	      }
-	      updateCashCloseDiagnostic('cash_close_verify_closed', { business: basis.business, closeDetails, reportId, status: committed.pending ? 'pending' : 'closed' });
+	      updateCashCloseDiagnostic('cash_close_verify_closed', { business: basis.business, closeDetails, reportId, status: committed.pending ? 'pending' : 'confirmed' });
 	      window.click360RecordTelemetry?.('cash_close', { requestId: reportId, mode: summary.diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
 	      closeModal(false);
 	      renderApp('cash');
@@ -8223,14 +8331,20 @@ function parseMoney(value) {
 	        state = normalizeState(cloneState(previousState));
 	        lastAutoSaveHash = JSON.stringify(state);
 	      }
+	      const outcome = error?.outcome || (!commitStarted && stage !== 'cash_close_verify_server_before_write' ? 'rejected' : 'unknown');
 	      const diagnostic = recordCashCloseIssue(stage, error, {
 	        ...diagnosticContext,
 	        gate:evaluatedGate,
 	        reportId,
 	        saveFailure:error?.saveFailure || window.click360LastSaveFailure || null,
-	        errorCode:error?.code || error?.name || 'cash_close_failed'
+	        errorCode:error?.code || error?.name || 'cash_close_failed',
+	        status:outcome
 	      });
-	      showCashCloseError(stage, diagnostic, retryOptions);
+	      if (outcome === 'rejected') {
+	        showCashCloseRejected(stage, diagnostic, retryOptions);
+	      } else {
+	        showCashCloseUnknown(stage, diagnostic, { cashCloseTarget, target:cashCloseTarget, retryOptions, diagnosticContext });
+	      }
 	    } finally {
 	      if (inFlightKey) cashCloseInFlight.delete(inFlightKey);
 	      submitButton?.removeAttribute('disabled');

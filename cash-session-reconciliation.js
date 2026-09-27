@@ -117,6 +117,13 @@
     return compact;
   }
 
+  function cashCloseOutcomeFromEvidence({ pending = false, localRejected = false, serverCheck = null } = {}) {
+    if (pending) return 'pending';
+    if (localRejected) return 'rejected';
+    if (serverCheck?.ok === true) return serverCheck.closed === true ? 'confirmed' : 'rejected';
+    return 'unknown';
+  }
+
   const api = Object.freeze({
     latestCashSession,
     cashReportsForSession,
@@ -130,7 +137,8 @@
     latestClosedCashReport,
     cashCloseTargetMatches,
     closedCashReportForTarget,
-    compactCashCloseReport
+    compactCashCloseReport,
+    cashCloseOutcomeFromEvidence
   });
 
   root.CLICK360_CASH_RECONCILIATION = api;
