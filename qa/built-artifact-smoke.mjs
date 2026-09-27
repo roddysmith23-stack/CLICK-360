@@ -1,12 +1,15 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { chromium, webkit } from 'playwright';
 
 const root = path.resolve(import.meta.dirname, '..');
 const port = Number(process.env.CLICK360_ARTIFACT_E2E_PORT || 4285);
-const url = `http://127.0.0.1:${port}/?v=commercial-1-0-5-r38-mvp-candidate`;
+const sourceReleaseManifest = JSON.parse(await readFile(path.join(root, 'release-manifest.json'), 'utf8'));
+const assetVersion = String(sourceReleaseManifest.version || '');
+if (!assetVersion) throw new Error('Source release manifest has no version.');
+const url = `http://127.0.0.1:${port}/?v=${encodeURIComponent(assetVersion)}`;
 const output = path.join(root, 'output/playwright/release-1.0.5');
 
 execFileSync('npm', ['run', 'build:static'], { cwd:root, stdio:'inherit' });
@@ -48,13 +51,13 @@ async function run(name, browserType, options = {}) {
     });
     const release = await page.evaluate(() => window.CLICK360_RUNTIME_GUARD?.getReleaseMetadata?.() || null);
     if (release?.appVersion !== '1.0.5') throw new Error(`${name} wrong app version: ${JSON.stringify(release)}`);
-    if (release?.assetVersion !== 'commercial-1-0-5-r38-mvp-candidate') throw new Error(`${name} wrong asset version: ${JSON.stringify(release)}`);
+    if (release?.assetVersion !== assetVersion) throw new Error(`${name} wrong asset version: ${JSON.stringify(release)}`);
     if (!release?.buildSha || release.buildSha === '__CLICK360_BUILD_SHA__') throw new Error(`${name} build SHA was not injected`);
     const manifest = await page.evaluate(async () => {
-      const response = await fetch('manifest.webmanifest?v=commercial-1-0-5-r38-mvp-candidate');
+      const response = await fetch(`manifest.webmanifest?v=${encodeURIComponent(window.CLICK360_RUNTIME_GUARD.getReleaseMetadata().assetVersion)}`);
       return { ok:response.ok, data:await response.json() };
     });
-    if (!manifest.ok || !String(manifest.data.start_url || '').includes('commercial-1-0-5-r38-mvp-candidate')) {
+    if (!manifest.ok || !String(manifest.data.start_url || '').includes(assetVersion)) {
       throw new Error(`${name} PWA manifest is stale`);
     }
     if (name === 'chromium') {
@@ -67,7 +70,7 @@ async function run(name, browserType, options = {}) {
         ]);
       });
       const caches = await page.evaluate(() => window.caches.keys());
-      if (!caches.includes('click360-commercial-1-0-5-r38-mvp-candidate')) {
+      if (!caches.includes(`click360-${assetVersion}`)) {
         throw new Error(`Chromium Service Worker cache mismatch: ${JSON.stringify(caches)}`);
       }
     }
