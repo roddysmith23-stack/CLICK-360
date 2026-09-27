@@ -218,6 +218,11 @@ const firebase = { firestore:{ FieldValue:{ serverTimestamp:() => 'SERVER_TIMEST
     report:{ id:'report-cash-existing', date:'2026-09-04', saleIds:[] }
   });
   assert.strictEqual(confirmed.status, 'confirmed_existing', 'a server-confirmed close is recognized before retrying');
+  await assert.rejects(() => repositoryA.closeCashSession({
+    operationId:'close-existing',
+    cashSessionId:'cash-existing',
+    report:{ id:'report-cash-existing', date:'2026-09-05', saleIds:[] }
+  }), /CASH_CLOSE_STATE_CONFLICT/, 'a same-id report with different content must fail closed');
 
   const disabledSeed = {};
   const disabledRoot = seedTenant(disabledSeed, 'owner-disabled', 'business-disabled', [{ id:'p', stock:1, qty:1 }]);

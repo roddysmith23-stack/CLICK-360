@@ -295,6 +295,15 @@
         }
         if (reportSnapshot.exists || session.status === 'closed') {
           if (reportSnapshot.exists && session.status === 'closed' && session.reportId === reportId) {
+            const existingReport = reportSnapshot.data() || {};
+            assertIdentity(existingReport, expected, `dailyReports/${reportId}`);
+            const suppliedReportMatches = Object.entries(report).every(([key, value]) => key === 'id'
+              || canonicalJson(existingReport[key]) === canonicalJson(value));
+            const operationMatches = !existingReport.operationId || existingReport.operationId === operationId;
+            const hashMatches = !existingReport.payloadSha256 || existingReport.payloadSha256 === fingerprint;
+            if (!suppliedReportMatches || !operationMatches || !hashMatches || existingReport.cashSessionId !== cashSessionId) {
+              throw new Error('CASH_CLOSE_STATE_CONFLICT');
+            }
             return { ok:true, status:'confirmed_existing', operationId, cashSessionId, reportId, payloadSha256:fingerprint };
           }
           throw new Error('CASH_CLOSE_STATE_CONFLICT');
@@ -307,6 +316,7 @@
           operationId,
           cashSessionId,
           actorUid,
+          payloadSha256:fingerprint,
           renderVersion:report.renderVersion || 'cash-close-structured-v1',
           status:'closed'
         });
