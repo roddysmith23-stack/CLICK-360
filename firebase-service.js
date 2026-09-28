@@ -11,7 +11,7 @@
     return;
   }
 
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r38-mvp-candidate';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r38-1-sync-integrity';
 	  const FIRESTORE_SCHEMA_VERSION = '16.2.0';
   // r37.2.1 (LIVE CLIENT RECOVERY -- real SHARY incident): this used to also
   // delete every stale click360- cache here, unconditionally, on every page
@@ -67,6 +67,7 @@
 			  const PENDING_REMOTE_SYNC_GRACE_MS = 8000;
 			  const PENDING_REMOTE_SYNC_TTL_MS = 2 * 60 * 1000;
 			  const SYNC_CONFLICT_TTL_MS = 10 * 60 * 1000;
+			  const FRESH_REMOTE_VERIFICATION_TTL_MS = 2 * 60 * 1000;
 			  const UNKNOWN_LOCK_AGE_MS = Number.MAX_SAFE_INTEGER;
 			  const NON_MATERIAL_SYNC_SOURCES = new Set([
 			    'business_switch',
@@ -82,6 +83,8 @@
 			  ]);
 			  const PUSH_SCHEDULERS = new Map();
 			  let SYNC_CONFLICT_PENDING = false;
+			  let LAST_FRESH_REMOTE_VERIFICATION = null;
+			  let LOCAL_MUTATION_INTENT = null;
 			  let ONLINE_ONLY_SAFE = false;
 
 			  const rawSetItem = (key, value) => window.localStorage.setItem(key, value);
@@ -235,7 +238,9 @@
 			      return { allowed:true, reason: navigator.onLine ? 'modular_server_confirmed_boundary' : 'modular_offline_local_queued' };
 			    }
 			    const syncState = getSyncState({ cleanup: true, reason: 'write_gate' });
+			    const localMutationIntent = typeof currentLocalMutationIntent === 'function' ? currentLocalMutationIntent() : null;
 			    if (syncState.status === 'real_conflict') return { allowed: false, reason: 'sync_conflict', syncState };
+			    if (syncState.status === 'needs_review' && !localMutationIntent) return { allowed: false, reason: 'sync_verification_required', syncState };
 			    const pendingGate = pendingRemoteSyncGateStatus(syncState);
 			    if (!pendingGate.allowed) return pendingGate;
 			    if (!tenantGuard.canWrite(ACTIVE_CONTEXT)) return { allowed: false, reason: 'tenant_guard_not_ready' };
@@ -1017,8 +1022,10 @@
 			  const OPTIONAL_EMPTY_ARRAY_KEYS = new Set([
 			    'restaurantPayments', 'restaurantPrintHistory', 'restaurantEvents', 'restaurantRecipes',
 			    'vehicles', 'routes', 'loadSheets', 'routeSales', 'collections', 'returns',
-			    'routeSettlements', 'routeExpenses', 'routeCustomers', 'events', 'printHistory'
+			    'routeSettlements', 'routeExpenses', 'routeCustomers', 'events', 'printHistory',
+			    'operationLedger', 'activationRequests'
 			  ]);
+			  const OPTIONAL_EMPTY_OBJECT_KEYS = new Set(['userProfiles', 'policies', 'legal']);
 			  function withoutNonMaterialSyncFields(value, key = '', path = []) {
 			    if (Array.isArray(value)) {
 			      const items = value.map((item) => withoutNonMaterialSyncFields(item, '', [...path, key, '[]']));
@@ -1026,15 +1033,31 @@
 			      return items;
 			    }
 			    if (!value || typeof value !== 'object') return value;
+			    if (key === 'userProfiles') {
+			      // Synced profile display data is cached and persisted through its own
+			      // profile endpoint. buildBusinessPayload() may rehydrate that cache even
+			      // when an older state/main snapshot has no userProfiles map. Only an
+			      // explicitly pending profile is material for state-sync protection.
+			      const pendingProfiles = Object.fromEntries(Object.entries(value)
+			        .filter(([, profile]) => profile?.pendingSync === true));
+			      if (Object.keys(pendingProfiles).length === 0) return undefined;
+			      value = pendingProfiles;
+			    }
 			    const output = {};
 			    Object.keys(value).sort().forEach((itemKey) => {
 			      if (['activeBusinessId', 'updatedAt', 'updatedAtMs'].includes(itemKey)) return;
 			      if (itemKey === 'layout' && path.includes('tables')) return;
+			      // These compatibility defaults are reconstructed locally by normalizeState().
+			      // They do not represent an economic or user-authored difference from the
+			      // authoritative payload. Non-empty operational collections remain material.
+			      if ((key === 'data' || path.includes('data')) && ['identity', 'version', 'legacyDataBusinessId'].includes(itemKey)) return;
+			      if (key === 'settings' && itemKey === 'appVersion') return;
 			      const nextValue = withoutNonMaterialSyncFields(value[itemKey], itemKey, [...path, key].filter(Boolean));
 			      if (nextValue === undefined) return;
 			      output[itemKey] = nextValue;
 			    });
 			    if (key === 'logistics' && Object.keys(output).length === 0) return undefined;
+			    if (OPTIONAL_EMPTY_OBJECT_KEYS.has(key) && Object.keys(output).length === 0) return undefined;
 			    return output;
 			  }
 
@@ -1122,6 +1145,117 @@
 			    return NON_MATERIAL_SYNC_SOURCES.has(String(source || '').toLowerCase());
 			  }
 
+			  function currentFreshRemoteVerification(hashes = currentPayloadHashes(), now = Date.now()) {
+			    const verification = LAST_FRESH_REMOTE_VERIFICATION;
+			    if (!verification || !ACTIVE_CONTEXT || !hashes.payload) return null;
+			    if (verification.authEpoch !== AUTH_EPOCH || verification.tenantKey !== ACTIVE_CONTEXT.tenantKey) return null;
+			    if (now - verification.checkedAtMs > FRESH_REMOTE_VERIFICATION_TTL_MS) return null;
+			    if (verification.localMaterialHash !== hashes.materialHash) return null;
+			    return verification;
+			  }
+
+			  function currentLocalMutationIntent(hashes = currentPayloadHashes(), now = Date.now()) {
+			    const intent = LOCAL_MUTATION_INTENT;
+			    if (!intent || !ACTIVE_CONTEXT || !hashes.payload) return null;
+			    if (intent.authEpoch !== AUTH_EPOCH || intent.tenantKey !== ACTIVE_CONTEXT.tenantKey) return null;
+			    if (now > intent.expiresAtMs || intent.localMaterialHash !== hashes.materialHash) return null;
+			    return intent;
+			  }
+
+			  function beginLocalMutationIntent({ operationId = '', previousState = null } = {}) {
+			    const id = String(operationId || '');
+			    const previousPayload = buildBusinessPayload(previousState);
+			    const currentHashes = currentPayloadHashes();
+			    if (!id || !previousPayload || !currentHashes.payload || !ACTIVE_CONTEXT) return false;
+			    const previousHashes = {
+			      payload: previousPayload,
+			      payloadHash: snapshotString(previousPayload),
+			      materialHash: materialPayloadHash(previousPayload)
+			    };
+			    const freshBase = currentFreshRemoteVerification(previousHashes);
+			    const baseVerified = materialMatchesLastApplied(previousHashes) || freshBase?.localMatchesRemote === true;
+			    if (!baseVerified) return false;
+			    LOCAL_MUTATION_INTENT = Object.freeze({
+			      operationId:id,
+			      authEpoch:AUTH_EPOCH,
+			      tenantKey:ACTIVE_CONTEXT.tenantKey,
+			      baseMaterialHash:previousHashes.materialHash,
+			      localMaterialHash:currentHashes.materialHash,
+			      expiresAtMs:Date.now() + PENDING_REMOTE_SYNC_GRACE_MS
+			    });
+			    return true;
+			  }
+
+			  function endLocalMutationIntent(operationId = '') {
+			    if (LOCAL_MUTATION_INTENT?.operationId === String(operationId || '')) LOCAL_MUTATION_INTENT = null;
+			  }
+
+			  async function verifyRemoteSyncState({ reason = 'support_diagnostic' } = {}) {
+			    const user = auth.currentUser;
+			    const context = ACTIVE_CONTEXT;
+			    const stateDoc = STATE_DOC;
+			    const expectedEpoch = AUTH_EPOCH;
+			    const hashes = currentPayloadHashes();
+			    const checkedAtMs = Date.now();
+			    const unavailable = (status, errorCode) => ({
+			      ok: false,
+			      status,
+			      errorCode,
+			      checkedAt: new Date(checkedAtMs).toISOString(),
+			      checkedAtMs,
+			      localHash: hashFingerprint(hashes.materialHash),
+			      remoteHash: '',
+			      remoteRevision: 0,
+			      localMatchesRemote: null,
+			      reason: String(reason || 'support_diagnostic').slice(0, 80)
+			    });
+			    if (!navigator.onLine) return unavailable('offline', 'offline');
+			    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user) || !AUTH_APPROVED || !PULL_COMPLETE || !hashes.payload) {
+			      return unavailable('unavailable', 'sync_scope_not_ready');
+			    }
+			    try {
+			      const snapshot = await stateDoc.get({ source: 'server' });
+			      if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return unavailable('unavailable', 'stale_auth_scope');
+			      if (!snapshot.exists) return unavailable('missing', 'remote_document_missing');
+			      const remote = snapshot.data() || {};
+			      if (remote.schemaVersion !== SCHEMA_VERSION || !remoteMatchesContext(remote, context)) {
+			        return unavailable('invalid', 'remote_identity_or_schema_mismatch');
+			      }
+			      const remoteMaterialHash = materialPayloadHash(remote.payload);
+			      const remoteRevision = Number(remote.revision || remote.updatedAtMs || 0);
+			      const localMatchesRemote = !!remoteMaterialHash && remoteMaterialHash === hashes.materialHash;
+			      const verification = Object.freeze({
+			        authEpoch: expectedEpoch,
+			        tenantKey: context.tenantKey,
+			        checkedAtMs,
+			        reason: String(reason || 'support_diagnostic').slice(0, 80),
+			        status: localMatchesRemote ? 'verified_match' : 'diverged',
+			        localMaterialHash: hashes.materialHash,
+			        remoteMaterialHash,
+			        remoteRevision,
+			        localMatchesRemote
+			      });
+			      // Ephemeral evidence only. A diagnostic read must never rewrite the
+			      // last-applied baseline, clear an outbox/conflict marker or hydrate
+			      // economic state. A later local mutation invalidates this evidence
+			      // automatically because its material hash no longer matches.
+			      LAST_FRESH_REMOTE_VERIFICATION = verification;
+			      return {
+			        ok: true,
+			        status: verification.status,
+			        checkedAt: new Date(checkedAtMs).toISOString(),
+			        checkedAtMs,
+			        localHash: hashFingerprint(hashes.materialHash),
+			        remoteHash: hashFingerprint(remoteMaterialHash),
+			        remoteRevision,
+			        localMatchesRemote,
+			        reason: verification.reason
+			      };
+			    } catch (error) {
+			      return unavailable('error', String(error?.code || error?.name || 'remote_read_failed').slice(0, 80));
+			    }
+			  }
+
 			  function getSyncState({ cleanup = false, reason = 'sync_state', force = false } = {}) {
 			    const now = Date.now();
 			    const hashes = currentPayloadHashes();
@@ -1133,6 +1267,9 @@
 			    const pendingAgeMs = pendingMeta ? lockAgeMs(pendingMeta) : 0;
 			    const conflictAgeMs = conflictMarker ? Number(conflictMarker.ageMs || UNKNOWN_LOCK_AGE_MS) : 0;
 			    const materialEquivalent = materialMatchesLastApplied(hashes);
+			    const freshVerification = currentFreshRemoteVerification(hashes, now);
+			    const freshRemoteMatch = freshVerification?.localMatchesRemote === true;
+			    const freshRemoteDivergence = freshVerification?.localMatchesRemote === false;
 			    const hasRemoteBaseline = lastAppliedMaterialAvailable();
 			    const pendingSource = String(pendingMeta?.source || '').toLowerCase();
 			    const conflictSource = String(conflictMarker?.source || '').toLowerCase();
@@ -1156,6 +1293,7 @@
 			      reason,
 			      activeBusinessId: String(hashes.payload?.data?.activeBusinessId || ''),
 			      hasDirtyFields,
+			      hasBaselineDifference: hasDirtyFields,
 			      // r37: localHash/remoteHash here are diagnostic DISPLAY fields only
 			      // (the real clean/dirty decision above uses materialEquivalent/
 			      // hasDirtyFields, computed from materialMatchesLastApplied(hashes),
@@ -1171,6 +1309,13 @@
 			      // is what actually shows up as a mismatch.
 			      localHash: hashFingerprint(hashes.materialHash),
 			      remoteHash: hashFingerprint(lastMaterial || safeStorageGet(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'))),
+			      remoteHashKind: 'last_applied_baseline',
+			      freshRemoteStatus: freshVerification?.status || 'not_checked',
+			      freshRemoteHash: hashFingerprint(freshVerification?.remoteMaterialHash || ''),
+			      freshRemoteRevision: Number(freshVerification?.remoteRevision || 0),
+			      freshRemoteCheckedAt: freshVerification ? new Date(freshVerification.checkedAtMs).toISOString() : '',
+			      freshRemoteAgeMs: freshVerification ? Math.max(0, now - freshVerification.checkedAtMs) : 0,
+			      localMatchesFreshRemote: freshVerification ? freshVerification.localMatchesRemote === true : null,
 			      lastUpdatedAt: new Date(now).toISOString(),
 			      displayMode: window.matchMedia?.('(display-mode: standalone)')?.matches === true || navigator.standalone === true ? 'standalone' : 'browser',
 			      pendingAgeMs: pendingMeta ? pendingAgeMs : 0,
@@ -1208,6 +1353,14 @@
 			      }
 			    } else if (pendingWindowActive && schedulerActive) {
 			      next = { ...base, status: hasDirtyFields ? 'pending_write' : 'loading', blocking: hasDirtyFields, reason: hasDirtyFields ? 'pending_write_window' : 'sync_loading_window' };
+			    } else if (freshRemoteDivergence) {
+			      next = { ...base, status: 'real_conflict', blocking: true, reason: 'fresh_remote_material_divergence' };
+			    } else if (hasDirtyFields && freshRemoteMatch) {
+			      next = { ...base, status: 'verified_clean', blocking: false, reason: 'fresh_remote_material_match' };
+			    } else if (hasDirtyFields) {
+			      next = { ...base, status: 'needs_review', blocking: true, reason: 'material_difference_without_fresh_verification' };
+			    } else if (PULL_COMPLETE && hashes.payload && !hasRemoteBaseline) {
+			      next = { ...base, status: 'needs_review', blocking: true, reason: 'remote_baseline_missing' };
 			    }
 			    if (cleanup && next.status === 'stale_lock') {
 			      let cleanedPending = false;
@@ -1275,10 +1428,13 @@
 
 			  window.click360ClearStaleSyncGuard = (details = {}) => maybeClearStaleSyncGuard(details);
 			  window.click360GetSyncState = (details = {}) => getSyncState({ cleanup: details.cleanup === true, reason: details.reason || 'diagnostic' });
+			  window.click360VerifyRemoteSyncState = (details = {}) => verifyRemoteSyncState(details);
+			  window.click360BeginLocalMutationIntent = (details = {}) => beginLocalMutationIntent(details);
+			  window.click360EndLocalMutationIntent = (operationId = '') => endLocalMutationIntent(operationId);
 
-		  function buildBusinessPayload() {
+	  function buildBusinessPayload(stateOverride = null) {
 	    if (!activeIdentityIsValid() || typeof window.click360GetTenantState !== "function") return null;
-	    const state = window.click360GetTenantState();
+	    const state = stateOverride || window.click360GetTenantState();
 	    if (!state || !sameTenant(state.identity)) return null;
 	    const settings = state.settings || {};
       const userProfiles = settings.userProfiles && typeof settings.userProfiles === 'object' && !Array.isArray(settings.userProfiles)
@@ -2774,8 +2930,11 @@
 	      return false;
 	    }
 		    const syncState = getSyncState({ cleanup: true, reason: `push:${reason}` });
-		    if (syncState.status === 'real_conflict') {
-		      setSyncStatus('error', 'Hay un conflicto pendiente. Descarga o respalda los datos antes de volver a sincronizar.');
+		    const localMutationIntent = typeof currentLocalMutationIntent === 'function' ? currentLocalMutationIntent() : null;
+		    if (syncState.status === 'real_conflict' || (syncState.status === 'needs_review' && !localMutationIntent)) {
+		      setSyncStatus('error', syncState.status === 'needs_review'
+		        ? 'Debemos comprobar la nube antes de guardar. Tus datos locales siguen protegidos.'
+		        : 'Hay un conflicto pendiente. Descarga o respalda los datos antes de volver a sincronizar.');
 		      return false;
 		    }
 		    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user) || !AUTH_APPROVED || isEffectiveReadOnly() || IS_RESTORING_REMOTE || !PULL_COMPLETE || !tenantGuard.canWrite(context)) return false;

@@ -1,4 +1,4 @@
-const CACHE = 'click360-commercial-1-0-5-r38-mvp-candidate';
+const CACHE = 'click360-commercial-1-0-5-r38-1-sync-integrity';
 const ASSETS = [
   './',
   './index.html',
