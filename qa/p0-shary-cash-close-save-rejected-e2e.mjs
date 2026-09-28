@@ -32,7 +32,7 @@ async function waitForServer() {
 }
 
 function fixtureSource() {
-  return ({ targetBytes = 838800, serverClosed = false, serverClosesAfterWrite = false, preflightError = false, syncResult = true, refreshResult = true } = {}) => {
+	return async ({ targetBytes = 838800, serverClosed = false, serverClosesAfterWrite = false, preflightError = false, syncResult = true, refreshResult = true, staleBaseline = false, freshRemoteMatches = true } = {}) => {
     const uid = 'synthetic-shary-owner';
     const businessId = 'synthetic-shary-business';
     const context = { authUid:uid, ownerUid:uid, ownerId:uid, businessId:uid, tenantKey:`owner:${uid}:business:${uid}`, schemaVersion:10 };
@@ -64,7 +64,11 @@ function fixtureSource() {
     window.click360SetTenantContext(context, { deferLocalLoad:true });
     window.click360User = { uid, email:'synthetic-owner@example.test', role:'owner', name:'Synthetic Owner', status:'founder_legacy', approved:true, ownerId:uid, isOwner:true, source:'accountAccess' };
     window.click360AccessState = { mode:'founder_legacy', plan:'founder_legacy', readOnly:false, source:'synthetic-e2e' };
-    window.click360WriteGate = () => ({ allowed:true, reason:'synthetic_e2e' });
+	window.__syncVerificationCalls = 0;
+	window.__syncFreshVerified = false;
+	window.click360WriteGate = () => staleBaseline && !window.__syncFreshVerified
+	  ? { allowed:false, reason:'sync_verification_required', syncState:window.click360GetSyncState?.() }
+	  : { allowed:true, reason:staleBaseline ? 'fresh_remote_material_match' : 'synthetic_e2e', syncState:window.click360GetSyncState?.() };
     window.__serverPreflightCalls = 0;
     window.__syntheticRemote = null;
     window.click360VerifyCashCloseOnServer = async () => {
@@ -80,15 +84,38 @@ function fixtureSource() {
       if (refreshResult && window.__syntheticRemote) window.click360ApplyTenantState(structuredClone(window.__syntheticRemote), context);
       return refreshResult;
     };
-    window.click360GetSyncState = () => ({ status:'clean', blocking:false, hasDirtyFields:false, localHash:'h_same', remoteHash:'h_same' });
+	window.click360GetSyncState = () => staleBaseline
+	  ? {
+	      status:window.__syncFreshVerified ? 'verified_clean' : 'needs_review',
+	      blocking:!window.__syncFreshVerified,
+	      reason:window.__syncFreshVerified ? 'fresh_remote_material_match' : 'material_difference_without_fresh_verification',
+	      hasDirtyFields:true,
+	      localHash:'h_0fee9b18',
+	      remoteHash:'h_01f8df6e',
+	      remoteHashKind:'last_applied_baseline',
+	      freshRemoteStatus:window.__syncFreshVerified ? 'verified_match' : 'not_checked',
+	      freshRemoteHash:window.__syncFreshVerified ? 'h_0fee9b18' : '',
+	      freshRemoteRevision:window.__syncFreshVerified ? 1790534688206 : 0,
+	      localMatchesFreshRemote:window.__syncFreshVerified ? true : null
+	    }
+	  : { status:'clean', blocking:false, hasDirtyFields:false, localHash:'h_same', remoteHash:'h_same', freshRemoteStatus:'not_checked' };
+	window.click360VerifyRemoteSyncState = async () => {
+	  window.__syncVerificationCalls += 1;
+	  if (!freshRemoteMatches) return { ok:true, status:'diverged', localHash:'h_0fee9b18', remoteHash:'h_server_changed', remoteRevision:1790534688207, localMatchesRemote:false };
+	  window.__syncFreshVerified = true;
+	  return { ok:true, status:'verified_match', localHash:'h_0fee9b18', remoteHash:'h_0fee9b18', remoteRevision:1790534688206, localMatchesRemote:true };
+	};
     window.click360ApplyTenantState(state, context);
     window.click360Route('cash');
     document.getElementById('click360-auth-gate')?.remove();
-    const closeButton = document.getElementById('closeStaleCashBtn');
-    if (!closeButton) throw new Error('The synthetic historical session close control was not rendered.');
-    closeButton.click();
-    if (!document.getElementById('closeDayForm')) throw new Error('The synthetic historical session close form did not open.');
-    return { beforeBytes:byteSize(window.click360GetTenantState()), productCount:products.length, saleCount:sales.length, movementCount:movements.length };
+	const closeButton = document.getElementById('closeStaleCashBtn');
+	if (!closeButton) throw new Error('The synthetic historical session close control was not rendered.');
+	closeButton.click();
+	for (let attempt = 0; attempt < 40 && !document.getElementById('closeDayForm') && !document.querySelector('.cashCloseIssuePanel'); attempt += 1) {
+	  await Promise.resolve();
+	}
+	if (freshRemoteMatches && !document.getElementById('closeDayForm')) throw new Error('The synthetic historical session close form did not open after safe verification.');
+	return { beforeBytes:byteSize(window.click360GetTenantState()), productCount:products.length, saleCount:sales.length, movementCount:movements.length };
   };
 }
 
@@ -145,7 +172,8 @@ async function stateOutcome(page) {
       product0:{ stock:state.products[0].stock, qty:state.products[0].qty },
       sales:state.sales.length,
       movements:state.movements.length,
-      preflightCalls:window.__serverPreflightCalls,
+	  preflightCalls:window.__serverPreflightCalls,
+	  syncVerificationCalls:window.__syncVerificationCalls,
       preview:document.querySelector('#pdfContentPreview')?.innerText || '',
       diagnostic:window.click360GetCashCloseDiagnostics?.(),
       storage:window.click360GetStorageState?.() || null,
@@ -157,6 +185,17 @@ async function stateOutcome(page) {
 async function run() {
   const browser = await browserType.launch(browserChannel ? { channel:browserChannel } : {});
   try {
+	const divergent = await createPage(browser);
+	await divergent.page.evaluate(fixtureSource(), { targetBytes:838800, staleBaseline:true, freshRemoteMatches:false });
+	await divergent.page.getByRole('heading', { name:'Comprobación de nube pendiente' }).waitFor({ state:'visible', timeout:uiTimeout });
+	const divergentResult = await stateOutcome(divergent.page);
+	assert(divergentResult.syncVerificationCalls === 1, 'unexplained dirty state must trigger one fresh read-only server verification');
+	assert(divergentResult.preflightCalls === 0, 'cash-session preflight must not run after whole-state divergence');
+	assert(divergentResult.reports.length === 0 && divergentResult.session.status === 'open', 'divergence must not create a report or close the session');
+	assert(divergentResult.sales === 30 && divergentResult.movements === 107 && divergentResult.product0.stock === 0 && divergentResult.product0.qty === 0, 'divergence must preserve sale, movement and inventory');
+	assert(divergent.pageErrors.length === 0, `unexpected divergent-sync page errors: ${JSON.stringify(divergent.pageErrors)}`);
+	await divergent.context.close();
+
     const rejected = await createPage(browser);
     const rejectedInitial = await rejected.page.evaluate(fixtureSource(), { targetBytes:841500 });
     assert(rejectedInitial.beforeBytes < 850000 && rejectedInitial.beforeBytes > 849000, `rejection fixture must sit immediately below the guard, got ${rejectedInitial.beforeBytes}`);
@@ -185,7 +224,7 @@ async function run() {
 
     const successful = await createPage(browser);
     const { page, pageErrors } = successful;
-    const initial = await page.evaluate(fixtureSource(), { targetBytes:838800 });
+	const initial = await page.evaluate(fixtureSource(), { targetBytes:838800, staleBaseline:true, freshRemoteMatches:true });
     assert(initial.productCount === 463 && initial.saleCount === 30 && initial.movementCount === 107, 'the production-shaped fixture counts must be preserved');
     assert(initial.beforeBytes < 850000 && initial.beforeBytes > 846500, `fixture must sit near the guarded limit, got ${initial.beforeBytes}`);
 
@@ -204,7 +243,9 @@ async function run() {
     assert(result.session.status === 'closed' && result.session.reportId === result.reports[0].id, 'exact session must close once');
     assert(result.products === 463 && result.product0.stock === 0 && result.product0.qty === 0, 'inventory must not be decremented again');
     assert(result.sales === 30 && result.movements === 107, 'sale and movement counts must remain unchanged');
-    assert(result.preflightCalls === 1, 'server must be checked once before mutation');
+	assert(result.preflightCalls === 1, 'server must be checked once before mutation');
+	assert(result.syncVerificationCalls === 1, 'obsolete baseline must be reconciled by exactly one fresh whole-state read before close');
+	assert(result.diagnostic?.syncState?.freshRemoteStatus === 'verified_match', 'cash-close diagnostic must retain fresh authoritative match evidence');
     assert(result.preview.includes('$30.00') || result.preview.includes('$30,00'), 'structured report must reconstruct the $30 transfer summary');
 
     await mkdir(path.join(root, 'output/playwright'), { recursive:true });

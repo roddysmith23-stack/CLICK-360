@@ -7,7 +7,7 @@
   const CACHE_META_PREFIX = 'CLICK360:V16:CACHEMETA:';
   const LEGACY_STATE_PREFIX = 'CLICK360_STATE:';
   const LEGACY_SESSION_PREFIX = 'CLICK360_SESSION:';
-  const APP_ASSET_VERSION = 'commercial-1-0-5-r38-mvp-candidate';
+  const APP_ASSET_VERSION = 'commercial-1-0-5-r38-1-sync-integrity';
   const APP_RELEASE_VERSION = '1.0.5';
   const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';
   const APP_VISIBLE_VERSION = `${APP_RELEASE_VERSION}${APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? ` · ${APP_BUILD_SHA}` : ''}`;
@@ -212,6 +212,7 @@
     if (reason === 'offline_online_only') return 'Este dispositivo necesita internet para guardar. Conéctate y vuelve a intentar.';
     if (reason === 'legacy_migration_required') return 'Estos datos están protegidos hasta completar una migración segura.';
     if (reason === 'sync_conflict') return 'Hay un conflicto de sincronización pendiente. Actualiza desde nube o respalda antes de continuar.';
+    if (reason === 'sync_verification_required') return 'Debemos comprobar la nube antes de guardar. Tus datos locales siguen protegidos.';
     if (reason === 'auth_not_ready') return 'La sesión aún se está verificando. Intenta nuevamente en unos segundos.';
     if (reason === 'tenant_guard_not_ready') return 'La cuenta aún está preparando la protección de datos. Intenta nuevamente en unos segundos.';
     if (reason === 'local_state_too_large') return 'El cierre supera el límite seguro del estado actual. No se guardó ni se duplicó ningún movimiento.';
@@ -1026,6 +1027,7 @@ function parseMoney(value) {
     }
     const operationId = uid('persist');
     try {
+	  window.click360BeginLocalMutationIntent?.({ operationId, previousState });
       if (!save({ allowIndexedDbOffline: true, operationId, deferSync: true })) {
         return {
           ok:false,
@@ -1051,6 +1053,14 @@ function parseMoney(value) {
       toast('Cambio guardado en este dispositivo. Se confirmará al recuperar internet.', 'ok');
       return { ok: true, pending: true };
     }
+    // The local IndexedDB snapshot and its pendingRemoteSync metadata are
+    // part of the write gate's evidence. Wait for this operation's own cache
+    // bookkeeping before starting the remote push; otherwise an older
+    // cloud-confirmed cache callback can briefly erase the pending marker and
+    // make a legitimate new mutation look like an unexplained divergence.
+    // LocalStorage remains the durable fallback when IndexedDB is unavailable.
+    if (persistence?.indexedPromise) await persistence.indexedPromise;
+    if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
     if (typeof window.click360SyncNow !== 'function') {
       restoreCriticalSnapshot(previousState);
       toast('No se pudo confirmar el cambio en la nube. Inténtalo nuevamente.', 'err');
@@ -1080,6 +1090,7 @@ function parseMoney(value) {
       : (refreshed ? 'remote_state_mismatch' : 'remote_confirmation_failed');
     return { ok: false, pending: false, reason };
     } finally {
+	  window.click360EndLocalMutationIntent?.(operationId);
       actionLock.release();
     }
   }
@@ -1938,7 +1949,11 @@ function parseMoney(value) {
     const fallback = navigator.onLine
       ? { status: 'local', title: 'Modo local', detail: 'La nube se activará al iniciar sesión con Google.' }
       : { status: 'offline', title: 'Sin internet', detail: 'Puedes trabajar localmente; se sincroniza cuando vuelva la conexión.' };
-    const s = typeof window.click360GetSyncStatus === 'function' ? window.click360GetSyncStatus() : fallback;
+	    const raw = typeof window.click360GetSyncStatus === 'function' ? window.click360GetSyncStatus() : fallback;
+	    const reliability = window.click360GetSyncState?.({ reason:'sync_status_ui' }) || {};
+	    const s = reliability.status === 'needs_review' || reliability.status === 'real_conflict'
+	      ? { ...raw, status:'error', message:'Debemos comprobar la nube antes de permitir otra operación. Tus datos locales siguen protegidos.' }
+	      : raw;
     const map = {
 	      synced: ['Nube sincronizada', 'Tus datos están guardados en este dispositivo y en la nube.'],
 	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
@@ -6305,7 +6320,7 @@ function parseMoney(value) {
 		        <div class="syncRecoveryCard">
 		          <button type="button" class="btn block" id="clearLocalAppStateBtn">Reparar sincronización</button>
 		          <p class="fieldHint">Actualiza los datos guardados en este dispositivo y los vuelve a traer desde la nube. No borra tus negocios ni tus productos.</p>
-		          <details class="settingsDisclosure" style="margin-top:8px;"><summary>Diagnóstico avanzado</summary><p class="fieldHint">Elimina bloqueos técnicos de sincronización guardados en este dispositivo (no en la nube) y vuelve a leer tu información desde el servidor.</p><button type="button" class="btn silver block" id="copySyncDiagnosticBtn" style="margin-top:8px;">Copiar diagnóstico técnico</button></details>
+		          <details class="settingsDisclosure" style="margin-top:8px;"><summary>Diagnóstico avanzado</summary><p class="fieldHint">Comprueba el servidor en modo lectura y separa el último baseline guardado de una verificación fresca. No reemplaza ni elimina datos.</p><button type="button" class="btn silver block" id="copySyncDiagnosticBtn" style="margin-top:8px;">Comprobar y copiar diagnóstico</button></details>
 		        </div>
 	      </section>
       <section class="card sectionCard" style="margin-top:14px">
@@ -7751,6 +7766,11 @@ function parseMoney(value) {
 	        reason: String(syncState.reason || '').slice(0, 80),
 	        localHash: String(syncState.localHash || '').slice(0, 24),
 	        remoteHash: String(syncState.remoteHash || '').slice(0, 24),
+	        freshRemoteStatus: String(syncState.freshRemoteStatus || 'not_checked').slice(0, 40),
+	        freshRemoteHash: String(syncState.freshRemoteHash || '').slice(0, 24),
+	        freshRemoteRevision: Number(syncState.freshRemoteRevision || 0),
+	        localMatchesFreshRemote: syncState.localMatchesFreshRemote === true
+	          ? true : syncState.localMatchesFreshRemote === false ? false : null,
 	        lockAgeMs: Number(syncState.lockAgeMs || 0),
 	        hasDirtyFields: syncState.hasDirtyFields === true
 	      },
@@ -7778,7 +7798,9 @@ function parseMoney(value) {
 	      ['Sync', `${diagnostic.syncState?.status || 'unknown'} / bloquea=${diagnostic.syncState?.blocking === true}`],
 	      ['Motivo', diagnostic.reason || diagnostic.syncState?.reason || 'sin_detalle'],
 	      ['Hash local', diagnostic.syncState?.localHash || 'n/a'],
-	      ['Hash nube', diagnostic.syncState?.remoteHash || 'n/a'],
+	      ['Hash baseline anterior', diagnostic.syncState?.remoteHash || 'n/a'],
+	      ['Servidor fresco', diagnostic.syncState?.freshRemoteStatus || 'no comprobado'],
+	      ['Hash servidor fresco', diagnostic.syncState?.freshRemoteHash || 'n/a'],
 	      ['Edad lock', `${Math.round(Number(diagnostic.syncState?.lockAgeMs || 0) / 1000)}s`],
 	      ['Modo', diagnostic.displayMode || 'browser'],
 	      ['Online', diagnostic.online ? 'sí' : 'no']
@@ -7827,12 +7849,15 @@ function parseMoney(value) {
 	      errorCode: status.reason || 'cash_close_access_blocked',
 	      status: 'blocked'
 	    });
-	    const message = status.reason === 'worker_module_paused'
+	    const message = status.reason === 'sync_verification_required'
+	      ? 'Hay una diferencia local que todavía no ha sido comprobada directamente con el servidor. No se cerró la caja y tus datos permanecen intactos.'
+	      : status.reason === 'worker_module_paused'
 	      ? 'El acceso operativo para trabajadores está temporalmente pausado. Ingresa con el dueño del negocio para cerrar caja.'
 	      : status.reason === 'read_only'
 	        ? 'Tu cuenta está en modo lectura. No se cerró la caja.'
 	        : 'Tu cuenta no tiene autorización para cerrar caja en este negocio.';
-	    showModal(`<div class="modalHeader"><div><h2>Sin permiso para cerrar caja</h2><p class="fieldHint">${escapeHtml(message)}</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	    const title = status.reason === 'sync_verification_required' ? 'Comprobación de nube pendiente' : 'Sin permiso para cerrar caja';
+	    showModal(`<div class="modalHeader"><div><h2>${escapeHtml(title)}</h2><p class="fieldHint">${escapeHtml(message)}</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
 	      <div class="cashCloseIssuePanel">
 	        ${cashCloseDiagnosticRows(diagnostic)}
 	        <button type="button" class="btn primary block" data-close>Entendido</button>
@@ -8110,9 +8135,17 @@ function parseMoney(value) {
 	    $('#downloadImgCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_png', () => downloadHtmlAsPng(renderedHtml, `Cierre_Caja_${closeDetails.date}.png`)));
 	    toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
 	  }
-	  function openCashCloseDialog(options = {}) {
+	  async function openCashCloseDialog(options = {}) {
 	    cashCloseSessionOverride = options.session || null;
-	    const accessStatus = cashCloseAccessStatus('cash_close_open_modal');
+	    let accessStatus = cashCloseAccessStatus('cash_close_open_modal');
+	    if (!accessStatus.allowed && accessStatus.reason === 'sync_verification_required'
+	      && navigator.onLine !== false && typeof window.click360VerifyRemoteSyncState === 'function') {
+	      toast('Comprobando que este dispositivo y la nube coincidan...');
+	      const verification = await window.click360VerifyRemoteSyncState({ reason:'cash_close_open_preflight' }).catch(() => null);
+	      if (verification?.ok && verification.localMatchesRemote === true) {
+	        accessStatus = cashCloseAccessStatus('cash_close_open_verified');
+	      }
+	    }
 	    if (!accessStatus.allowed) return showCashCloseAccessBlocked(accessStatus);
 	    const basis = cashCloseBasis();
 	    if (!basis.businessId) return toast('No se encontró el negocio activo.', 'err');
@@ -8154,7 +8187,15 @@ function parseMoney(value) {
 	    const submitButton = $('#closeDaySubmitBtn');
 	    try {
 	      submitButton?.setAttribute('disabled', 'disabled');
-	      const accessStatus = cashCloseAccessStatus(stage);
+	      let accessStatus = cashCloseAccessStatus(stage);
+	      if (!accessStatus.allowed && accessStatus.reason === 'sync_verification_required'
+	        && navigator.onLine !== false && typeof window.click360VerifyRemoteSyncState === 'function') {
+	        stage = 'cash_close_verify_sync_state';
+	        const verification = await window.click360VerifyRemoteSyncState({ reason:stage }).catch(() => null);
+	        if (verification?.ok && verification.localMatchesRemote === true) {
+	          accessStatus = cashCloseAccessStatus('cash_close_validate_verified_sync');
+	        }
+	      }
 	      evaluatedGate = accessStatus.gate || null;
 	      updateCashCloseDiagnostic(stage, { business: accessStatus.business, gate: accessStatus.gate, reason: accessStatus.reason });
 	      if (!accessStatus.allowed) {
@@ -9378,9 +9419,13 @@ function parseMoney(value) {
 		      ['Sync', `${syncState.status || 'unknown'} / bloquea=${syncState.blocking === true}`],
 		      ['Motivo', syncState.reason || 'sin_detalle'],
 		      ['Hash local', syncState.localHash || 'n/a'],
-		      ['Hash nube', syncState.remoteHash || 'n/a'],
+		      ['Hash baseline anterior', syncState.remoteHash || 'n/a'],
+		      ['Verificación fresca', syncState.freshRemoteStatus || 'no realizada'],
+		      ['Hash servidor fresco', syncState.freshRemoteHash || 'n/a'],
+		      ['Revisión servidor fresca', syncState.freshRemoteRevision || 'n/a'],
+		      ['Local coincide con servidor', syncState.localMatchesFreshRemote === true ? 'sí' : syncState.localMatchesFreshRemote === false ? 'no' : 'no comprobado'],
 		      ['Edad lock', `${Math.round(Number(syncState.lockAgeMs || 0) / 1000)}s`],
-		      ['Cambios reales', syncState.hasDirtyFields === true ? 'sí' : 'no'],
+		      ['Diferencia contra baseline', syncState.hasDirtyFields === true ? 'sí' : 'no'],
 		      ['Online', navigator.onLine ? 'sí' : 'no']
 		    ];
 		    // Hide technical rows by default - show only under support disclosure
@@ -9413,6 +9458,14 @@ function parseMoney(value) {
 		        reason: String(syncState.reason || ''),
 		        localHash: String(syncState.localHash || ''),
 		        remoteHash: String(syncState.remoteHash || ''),
+		        remoteHashKind: String(syncState.remoteHashKind || 'last_applied_baseline'),
+		        freshRemoteStatus: String(syncState.freshRemoteStatus || 'not_checked'),
+		        freshRemoteHash: String(syncState.freshRemoteHash || ''),
+		        freshRemoteRevision: Number(syncState.freshRemoteRevision || 0),
+		        freshRemoteCheckedAt: String(syncState.freshRemoteCheckedAt || ''),
+		        freshRemoteAgeMs: Number(syncState.freshRemoteAgeMs || 0),
+		        localMatchesFreshRemote: syncState.localMatchesFreshRemote === true
+		          ? true : syncState.localMatchesFreshRemote === false ? false : null,
 		        lockAgeMs: Number(syncState.lockAgeMs || 0),
 		        hasDirtyFields: syncState.hasDirtyFields === true
 		      },
@@ -12384,15 +12437,19 @@ function parseMoney(value) {
 		    });
 		    $('#clearLocalAppStateBtn')?.addEventListener('click', clearLocalAppStateRecovery);
 		    $('#copySyncDiagnosticBtn')?.addEventListener('click', async () => {
+		      const button = $('#copySyncDiagnosticBtn');
+		      button?.setAttribute('disabled', 'disabled');
+		      toast('Comprobando el servidor en modo lectura...');
+		      const verification = await window.click360VerifyRemoteSyncState?.({ reason:'ui_diagnostic' }).catch(() => null);
 		      const diagnostic = window.click360GetReliabilityDiagnostics?.() || {};
 		      const text = JSON.stringify(diagnostic, null, 2);
 		      try {
 		        await navigator.clipboard.writeText(text);
-		        toast('Diagnóstico copiado.');
+		        toast(verification?.ok ? 'Servidor comprobado y diagnóstico copiado.' : 'Diagnóstico copiado; no se pudo comprobar el servidor.', verification?.ok ? 'ok' : 'err');
 		      } catch {
 		        console.info('CLICK360 diagnóstico', diagnostic);
 		        toast('Diagnóstico enviado a consola.', 'ok');
-		      }
+		      } finally { button?.removeAttribute('disabled'); }
 		    });
 	    $('#restoreFile').onchange = (e) => {
 	        if(!isOwnerUser()) {

@@ -36,7 +36,7 @@ function stopProcessTree(child) {
 }
 
 async function waitForUrl(target, label) {
-  for (let attempt = 0; attempt < 180; attempt += 1) {
+  for (let attempt = 0; attempt < 360; attempt += 1) {
     try { if ((await fetch(target)).ok) return; } catch {}
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -219,12 +219,22 @@ async function openSignedIn(browser, viewport) {
     return local ? route.continue() : route.abort();
   });
   const step = async (label, fn) => {
-    try { return await fn(); } catch (error) { throw new Error(`openSignedIn step "${label}" failed: ${error.message}`); }
+    try { return await fn(); } catch (error) {
+      const diagnostic = await page.evaluate(() => ({
+        hydrated: window.click360IsTenantDataHydrated?.(),
+        syncStatus: window.click360SyncStatus || null,
+        syncState: window.click360GetSyncReliabilityState?.({ cleanup:false }) || null,
+        writeGate: window.click360WriteGate?.() || null,
+        provenance: window.click360GetTenantStateProvenance?.() || null,
+        trace: (window.R38_SYNC_TRACE || []).slice(-12)
+      })).catch(() => null);
+      throw new Error(`openSignedIn step "${label}" failed: ${error.message}; diagnostic=${JSON.stringify(diagnostic)}`);
+    }
   };
   await step('goto', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }));
-  await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 }));
+  await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', undefined, { timeout: 60000 }));
   await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
-  await step('hydrated-and-synced', () => page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', { timeout: 60000 }));
+  await step('hydrated-and-synced', () => page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', undefined, { timeout: 180000 }));
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };

@@ -40,7 +40,7 @@ assert('HTML carga qrcode-generator antes de app', html.includes('vendor/qrcode-
 assert('HTML carga jsQR antes de app', html.includes('vendor/jsQR.js') && html.indexOf('vendor/jsQR.js') < html.indexOf('app.js'));
 assert('HTML carga conciliación de caja antes de app', html.includes('cash-session-reconciliation.js') && html.indexOf('cash-session-reconciliation.js') < html.indexOf('app.js'));
 assert('HTML carga overrides de cuota después del dominio y antes del servicio', html.includes('tenant-quota-overrides.js') && html.indexOf('v16-domain.js') < html.indexOf('tenant-quota-overrides.js') && html.indexOf('tenant-quota-overrides.js') < html.indexOf('firebase-service.js'));
-assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-commercial-1-0-5-r38-mvp-candidate'));
+assert('cache offline safe', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('click360-commercial-1-0-5-r38-1-sync-integrity'));
 assert('service worker cachea guard P0', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./p0-tenant-guard.js'));
 assert('service worker cachea vendor QR', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/qrcode-generator.js') && fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./vendor/jsQR.js'));
 assert('service worker cachea conciliación de caja', fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8').includes('./cash-session-reconciliation.js'));
@@ -54,7 +54,7 @@ assert('estado local aislado por UID y tenant', app.includes("const STATE_PREFIX
 assert('sesión local aislada por UID', app.includes("const SESSION_PREFIX = 'CLICK360:V16:SESSION:'") && app.includes('`${SESSION_PREFIX}${activeTenantContext.authUid}`') && app.includes('sessionStorageKey()'));
 assert('sesión local no concede permisos', app.includes('cloudUser.uid !== activeTenantContext.authUid') && !app.includes('session.role') && !app.includes('session.username'));
 assert('estado global legacy no se carga', !app.includes("localStorage.getItem(LEGACY_STATE_KEY)"));
-assert('payload cloud explícito', firebaseService.includes('function buildBusinessPayload()') && firebaseService.includes('payload'));
+assert('payload cloud explícito', firebaseService.includes('function buildBusinessPayload(') && firebaseService.includes('payload'));
 assert('no sincroniza todo localStorage', !firebaseService.includes('function getLocalSnapshot()') && !firebaseService.includes('localStorage: snapshot'));
 assert('guard de identidad en push', firebaseService.includes('activeIdentityIsValid(user)') && firebaseService.includes('blocked_push_identity'));
 assert('guard de identidad en pull', firebaseService.includes('remoteMatchesContext(remoteData, context)') && firebaseService.includes('blocked_pull_identity'));

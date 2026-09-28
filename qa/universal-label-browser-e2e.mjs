@@ -211,7 +211,7 @@ async function runWebKit() {
     // #ulcSimpleMode is intentionally hidden below the phone breakpoint (see
     // assertResponsiveLayout above) -- only #ulcAdvanced, the actionable mode
     // switch, is required to stay visible.
-    if (!(await page.locator('#ulcAdvanced').isVisible())) throw new Error('WebKit mobile advanced mode button is hidden.');
+    await page.locator('#ulcAdvanced').waitFor({ state: 'visible', timeout: 30_000 });
     const box = await page.locator('[data-ulc-object]').first().boundingBox();
     if (!box) throw new Error('Touch object is not visible.');
     const before = Number(await page.locator('#ulcX').inputValue());

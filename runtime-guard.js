@@ -2,7 +2,7 @@
   'use strict';
 
   const APP_VERSION = '1.0.5';
-  const ASSET_VERSION = 'commercial-1-0-5-r38-mvp-candidate';
+  const ASSET_VERSION = 'commercial-1-0-5-r38-1-sync-integrity';
   const STORAGE_PREFIX = 'CLICK360:V16_2:RUNTIME_ERRORS:';
   const SESSION_ID_KEY = 'CLICK360:V16_2:RUNTIME_SESSION_ID';
   const MAX_REPORTS = 12;
@@ -292,6 +292,12 @@
 		        reason: String(reliabilityState.reason || '').slice(0, 80),
 		        localHash: String(reliabilityState.localHash || '').slice(0, 24),
 		        remoteHash: String(reliabilityState.remoteHash || '').slice(0, 24),
+		        remoteHashKind: String(reliabilityState.remoteHashKind || 'last_applied_baseline').slice(0, 40),
+		        freshRemoteStatus: String(reliabilityState.freshRemoteStatus || 'not_checked').slice(0, 40),
+		        freshRemoteHash: String(reliabilityState.freshRemoteHash || '').slice(0, 24),
+		        freshRemoteRevision: Number(reliabilityState.freshRemoteRevision || 0),
+		        localMatchesFreshRemote: reliabilityState.localMatchesFreshRemote === true
+		          ? true : reliabilityState.localMatchesFreshRemote === false ? false : null,
 		        lockAgeMs: Number(reliabilityState.lockAgeMs || 0),
 		        hasDirtyFields: reliabilityState.hasDirtyFields === true,
 		        displayMode: String(reliabilityState.displayMode || displayMode()).slice(0, 24)

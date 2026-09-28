@@ -322,7 +322,9 @@ async function waitForBoot(page) {
 }
 
 function readSnapshot(page) {
-  return page.evaluate(() => ({
+	return page.evaluate(() => {
+	  const reliability = window.click360GetSyncState?.({ reason: 'qa_probe' }) || {};
+	  return ({
     syncStatus: window.click360SyncStatus?.status || null,
     syncMessage: window.click360SyncStatus?.message || '',
     hydrated: window.click360IsTenantDataHydrated?.() === true,
@@ -330,7 +332,13 @@ function readSnapshot(page) {
     sales: window.click360GetTenantState?.()?.sales?.length ?? null,
     movements: window.click360GetTenantState?.()?.movements?.length ?? null,
     labelTemplates: window.click360GetTenantState?.()?.settings?.labelTemplates?.length ?? null,
-    conflictBlocking: window.click360GetSyncState?.({ reason: 'qa_probe' })?.blocking ?? null,
+	conflictBlocking: reliability.blocking ?? null,
+	syncReliability: {
+	  status:reliability.status || '', reason:reliability.reason || '',
+	  localHash:reliability.localHash || '', remoteHash:reliability.remoteHash || '',
+	  freshRemoteStatus:reliability.freshRemoteStatus || '', freshRemoteHash:reliability.freshRemoteHash || '',
+	  hasDirtyFields:reliability.hasDirtyFields === true, materialEquivalent:reliability.materialEquivalent === true
+	},
     localStats: window.click360GetLocalBusinessSyncStats?.() || null,
     cacheStatus: (() => {
       const status = window.click360TenantContext ? window.click360GetTenantCacheStatus?.(window.click360TenantContext) : null;
@@ -341,7 +349,8 @@ function readSnapshot(page) {
     navCount: Number(sessionStorage.getItem('__click360TestNavCount') || '0'),
     gateVisible: !!document.querySelector('#click360-auth-gate'),
     gateText: document.querySelector('#click360-auth-gate')?.textContent?.trim().slice(0, 120) || ''
-  }));
+	  });
+	});
 }
 
 /**
@@ -406,7 +415,12 @@ async function stageStuckEmptyDevice({ browser, testEnv, uid, email, password })
   // the background pull refuses it (pendingLocalRecovery -> 'conflict'), so
   // an explicit forced refresh is the ONLY escape -- and that is precisely
   // what used to be swallowed before `force` was ever consulted.
-  const staged = await firstSession.page.evaluate(({ snapshot, baseRevision }) => {
+  // Freeze the browser network before writing this stale fixture. Otherwise
+  // the live listener can legitimately confirm the full cloud snapshot again
+  // between test setup and page.close(), making the intended fixture flaky.
+  await context.setOffline(true);
+  await firstSession.page.waitForTimeout(250);
+  const staged = await firstSession.page.evaluate(async ({ snapshot, baseRevision }) => {
     const context = window.click360TenantContext;
     localStorage.setItem(`CLICK360:V16:STATE:${context.authUid}:${context.tenantKey}`, snapshot);
     const metaKey = `CLICK360:V16:CACHEMETA:${context.authUid}:${context.tenantKey}`;
@@ -420,6 +434,13 @@ async function stageStuckEmptyDevice({ browser, testEnv, uid, email, password })
       operationId: 'offline_write_never_pushed',
       pendingCreatedAtMs: Date.now()
     }));
+	await window.CLICK360_V16_STORAGE.putSnapshot(context, JSON.parse(snapshot), {
+	  source: 'localstorage',
+	  pendingRemoteSync: true,
+	  baseRevision,
+	  operationId: 'offline_write_never_pushed',
+	  pendingCreatedAtMs: Date.now()
+	});
     return window.click360GetTenantCacheStatus(context);
   }, { snapshot: emptySnapshotJson, baseRevision: REVISION_EMPTY });
   assert(staged.valid === true && staged.pendingRemoteSync === true && Number(staged.baseRevision) === REVISION_EMPTY,
@@ -429,6 +450,28 @@ async function stageStuckEmptyDevice({ browser, testEnv, uid, email, password })
   // byte first: a closing tab can flush a local push, and the whole point is
   // that the cloud still holds her real data, untouched.
   await firstSession.page.close();
+  // A browser can deliver the queued online event while the closing page is
+  // being torn down. Restage the local fixture at document-start on the next
+  // app launch so no prior listener or reconnect callback can race the test.
+  await context.addInitScript(({ tenantUid, snapshot, baseRevision }) => {
+    const markerKey = `__click360EmptyRecoveryFixture:${tenantUid}`;
+    if (localStorage.getItem(markerKey) === 'ready') return;
+    const tenantKey = `owner:${tenantUid}:business:${tenantUid}`;
+    localStorage.setItem(`CLICK360:V16:STATE:${tenantUid}:${tenantKey}`, snapshot);
+    const metaKey = `CLICK360:V16:CACHEMETA:${tenantUid}:${tenantKey}`;
+    const meta = JSON.parse(localStorage.getItem(metaKey) || '{}');
+    localStorage.setItem(metaKey, JSON.stringify({
+      ...meta,
+      tenantKey,
+      source: 'localstorage',
+      pendingRemoteSync: true,
+      baseRevision,
+      operationId: 'offline_write_never_pushed',
+      pendingCreatedAtMs: Date.now()
+    }));
+    localStorage.setItem(markerKey, 'ready');
+  }, { tenantUid: uid, snapshot: emptySnapshotJson, baseRevision: REVISION_EMPTY });
+  await context.setOffline(false);
   await seed(testEnv, async (db) => {
     await setDoc(doc(db, 'businesses', uid, 'state', 'main'), fullDocument);
   });
@@ -477,13 +520,41 @@ async function assertConverged(page, label, navCountBefore) {
     await page.waitForTimeout(500);
     after = await readSnapshot(page);
   }
+	if (process.env.CLICK360_QA_DEBUG === '1' && after.conflictBlocking) {
+	  const materialDiff = await page.evaluate(async () => {
+	    const context = window.click360TenantContext;
+	    const snapshot = await window.click360Db.collection('businesses').doc(context.ownerId).collection('state').doc('main').get({ source:'server' });
+	    const remote = snapshot.data()?.payload?.data || {};
+	    const local = window.click360GetTenantState?.() || {};
+	    const ignored = new Set(['activeBusinessId', 'updatedAt', 'updatedAtMs']);
+	    const diffs = [];
+	    const walk = (left, right, path = 'data') => {
+	      if (diffs.length >= 80) return;
+	      if (left === right) return;
+	      if (Array.isArray(left) || Array.isArray(right)) {
+	        if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) diffs.push(`${path}:array-length ${left?.length}/${right?.length}`);
+	        const length = Math.max(left?.length || 0, right?.length || 0);
+	        for (let index = 0; index < length; index += 1) walk(left?.[index], right?.[index], `${path}[${index}]`);
+	        return;
+	      }
+	      if (!left || !right || typeof left !== 'object' || typeof right !== 'object') { diffs.push(`${path}:${JSON.stringify(left)}=>${JSON.stringify(right)}`); return; }
+	      for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) {
+	        if (ignored.has(key)) continue;
+	        walk(left[key], right[key], `${path}.${key}`);
+	      }
+	    };
+	    walk(remote, local);
+	    return diffs;
+	  });
+	  console.log('[debug] remote/local material paths after recovery:', JSON.stringify(materialDiff, null, 2));
+	}
   assert(after.hydrated === true, `[${label}] the device must end genuinely hydrated (tenantDataHydrated === true), got ${after.hydrated} with sync status "${after.syncStatus}"`);
   assert(after.products === CLOUD_PRODUCT_COUNT, `[${label}] the device must now hold the full cloud catalog (${CLOUD_PRODUCT_COUNT} products), got ${after.products}`);
   assert(after.sales === 3, `[${label}] the 3 cloud sales must be present, got ${after.sales}`);
   assert(after.movements === 2, `[${label}] the 2 cloud movements must be present, got ${after.movements}`);
   assert(after.labelTemplates === 1, `[${label}] the real saved label template must have arrived with the cloud snapshot, got ${after.labelTemplates}`);
   assert(after.syncStatus === 'synced', `[${label}] sync status must settle on "synced", got "${after.syncStatus}" (${after.syncMessage})`);
-  assert(after.conflictBlocking === false, `[${label}] the conflict marker must be genuinely cleared, not re-armed -- getSyncState().blocking is still ${after.conflictBlocking} after 15s; cache status: ${JSON.stringify(after.cacheStatus)}`);
+	assert(after.conflictBlocking === false, `[${label}] the conflict marker must be genuinely cleared, not re-armed -- getSyncState().blocking is still ${after.conflictBlocking} after 15s; reliability: ${JSON.stringify(after.syncReliability)}; cache status: ${JSON.stringify(after.cacheStatus)}`);
   assert(after.navCount === navCountBefore, `[${label}] recovering from the cloud must NEVER reload the page mid-sync (the service-worker auto-heal race) -- boot count went ${navCountBefore} -> ${after.navCount}`);
   assert(after.gateVisible === false, `[${label}] the app must not bounce back to the public access gate ("${after.gateText}")`);
   return after;
