@@ -17,6 +17,7 @@ const files = [
   'firebase-config.js',
   'p0-tenant-guard.js',
   'worker-data-boundary.js',
+  'modular-persistence.js',
   'v16-domain.js',
   'tenant-quota-overrides.js',
   'v16-storage.js',
