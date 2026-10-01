@@ -17,7 +17,10 @@ const firebaseService = fs.readFileSync('firebase-service.js', 'utf8');
 // ── Local-first save(): a write survives with zero network once a device
 // has ever completed a real, successful online session (localStorage/
 // IndexedDB fallback, never silently dropped). ──
-const saveBlock = app.slice(app.indexOf('function save(options = {})'), app.indexOf('function save(options = {})') + 3000);
+const saveStart = app.indexOf('function save(options = {})');
+const saveEnd = app.indexOf('function restoreCriticalSnapshot(', saveStart);
+assert(saveStart >= 0 && saveEnd > saveStart, 'save() structural boundaries must be discoverable');
+const saveBlock = app.slice(saveStart, saveEnd);
 assert(saveBlock.includes("localStorage.setItem(stateStorageKey(), serialized)"), 'save() must persist to localStorage synchronously as its primary local-first path');
 assert(saveBlock.includes('queueIndexedSnapshot(snapshot'), 'save() must ALSO queue the same write into the IndexedDB snapshot store (the durable, larger-capacity offline queue)');
 assert(saveBlock.includes('operationId'), 'every locally-persisted write must carry an operationId -- the key the reconnect-sync/idempotency gate keys off of');

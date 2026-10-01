@@ -157,7 +157,9 @@ assert(runtime.includes('cashClose:') && runtime.includes('if (details.uiHandled
 assert(app.includes('reportClosed && sessionClosed'), 'cash close verifies both report and session');
 assert(app.includes('cashCloseInFlight') && app.includes('Ya estamos cerrando esta caja'), 'cash close has an in-flight guard');
 assert(app.includes('worker_module_paused') && app.includes('El acceso operativo para trabajadores está temporalmente pausado'), 'workers module has a clear paused state');
-assert(app.includes('No pudimos cerrar la caja') && app.includes('Reintentar cierre') && app.includes('Copiar diagnóstico'), 'cash close failure UI is actionable');
+assert(app.includes('Cierre rechazado') && app.includes('Reintentar cierre') && app.includes('Copiar diagnóstico'), 'a proven rejection offers a safe retry and diagnostic');
+assert(app.includes('Estado del cierre sin confirmar') && app.includes('Comprobar servidor'), 'an unknown outcome requires reconciliation before retry');
+assert(app.includes('Cierre confirmado') && app.includes('No se creó un reporte adicional'), 'a server-confirmed close never implies a second write');
 assert(app.includes('Caja cerrada') && app.includes('la exportación no se pudo completar'), 'export failure does not imply data failure');
 assert(styles.includes('.cashCloseIssuePanel') && styles.includes('.cashCloseDiagnosticList'), 'cash diagnostic UI is styled');
 assert(!app.includes('shary10mmvv@gmail.com') && !app.includes('roddysmith23@hotmail.com'), 'cash close code does not hardcode real users');

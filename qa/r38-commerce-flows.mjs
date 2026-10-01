@@ -31,7 +31,12 @@ async function searchAndEdit(page,code,expectedName){
       assert(geometry.x>=0&&geometry.y>=0&&geometry.right<=geometry.w+1&&geometry.bottom<=geometry.h,`no manual scroll required ${attribute}: ${JSON.stringify(geometry)}`);
       assert(geometry.svg,'action icon rendered (not blank)');
     }
-    await cards.locator('[data-edit]').click();
+    // The synthetic access refresh above intentionally replaces productList's
+    // innerHTML. On a long WebKit run the node can be replaced between the
+    // pointer down/up phases of Playwright's physical click, losing only the
+    // test gesture. Dispatch on the currently attached button atomically; the
+    // real bound handler and every editor assertion below remain exercised.
+    await cards.locator('[data-edit]').evaluate((button) => button.click());
     assert(await page.locator('#pCode').inputValue()===code,'correct edit product code');
     assert(await page.locator('#pName').inputValue()===expectedName,'correct edit product name');
     await page.evaluate(()=>window.dispatchEvent(new CustomEvent('click360-access-changed')));
@@ -141,7 +146,9 @@ async function commerce(page,label){
   assert(report.expectedCash===62&&report.countedCash===62&&report.difference===0,'cash reconciliation authoritative: '+JSON.stringify({expected:report.expectedCash,counted:report.countedCash,difference:report.difference,opening:report.openingAmount,movements:closed.movements}));
   assert(session.expectedCash===62&&session.countedCash===62&&session.difference===0,'cash session matches voucher');
   assert(report.paymentTotals.cash===12&&report.paymentTotals.card===12.5&&report.paymentTotals.transfer===12&&report.paymentTotals.layawayPayments===12,'voucher separate tender totals');
-  for(const [label,amount]of [['Efectivo','12.00'],['Tarjeta','12.50'],['Transferencia','12.00'],['Abonos Apartado','12.00']])assert(report.html.includes(`<span>${label}:</span><span>$${amount}</span>`),'voucher '+label);
+  assert(!Object.hasOwn(report,'html')&&report.renderVersion==='cash-close-structured-v1','new cash reports persist structured fields without redundant printable HTML');
+  const voucherHtml=await page.locator('#pdfContentPreview').innerHTML();
+  for(const [label,amount]of [['Efectivo','12.00'],['Tarjeta','12.50'],['Transferencia','12.00'],['Abonos Apartado','12.00']])assert(voucherHtml.includes(`<span>${label}:</span><span>$${amount}</span>`),'reconstructed voucher '+label);
   results.push({label,sales:4,newMovements:6,layaway:'picked_up',physicalIncome,expectedCash:62,stock:27});
 }
 
