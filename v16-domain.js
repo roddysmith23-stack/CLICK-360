@@ -73,11 +73,8 @@
       // and evaluateEntitlement() -- status 'founder' (distinct, internal/
       // platform) already bypasses billing separately.
       prices: Object.freeze({ historical: true }),
-      // Historical Founder commercial contract: 2 businesses, 2 worker seats
-      // and up to 2,000 active products. Storage stays at the existing
-      // technical allowance; account-scoped manual overrides remain additive.
-      limits: Object.freeze({ businesses: 2, workerSeatsIncluded: 2, workerSeatsMax: 2, productsActive: 2000, storageBytes: 20 * 1024 * 1024 }),
-      features: Object.freeze(['Todo Business', 'Licencia funcional historica permanente', 'Sin mensualidad por funciones ya adquiridas', 'Hasta 2 negocios', 'Hasta 2 trabajadores', 'Hasta 2000 productos activos']),
+      limits: Object.freeze({ businesses: 10, workerSeatsIncluded: 2, workerSeatsMax: 25, productsActive: 2000, storageBytes: 20 * 1024 * 1024 }),
+      features: Object.freeze(['Todo Business', 'Licencia funcional historica permanente', 'Sin mensualidad por funciones ya adquiridas', 'Cuotas de infraestructura amplias con margen de crecimiento']),
       historical: true,
       notSoldToNewCustomers: true
     })
