@@ -1886,7 +1886,11 @@
     const access = account.state;
     const data = account.data || {};
     const ownerId = user.uid;
-    const limits = window.CLICK360_V16_DOMAIN?.planLimits(access.plan)
+    const limitOverrides = data.manualLimitOverrides && typeof data.manualLimitOverrides === 'object'
+      ? data.manualLimitOverrides
+      : null;
+    const limits = window.CLICK360_TENANT_QUOTA?.planLimits?.(window.CLICK360_V16_DOMAIN, access.plan, limitOverrides)
+      || window.CLICK360_V16_DOMAIN?.planLimits(access.plan)
       || (access.plan === 'pro' ? { businesses: 5, workers: 10 } : { businesses: 1, workers: 2 });
     window.click360User = {
       uid: user.uid,
@@ -1898,6 +1902,7 @@
       approved: false,
       businessLimit: limits.businesses,
       workerLimit: limits.workers,
+      manualLimitOverrides: limitOverrides,
       ownerId,
       isOwner: true,
       access: publishAccessState(access)

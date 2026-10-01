@@ -19,8 +19,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 await import('./v16-domain.js');
+await import('./tenant-quota-overrides.js');
 const domain = globalThis.CLICK360_V16_DOMAIN;
+const tenantQuota = globalThis.CLICK360_TENANT_QUOTA;
 assert(domain, 'V16 domain module must load');
+assert(tenantQuota, 'Tenant quota override module must load');
 
 // ── Catalog: 5 tiers, real display names, generous founder_legacy limits ──
 const tiers = ['base', 'pro', 'business', 'enterprise', 'founder_legacy'];
@@ -57,6 +60,10 @@ assert.equal(quotaStatusCallCount, 2, 'tenantQuotaStatus() must be called exactl
 assert(app.includes('function accessView()'), 'Mi plan y acceso view must exist');
 assert(/quota\?\.productsActive\?\.blocked.*return toast\(quotaBlockMessage/.test(app), 'the product-creation gate must block only on productsActive.blocked, using the shared quota message');
 assert(app.includes('function tenantAccountPlan()') && app.includes('function tenantUsageSnapshot()') && app.includes('function tenantQuotaStatus()'), 'the three quota primitives must exist');
+assert(app.includes('function tenantLimitOverrides()')
+  && app.includes('function tenantPlanEntitlements()')
+  && app.includes('CLICK360_TENANT_QUOTA?.planEntitlements?.(domain, tenantAccountPlan(), tenantLimitOverrides())'),
+  'display, product and image quotas must all use the same tenant-scoped manualLimitOverrides');
 assert(app.includes('function resolvedPlanFeatures('), 'Mi plan must resolve "Todo X"-style catalog shorthand into a real included/not-included feature list, not show marketing shorthand to the customer');
 assert(app.includes("data-request-plan=\"${code}\" data-request-period=\"custom\""), 'the Enterprise plan card must request a quote (period=custom) instead of fabricating a self-serve price');
 // r36 Section 4: Founder accounts see their permanent-license card, not the purchasable plan grid or the WhatsApp purchase CTA.
@@ -85,8 +92,17 @@ assert(/data\.status == "founder_legacy" && data\.plan == "founder_legacy"/.test
 // domain source itself, not in admin-core.mjs.
 const domainSource = fs.readFileSync('v16-domain.js', 'utf8');
 tiers.forEach((code) => assert(domainSource.includes(`'${code}'`), `activationFields() must recognize the ${code} plan code`));
+const tenantQuotaSource = fs.readFileSync('tenant-quota-overrides.js', 'utf8');
+assert(tenantQuotaSource.includes('function sanitizeOverrideLimit(value)') && tenantQuotaSource.includes('function planEntitlements(domain, planCode, overrides)'),
+  'the additive quota module must sanitize tenant-scoped overrides without changing the frozen V16 domain');
 assert(/founder_legacy has no billing period/.test(domainSource), 'founder_legacy activation must reject a billing period instead of silently accepting one');
 const adminCore = fs.readFileSync('scripts/lib/click360-v16-admin-core.mjs', 'utf8');
 assert(/domain\.activationFields\(/.test(adminCore), 'click360-v16-admin-core.mjs must delegate to the canonical v16-domain.js activationFields(), not maintain its own copy');
+
+const firebaseService = fs.readFileSync('firebase-service.js', 'utf8');
+assert(firebaseService.includes("data.manualLimitOverrides && typeof data.manualLimitOverrides === 'object'")
+  && firebaseService.includes('CLICK360_TENANT_QUOTA?.planLimits?.(window.CLICK360_V16_DOMAIN, access.plan, limitOverrides)')
+  && firebaseService.includes('manualLimitOverrides: limitOverrides'),
+  'accountAccess hydration must carry a single tenant override into both legacy and commercial quota gates');
 
 console.log('PASS Commercial MVP: 5-tier plan catalog, quota-blocks-creation-only contract, founder_legacy entitlement, capacityRequests wiring, admin activation coverage (structural + domain regression)');
