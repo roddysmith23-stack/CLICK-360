@@ -1122,6 +1122,82 @@
 			    return NON_MATERIAL_SYNC_SOURCES.has(String(source || '').toLowerCase());
 			  }
 
+			  // r89 (porto selectivo de #86): ephemeral cache for the last fresh
+			  // server verification. This is a read-only diagnostic read -- it must
+			  // NEVER rewrite LAST_APPLIED_REMOTE_MATERIAL_HASH, clear an outbox/
+			  // conflict marker, or hydrate economic state. It is invalidated
+			  // automatically whenever the local material hash changes.
+			  let LAST_FRESH_REMOTE_VERIFICATION = null;
+
+			  function currentFreshRemoteVerification(hashes = currentPayloadHashes(), nowMs = Date.now()) {
+			    if (!LAST_FRESH_REMOTE_VERIFICATION) return null;
+			    // Evidence is only valid if local material hash has not changed
+			    // since we took the snapshot (any local mutation invalidates it).
+			    if (LAST_FRESH_REMOTE_VERIFICATION.localMaterialHash !== hashes.materialHash) return null;
+			    // Expire after 90 seconds to avoid stale-positive green states.
+			    const FRESH_VERIFICATION_TTL_MS = 90 * 1000;
+			    if (nowMs - LAST_FRESH_REMOTE_VERIFICATION.checkedAtMs > FRESH_VERIFICATION_TTL_MS) return null;
+			    return LAST_FRESH_REMOTE_VERIFICATION;
+			  }
+
+			  async function verifyRemoteSyncState({ reason = 'support_diagnostic' } = {}) {
+			    const context = ACTIVE_CONTEXT;
+			    const stateDoc = STATE_DOC;
+			    const user = auth.currentUser;
+			    const expectedEpoch = AUTH_EPOCH;
+			    const hashes = currentPayloadHashes();
+			    const checkedAtMs = Date.now();
+			    function unavailable(status, errorCode) {
+			      return Object.freeze({ ok: false, status, errorCode: String(errorCode || 'unavailable') });
+			    }
+			    if (!navigator.onLine) return unavailable('offline', 'offline');
+			    if (MODULAR_MODE || !context || !stateDoc || !user) {
+			      return unavailable('unavailable', 'sync_scope_not_ready');
+			    }
+			    if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) {
+			      return unavailable('unavailable', 'sync_scope_not_ready');
+			    }
+			    try {
+			      const snapshot = await stateDoc.get({ source: 'server' });
+			      if (!isActiveSyncScope(context, stateDoc, expectedEpoch, user)) return unavailable('unavailable', 'stale_auth_scope');
+			      if (!snapshot.exists) return unavailable('missing', 'remote_document_missing');
+			      const remote = snapshot.data() || {};
+			      if (!remoteMatchesContext(remote, context)) {
+			        return unavailable('invalid', 'remote_identity_mismatch');
+			      }
+			      const remoteMaterialHash = materialPayloadHash(remote.payload);
+			      const remoteRevision = Number(remote.revision || remote.updatedAtMs || 0);
+			      const localMatchesRemote = !!remoteMaterialHash && remoteMaterialHash === hashes.materialHash;
+			      const verification = Object.freeze({
+			        authEpoch: expectedEpoch,
+			        tenantKey: context.tenantKey,
+			        checkedAtMs,
+			        reason: String(reason || 'support_diagnostic').slice(0, 80),
+			        status: localMatchesRemote ? 'verified_match' : 'diverged',
+			        localMaterialHash: hashes.materialHash,
+			        remoteMaterialHash,
+			        remoteRevision,
+			        localMatchesRemote
+			      });
+			      // Store as ephemeral evidence -- a later local mutation resets
+			      // this automatically via currentFreshRemoteVerification().
+			      LAST_FRESH_REMOTE_VERIFICATION = verification;
+			      return {
+			        ok: true,
+			        status: verification.status,
+			        checkedAt: new Date(checkedAtMs).toISOString(),
+			        checkedAtMs,
+			        localHash: hashFingerprint(hashes.materialHash),
+			        remoteHash: hashFingerprint(remoteMaterialHash),
+			        remoteRevision,
+			        localMatchesRemote,
+			        reason: verification.reason
+			      };
+			    } catch (error) {
+			      return unavailable('error', String(error?.code || error?.name || 'remote_read_failed').slice(0, 80));
+			    }
+			  }
+
 			  function getSyncState({ cleanup = false, reason = 'sync_state', force = false } = {}) {
 			    const now = Date.now();
 			    const hashes = currentPayloadHashes();
@@ -1144,6 +1220,11 @@
 			      && Number(conflictMarker.baseRevision || conflictMarker.localRevision || 0) > 0
 			      && Number(conflictMarker.remoteRevision || 0) !== Number(conflictMarker.baseRevision || conflictMarker.localRevision || 0);
 			    const hasDirtyFields = !!hashes.payload && !materialEquivalent && hasRemoteBaseline && !nonMaterialSource;
+			    // r89: check for a fresh server verification taken since the last
+			    // local mutation (ephemeral, read-only, never clears outbox).
+			    const freshVerification = currentFreshRemoteVerification(hashes, now);
+			    const freshRemoteMatch = freshVerification?.localMatchesRemote === true;
+			    const freshRemoteDivergence = freshVerification?.localMatchesRemote === false;
 			    const staleLock = force
 			      || materialEquivalent
 			      || nonMaterialSource
@@ -1171,6 +1252,14 @@
 			      // is what actually shows up as a mismatch.
 			      localHash: hashFingerprint(hashes.materialHash),
 			      remoteHash: hashFingerprint(lastMaterial || safeStorageGet(tenantStorageKey('LAST_APPLIED_REMOTE_HASH'))),
+			      remoteHashKind: 'last_applied_baseline',
+			      // Fresh server verification fields (null when not yet checked or expired)
+			      freshRemoteStatus: freshVerification?.status || 'not_checked',
+			      freshRemoteHash: hashFingerprint(freshVerification?.remoteMaterialHash || ''),
+			      freshRemoteRevision: Number(freshVerification?.remoteRevision || 0),
+			      freshRemoteCheckedAt: freshVerification ? new Date(freshVerification.checkedAtMs).toISOString() : '',
+			      freshRemoteAgeMs: freshVerification ? Math.max(0, now - freshVerification.checkedAtMs) : 0,
+			      localMatchesFreshRemote: freshVerification ? (freshVerification.localMatchesRemote === true) : null,
 			      lastUpdatedAt: new Date(now).toISOString(),
 			      displayMode: window.matchMedia?.('(display-mode: standalone)')?.matches === true || navigator.standalone === true ? 'standalone' : 'browser',
 			      pendingAgeMs: pendingMeta ? pendingAgeMs : 0,
@@ -1275,6 +1364,10 @@
 
 			  window.click360ClearStaleSyncGuard = (details = {}) => maybeClearStaleSyncGuard(details);
 			  window.click360GetSyncState = (details = {}) => getSyncState({ cleanup: details.cleanup === true, reason: details.reason || 'diagnostic' });
+			  // r89 (porto selectivo #86): read-only authoritative server check.
+			  // Does NOT mutate local state, baseline, or outbox. Invalidated
+			  // automatically when local material hash changes.
+			  window.click360VerifyRemoteSyncState = (details = {}) => verifyRemoteSyncState(details);
 
 		  function buildBusinessPayload() {
 	    if (!activeIdentityIsValid() || typeof window.click360GetTenantState !== "function") return null;

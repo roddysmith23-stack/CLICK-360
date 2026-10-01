@@ -229,7 +229,8 @@
     if (reason === 'sync_conflict') return 'Hay un conflicto de sincronización pendiente. Actualiza desde nube o respalda antes de continuar.';
     if (reason === 'auth_not_ready') return 'La sesión aún se está verificando. Intenta nuevamente en unos segundos.';
     if (reason === 'tenant_guard_not_ready') return 'La cuenta aún está preparando la protección de datos. Intenta nuevamente en unos segundos.';
-    if (reason === 'local_state_too_large') return 'El cierre supera el límite seguro del estado actual. No se guardó ni se duplicó ningún movimiento.';
+    if (reason === 'local_state_too_large') return 'El cierre supera el límite seguro del estado actual. Tus ventas y movimientos no se borraron ni duplicaron. Intenta de nuevo o contacta soporte.';
+    if (reason === 'cash_close_session_identity_lost') return 'No se pudo identificar la sesión de caja exacta. No se cerró ninguna caja. Actualiza la pantalla e intenta de nuevo.';
     if (reason === 'local_storage_quota_exceeded') return 'El almacenamiento local está lleno. El cierre no se guardó ni se duplicó.';
     if (reason === 'remote_commit_rejected') return 'El cambio no fue confirmado y no se registró como completado.';
     if (reason === 'remote_state_mismatch') return 'El servidor contiene un estado diferente. No se sobrescribieron sus cambios.';
@@ -1978,10 +1979,27 @@ function parseMoney(value) {
       ? { status: 'local', title: 'Modo local', detail: 'La nube se activará al iniciar sesión con Google.' }
       : { status: 'offline', title: 'Sin internet', detail: 'Puedes trabajar localmente; se sincroniza cuando vuelva la conexión.' };
     const s = typeof window.click360GetSyncStatus === 'function' ? window.click360GetSyncStatus() : fallback;
+    // r89: 'synced' requires authoritative server evidence. Before #86 is
+    // fully ported, getSyncState may report status='clean' while
+    // hasDirtyFields=true -- a stale-baseline false positive. We map that
+    // case to 'pending' so the UI never tells the user "Nube sincronizada"
+    // without real evidence. When click360GetSyncState is available and
+    // returns needs_review/pending_write, we surface those explicitly.
+    const rawSyncState = typeof window.click360GetSyncState === 'function'
+      ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
+    const effectiveStatus = (() => {
+      if (rawSyncState?.status === 'needs_review') return 'needs_review';
+      if (rawSyncState?.status === 'pending_write') return 'pending';
+      if (rawSyncState?.status === 'real_conflict') return 'error';
+      if (s.status === 'synced' && rawSyncState?.hasDirtyFields === true) return 'pending';
+      return s.status;
+    })();
     const map = {
-	      synced: ['Nube sincronizada', 'Tus datos están guardados en este dispositivo y en la nube.'],
+	      synced: ['Guardado en nube', 'Tus datos están guardados en este dispositivo y confirmados en la nube.'],
 	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
-      pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando conexión o confirmación de nube.'],
+      pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando confirmación de nube.'],
+      pending_write: ['Guardando...', 'Enviando cambios al servidor.'],
+      needs_review: ['Verificando...', 'Hay una diferencia local pendiente de comprobación con el servidor. Tus datos están protegidos.'],
       offline: ['Sin internet', 'La app sigue funcionando localmente y subirá cambios al reconectar.'],
       error: ['Revisar nube', s.message || 'No se pudo confirmar la sincronización. Tus datos locales se mantienen.'],
       read_only: ['Modo lectura', s.message || 'Tu información está protegida. Activa un plan para volver a editar.'],
@@ -1990,8 +2008,8 @@ function parseMoney(value) {
       checking: ['Verificando nube', 'Comprobando sesión y datos remotos.'],
       local: ['Modo local', 'Inicia sesión con Google para activar nube.']
     };
-    const [title, detail] = map[s.status] || map.local;
-    return { ...s, title, detail };
+    const [title, detail] = map[effectiveStatus] || map.local;
+    return { ...s, status: effectiveStatus, title, detail };
   }
   function syncPillHtml(compact=false) {
     const info = syncStatusInfo();
@@ -8202,26 +8220,70 @@ function parseMoney(value) {
 	      }
 	      stage = 'cash_close_load_session';
 	      const basis = cashCloseBasis();
-	      diagnosticContext = { business:basis.business, cashSessionId:basis.activeSession?.id || '', gate:evaluatedGate };
+	      // r89 (P0, cashSessionId identity guard): cashCloseBasis() resolves
+	      // activeSession from state.cashSessions at call time. If the session
+	      // was already marked closed by the reconciler between modal-open and
+	      // submit (or if the override lookup failed), activeSession may be null
+	      // even though cashCloseSessionOverride carries a valid session id.
+	      // In that case we try to recover the session object directly rather
+	      // than silently proceeding with cashSessionId="". An empty id would
+	      // cause verifyServerClose to search for legacy reports without a
+	      // session id, find nothing, and allow a write that then hits the
+	      // 850 KB cloud limit -- producing the misleading save_rejected error.
+	      let resolvedSession = basis.activeSession;
+	      const overrideId = cashCloseSessionOverride?.id || '';
+	      if (!resolvedSession && overrideId) {
+	        // Secondary lookup: find the session directly by id regardless of
+	        // its current status so we can decide consciously what to do.
+	        const directSession = (state.cashSessions || []).find(
+	          (s) => s.id === overrideId && s.businessId === (basis.businessId || cashCloseSessionOverride?.businessId)
+	        ) || null;
+	        if (directSession && directSession.status !== 'closed') {
+	          resolvedSession = directSession;
+	        } else if (directSession && directSession.status === 'closed') {
+	          // Session was closed between modal-open and submit. Treat as
+	          // already-closed success instead of letting the write proceed.
+	          const alreadyClosed = updateCashCloseDiagnostic('cash_close_already_confirmed_local', {
+	            business: basis.business, cashSessionId: overrideId, reportId: ''
+	          });
+	          toast('La caja ya estaba cerrada.', 'ok');
+	          closeModal(false);
+	          renderApp('cash');
+	          showCashCloseConfirmed(alreadyClosed);
+	          return;
+	        }
+	      }
+	      const resolvedSessionId = resolvedSession?.id || '';
+	      diagnosticContext = { business:basis.business, cashSessionId:resolvedSessionId, gate:evaluatedGate };
 	      cashCloseTarget = {
 	        businessId:basis.businessId,
-	        date:basis.date,
-	        cashSessionId:basis.activeSession?.id || ''
+	        date: resolvedSession?.date || basis.date,
+	        cashSessionId: resolvedSessionId
 	      };
 	      if (!basis.businessId) {
 	        const error = new Error('No active business for cash close.');
 	        error.code = 'cash_close_no_active_business';
 	        throw error;
 	      }
-	      if (basis.overrideRequested && !basis.activeSession) {
+	      // Guard: if cashCloseSessionOverride named a session with a real id
+	      // but we still cannot resolve it, we must not proceed with an empty
+	      // cashSessionId. An empty id would silently query a different set of
+	      // reports on the server and could create a duplicate or unlinked close.
+	      if (overrideId && !resolvedSessionId) {
+	        const error = new Error('Cash session identity lost between modal open and submit.');
+	        error.code = 'cash_close_session_identity_lost';
+	        error.outcome = 'rejected'; // safe: no write has started
+	        throw error;
+	      }
+	      if (basis.overrideRequested && !resolvedSession) {
 	        toast('Esta sesión de caja ya no está disponible. Actualiza la vista.', 'err');
 	        closeModal();
 	        renderApp('cash');
 	        return;
 	      }
-	      const closeEligibility = globalThis.CLICK360_CASH_RECONCILIATION?.cashCloseEligibility?.(basis.activeSession, state.dailyReports || []);
-	      if ((basis.activeSession && closeEligibility?.allowed === false)
-	        || (!basis.activeSession && isBusinessDateClosed(basis.date, basis.businessId))) {
+	      const closeEligibility = globalThis.CLICK360_CASH_RECONCILIATION?.cashCloseEligibility?.(resolvedSession, state.dailyReports || []);
+	      if ((resolvedSession && closeEligibility?.allowed === false)
+	        || (!resolvedSession && isBusinessDateClosed(cashCloseTarget.date, basis.businessId))) {
 	        toast('Esa sesión de caja ya está cerrada.', 'ok');
 	        closeModal();
 	        renderApp('cash');
@@ -8256,14 +8318,14 @@ function parseMoney(value) {
 	        }
 	        stage = 'cash_close_load_session';
 	      }
-	      const sessionKey = basis.activeSession?.id || `legacy:${basis.businessId}:${basis.date}`;
-	      inFlightKey = `${basis.businessId}:${basis.date}:${sessionKey}`;
+	      const sessionKey = resolvedSessionId || `legacy:${basis.businessId}:${cashCloseTarget.date}`;
+	      inFlightKey = `${basis.businessId}:${cashCloseTarget.date}:${sessionKey}`;
 	      if (cashCloseInFlight.has(inFlightKey)) {
 	        toast('Ya estamos cerrando esta caja. Espera la confirmación.', 'ok');
 	        return;
 	      }
 	      cashCloseInFlight.add(inFlightKey);
-	      updateCashCloseDiagnostic(stage, diagnosticContext);
+	      updateCashCloseDiagnostic(stage, { ...diagnosticContext, cashSessionId: resolvedSessionId });
 	      const cInicial = parseMoney($('#cajaInicial')?.value);
 	      const eFisico = parseMoney($('#efectivoFisico')?.value);
 	      const observations = ($('#cierreObs')?.value || '').trim();
@@ -8279,8 +8341,8 @@ function parseMoney(value) {
 	      state.dailyReports ||= [];
 	      state.cashSessions ||= [];
 	      const existingClosedReport = state.dailyReports.find((report) =>
-	        report.businessId === basis.businessId && report.date === basis.date && report.status === 'closed'
-	        && (basis.activeSession?.id ? report.cashSessionId === basis.activeSession.id : !report.cashSessionId));
+	        report.businessId === basis.businessId && report.date === cashCloseTarget.date && report.status === 'closed'
+	        && (resolvedSessionId ? report.cashSessionId === resolvedSessionId : !report.cashSessionId));
 	      if (existingClosedReport) {
 	        toast('La caja ya estaba cerrada. Puedes ver el cierre en el historial.', 'ok');
 	        closeModal();
@@ -8291,10 +8353,10 @@ function parseMoney(value) {
 	        id: reportId,
 	        operationId: reportId,
 	        businessId: basis.businessId,
-	        date: basis.date,
-	        cashSessionId: basis.activeSession?.id || '',
-	        openedBy: basis.activeSession?.openedBy || basis.apertureMov?.createdBy || '',
-	        openedAt: basis.activeSession?.openedAt || '',
+	        date: cashCloseTarget.date,
+	        cashSessionId: resolvedSessionId,
+	        openedBy: resolvedSession?.openedBy || basis.apertureMov?.createdBy || '',
+	        openedAt: resolvedSession?.openedAt || '',
 	        closedBy: authUser().name,
 	        closedByUid: window.click360User?.uid || '',
 	        closedAt: new Date().toISOString(),
@@ -8317,8 +8379,8 @@ function parseMoney(value) {
 	      const storedCloseDetails = globalThis.CLICK360_CASH_RECONCILIATION?.compactCashCloseReport?.(closeDetails)
 	        || (({ html, ...structured }) => ({ ...structured, renderVersion:'cash-close-structured-v1' }))(closeDetails);
 	      state.dailyReports.push(storedCloseDetails);
-	      if (basis.activeSession) Object.assign(basis.activeSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: summary.balanceCalculado, difference: summary.diferencia, reportId, observations });
-	      addAudit('cash_closed', { reportId, expectedCash: summary.balanceCalculado, countedCash: eFisico, difference: summary.diferencia, cashSessionId: basis.activeSession?.id || '' });
+	      if (resolvedSession) Object.assign(resolvedSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: summary.balanceCalculado, difference: summary.diferencia, reportId, observations });
+	      addAudit('cash_closed', { reportId, expectedCash: summary.balanceCalculado, countedCash: eFisico, difference: summary.diferencia, cashSessionId: resolvedSessionId });
 	      const business = state.businesses.find((item) => item.id === basis.businessId);
 	      if (business) business.lastCashBalance = eFisico;
 	      updateCashCloseDiagnostic(stage, { ...diagnosticContext, closeDetails, reportId });
@@ -8326,7 +8388,7 @@ function parseMoney(value) {
 	      commitStarted = true;
 	      const committed = await commitCriticalMutation(previousState, 'cash_closed', (next) => {
 	        const reportClosed = (next.dailyReports || []).some((report) => report.id === reportId && report.businessId === basis.businessId && report.status === 'closed');
-	        const sessionClosed = !basis.activeSession || (next.cashSessions || []).some((session) => session.id === basis.activeSession.id && session.businessId === basis.businessId && session.status === 'closed' && session.reportId === reportId);
+	        const sessionClosed = !resolvedSessionId || (next.cashSessions || []).some((session) => session.id === resolvedSessionId && session.businessId === basis.businessId && session.status === 'closed' && session.reportId === reportId);
 	        return reportClosed && sessionClosed;
 	      });
 	      if (!committed.ok) {
