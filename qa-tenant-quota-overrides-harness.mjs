@@ -7,6 +7,14 @@ const quota = globalThis.CLICK360_TENANT_QUOTA;
 assert(domain && quota);
 
 const catalogBefore = structuredClone(domain.PLAN_CATALOG.founder_legacy.limits);
+const founderDefault = quota.planEntitlements(domain, 'founder_legacy', null);
+assert.equal(founderDefault.limits.businesses, 2);
+assert.equal(founderDefault.limits.workerSeatsIncluded, 2);
+assert.equal(founderDefault.limits.workerSeatsMax, 2);
+assert.equal(founderDefault.limits.productsActive, 2000);
+assert.deepEqual(domain.PLAN_CATALOG.founder_legacy.limits, catalogBefore,
+  'effective Founder contract must not mutate the frozen shared catalog');
+
 const overridden = quota.planEntitlements(domain, 'founder_legacy', {
   businesses:12,
   workers:40,
