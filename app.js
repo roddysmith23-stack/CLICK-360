@@ -92,7 +92,12 @@
     size: resolvedCriticalActionGate ? resolvedCriticalActionGate.size() : null
   });
   const MAX_IMAGE_INPUT_BYTES = 8 * 1024 * 1024;
+  // 850 KB remains the safety ceiling for the legacy single-document cloud path.
+  // A local-only PWA may safely keep a larger device snapshot while the tenant is
+  // waiting for modular cloud storage. This prevents the legacy cloud ceiling
+  // from blocking day-to-day work when Nube explicitly reports "Modo local".
   const MAX_LOCAL_TENANT_STATE_BYTES = tenantRuntime?.MAX_CLOUD_PAYLOAD_BYTES || 850000;
+  const MAX_LOCAL_ONLY_TENANT_STATE_BYTES = 8 * 1024 * 1024;
   const LOCAL_BACKUP_RETENTION = 3;
   const WORKER_TENANT_ACCESS_ENABLED = window.CLICK360_WORKER_DATA_BOUNDARY?.enabledForProject?.(
     window.CLICK360_FIREBASE_CONFIG?.projectId
@@ -203,6 +208,16 @@
       return external;
     }
     return { allowed: true, reason: 'ok' };
+  }
+  function localOnlyPersistenceMode() {
+    try {
+      const sync = typeof window.click360GetSyncStatus === 'function'
+        ? window.click360GetSyncStatus()
+        : null;
+      return typeof window.click360SyncNow !== 'function' || sync?.status === 'local';
+    } catch {
+      return typeof window.click360SyncNow !== 'function';
+    }
   }
   function writeBlockMessage(gate = {}) {
     const reason = String(gate.reason || 'unknown');
@@ -871,6 +886,7 @@ function parseMoney(value) {
     const previousState = cloneState(lastPersistedState);
     lastSavePersistence = null;
     let attemptedBytes = 0;
+    let persistenceLimitBytes = MAX_LOCAL_TENANT_STATE_BYTES;
     try {
       if (!isOwnerUser() && window.click360IsModularBoundarySession?.() !== true) {
         const error = new Error('El acceso operativo para trabajadores está temporalmente pausado.');
@@ -882,8 +898,14 @@ function parseMoney(value) {
       state.identity = tenantIdentity();
       const serialized = JSON.stringify(state);
       attemptedBytes = stateSizeBytes(serialized);
-      if (attemptedBytes > MAX_LOCAL_TENANT_STATE_BYTES) {
-        const error = new Error('El estado supera el espacio local seguro.');
+      const localOnlyPersistence = localOnlyPersistenceMode();
+      persistenceLimitBytes = localOnlyPersistence
+        ? MAX_LOCAL_ONLY_TENANT_STATE_BYTES
+        : MAX_LOCAL_TENANT_STATE_BYTES;
+      if (attemptedBytes > persistenceLimitBytes) {
+        const error = new Error(localOnlyPersistence
+          ? 'El estado supera el espacio seguro disponible en este dispositivo.'
+          : 'El estado supera el límite seguro del almacenamiento en nube heredado.');
         error.code = 'click360/local-state-too-large';
         error.stage = 'save_size_guard';
         throw error;
@@ -924,7 +946,8 @@ function parseMoney(value) {
         snapshot,
         localPersisted,
         indexedPromise,
-        storageError
+        storageError,
+        localOnlyPersistence
       };
       if (localPersisted) {
         writeCacheMeta('localstorage', stateSizeBytes(serialized), {
@@ -969,7 +992,7 @@ function parseMoney(value) {
           : String(e.code || e.name || 'local_save_failed');
       publishSaveFailure(saveFailureCode, e.stage || 'save_local_persistence', {
         payloadBytes:attemptedBytes,
-        limitBytes:MAX_LOCAL_TENANT_STATE_BYTES,
+        limitBytes:persistenceLimitBytes,
         storageMode:storageState.mode
       });
       window.CLICK360_RUNTIME_GUARD?.record?.({
@@ -1035,6 +1058,22 @@ function parseMoney(value) {
         };
       }
       const persistence = lastSavePersistence?.operationId === operationId ? lastSavePersistence : null;
+      if (persistence?.localOnlyPersistence === true) {
+        let devicePersisted = persistence.localPersisted === true;
+        if (!devicePersisted) {
+          devicePersisted = await persistence.indexedPromise;
+          if (activeTenantContext !== context) return { ok:false, pending:false, stale:true };
+        }
+        if (!devicePersisted) {
+          restoreCriticalSnapshot(previousState);
+          toast('No se pudo guardar el cambio en este dispositivo. La información anterior sigue intacta.', 'err');
+          return { ok:false, pending:false, reason:'local_device_persistence_failed' };
+        }
+        rememberPersistedState();
+        lastAutoSaveHash = JSON.stringify(state);
+        toast('Cambio guardado en este dispositivo. Inicia sesión con Google para activar el respaldo en nube.', 'ok');
+        return { ok:true, pending:true, localOnly:true };
+      }
       if (!navigator.onLine && !persistence?.localPersisted) {
         const indexedPersisted = await persistence?.indexedPromise;
         if (activeTenantContext !== context) return { ok: false, pending: false, stale: true };
@@ -12362,7 +12401,10 @@ function parseMoney(value) {
     return true;
   }
   function validateBackupData(data) {
-    if (!data || typeof data !== 'object' || stateSizeBytes(data) > MAX_LOCAL_TENANT_STATE_BYTES) return false;
+    const limitBytes = localOnlyPersistenceMode()
+      ? MAX_LOCAL_ONLY_TENANT_STATE_BYTES
+      : MAX_LOCAL_TENANT_STATE_BYTES;
+    if (!data || typeof data !== 'object' || stateSizeBytes(data) > limitBytes) return false;
     return tenantRuntime?.validBusinessPayload({ identity: data.identity, data }, activeTenantContext) === true;
   }
 	  function bindBackup(){
