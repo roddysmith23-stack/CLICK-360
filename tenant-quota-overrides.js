@@ -10,6 +10,14 @@
     const base = domain?.planEntitlements?.(planCode);
     if (!base) return null;
     const limits = { ...base.limits };
+    // Historical Founder contract is enforced additively here because
+    // v16-domain.js is frozen by the R38 sentinel. Do not mutate PLAN_CATALOG.
+    if (base.code === 'founder_legacy') {
+      limits.businesses = 2;
+      limits.workerSeatsIncluded = 2;
+      limits.workerSeatsMax = 2;
+      limits.productsActive = 2000;
+    }
     const businesses = sanitizeOverrideLimit(overrides?.businesses);
     const workerSeatsMax = sanitizeOverrideLimit(overrides?.workers ?? overrides?.workerSeatsMax);
     const productsActive = sanitizeOverrideLimit(overrides?.productsActive);
