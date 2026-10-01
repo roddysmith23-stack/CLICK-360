@@ -30,8 +30,12 @@ const tiers = ['base', 'pro', 'business', 'enterprise', 'founder_legacy'];
 tiers.forEach((code) => assert(domain.PLAN_CATALOG[code], `PLAN_CATALOG must expose the ${code} tier`));
 assert.equal(domain.PLAN_CATALOG.base.name, 'Basic');
 assert.equal(domain.PLAN_CATALOG.founder_legacy.name, 'Founder');
+assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.businesses, 2, 'Founder legacy contract must allow exactly 2 businesses by default');
+assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.workerSeatsIncluded, 2, 'Founder legacy contract includes 2 worker seats');
+assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.workerSeatsMax, 2, 'Founder legacy contract must cap workers at 2 by default');
+assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.productsActive, 2000, 'Founder legacy contract must allow 2,000 active products');
 assert(domain.PLAN_CATALOG.founder_legacy.limits.productsActive >= domain.PLAN_CATALOG.business.limits.productsActive,
-  'founder_legacy quotas must be at least as generous as Business, derived from real measured usage with growth margin');
+  'Founder legacy product capacity must retain its historical large-catalog allowance');
 assert(!domain.PLAN_CATALOG.founder_legacy.prices.month, 'founder_legacy must carry no recurring monthly price');
 
 // ── Quota model: reaching 100% blocks only new-resource creation ──
@@ -60,6 +64,11 @@ assert.equal(quotaStatusCallCount, 2, 'tenantQuotaStatus() must be called exactl
 assert(app.includes('function accessView()'), 'Mi plan y acceso view must exist');
 assert(/quota\?\.productsActive\?\.blocked.*return toast\(quotaBlockMessage/.test(app), 'the product-creation gate must block only on productsActive.blocked, using the shared quota message');
 assert(app.includes('function tenantAccountPlan()') && app.includes('function tenantUsageSnapshot()') && app.includes('function tenantQuotaStatus()'), 'the three quota primitives must exist');
+assert(app.includes('const MAX_LOCAL_ONLY_TENANT_STATE_BYTES = 8 * 1024 * 1024')
+  && app.includes('function localOnlyPersistenceMode()')
+  && app.includes("sync?.status === 'local'")
+  && app.includes('persistence?.localOnlyPersistence === true'),
+  'Modo local must be able to persist a larger device snapshot without weakening the 850 KB legacy cloud guard');
 assert(app.includes('function tenantLimitOverrides()')
   && app.includes('function tenantPlanEntitlements()')
   && app.includes('CLICK360_TENANT_QUOTA?.planEntitlements?.(domain, tenantAccountPlan(), tenantLimitOverrides())'),
