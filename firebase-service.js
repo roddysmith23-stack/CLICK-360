@@ -3689,6 +3689,44 @@
     }
   });
 
+	  window.click360VerifyCashCloseOnServer = async (target = {}) => {
+	    const context = ACTIVE_CONTEXT;
+	    const stateDoc = STATE_DOC;
+	    const businessId = String(target.businessId || '');
+	    const date = String(target.date || '');
+	    const cashSessionId = String(target.cashSessionId || '');
+	    if (!navigator.onLine) return { ok:false, errorCode:'cash_close_server_preflight_offline' };
+	    if (MODULAR_MODE || !context || !stateDoc || !businessId || !date || !isActiveSyncScope(context, stateDoc, AUTH_EPOCH, auth.currentUser)) {
+	      return { ok:false, errorCode:'cash_close_server_preflight_not_ready' };
+	    }
+	    try {
+	      const snapshot = await stateDoc.get({ source:'server' });
+	      if (!snapshot.exists) return { ok:false, errorCode:'cash_close_server_document_missing' };
+	      const remote = snapshot.data() || {};
+	      if (!remoteMatchesContext(remote, context)) return { ok:false, errorCode:'cash_close_server_identity_mismatch' };
+	      const remoteState = remote.payload?.data || {};
+	      const targetDetails = { businessId, date, cashSessionId };
+	      const report = window.CLICK360_CASH_RECONCILIATION?.closedCashReportForTarget?.(remoteState.dailyReports || [], targetDetails)
+	        || (remoteState.dailyReports || []).find((item) => item.businessId === businessId
+	          && item.date === date && item.status === 'closed'
+	          && (cashSessionId ? item.cashSessionId === cashSessionId : !item.cashSessionId));
+	      const session = cashSessionId
+	        ? (remoteState.cashSessions || []).find((item) => item.id === cashSessionId && item.businessId === businessId)
+	        : null;
+	      if (session?.status === 'closed' && !report) {
+	        return { ok:false, errorCode:'cash_close_server_inconsistent_session' };
+	      }
+	      return {
+	        ok:true,
+	        closed:Boolean(report),
+	        reportId:report?.id || '',
+	        sessionClosed:cashSessionId ? session?.status === 'closed' : Boolean(report),
+	        remoteRevision:Number(remote.revision || remote.updatedAtMs || 0)
+	      };
+	    } catch (error) {
+	      return { ok:false, errorCode:String(error?.code || 'cash_close_server_preflight_read_failed').slice(0, 80) };
+	    }
+	  };
 	  window.click360SyncNow = () => MODULAR_MODE ? pushModularState("manual") : pushLocalToFirestore("manual");
 	  window.click360RefreshNow = () => MODULAR_MODE ? pullModularState() : pullRemoteOnce({ force: true, reload: true });
 	  // r37.2.5 (P0, real SHARY incident): a caller with an active

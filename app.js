@@ -176,6 +176,19 @@
   window.click360GetEffectiveAccess = accessInfo;
   window.click360CanWriteByAccess = () => !accessInfo().readOnly;
   let lastWriteBlock = null;
+  let lastSaveFailure = null;
+  function publishSaveFailure(code = '', stage = '', details = {}) {
+    lastSaveFailure = code ? Object.freeze({
+      code:String(code).slice(0, 80),
+      stage:String(stage || 'save').slice(0, 80),
+      payloadBytes:Number(details.payloadBytes || 0),
+      limitBytes:Number(details.limitBytes || MAX_LOCAL_TENANT_STATE_BYTES || 0),
+      storageMode:String(details.storageMode || storageState?.mode || '').slice(0, 40),
+      at:new Date().toISOString()
+    }) : null;
+    window.click360LastSaveFailure = lastSaveFailure;
+    return lastSaveFailure;
+  }
   function writeGateStatus() {
     // r37 (legacy consent grace): a legacy owner whose 7-day grace period
     // has expired without accepting the updated Terms/Privacy is blocked
@@ -201,6 +214,11 @@
     if (reason === 'sync_conflict') return 'Hay un conflicto de sincronización pendiente. Actualiza desde nube o respalda antes de continuar.';
     if (reason === 'auth_not_ready') return 'La sesión aún se está verificando. Intenta nuevamente en unos segundos.';
     if (reason === 'tenant_guard_not_ready') return 'La cuenta aún está preparando la protección de datos. Intenta nuevamente en unos segundos.';
+    if (reason === 'local_state_too_large') return 'El cierre supera el límite seguro del estado actual. No se guardó ni se duplicó ningún movimiento.';
+    if (reason === 'local_storage_quota_exceeded') return 'El almacenamiento local está lleno. El cierre no se guardó ni se duplicó.';
+    if (reason === 'remote_commit_rejected') return 'El cambio no fue confirmado y no se registró como completado.';
+    if (reason === 'remote_state_mismatch') return 'El servidor contiene un estado diferente. No se sobrescribieron sus cambios.';
+    if (reason === 'remote_commit_unknown' || reason === 'remote_confirmation_failed') return 'No pudimos confirmar el cambio en el servidor. No lo repitas hasta comprobar la sincronización.';
     return gate.message || 'No se pudo guardar ahora. Tus datos anteriores siguen intactos.';
   }
   // r37.2 (ERROR RECOVERY): a caught error's .message can be a curated
@@ -834,12 +852,14 @@ function parseMoney(value) {
   function save(options = {}) {
     if (!activeTenantContext || !stateStorageKey()) {
       console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
+      publishSaveFailure('tenant_not_active', 'save_context');
       return false;
     }
     const gate = writeGateStatus();
 	    if (!gate.allowed) {
 	      lastWriteBlock = { ...gate, at: new Date().toISOString() };
 	      window.click360LastWriteBlock = lastWriteBlock;
+	      publishSaveFailure(gate.reason || 'write_gate_rejected', 'save_write_gate');
 	      restoreLastPersistedState();
 	      if (gate.reason === 'sync_conflict') showSyncConflictRecovery(gate);
 	      toast(writeBlockMessage(gate), gate.reason === 'pending_remote_sync' ? 'ok' : 'err');
@@ -847,8 +867,10 @@ function parseMoney(value) {
 	    }
     lastWriteBlock = null;
     window.click360LastWriteBlock = null;
+    publishSaveFailure();
     const previousState = cloneState(lastPersistedState);
     lastSavePersistence = null;
+    let attemptedBytes = 0;
     try {
       if (!isOwnerUser() && window.click360IsModularBoundarySession?.() !== true) {
         const error = new Error('El acceso operativo para trabajadores está temporalmente pausado.');
@@ -859,9 +881,11 @@ function parseMoney(value) {
       state.updatedAt = new Date().toISOString();
       state.identity = tenantIdentity();
       const serialized = JSON.stringify(state);
-      if (stateSizeBytes(serialized) > MAX_LOCAL_TENANT_STATE_BYTES) {
+      attemptedBytes = stateSizeBytes(serialized);
+      if (attemptedBytes > MAX_LOCAL_TENANT_STATE_BYTES) {
         const error = new Error('El estado supera el espacio local seguro.');
         error.code = 'click360/local-state-too-large';
+        error.stage = 'save_size_guard';
         throw error;
       }
       let localPersisted = false;
@@ -938,6 +962,16 @@ function parseMoney(value) {
     } catch(e) {
       console.error(e);
       state = previousState || state;
+      const saveFailureCode = e.code === 'click360/local-state-too-large'
+        ? 'local_state_too_large'
+        : (e.name === 'QuotaExceededError' || String(e.message || '').toLowerCase().includes('quota'))
+          ? 'local_storage_quota_exceeded'
+          : String(e.code || e.name || 'local_save_failed');
+      publishSaveFailure(saveFailureCode, e.stage || 'save_local_persistence', {
+        payloadBytes:attemptedBytes,
+        limitBytes:MAX_LOCAL_TENANT_STATE_BYTES,
+        storageMode:storageState.mode
+      });
       window.CLICK360_RUNTIME_GUARD?.record?.({
         message: e.message || 'Error al guardar estado local.',
         filename: 'app.js',
@@ -993,7 +1027,12 @@ function parseMoney(value) {
     const operationId = uid('persist');
     try {
       if (!save({ allowIndexedDbOffline: true, operationId, deferSync: true })) {
-        return { ok: false, pending: false, reason: lastWriteBlock?.reason || 'save_rejected' };
+        return {
+          ok:false,
+          pending:false,
+          reason:lastSaveFailure?.code || lastWriteBlock?.reason || 'save_rejected',
+          saveFailure:lastSaveFailure
+        };
       }
       const persistence = lastSavePersistence?.operationId === operationId ? lastSavePersistence : null;
       if (!navigator.onLine && !persistence?.localPersisted) {
@@ -1036,7 +1075,10 @@ function parseMoney(value) {
     // already-committed product/sale with the pre-operation state.
     if (!refreshed && !synced) restoreCriticalSnapshot(previousState);
     if (!options.suppressFailureToast) toast('El cambio no fue confirmado y no se registró como completado.', 'err');
-    return { ok: false, pending: false };
+    const reason = !synced
+      ? (refreshed ? 'remote_commit_rejected' : 'remote_commit_unknown')
+      : (refreshed ? 'remote_state_mismatch' : 'remote_confirmation_failed');
+    return { ok: false, pending: false, reason };
     } finally {
       actionLock.release();
     }
@@ -6940,6 +6982,9 @@ function parseMoney(value) {
 	        const wait = await waitForVerifiableConfirmation(updatedAtMs, Date.now() + 15000, initialSnapshot);
         diagnostics.stalled = wait.stalled;
         diagnostics.retryBaselineAuthoritative = wait.last.authoritative;
+	        if (wait.last.authoritative) {
+	          diagnostics.targetChangedRemotely = productFingerprint(baselineProduct) !== wait.last.fingerprint;
+	        }
 	        if (wait.confirmed) committed = { ok:true, pending:false, recovered:true };
 	      }
       if (!committed.ok && diagnostics.retryBaselineAuthoritative === true && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
@@ -6994,7 +7039,7 @@ function parseMoney(value) {
 	      // remotely, so we correctly declined to auto-retry) must surface
 	      // its own explicit, recoverable message -- never the generic
 	      // "not confirmed" fallback, which reads as an unexplained failure.
-	      if (!committed.ok && diagnostics.targetChangedRemotely && !committed.reason) committed = { ...committed, reason:'sync_conflict' };
+	      if (!committed.ok && diagnostics.targetChangedRemotely) committed = { ...committed, reason:'sync_conflict' };
 	      if (!committed.ok) {
 	        if (committed.reason || lastWriteBlock?.reason) {
 	          const failureGate = { ...(lastWriteBlock || {}), reason:committed.reason || lastWriteBlock.reason };
@@ -7690,6 +7735,15 @@ function parseMoney(value) {
 	      writeGate: details.gate ? {
 	        allowed: details.gate.allowed !== false,
 	        reason: String(details.gate.reason || '').slice(0, 80)
+	      } : (window.click360LastWriteBlock ? {
+	        allowed:false,
+	        reason:String(window.click360LastWriteBlock.reason || '').slice(0, 80)
+	      } : null),
+	      saveFailure: details.saveFailure || window.click360LastSaveFailure ? {
+	        code:String((details.saveFailure || window.click360LastSaveFailure)?.code || '').slice(0, 80),
+	        stage:String((details.saveFailure || window.click360LastSaveFailure)?.stage || '').slice(0, 80),
+	        payloadBytes:Number((details.saveFailure || window.click360LastSaveFailure)?.payloadBytes || 0),
+	        limitBytes:Number((details.saveFailure || window.click360LastSaveFailure)?.limitBytes || 0)
 	      } : null,
 	      syncState: {
 	        status: String(syncState.status || '').slice(0, 40),
@@ -7719,6 +7773,8 @@ function parseMoney(value) {
 	      ['Acceso', `${diagnostic.effectiveAccess?.mode || 'unknown'} / lectura=${diagnostic.effectiveAccess?.readOnly === true}`],
 	      ['Caja', diagnostic.canCash ? 'permitida' : 'sin permiso'],
 	      ['Escritura', diagnostic.writeGate ? `${diagnostic.writeGate.allowed ? 'permitida' : 'bloqueada'} / ${diagnostic.writeGate.reason || 'ok'}` : 'sin evaluar'],
+	      ['Guardado', diagnostic.saveFailure?.code || 'sin_error_local'],
+	      ['Tamaño', diagnostic.saveFailure?.payloadBytes ? `${Math.ceil(diagnostic.saveFailure.payloadBytes / 1024)} KB / ${Math.ceil(diagnostic.saveFailure.limitBytes / 1024)} KB` : 'n/a'],
 	      ['Sync', `${diagnostic.syncState?.status || 'unknown'} / bloquea=${diagnostic.syncState?.blocking === true}`],
 	      ['Motivo', diagnostic.reason || diagnostic.syncState?.reason || 'sin_detalle'],
 	      ['Hash local', diagnostic.syncState?.localHash || 'n/a'],
@@ -7747,7 +7803,7 @@ function parseMoney(value) {
 	      ...details,
 	      error,
 	      errorCode: details.errorCode || error?.code || error?.name || 'cash_close_error',
-	      status: 'error'
+	      status: details.status || 'error'
 	    });
 	    window.CLICK360_RUNTIME_GUARD?.record?.({
 	      message: `Cash close failed at ${diagnostic.stage}`,
@@ -7783,8 +7839,30 @@ function parseMoney(value) {
 	      </div>`);
 	    toast('No se cerró la caja.', 'err');
 	  }
-	  function showCashCloseError(stage, diagnostic, retryOptions = {}) {
-	    showModal(`<div class="modalHeader"><div><h2>No pudimos cerrar la caja</h2><p class="fieldHint">El cierre no se guardó. Tus datos anteriores siguen intactos.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	  function bindCashCloseDiagnosticCopy(diagnostic) {
+	    $('#copyCashCloseDiagnosticBtn')?.addEventListener('click', async () => {
+	      await navigator.clipboard?.writeText(JSON.stringify(diagnostic, null, 2)).catch(() => null);
+	      toast('Diagnóstico copiado');
+	    });
+	  }
+	  function showCashCloseConfirmed(diagnostic) {
+	    showModal(`<div class="modalHeader"><div><h2>Cierre confirmado</h2><p class="fieldHint">El servidor ya contiene este cierre. No se creó un reporte adicional.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <div class="cashCloseIssuePanel">
+	        ${cashCloseDiagnosticRows(diagnostic)}
+	        <div class="cashCloseActions">
+	          <button type="button" class="btn silver block" id="copyCashCloseDiagnosticBtn">Copiar diagnóstico</button>
+	        </div>
+	        <button type="button" class="btn primary block" data-close style="margin-top:10px;">Entendido</button>
+	      </div>`);
+	    bindCashCloseDiagnosticCopy(diagnostic);
+	    toast('Cierre confirmado en el servidor.', 'ok');
+	  }
+	  function showCashCloseRejected(stage, diagnostic, retryOptions = {}) {
+	    const localFailure = ['local_state_too_large', 'local_storage_quota_exceeded'].includes(diagnostic.saveFailure?.code || diagnostic.errorCode);
+	    const message = localFailure
+	      ? 'El cierre fue rechazado antes de enviarse al servidor. No se duplicó ningún dato.'
+	      : 'El servidor fue comprobado y este cierre no quedó aplicado. Puedes corregir la causa y reintentar.';
+	    showModal(`<div class="modalHeader"><div><h2>Cierre rechazado</h2><p class="fieldHint">${escapeHtml(message)}</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
 	      <div class="cashCloseIssuePanel">
 	        ${cashCloseDiagnosticRows(diagnostic)}
 	        <div class="cashCloseActions">
@@ -7797,11 +7875,62 @@ function parseMoney(value) {
 	      closeModal(false);
 	      openCashCloseDialog(retryOptions);
 	    });
-	    $('#copyCashCloseDiagnosticBtn')?.addEventListener('click', async () => {
-	      await navigator.clipboard?.writeText(JSON.stringify(diagnostic, null, 2)).catch(() => null);
-	      toast('Diagnóstico copiado');
+	    bindCashCloseDiagnosticCopy(diagnostic);
+	    toast(`Cierre rechazado. Código: ${stage}`, 'err');
+	  }
+	  function showCashCloseUnknown(stage, diagnostic, recovery = {}) {
+	    showModal(`<div class="modalHeader"><div><h2>Estado del cierre sin confirmar</h2><p class="fieldHint">No vuelvas a cerrar todavía. Primero comprobaremos el servidor para evitar un reporte duplicado.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
+	      <div class="cashCloseIssuePanel">
+	        ${cashCloseDiagnosticRows(diagnostic)}
+	        <div class="cashCloseActions">
+	          <button type="button" class="btn primary block" id="verifyCashCloseStatusBtn">Comprobar servidor</button>
+	          <button type="button" class="btn silver block" id="copyCashCloseDiagnosticBtn">Copiar diagnóstico</button>
+	        </div>
+	        <button type="button" class="btn block" data-close style="margin-top:10px;">Cerrar sin reintentar</button>
+	      </div>`);
+	    bindCashCloseDiagnosticCopy(diagnostic);
+	    $('#verifyCashCloseStatusBtn')?.addEventListener('click', async () => {
+	      const button = $('#verifyCashCloseStatusBtn');
+	      button?.setAttribute('disabled', 'disabled');
+	      try {
+	        const verifyServerClose = window.click360VerifyCashCloseOnServer;
+	        const serverCheck = typeof verifyServerClose === 'function'
+	          ? await verifyServerClose(recovery.target || {})
+	          : { ok:false, errorCode:'cash_close_server_preflight_unavailable' };
+	        if (serverCheck?.ok && serverCheck.closed) {
+	          const confirmed = updateCashCloseDiagnostic('cash_close_confirmed_after_recheck', {
+	            ...recovery.diagnosticContext,
+	            reportId:serverCheck.reportId || '',
+	            status:'confirmed'
+	          });
+	          showCashCloseConfirmed(confirmed);
+	          return;
+	        }
+	        if (serverCheck?.ok) {
+	          const rejected = updateCashCloseDiagnostic('cash_close_not_applied_server', {
+	            ...recovery.diagnosticContext,
+	            status:'rejected',
+	            errorCode:'cash_close_not_applied_server'
+	          });
+	          showCashCloseRejected('cash_close_not_applied_server', rejected, recovery.retryOptions || {});
+	          return;
+	        }
+	        const unknown = updateCashCloseDiagnostic(stage, {
+	          ...recovery.diagnosticContext,
+	          status:'unknown',
+	          errorCode:serverCheck?.errorCode || 'cash_close_server_recheck_failed'
+	        });
+	        showCashCloseUnknown(stage, unknown, recovery);
+	      } catch (error) {
+	        const unknown = recordCashCloseIssue(stage, error, {
+	          ...recovery.diagnosticContext,
+	          status:'unknown',
+	          errorCode:error?.code || 'cash_close_server_recheck_failed'
+	        });
+	        showCashCloseUnknown(stage, unknown, recovery);
+	      }
 	    });
-	    toast(`No se cerró la caja. Código: ${stage}`, 'err');
+	    toast('Estado del cierre sin confirmar. No reintentes todavía.', 'err');
 	  }
 	  function showCashCloseExportIssue(stage, diagnostic) {
 	    showModal(`<div class="modalHeader"><div><h2>Caja cerrada</h2><p class="fieldHint">El cierre quedó guardado, pero la exportación no se pudo completar en este dispositivo.</p></div><button class="closeBtn" data-close aria-label="Cerrar">×</button></div>
@@ -7906,12 +8035,56 @@ function parseMoney(value) {
 	            </div>`;
 	    return { income, out, balanceCalculado, diferencia, sales, salesEfectivo, salesTarjeta, salesTransf, abonosApartado, totalIva, totalItems, html };
 	  }
+	  function cashCloseReportHtml(report = {}, business = null) {
+	    if (report.html) return sanitizeStoredReportHtml(report.html);
+	    const activeBusiness = business || (state.businesses || []).find((item) => item.id === report.businessId) || currentBusiness();
+	    const settings = activeBusiness?.settings || {};
+	    const logoSrc = safeImageSrc(settings.logoUrl);
+	    const closedLabel = (() => {
+	      const parsed = new Date(report.closedAt || '');
+	      return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString('es-EC') : String(report.date || '');
+	    })();
+	    const paymentTotals = report.paymentTotals || {};
+	    return `<div style="font-family:monospace; color:#000; font-size:12px; margin:0; padding:10px; width:80mm; background:white;">
+	      ${logoSrc ? `<div style="text-align:center; margin-bottom:6px;"><img src="${escapeHtml(logoSrc)}" style="max-width:80px; max-height:80px; object-fit:contain;"></div>` : ''}
+	      <h2 style="font-size:16px; margin:0 0 2px; text-align:center;">${escapeHtml(activeBusiness?.name || 'Negocio')}</h2>
+	      ${settings.ruc ? `<div style="text-align:center; font-size:10px;">RUC/ID: ${escapeHtml(settings.ruc)}</div>` : ''}
+	      ${settings.phone ? `<div style="text-align:center; font-size:10px;">Tel: ${escapeHtml(settings.phone)}</div>` : ''}
+	      <div style="text-align:center; margin:10px 0;">CIERRE DE CAJA<br>${escapeHtml(closedLabel)}</div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Caja Inicial:</span><span>${fmt(report.openingAmount)}</span></div>
+	      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	      <div style="text-align:center;font-weight:bold;margin-bottom:4px">RESUMEN VENTAS</div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Productos Vendidos:</span><span>${Number(report.productQuantity || 0)}</span></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>IVA Recaudado:</span><span>${fmt(report.taxTotal)}</span></div>
+	      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(paymentTotals.cash)}</span></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(paymentTotals.card)}</span></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(paymentTotals.transfer)}</span></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(paymentTotals.layawayPayments)}</span></div>
+	      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	      <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingresos en efectivo:</span><span>+${fmt(report.income)}</span></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Total Salidas:</span><span>-${fmt(report.expenses)}</span></div>
+	      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:14px;"><b>Balance Teórico:</b><b>${fmt(report.expectedCash)}</b></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo Declarado:</span><span>${fmt(report.countedCash)}</span></div>
+	      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:13px;"><b>Diferencia:</b><b>${fmt(report.difference)}</b></div>
+	      <div style="margin-top:10px;">Obs: ${escapeHtml(report.observations || '')}</div>
+	      <div style="margin-top:10px; text-align:center;">Generado por: ${escapeHtml(report.closedBy || 'Usuario')}</div>
+	    </div>`;
+	  }
 	  function showCashCloseSummary(closeDetails, committed = {}) {
-	    updateCashCloseDiagnostic('cash_close_export_ready', { closeDetails, reportId: closeDetails.id });
+	    const renderedHtml = cashCloseReportHtml(closeDetails);
+	    updateCashCloseDiagnostic('cash_close_export_ready', {
+	      closeDetails,
+	      reportId: closeDetails.id,
+	      status: committed.pending ? 'pending' : 'confirmed'
+	    });
 	    showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
 	      <div class="cashClosePreview">
 	        <div id="pdfContentPreview" class="cashClosePreviewInner">
-	          ${closeDetails.html}
+	          ${renderedHtml}
 	        </div>
 	      </div>
 	      <div class="cashCloseActions">
@@ -7919,7 +8092,9 @@ function parseMoney(value) {
 	          <button class="btn silver block" id="downloadPdfCierreBtn">Guardar PDF</button>
 	          <button class="btn primary block" id="downloadImgCierreBtn">Descargar Imagen (PNG)</button>
 	      </div>
-	      <p class="fieldHint">El cierre ya quedó guardado. Si una exportación falla, puedes volver a abrir este resumen desde el historial.</p>
+	      <p class="fieldHint">${committed.pending
+	        ? 'El cierre quedó guardado en este dispositivo y está pendiente de sincronización. No lo repitas.'
+	        : 'Cierre confirmado. Si una exportación falla, puedes volver a abrir este resumen desde el historial.'}</p>
 	    `);
 	    const runExport = async (stage, job) => {
 	      updateCashCloseDiagnostic(stage, { closeDetails, reportId: closeDetails.id });
@@ -7930,9 +8105,9 @@ function parseMoney(value) {
 	        showCashCloseExportIssue(stage, diagnostic);
 	      }
 	    };
-	    $('#printCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_print', () => handoffPrint({ html: closeDetails.html, media: 'a4', filename: `Cierre_Caja_${closeDetails.date}.pdf` }, 'system')));
-	    $('#downloadPdfCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_pdf', () => handoffPrint({ html: closeDetails.html, media: 'a4', filename: `Cierre_Caja_${closeDetails.date}.pdf` }, 'pdf')));
-	    $('#downloadImgCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_png', () => downloadHtmlAsPng(closeDetails.html, `Cierre_Caja_${closeDetails.date}.png`)));
+	    $('#printCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_print', () => handoffPrint({ html: renderedHtml, media: 'a4', filename: `Cierre_Caja_${closeDetails.date}.pdf` }, 'system')));
+	    $('#downloadPdfCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_pdf', () => handoffPrint({ html: renderedHtml, media: 'a4', filename: `Cierre_Caja_${closeDetails.date}.pdf` }, 'pdf')));
+	    $('#downloadImgCierreBtn')?.addEventListener('click', () => runExport('cash_close_export_png', () => downloadHtmlAsPng(renderedHtml, `Cierre_Caja_${closeDetails.date}.png`)));
 	    toast(committed.pending ? 'Cierre guardado; sincronización pendiente.' : 'Cierre del día generado');
 	  }
 	  function openCashCloseDialog(options = {}) {
@@ -7973,10 +8148,14 @@ function parseMoney(value) {
 	    let inFlightKey = '';
 	    let commitStarted = false;
 	    let reportId = '';
+	    let evaluatedGate = null;
+	    let diagnosticContext = {};
+	    let cashCloseTarget = null;
 	    const submitButton = $('#closeDaySubmitBtn');
 	    try {
 	      submitButton?.setAttribute('disabled', 'disabled');
 	      const accessStatus = cashCloseAccessStatus(stage);
+	      evaluatedGate = accessStatus.gate || null;
 	      updateCashCloseDiagnostic(stage, { business: accessStatus.business, gate: accessStatus.gate, reason: accessStatus.reason });
 	      if (!accessStatus.allowed) {
 	        showCashCloseAccessBlocked(accessStatus);
@@ -7984,6 +8163,12 @@ function parseMoney(value) {
 	      }
 	      stage = 'cash_close_load_session';
 	      const basis = cashCloseBasis();
+	      diagnosticContext = { business:basis.business, cashSessionId:basis.activeSession?.id || '', gate:evaluatedGate };
+	      cashCloseTarget = {
+	        businessId:basis.businessId,
+	        date:basis.date,
+	        cashSessionId:basis.activeSession?.id || ''
+	      };
 	      if (!basis.businessId) {
 	        const error = new Error('No active business for cash close.');
 	        error.code = 'cash_close_no_active_business';
@@ -8003,6 +8188,35 @@ function parseMoney(value) {
 	        renderApp('cash');
 	        return;
 	      }
+	      if (navigator.onLine !== false) {
+	        stage = 'cash_close_verify_server_before_write';
+	        const verifyServerClose = window.click360VerifyCashCloseOnServer;
+	        if (typeof verifyServerClose !== 'function') {
+	          const error = new Error('Server cash-close verification is unavailable.');
+	          error.code = 'cash_close_server_preflight_unavailable';
+	          error.outcome = 'unknown';
+	          throw error;
+	        }
+	        const serverCheck = await verifyServerClose(cashCloseTarget);
+	        if (!serverCheck?.ok) {
+	          const error = new Error('Server cash-close verification failed.');
+	          error.code = serverCheck?.errorCode || 'cash_close_server_preflight_failed';
+	          error.outcome = 'unknown';
+	          throw error;
+	        }
+	        if (serverCheck.closed) {
+	          const confirmed = updateCashCloseDiagnostic('cash_close_already_confirmed_server', {
+	            ...diagnosticContext,
+	            reportId:serverCheck.reportId || '',
+	            status:'confirmed'
+	          });
+	          closeModal(false);
+	          renderApp('cash');
+	          showCashCloseConfirmed(confirmed);
+	          return;
+	        }
+	        stage = 'cash_close_load_session';
+	      }
 	      const sessionKey = basis.activeSession?.id || `legacy:${basis.businessId}:${basis.date}`;
 	      inFlightKey = `${basis.businessId}:${basis.date}:${sessionKey}`;
 	      if (cashCloseInFlight.has(inFlightKey)) {
@@ -8010,7 +8224,7 @@ function parseMoney(value) {
 	        return;
 	      }
 	      cashCloseInFlight.add(inFlightKey);
-	      updateCashCloseDiagnostic(stage, { business: basis.business, cashSessionId: basis.activeSession?.id || '' });
+	      updateCashCloseDiagnostic(stage, diagnosticContext);
 	      const cInicial = parseMoney($('#cajaInicial')?.value);
 	      const eFisico = parseMoney($('#efectivoFisico')?.value);
 	      const observations = ($('#cierreObs')?.value || '').trim();
@@ -8061,12 +8275,14 @@ function parseMoney(value) {
 	        status: 'closed',
 	        html: summary.html
 	      };
-	      state.dailyReports.push(closeDetails);
+	      const storedCloseDetails = globalThis.CLICK360_CASH_RECONCILIATION?.compactCashCloseReport?.(closeDetails)
+	        || (({ html, ...structured }) => ({ ...structured, renderVersion:'cash-close-structured-v1' }))(closeDetails);
+	      state.dailyReports.push(storedCloseDetails);
 	      if (basis.activeSession) Object.assign(basis.activeSession, { status: 'closed', closedBy: authUser().name, closedByUid: window.click360User?.uid || '', closedAt: closeDetails.closedAt, countedCash: eFisico, expectedCash: summary.balanceCalculado, difference: summary.diferencia, reportId, observations });
 	      addAudit('cash_closed', { reportId, expectedCash: summary.balanceCalculado, countedCash: eFisico, difference: summary.diferencia, cashSessionId: basis.activeSession?.id || '' });
 	      const business = state.businesses.find((item) => item.id === basis.businessId);
 	      if (business) business.lastCashBalance = eFisico;
-	      updateCashCloseDiagnostic(stage, { business: basis.business, closeDetails, reportId });
+	      updateCashCloseDiagnostic(stage, { ...diagnosticContext, closeDetails, reportId });
 	      stage = 'cash_close_verify_closed';
 	      commitStarted = true;
 	      const committed = await commitCriticalMutation(previousState, 'cash_closed', (next) => {
@@ -8077,9 +8293,36 @@ function parseMoney(value) {
 	      if (!committed.ok) {
 	        const error = new Error(writeBlockMessage(window.click360LastWriteBlock || { reason: committed.reason || 'cash_close_commit_not_confirmed' }));
 	        error.code = committed.reason || 'cash_close_commit_not_confirmed';
+	        error.saveFailure = committed.saveFailure || window.click360LastSaveFailure || null;
+	        const classifyOutcome = globalThis.CLICK360_CASH_RECONCILIATION?.cashCloseOutcomeFromEvidence
+	          || ((evidence = {}) => evidence.pending ? 'pending' : evidence.localRejected ? 'rejected' : evidence.serverCheck?.ok ? (evidence.serverCheck.closed ? 'confirmed' : 'rejected') : 'unknown');
+	        if (error.saveFailure || window.click360LastWriteBlock) {
+	          error.outcome = classifyOutcome({ localRejected:true });
+	          throw error;
+	        }
+	        if (navigator.onLine !== false && typeof window.click360VerifyCashCloseOnServer === 'function') {
+	          stage = 'cash_close_verify_server_after_failure';
+	          const serverCheck = await window.click360VerifyCashCloseOnServer(cashCloseTarget);
+	          if (serverCheck?.ok && serverCheck.closed) {
+	            const confirmed = updateCashCloseDiagnostic('cash_close_confirmed_after_response_failure', {
+	              ...diagnosticContext,
+	              closeDetails,
+	              reportId:serverCheck.reportId || reportId,
+	              status:'confirmed'
+	            });
+	            closeModal(false);
+	            renderApp('cash');
+	            showCashCloseConfirmed(confirmed);
+	            return;
+	          }
+	          error.outcome = classifyOutcome({ serverCheck });
+	          if (!serverCheck?.ok) error.code = serverCheck?.errorCode || 'cash_close_server_recheck_failed';
+	        } else {
+	          error.outcome = 'unknown';
+	        }
 	        throw error;
 	      }
-	      updateCashCloseDiagnostic('cash_close_verify_closed', { business: basis.business, closeDetails, reportId, status: committed.pending ? 'pending' : 'closed' });
+	      updateCashCloseDiagnostic('cash_close_verify_closed', { business: basis.business, closeDetails, reportId, status: committed.pending ? 'pending' : 'confirmed' });
 	      window.click360RecordTelemetry?.('cash_close', { requestId: reportId, mode: summary.diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
 	      closeModal(false);
 	      renderApp('cash');
@@ -8094,8 +8337,20 @@ function parseMoney(value) {
 	        state = normalizeState(cloneState(previousState));
 	        lastAutoSaveHash = JSON.stringify(state);
 	      }
-	      const diagnostic = recordCashCloseIssue(stage, error, { reportId, errorCode: error?.code || error?.name || 'cash_close_failed' });
-	      showCashCloseError(stage, diagnostic, retryOptions);
+	      const outcome = error?.outcome || (!commitStarted && stage !== 'cash_close_verify_server_before_write' ? 'rejected' : 'unknown');
+	      const diagnostic = recordCashCloseIssue(stage, error, {
+	        ...diagnosticContext,
+	        gate:evaluatedGate,
+	        reportId,
+	        saveFailure:error?.saveFailure || window.click360LastSaveFailure || null,
+	        errorCode:error?.code || error?.name || 'cash_close_failed',
+	        status:outcome
+	      });
+	      if (outcome === 'rejected') {
+	        showCashCloseRejected(stage, diagnostic, retryOptions);
+	      } else {
+	        showCashCloseUnknown(stage, diagnostic, { cashCloseTarget, target:cashCloseTarget, retryOptions, diagnosticContext });
+	      }
 	    } finally {
 	      if (inFlightKey) cashCloseInFlight.delete(inFlightKey);
 	      submitButton?.removeAttribute('disabled');
@@ -12791,7 +13046,7 @@ function parseMoney(value) {
 	 id = decodeActionId(id);
      const r = state.dailyReports?.find(x=>x.id===id);
      if(!r) return;
-     const reportHtml = sanitizeStoredReportHtml(r.html);
+     const reportHtml = cashCloseReportHtml(r);
      showModal(`<div class="modalHeader"><h2>Resumen de Cierre</h2><button class="closeBtn" data-close>×</button></div>
        <div style="background:#fff; border-radius:8px; border:1px solid #ccc; max-height:40vh; overflow-y:auto; margin-bottom:15px; padding:10px; display:flex; justify-content:center;">
          <div id="pdfContentPreview" style="transform: scale(0.85); transform-origin: top center;">

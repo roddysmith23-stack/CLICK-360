@@ -232,6 +232,8 @@ async function submitPreparedAndClassify(page, stock) {
     return /Producto (creado|actualizado) y confirmado en la nube/.test(message)
       || /Hay un conflicto de sincronizaci.n pendiente/.test(message)
       || /El cambio no fue confirmado y no se registr. como completado/.test(message)
+      || /El servidor contiene un estado diferente\. No se sobrescribieron sus cambios\./.test(message)
+      || /No pudimos confirmar el cambio en el servidor\. No lo repitas hasta comprobar la sincronizaci.n\./.test(message)
       || /La sesi.n a.n se est. verificando/.test(message)
       || (toast?.classList.contains('err') && !/Sincronizando cambios/.test(message));
   }, null, { timeout: 30000 });
@@ -244,6 +246,8 @@ async function submitPreparedAndClassify(page, stock) {
     if (/Producto (creado|actualizado) y confirmado en la nube/.test(message)) outcome = 'confirmed';
     else if (/Hay un conflicto de sincronizaci.n pendiente/.test(message)) outcome = 'safe_conflict';
     else if (/El cambio no fue confirmado y no se registr. como completado/.test(message)) outcome = 'not_confirmed';
+    else if (/El servidor contiene un estado diferente\. No se sobrescribieron sus cambios\./.test(message)) outcome = 'not_confirmed';
+    else if (/No pudimos confirmar el cambio en el servidor\. No lo repitas hasta comprobar la sincronizaci.n\./.test(message)) outcome = 'not_confirmed';
     // r37.2.5: a write-gate refusal because THIS device's own session is
     // still (re-)verifying (auth_not_ready) is the same safety contract as
     // not_confirmed for this harness's purposes: the write demonstrably did

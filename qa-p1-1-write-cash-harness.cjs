@@ -64,7 +64,7 @@ assert(app.includes("await commitCriticalMutation(previousState, 'cash_closed'")
 assert(app.includes('function showCashCloseSummary(') && app.includes('showCashCloseSummary(closeDetails, committed);'), 'cash close summary is displayed after commit');
 assert(app.includes("stage = 'cash_close_verify_closed'") && app.includes('reportClosed && sessionClosed'), 'cash close verifies report and session before success');
 assert(app.includes('cashCloseInFlight') && app.includes('Ya estamos cerrando esta caja'), 'cash close prevents double submit');
-assert(app.includes('No pudimos cerrar la caja') && app.includes('Sin permiso para cerrar caja'), 'cash close has controlled failure UI');
+assert(app.includes('Cierre rechazado') && app.includes('Estado del cierre sin confirmar') && app.includes('Cierre confirmado') && app.includes('Sin permiso para cerrar caja'), 'cash close distinguishes rejected, unknown, confirmed and access-blocked outcomes');
 assert(app.includes('window.click360GetCashCloseDiagnostics') && runtime.includes('cashClose:') && runtime.includes('uiHandled'), 'cash close exposes sanitized diagnostics without generic handled-error toast');
 assert(firebase.includes('window.click360WriteGate = writeGateStatus'), 'Firebase service publishes structured write gate status');
 assert(firebase.includes('if (accessDoesNotExpire()) return true'), 'permanent access is not degraded by offline clock revalidation');
