@@ -30,11 +30,12 @@ const tiers = ['base', 'pro', 'business', 'enterprise', 'founder_legacy'];
 tiers.forEach((code) => assert(domain.PLAN_CATALOG[code], `PLAN_CATALOG must expose the ${code} tier`));
 assert.equal(domain.PLAN_CATALOG.base.name, 'Basic');
 assert.equal(domain.PLAN_CATALOG.founder_legacy.name, 'Founder');
-assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.businesses, 2, 'Founder legacy contract must allow exactly 2 businesses by default');
-assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.workerSeatsIncluded, 2, 'Founder legacy contract includes 2 worker seats');
-assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.workerSeatsMax, 2, 'Founder legacy contract must cap workers at 2 by default');
-assert.equal(domain.PLAN_CATALOG.founder_legacy.limits.productsActive, 2000, 'Founder legacy contract must allow 2,000 active products');
-assert(domain.PLAN_CATALOG.founder_legacy.limits.productsActive >= domain.PLAN_CATALOG.business.limits.productsActive,
+const effectiveFounder = tenantQuota.planEntitlements(domain, 'founder_legacy', null);
+assert.equal(effectiveFounder.limits.businesses, 2, 'Founder legacy effective contract must allow exactly 2 businesses by default');
+assert.equal(effectiveFounder.limits.workerSeatsIncluded, 2, 'Founder legacy effective contract includes 2 worker seats');
+assert.equal(effectiveFounder.limits.workerSeatsMax, 2, 'Founder legacy effective contract must cap workers at 2 by default');
+assert.equal(effectiveFounder.limits.productsActive, 2000, 'Founder legacy effective contract must allow 2,000 active products');
+assert(effectiveFounder.limits.productsActive >= domain.PLAN_CATALOG.business.limits.productsActive,
   'Founder legacy product capacity must retain its historical large-catalog allowance');
 assert(!domain.PLAN_CATALOG.founder_legacy.prices.month, 'founder_legacy must carry no recurring monthly price');
 
