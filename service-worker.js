@@ -1,3 +1,6 @@
+// 2026-10-01 P0 SHARY local-save hotfix: content stamp intentionally changes
+// the Service Worker bytes so installed PWAs fetch and pre-cache the corrected
+// app.js without changing the already-certified R38 cache/version contract.
 const CACHE = 'click360-commercial-1-0-5-r38-mvp-candidate';
 const ASSETS = [
   './',
