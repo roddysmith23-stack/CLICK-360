@@ -14,7 +14,7 @@ The cloud-capacity fence applies only to the legacy document writer. A real-sour
 
 ## Fresh read-only evidence
 
-Capture: 2026-10-03T18:12:50.970Z. Server revision: 1791050138270. Native backup SHA256: `9c421955d191d9dd50791e434897ff7516131c63580ad1e9ac0eb1bc029496f1`. Native fields SHA256: `a2d2cff0ef75db8eba7c5927cef1966fa0f69f45f4263e5218a90d036f943fab`.
+Latest capture: 2026-10-03T20:11:54.862Z. Server revision: 1791050138270; updateTime: 2026-10-03T17:55:39.835Z. Native backup SHA256: `e94d8376781183b6925a468a3e5a1819d38a93edef6362b46254396539ff1d4d`. Native fields SHA256: `a2d2cff0ef75db8eba7c5927cef1966fa0f69f45f4263e5218a90d036f943fab`. Both fresh reads have identical revision/native fields; differing backup hashes reflect their capture envelopes. Earlier backups remain preserved.
 
 463 products / 30 sales / 107 movements / 24 cash sessions / 22 daily reports / 272 embedded audit records. The 03/09 $30 sale and linked movement occur once; the exact session is closed and has one report. No sale/product/movement changes versus the previous verified capture. Do not repeat sale or close. Other audit collections remain in the private native backup; no personal data is published here. The iPhone's latest local outbox is not available, so remote persistence does not certify absence of local pending work.
 
@@ -25,6 +25,14 @@ Hosting manifest served during this session: `66dfa9fb517a`; no deployment perfo
 The actual-source harness reproduces the original failure and covers 840KB/860KB/900KB/1.2MB/3MB/7MB and rejection above 8MiB. Browser checks execute actual `save()` with native IndexedDB, cold page restart, stale-tab CAS and cloud-mirror fence in iPhone-emulated WebKit, Android-emulated Chromium, desktop Chromium and Firefox. These are automated emulations, not physical iPhone/Android/Windows/Safari/Edge acceptance.
 
 Existing cash-close regression now tests rejection above the independent 8MiB device budget, and a real application 1.2MB close, no cloud push, unchanged sale/stock and application IndexedDB rehydration. Cloud size remains guarded separately. CI includes permanent capacity checks; do not merge unless all existing checks and this job pass.
+
+Application commit: `799714bfffc35334538b40983aa09e2527b96837`, draft PR #90. Isolated staging: https://click360-staging-7620168025--p0-capacity-20261003-ea3uf05f.web.app. Served manifest reports `799714bfffc3`; application, Firebase service, IndexedDB adapter, service worker and manifest SHA256 were compared against the local built artifact and match. No Firestore writes were used for the staging publication.
+
+After the payment fix, local `npm run qa` and `npm run qa:p0:shary` completed successfully; capacity browser checks passed all four automated surfaces. At this checkpoint full integration, hosted P0 and commerce matrix are still running, and CI labels/inventory concurrency are pending. Do not treat pending checks as passed. A standalone commerce attempt failed before browser execution because Auth emulator did not become ready; its retry is executing with the complete browser matrix and no skipped scenarios. Journal and modular emulator certification are tracked independently in draft PR #91.
+
+## Additional confirmed payment race
+
+An actual-source regression failed before correction: a cloud hydration during the payment dialog replaced the state object graph, leaving the handler's sale/layaway references detached. It could append a movement to the live state while changing only the detached sale. The handler now re-resolves the current sale and linked layaway and revalidates tenant/business/date/session, write gate and current balance after the dialog. Eight synthetic scenarios cover hydration, concurrent payment, tenant/business/date/session switches, closed session and rejected gate, without touching stock. This demonstrates a real pre-existing race; it does not by itself prove that every intermittent CI timeout has the same cause. The fix and permanent regression are also preserved in the independent modular DEV branch.
 
 ## Controlled release and rollback
 
