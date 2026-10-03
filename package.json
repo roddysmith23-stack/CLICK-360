@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build:static": "node scripts/build-static-release.mjs",
+    "qa:modular-persistence": "node --check modular-persistence.js && node qa-modular-persistence-v2-harness.cjs",
+    "qa:modular:emulator": "firebase emulators:exec --only firestore --project demo-click360-modular-capacity --config qa/fixtures/modular-emulator.json 'node qa-modular-persistence-emulator.mjs'",
     "qa:worker-boundary": "node --check worker-data-boundary.js && node --check qa-worker-data-boundary-emulator.cjs && node --check qa-worker-data-boundary-gateway-harness.cjs && node --check scripts/worker-boundary-migrate.mjs && node --check scripts/worker-boundary-repair-identity.mjs && node --check scripts/worker-boundary-admin.mjs && node --check scripts/worker-boundary-preflight.mjs && node --check scripts/worker-boundary-activate-tenant.mjs && node --check scripts/worker-boundary-deactivate-tenant.mjs && node --check scripts/worker-boundary-monitor.mjs && node --check scripts/lib/pilot-authorization.mjs && node --check scripts/lib/firestore-rules-remote.mjs && node --check scripts/lib/worker-boundary-preflight-core.mjs && node --check scripts/lib/firebase-admin-connect.mjs && node --check scripts/lib/admin-telemetry.mjs && node qa-worker-data-boundary-harness.cjs && node qa-worker-data-boundary-gateway-harness.cjs",
     "qa:staging-target": "node scripts/validate-worker-staging-target.mjs",
     "qa:p0:staging": "sh scripts/run-staging-p0-runtime-recovery-qa.sh",
