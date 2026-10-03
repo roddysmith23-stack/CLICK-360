@@ -21,6 +21,8 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
       const rejects = async task => { try { await task(); return false; } catch { return true; } };
       const conflict = await rejects(() => journal.enqueue(a, 'op-sale', payload));
       const typedDenied = await rejects(() => journal.enqueue(a, 'bad-types', { timestamp: new Date() }));
+      const scoped = await journal.enqueue({ ...a, key: 'owner-a:business-b:poison', state: 'confirmed' }, 'safe-key', { type: 'cash_open' });
+      const scopePinned = scoped.key === 'owner-a:business-a:safe-key' && scoped.state === 'queued';
       const race = await Promise.allSettled([journal.claim(a, 'op-sale', 'device-a'), journal.claim(a, 'op-sale', 'device-b')]);
       const inflight = await journal.get(a, 'op-sale');
       await journal.markUnknown(a, 'op-sale', inflight.revision);
@@ -31,10 +33,10 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
       await journal.enqueue(b, 'op-sale', { type: 'cash_close', cashSessionId: 's' });
       journal.close();
       return { hash: row.payloadHash, duplicateRevision: duplicate.revision, conflict, winners: race.filter(r => r.status === 'fulfilled').length,
-        retryDenied, cachedDenied, typedDenied, isolated: !otherBusiness };
+        retryDenied, cachedDenied, typedDenied, scopePinned, isolated: !otherBusiness };
     });
     assert.equal(first.duplicateRevision, 1);
-    for (const k of ['conflict', 'retryDenied', 'cachedDenied', 'typedDenied', 'isolated']) assert.equal(first[k], true, k);
+    for (const k of ['conflict', 'retryDenied', 'cachedDenied', 'typedDenied', 'scopePinned', 'isolated']) assert.equal(first[k], true, k);
     assert.equal(first.winners, 1);
     await page.reload();
     await page.addScriptTag({ content: source });

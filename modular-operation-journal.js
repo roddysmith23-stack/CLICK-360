@@ -68,7 +68,7 @@
             if (current.payloadHash !== payloadHash) throw Error('OPERATION_ID_PAYLOAD_CONFLICT');
             return current;
           }
-          return { key: id, ...identity, operationId, payload: candidate, payloadHash,
+          return { key: id, ownerUid: identity.ownerUid, businessId: identity.businessId, operationId, payload: candidate, payloadHash,
             schemaVersion: 1, state: 'queued', revision: 1, attempts: 0, createdAt: Date.now() };
         });
       },
