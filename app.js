@@ -12973,13 +12973,26 @@ function parseMoney(value) {
     if (!isDayStarted()) return toast('Debes iniciar caja diaria antes de registrar abonos', 'err');
     if (isDayClosed()) return toast('La caja de hoy ya está cerrada', 'err');
     const businessId = currentBusiness()?.id;
-    const sale = salesForBiz(businessId).find(s=>s.id === saleId);
+    let sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(!['layaway','pending_payment'].includes(sale.status)) return toast('Esta cuenta no tiene saldo pendiente', 'err');
 
-	  const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
+	  const paymentScope = contextScope();
+	  const paymentDate = today();
+	  const paymentSessionId = currentOpenCashSession(businessId)?.id || '';
 	  const request = await requestLayawayPayment(sale);
 	  if (!request) return;
+	  // Remote hydration can replace the entire object graph while the dialog is open.
+	  // Revalidate context and resolve live records before mutating any payment fields.
+	  if (contextScope() !== paymentScope || currentBusiness()?.id !== businessId
+	      || today() !== paymentDate || !isDayStarted() || isDayClosed()
+	      || (currentOpenCashSession(businessId)?.id || '') !== paymentSessionId) {
+	    return toast('La caja o el negocio cambió. Revisa el estado actual antes de registrar el abono.', 'err');
+	  }
+	  if (!writeGateStatus().allowed) return toast('No se puede registrar el abono hasta conciliar el estado actual.', 'err');
+	  sale = salesForBiz(businessId).find((item) => item.id === saleId);
+	  if (!sale || !['layaway', 'pending_payment'].includes(sale.status)) return toast('Esta cuenta ya no tiene saldo pendiente.', 'err');
+	  const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
 	  const decision = window.CLICK360_V16_DOMAIN?.layawayPaymentDecision(linkedLayaway || sale, request.amount, request.method);
 	  if (!decision?.allowed) return toast(decision?.reason === 'amount_exceeds_balance' ? 'El abono no puede superar el saldo pendiente.' : 'No se pudo validar el abono.', 'err');
 	  const { amount, method } = decision;
