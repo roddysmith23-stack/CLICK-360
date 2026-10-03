@@ -219,7 +219,24 @@ async function openSignedIn(browser, viewport) {
     return local ? route.continue() : route.abort();
   });
   const step = async (label, fn) => {
-    try { return await fn(); } catch (error) { throw new Error(`openSignedIn step "${label}" failed: ${error.message}`); }
+    try { return await fn(); } catch (error) {
+      // A new page can fail before the caller assigns activeDevice. Capture
+      // its real state here, not the previous (already closed) device.
+      const diagnostic = await page.evaluate(() => ({
+        hydrated: window.click360IsTenantDataHydrated?.(),
+        provenance: window.click360GetTenantStateProvenance?.(),
+        sync: window.click360GetSyncStatus?.(),
+        capacity: window.click360GetCapacityStatus?.(),
+        storage: window.click360GetStorageState?.(),
+        gate: window.click360WriteGate?.(),
+        trace: window.R38_SYNC_TRACE,
+        counts: { products: window.click360GetTenantState?.()?.products?.length,
+          sales: window.click360GetTenantState?.()?.sales?.length },
+        toast: document.querySelector('#toast')?.textContent
+      })).catch(() => null);
+      console.error('R38 emulator-only new-device failure evidence '+JSON.stringify({ label, viewport, diagnostic, pageErrors }));
+      throw new Error(`openSignedIn step "${label}" failed: ${error.message}`);
+    }
   };
   await step('goto', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }));
   await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 }));
