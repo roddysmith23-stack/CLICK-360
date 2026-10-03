@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "qa:modular:journal": "node --check modular-operation-journal.js && node qa-modular-journal-e2e.mjs",
     "build:static": "node scripts/build-static-release.mjs",
     "qa:modular-persistence": "node --check modular-persistence.js && node qa-modular-persistence-v2-harness.cjs",
     "qa:modular:emulator": "firebase emulators:exec --only firestore --project demo-click360-modular-capacity --config qa/fixtures/modular-emulator.json 'node qa-modular-persistence-emulator.mjs'",

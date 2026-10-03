@@ -19,3 +19,5 @@ jobs:
       - run: npm ci
       - run: npm run qa:modular-persistence
       - run: npm run qa:modular:emulator
+      - run: npx playwright install --with-deps chromium webkit firefox
+      - run: npm run qa:modular:journal
