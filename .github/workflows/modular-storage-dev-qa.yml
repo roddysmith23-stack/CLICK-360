@@ -21,3 +21,4 @@ jobs:
       - run: npm run qa:modular:emulator
       - run: npx playwright install --with-deps chromium webkit firefox
       - run: npm run qa:modular:journal
+      - run: npm run qa:modular:coordinator

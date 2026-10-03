@@ -109,5 +109,5 @@
       }
     });
   }
-  root.CLICK360_MODULAR_JOURNAL = Object.freeze({ open });
+  root.CLICK360_MODULAR_JOURNAL = Object.freeze({ open, validatePayload:canonical });
 })(typeof window === 'undefined' ? globalThis : window);

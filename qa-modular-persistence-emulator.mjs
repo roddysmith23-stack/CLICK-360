@@ -49,8 +49,13 @@ try {
     movement:{date:'2026-09-03',cashSessionId:'cash',amount:30,kind:'ingreso'},
     productChanges:[{productId:'p-0',quantity:1,expectedStock,expectedRecordVersion:1}]});
   const duplicate=await Promise.all([alpha.commitSale(input('sale-1')),alpha.commitSale(input('sale-1'))]);
+  const prepared=await alpha.prepareOperation('sale',input('sale-1'));
+  assert.equal((await alpha.lookupOperation('sale-1','sale',prepared.payloadSha256)).exists,true);
+  assert.equal((await alpha.lookupOperation('never-applied','sale',prepared.payloadSha256)).exists,false);
+  await assert.rejects(()=>alpha.lookupOperation('sale-1','sale','wrong-hash'),/IDEMPOTENCY_KEY_CONFLICT/);
   assert.deepEqual(duplicate.map(r=>r.status).sort(),['already_committed','committed']);
   assert.equal((await db.doc(`${root('alpha')}/products/p-0`).get()).data().stock,9);
+  assert.equal((await db.doc(`${root('alpha')}/storageTelemetry/sale-sale-1`).get()).data().documentsWritten,7);
   assert.equal((await db.doc(`${root('beta')}/products/p-0`).get()).data().stock,10);
   const race=await Promise.allSettled([beta.commitSale(input('race-a')),beta.commitSale(input('race-b'))]);
   assert.equal(race.filter(r=>r.status==='fulfilled').length,1);

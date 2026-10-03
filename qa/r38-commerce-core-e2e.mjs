@@ -67,6 +67,9 @@ try{
     const diagnostic=await activeDevice.page.evaluate(()=>({search:document.querySelector('#productSearch')?.value,cards:document.querySelectorAll('#productList [data-pid]').length,searchTrace:window.R38_SEARCH_TRACE,toast:document.querySelector('#toast')?.textContent,sync:window.click360SyncStatus,gate:window.click360WriteGate?.(),confirmation:window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS,product:window.click360GetTenantState?.()?.products?.find(p=>p.code==='R38-CORE'),modal:document.querySelector('#modalRoot')?.innerText})).catch(()=>null);
     const syncTrace=await activeDevice.page.evaluate(()=>window.R38_SYNC_TRACE).catch(()=>null);
     const authoritative=await cloud().then(d=>({revision:d.revision,products:d.payload.data.products.length,product:d.payload.data.products.find(p=>p.code==='R38-CORE')})).catch(()=>null);
+    console.error('R38 emulator-only commerce failure evidence '+JSON.stringify({error:error.message,
+      sync:diagnostic?.sync,gate:diagnostic?.gate,toast:diagnostic?.toast,confirmation:diagnostic?.confirmation,
+      syncTrace:syncTrace?.slice(-20),serverRevision:authoritative?.revision}));
     writeFileSync(path.join(outputDir,'failure-'+Date.now()+'.json'),JSON.stringify({error:error.message,diagnostic,syncTrace,authoritative},null,2));
   }
   throw error;

@@ -162,7 +162,7 @@
       return sha256({ kind, schemaVersion:SCHEMA_VERSION, tenantKey:expected.tenantKey, payload });
     }
 
-    async function commitSale(input = {}) {
+    async function prepareSale(input = {}) {
       const operationId = safeId(input.operationId || input.sale?.operationId || input.sale?.id, 'operationId');
       const sale = canonicalize(input.sale || {});
       const movement = canonicalize(input.movement || {});
@@ -196,6 +196,11 @@
       const movementId = operationId;
       const auditId = `sale-${operationId}`;
       const telemetryId = `sale-${operationId}`;
+      return { operationId, sale, movement, productChanges, cashSessionId, payload, fingerprint, saleId, movementId, auditId, telemetryId };
+    }
+
+    async function commitSale(input = {}) {
+      const { operationId, sale, movement, productChanges, cashSessionId, payload, fingerprint, saleId, movementId, auditId, telemetryId } = await prepareSale(input);
       return db.runTransaction(async (transaction) => {
         await verifyReady(transaction);
         const ledgerRef = ref('operationLedger', operationId);
@@ -282,13 +287,13 @@
           kind:'sale',
           operationId,
           payloadBytes:byteLength(payload),
-          documentsWritten:productRows.length + 5
+          documentsWritten:productRows.length + 6
         });
         return { ok:true, status:'committed', operationId, saleId, movementId, payloadSha256:fingerprint };
       });
     }
 
-    async function closeCashSession(input = {}) {
+    async function prepareClose(input = {}) {
       const operationId = safeId(input.operationId, 'operationId');
       const cashSessionId = safeId(input.cashSessionId, 'cashSessionId');
       const report = canonicalize(input.report || {});
@@ -299,6 +304,11 @@
       if (Object.hasOwn(report, 'html')) throw new Error('CASH_REPORT_HTML_FORBIDDEN');
       const payload = { operationId, cashSessionId, report:{ ...report, id:reportId } };
       const fingerprint = await operationHash('cash_close', payload);
+      return { operationId, cashSessionId, report, reportId, auditId, telemetryId, payload, fingerprint };
+    }
+
+    async function closeCashSession(input = {}) {
+      const { operationId, cashSessionId, report, reportId, auditId, telemetryId, payload, fingerprint } = await prepareClose(input);
       return db.runTransaction(async (transaction) => {
         await verifyReady(transaction);
         const ledgerRef = ref('operationLedger', operationId);
@@ -386,10 +396,53 @@
       });
     }
 
+    async function prepareOperation(kind, input) {
+      const prepared = kind === 'sale' ? await prepareSale(input)
+        : kind === 'cash_close' ? await prepareClose(input) : null;
+      if (!prepared) throw new Error('MODULAR_OPERATION_KIND_UNSUPPORTED');
+      return { operationId:prepared.operationId, payloadSha256:prepared.fingerprint,
+        envelope:{ kind, schemaVersion:SCHEMA_VERSION, tenantKey:expected.tenantKey, payload:prepared.payload } };
+    }
+
+    async function lookupOperation(operationId, kind, payloadSha256) {
+      safeId(operationId, 'operationId');
+      return db.runTransaction(async transaction => {
+        // Transactions are server-only; offline/cached responses cannot prove absence.
+        await verifyReady(transaction);
+        const snapshot = await transaction.get(ref('operationLedger', operationId));
+        if (!snapshot.exists) return { source:'server', exists:false };
+        const record = snapshot.data();
+        assertIdentity(record, expected, 'operationLedger');
+        if (record.kind !== kind || record.payloadSha256 !== payloadSha256 || record.status !== 'committed') throw new Error('IDEMPOTENCY_KEY_CONFLICT');
+        if (kind === 'sale') {
+          const sale = await transaction.get(ref('sales', record.saleId));
+          const movement = await transaction.get(ref('movements', record.movementId));
+          if (!sale.exists || !movement.exists) throw new Error('SALE_CONFIRMATION_INCOMPLETE');
+          assertIdentity(sale.data(), expected, 'sales');
+          assertIdentity(movement.data(), expected, 'movements');
+          if (sale.data().operationId !== operationId || movement.data().operationId !== operationId
+            || movement.data().saleId !== record.saleId) throw new Error('SALE_CONFIRMATION_INCOMPLETE');
+        } else if (kind === 'cash_close') {
+          const session = await transaction.get(ref('cashSessions', record.cashSessionId));
+          const report = await transaction.get(ref('dailyReports', record.reportId));
+          if (!session.exists || !report.exists) throw new Error('CASH_CLOSE_CONFIRMATION_INCOMPLETE');
+          assertIdentity(session.data(), expected, 'cashSessions');
+          assertIdentity(report.data(), expected, 'dailyReports');
+          if (session.data().status !== 'closed' || session.data().reportId !== record.reportId
+            || report.data().cashSessionId !== record.cashSessionId || report.data().operationId !== operationId
+            || report.data().payloadSha256 !== payloadSha256) throw new Error('CASH_CLOSE_CONFIRMATION_INCOMPLETE');
+        } else throw new Error('MODULAR_OPERATION_KIND_UNSUPPORTED');
+        return { source:'server', exists:true, record:{ ownerUid:expected.ownerUid, businessId:expected.businessId,
+          operationId, payloadHash:record.payloadSha256 } };
+      });
+    }
+
     return Object.freeze({
       projectId,
       identity:expected,
       paths:pathMap,
+      prepareOperation,
+      lookupOperation,
       commitSale,
       closeCashSession
     });
