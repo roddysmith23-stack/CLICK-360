@@ -227,11 +227,14 @@ async function run() {
       window.click360SetTenantContext(ctx,{deferLocalLoad:true});
       const restored = await window.click360LoadIndexedTenantCache(ctx);
       const after = window.click360GetTenantState();
+      window.click360Route('backup');
       return {before,noPush,restored,reports:after.dailyReports.filter(r=>r.date==='2026-09-03').length,
-        sessionStatus:after.cashSessions.find(s=>s.id==='cash-0903')?.status,capacity:window.click360GetCapacityStatus()};
+        sessionStatus:after.cashSessions.find(s=>s.id==='cash-0903')?.status,capacity:window.click360GetCapacityStatus(),
+        layout:{viewport:innerWidth,width:document.documentElement.scrollWidth}};
     });
     assert(pending.before.cloudCapacityBlocked && pending.noPush, 'large state is explicitly pending and never sent to legacy cloud');
     assert(pending.restored && pending.reports === 1 && pending.sessionStatus === 'closed' && pending.capacity.cloudCapacityBlocked, 'application cold hydration recovers the capacity outbox from IndexedDB');
+    assert(pending.layout.width <= pending.layout.viewport + 1, 'capacity-pending backup UI must not overflow the viewport: '+JSON.stringify(pending.layout));
     assert(capacity.pageErrors.length === 0, `capacity page errors: ${JSON.stringify(capacity.pageErrors)}`);
     await capacity.context.close();
 

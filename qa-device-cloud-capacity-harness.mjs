@@ -6,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 const app = await readFile('app.js', 'utf8');
 const saveSource = app.slice(app.indexOf('  function save(options'), app.indexOf('  function restoreCriticalSnapshot'));
 const criticalSource = app.slice(app.indexOf('  async function commitCriticalMutation('),app.indexOf('  // Action Guardian:'));
-for (const size of [840000, 860000, 900000, 1200000, 3000000, 7000000, 8 * 1024 * 1024 + 1000]) {
+for (const size of [840000, 860000, 900000, 1200000, 3000000, 7000000, 8 * 1024 * 1024, 8 * 1024 * 1024 + 1000]) {
   const before = { products: [], updatedAtMs: 1 };
   const context = { authUid: 'owner', ownerId: 'owner', businessId: 'alpha', tenantKey: 'owner:alpha' };
   const sandbox = {
