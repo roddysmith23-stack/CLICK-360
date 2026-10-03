@@ -17,8 +17,12 @@ fs.writeFileSync(path.join(directory, 'firebase.json'), JSON.stringify({ firesto
 const java = ['/opt/homebrew/opt/openjdk@21/bin', '/usr/local/opt/openjdk@21/bin', '/opt/homebrew/opt/openjdk/bin', '/usr/local/opt/openjdk/bin'];
 // This process owns an isolated emulator. It never uses ADC or reaches Google.
 const emulator = spawn(path.resolve('node_modules/.bin/firebase'), ['emulators:start', '--only', 'firestore', '--project', project,
-  '--config', path.join(directory, 'firebase.json')], { cwd: directory, stdio: 'ignore', detached: true,
+  '--config', path.join(directory, 'firebase.json')], { cwd: directory, stdio: ['ignore', 'inherit', 'inherit'], detached: true,
   env: { ...process.env, PATH: `${java.join(':')}:${process.env.PATH}` } });
+let emulatorExit = null;
+let emulatorLaunchError = null;
+emulator.once('exit', (code, signal) => { emulatorExit = { code, signal }; });
+emulator.once('error', error => { emulatorLaunchError = error.message; });
 let commits = 0;
 async function request(resource, body) {
   assert(resource.startsWith(dbRoot) && !resource.includes('..'), 'loopback project confinement');
@@ -66,8 +70,12 @@ async function externalWrite(name, label) {
 
 try {
   let ready = false;
-  for (let i=0;i<180;i++) { try { ready = (await fetch(origin)).ok; } catch {} if (ready) break; await new Promise(r=>setTimeout(r,500)); }
-  assert(ready,'isolated Firestore emulator started');
+  for (let i=0;i<180;i++) {
+    try { ready = (await fetch(origin)).ok; } catch {}
+    if (ready || emulatorExit || emulatorLaunchError) break;
+    await new Promise(r=>setTimeout(r,500));
+  }
+  assert(ready, `isolated Firestore emulator started: ${JSON.stringify({ project, origin, emulatorExit, emulatorLaunchError })}; emulator output above is required startup evidence`);
   const f = await fixture();
   const restored = await applyRecovery(f);
   assert.equal(restored.status,'SHARY_DATA_RECOVERY_VERIFIED');
