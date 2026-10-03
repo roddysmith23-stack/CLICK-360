@@ -1,0 +1,24 @@
+name: Modular storage DEV regression
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  modular-storage-required:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npm run qa:modular-persistence
+      - run: npm run qa:modular:emulator
+      - run: npx playwright install --with-deps chromium webkit firefox
+      - run: npm run qa:modular:journal
+      - run: npm run qa:modular:coordinator
