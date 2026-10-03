@@ -64,6 +64,9 @@
       revision: Number(metadata.revision || 0),
       baseRevision: Number(metadata.baseRevision || 0),
       pendingRemoteSync: metadata.pendingRemoteSync === true,
+      cloudCapacityBlocked: metadata.cloudCapacityBlocked === true,
+      pendingOperations: Array.isArray(metadata.pendingOperations) ? [...new Set(metadata.pendingOperations)] : [],
+      deviceRevision: String(metadata.deviceRevision || metadata.operationId || ''),
       operationId: String(metadata.operationId || '').slice(0, 96),
       payloadHash: String(metadata.payloadHash || '').slice(0, 128),
       materialHash: String(metadata.materialHash || '').slice(0, 128),
@@ -72,7 +75,30 @@
       pendingCreatedAtMs: Number(metadata.pendingCreatedAtMs || 0),
       savedAtMs: Date.now()
     };
-    await transact(SNAPSHOT_STORE, 'readwrite', (store) => store.put(record));
+    // CAS inside the same IDB transaction prevents two tabs from replacing a
+    // capacity-pending snapshot, or a cloud mirror from erasing its outbox.
+    const db = await openDatabase();
+    try {
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction(SNAPSHOT_STORE, 'readwrite');
+        const store = transaction.objectStore(SNAPSHOT_STORE);
+        let failure;
+        const request = store.get(id);
+        request.onsuccess = () => {
+          const current = request.result;
+          if (current?.cloudCapacityBlocked && (!record.cloudCapacityBlocked
+            || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || ''))) {
+            failure = Object.assign(new Error('La copia local cambió en otra pestaña. Ningún dato pendiente fue reemplazado.'), { code:'indexeddb-revision-conflict' });
+            transaction.abort();
+            return;
+          }
+          store.put(record);
+        };
+        transaction.oncomplete = resolve;
+        transaction.onabort = () => reject(failure || transaction.error || new Error('Transaccion cancelada.'));
+        transaction.onerror = () => reject(transaction.error || new Error('Fallo de IndexedDB.'));
+      });
+    } finally { db.close(); }
     return { id, savedAtMs: record.savedAtMs };
   }
 

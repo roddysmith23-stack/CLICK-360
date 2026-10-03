@@ -1203,6 +1203,17 @@
 			    const hashes = currentPayloadHashes();
 			    const pendingMeta = localPendingSyncMeta();
 			    const conflictMarker = readSyncConflictMarker();
+              const capacity = window.click360GetCapacityStatus?.() || {};
+              if (capacity.cloudCapacityBlocked) {
+                const capacityConflict = conflictMarker && Number(conflictMarker.remoteRevision || 0) > 0
+                  && Number(conflictMarker.baseRevision || 0) !== Number(conflictMarker.remoteRevision);
+                return { ...capacity, status:capacityConflict ? 'real_conflict' : 'cloud_capacity_blocked', blocking:!!capacityConflict,
+                  reason:'legacy_document_capacity', hasDirtyFields:true,
+                  activeBusinessId:String(hashes.payload?.data?.activeBusinessId || ''),
+                  localHash:hashFingerprint(hashes.materialHash),
+                  remoteHash:hashFingerprint(safeStorageGet(tenantStorageKey('LAST_APPLIED_REMOTE_MATERIAL_HASH'))),
+                  remoteHashKind:'last_applied_baseline' };
+              }
 			    SYNC_CONFLICT_PENDING = !!conflictMarker;
 			    const pendingWindowActive = now < LOCAL_WRITE_PENDING_UNTIL;
 			    const schedulerActive = PUSH_SCHEDULERS.has(activeSchedulerKey());
@@ -1348,6 +1359,7 @@
 			  }
 
 			  function pendingRemoteSyncGateStatus(syncState = getSyncState({ cleanup: true, reason: 'pending_remote_sync_gate' })) {
+              if (syncState.cloudCapacityBlocked) return { allowed:true, reason:'device_capacity_pending', syncState };
 			    if (!navigator.onLine) return { allowed: true, reason: 'offline' };
 			    const pendingMeta = localPendingSyncMeta();
 			    if (!pendingMeta && syncState.status !== 'pending_write') return { allowed: true, reason: syncState.status === 'stale_lock' ? 'stale_pending_cleared' : 'ok', syncState };
@@ -1445,6 +1457,7 @@
 	    return window.CLICK360_P0_TENANT_GUARD.validBusinessPayload(payload, ACTIVE_CONTEXT) ? payload : null;
 	  }
 
+      window.click360GetCloudPayloadBytes = () => window.CLICK360_P0_TENANT_GUARD.utf8Bytes(buildBusinessPayload() || {});
 	  function localPayloadUpdatedAtMs() {
 	    return Number(buildBusinessPayload()?.data?.updatedAtMs || 0);
 	  }
@@ -2879,6 +2892,10 @@
 
 	    const payload = buildBusinessPayload();
 	    const payloadBytes = window.CLICK360_P0_TENANT_GUARD.utf8Bytes(payload || {});
+        if (payloadBytes > MAX_CLOUD_PAYLOAD_BYTES || window.click360GetCapacityStatus?.().cloudCapacityBlocked) {
+          setSyncStatus('cloud_capacity_blocked', 'Guardado en este dispositivo · respaldo en nube pendiente', { payloadBytes, cloudLimitBytes:MAX_CLOUD_PAYLOAD_BYTES });
+          return false;
+        }
 	    if (!payload || !sameTenant(payload.identity)) {
 	      quarantineIncident('blocked_push_identity', { reason });
 	      setSyncStatus('error', 'Se bloqueó una escritura porque la identidad o el contenido del tenant no coincide.');
@@ -3044,7 +3061,7 @@
 		    const initiallyDeferred = window.click360IsTenantStateDeferred?.() === true;
 		    let localCacheStatus = window.click360GetTenantCacheStatus?.(context) || { valid: false, reason: 'cache_status_unavailable' };
 		    const localStorageUnavailable = window.click360GetStorageState?.().localReady === false;
-		    if (navigator.onLine && ((!localCacheStatus.valid
+		    if (navigator.onLine && (initiallyDeferred || (!localCacheStatus.valid
           && ['cache_missing', 'localstorage_unavailable'].includes(localCacheStatus.reason)) || localStorageUnavailable)
           && typeof window.click360LoadIndexedTenantCache === 'function') {
           await window.click360LoadIndexedTenantCache(context);
@@ -3151,6 +3168,17 @@
 	      const indexedMeta = window.click360GetIndexedTenantCacheMeta?.() || {};
 	      const recoveryMeta = localCacheStatus.pendingRemoteSync === true ? localCacheStatus : indexedMeta;
 	      const pendingLocalRecovery = localCacheStatus.valid === true && recoveryMeta.pendingRemoteSync === true;
+          if (pendingLocalRecovery && recoveryMeta.cloudCapacityBlocked) {
+            // Even a forced refresh cannot discard a durable capacity outbox.
+            // A changed revision requires supervised reconciliation, not push.
+            tenantGuard.allow(context);
+            PULL_COMPLETE = true;
+            if (Number(recoveryMeta.baseRevision || 0) !== remoteRevision) {
+              markSyncConflict({ path:stateDoc.path, remoteRevision, baseRevision:Number(recoveryMeta.baseRevision || 0), source:'capacity_recovery' });
+            }
+            setSyncStatus('cloud_capacity_blocked', 'Guardado en este dispositivo · respaldo en nube pendiente');
+            return false;
+          }
 	    const remoteMustHydrate = initiallyDeferred && !pendingLocalRecovery;
     // A deferred context has not loaded any tenant cache yet. The verified V10
     // remote snapshot is authoritative in that first hydration, even if an old
@@ -3740,6 +3768,10 @@
 	  }, 1200);
 
 			  window.addEventListener('click360-local-state-saved', (event) => {
+              if (event.detail?.tenantKey === ACTIVE_CONTEXT?.tenantKey && event.detail?.cloudCapacityBlocked) {
+                setSyncStatus('cloud_capacity_blocked', 'Guardado en este dispositivo · respaldo en nube pendiente');
+                return;
+              }
 			    if (!IS_RESTORING_REMOTE && AUTH_APPROVED && PULL_COMPLETE
 			      && event.detail?.tenantKey === ACTIVE_CONTEXT?.tenantKey) {
 				      const pendingRemoteSync = event.detail?.pendingRemoteSync !== false;
