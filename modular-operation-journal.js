@@ -3,8 +3,17 @@
 // ledger lookup before any retry. No transport or credentials live here.
 (function (root) {
   'use strict';
-  const canonical = value => Array.isArray(value) ? value.map(canonical)
-    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
+  const canonical = value => {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && Object.getPrototypeOf(value) === Object.prototype) {
+      return Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])]));
+    }
+    // Do not silently hash Date/Timestamp/bytes as {} or drop undefined fields.
+    // The adapter must explicitly encode typed values before journaling them.
+    throw Error('JOURNAL_PAYLOAD_REQUIRES_EXPLICIT_JSON_TYPES');
+  };
   async function digest(value) {
     const bytes = new TextEncoder().encode(JSON.stringify(canonical(value)));
     return [...new Uint8Array(await root.crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');

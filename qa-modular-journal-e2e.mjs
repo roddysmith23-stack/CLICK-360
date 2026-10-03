@@ -20,6 +20,7 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
       const duplicate = await journal.enqueue(a, 'op-sale', row.payload);
       const rejects = async task => { try { await task(); return false; } catch { return true; } };
       const conflict = await rejects(() => journal.enqueue(a, 'op-sale', payload));
+      const typedDenied = await rejects(() => journal.enqueue(a, 'bad-types', { timestamp: new Date() }));
       const race = await Promise.allSettled([journal.claim(a, 'op-sale', 'device-a'), journal.claim(a, 'op-sale', 'device-b')]);
       const inflight = await journal.get(a, 'op-sale');
       await journal.markUnknown(a, 'op-sale', inflight.revision);
@@ -30,10 +31,10 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
       await journal.enqueue(b, 'op-sale', { type: 'cash_close', cashSessionId: 's' });
       journal.close();
       return { hash: row.payloadHash, duplicateRevision: duplicate.revision, conflict, winners: race.filter(r => r.status === 'fulfilled').length,
-        retryDenied, cachedDenied, isolated: !otherBusiness };
+        retryDenied, cachedDenied, typedDenied, isolated: !otherBusiness };
     });
     assert.equal(first.duplicateRevision, 1);
-    for (const k of ['conflict', 'retryDenied', 'cachedDenied', 'isolated']) assert.equal(first[k], true, k);
+    for (const k of ['conflict', 'retryDenied', 'cachedDenied', 'typedDenied', 'isolated']) assert.equal(first[k], true, k);
     assert.equal(first.winners, 1);
     await page.reload();
     await page.addScriptTag({ content: source });
