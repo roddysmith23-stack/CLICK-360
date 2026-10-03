@@ -909,7 +909,9 @@ function parseMoney(value) {
       // Device durability and the legacy Firestore document are different budgets.
       persistenceLimitBytes = MAX_LOCAL_ONLY_TENANT_STATE_BYTES;
       const cloudPayloadBytes = Number(window.click360GetCloudPayloadBytes?.() || attemptedBytes);
-      const cloudCapacityBlocked = !localOnlyPersistence && Math.max(attemptedBytes, cloudPayloadBytes) > MAX_LOCAL_TENANT_STATE_BYTES;
+      const legacyDocumentPersistence = window.click360IsModularBoundarySession?.() !== true;
+      const cloudCapacityBlocked = legacyDocumentPersistence && !localOnlyPersistence
+        && Math.max(attemptedBytes, cloudPayloadBytes) > MAX_LOCAL_TENANT_STATE_BYTES;
       if (attemptedBytes > persistenceLimitBytes) {
         const error = new Error(localOnlyPersistence
           ? 'El estado supera el espacio seguro disponible en este dispositivo.'

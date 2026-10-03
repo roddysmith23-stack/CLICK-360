@@ -58,6 +58,13 @@ for (const size of [840000, 860000, 900000, 1200000, 3000000, 7000000, 8 * 1024 
     sandbox.state={...before,padding:'x'.repeat(size - 300)};
     vm.runInContext('unavailable=save();',sandbox);
     assert.equal(sandbox.unavailable,false,'no cloud fallback when device storage unavailable');
+    sandbox.state={...before,padding:'x'.repeat(size - 300)};
+    sandbox.storageState.indexedDbReady=true;
+    sandbox.window.click360IsModularBoundarySession=()=>true;
+    sandbox.isOwnerUser=()=>false;
+    vm.runInContext('modular=save({deferSync:true});',sandbox);
+    assert.equal(sandbox.modular,true,'authorized modular worker also has the device budget');
+    assert.equal(sandbox.lastSavePersistence.cloudCapacityBlocked,false,'existing modular writers must not inherit the legacy document capacity fence');
   }
 }
 console.log('PASS actual save(): 840KB, 860KB, 900KB, 1.2MB, 3MB, 7MB and safe rejection above 8MiB');

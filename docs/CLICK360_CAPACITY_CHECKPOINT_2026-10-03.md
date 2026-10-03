@@ -10,6 +10,8 @@ Device budget is now 8MiB, independently of the unchanged 850,000-byte cloud pay
 
 This is a bridge, not a cloud capacity solution. Do not deploy it as a substitute for modular persistence. Pending operations are snapshot-backed operation IDs, not yet a modular replay journal. Two devices can accumulate distinct local changes: they require supervised reconciliation, never automatic stock merging. Old builds do not implement this new IDB CAS fence; preserve physical-device data and upgrade safely before enabling the bridge.
 
+The cloud-capacity fence applies only to the legacy document writer. A real-source regression additionally reproduced an unintended fence on already-modular authorized worker sessions; these keep the independent device budget without inheriting a monolithic cloud-document restriction. Their existing gateway/permission checks remain unchanged.
+
 ## Fresh read-only evidence
 
 Capture: 2026-10-03T18:12:50.970Z. Server revision: 1791050138270. Native backup SHA256: `9c421955d191d9dd50791e434897ff7516131c63580ad1e9ac0eb1bc029496f1`. Native fields SHA256: `a2d2cff0ef75db8eba7c5927cef1966fa0f69f45f4263e5218a90d036f943fab`.
