@@ -44,6 +44,15 @@ try {
   }))};
   const repo=biz=>api.createFirestoreRepository({db:instrumented,firebase,user:{uid:owner},ownerUid:owner,businessId:biz,projectId});
   const alpha=repo('alpha'), beta=repo('beta');
+  const firstPage=await alpha.readPage('sales',{limit:25});
+  const nextPage=await alpha.readPage('sales',{limit:25,afterId:firstPage.nextCursor});
+  assert.equal(firstPage.records.length,25);assert.equal(nextPage.records.length,25);
+  assert.equal(new Set([...firstPage.records,...nextPage.records].map(r=>r.id)).size,50);
+  assert.equal(firstPage.records.every(r=>r.businessId==='alpha'),true);
+  assert.equal((await beta.readPage('sales',{limit:25})).records.length,0);
+  await assert.rejects(()=>alpha.readPage('sales',{limit:5000}),/LIMIT_INVALID/);
+  await assert.rejects(()=>alpha.readPage('operationLedger'),/MODULE_UNSUPPORTED/);
+  await assert.rejects(()=>alpha.readPage('sales',{afterId:'other-business/sale'}),/invalido/);
   const input=(operationId,expectedStock=10)=>({operationId,
     sale:{date:'2026-09-03',cashSessionId:'cash',total:30,items:[{productId:'p-0',qty:1,price:30}]},
     movement:{date:'2026-09-03',cashSessionId:'cash',amount:30,kind:'ingreso'},
@@ -69,7 +78,8 @@ try {
   await assert.rejects(()=>alpha.commitSale({...input('after-close',9),productChanges:[{productId:'p-0',quantity:1,expectedStock:9,expectedRecordVersion:2}]}),/SESSION_NOT_OPEN/);
   await assert.rejects(()=>alpha.commitSale({...input('duplicate-product'),productChanges:[input('x').productChanges[0],input('y').productChanges[0]]}),/DUPLICATE_PRODUCT/);
   const disabled=repo('unapproved');
+  await assert.rejects(()=>disabled.readPage('sales'),/BUSINESS_FLAG_DISABLED/);
   await assert.rejects(()=>disabled.commitSale(input('no-flag')),/BUSINESS_FLAG_DISABLED/);
   console.log(JSON.stringify({status:'PASS',projectId,productionRequests:0,products:[500,2000],historicalSales:5000,historicalMovements:5000,historicalAudit:5000,
-    scenarios:['real transaction retries','duplicate sale','same-product race','duplicate close','sale after close denied','two businesses isolation','business flag denied','legacy unchanged'],reads,writes}));
+    scenarios:['real transaction retries','duplicate sale','same-product race','duplicate close','sale after close denied','two businesses isolation','business flag denied','bounded server pages','pagination cursor/limit validation','legacy unchanged'],reads,writes}));
 } finally { await db.terminate(); await deleteApp(app); }

@@ -20,7 +20,7 @@ Fresh read-only entitlement check found a stale real-account product override of
 | 6 Independent semantic comparison | Independent emulator count/IDs/native state comparison implemented; real tenant/media/full audit coverage pending |
 | 7 Product create/edit/import | Pending |
 | 8 Inventory opening/adjustments | Pending |
-| 9 History pagination | Pending |
+| 9 History pagination | Server-only bounded repository cursor API implemented; UI pagination pending |
 | 10 Derived print/report views | Pending |
 | 11 Authoritative close totals | Sales total/count taken from transactional session summary; method/cash counters and import verification pending |
 | 12 Modular client Rules | Pending; Admin-emulator tests do not certify Rules |

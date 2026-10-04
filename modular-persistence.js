@@ -445,6 +445,23 @@
       });
     }
 
+    async function readPage(moduleName,{limit=25,afterId=''}={}) {
+      if(!['products','sales','movements','cashSessions','dailyReports','auditEvents'].includes(moduleName))throw new Error('PAGINATION_MODULE_UNSUPPORTED');
+      if(!Number.isInteger(limit)||limit<1||limit>100)throw new Error('PAGINATION_LIMIT_INVALID');
+      if(afterId)safeId(afterId,'cursor');
+      await db.runTransaction(transaction=>verifyReady(transaction));
+      let query=rootRef.collection(moduleName).orderBy(firebase.firestore.FieldPath?.documentId?.()||'__name__').limit(limit);
+      if(afterId)query=query.startAfter(afterId);
+      const snapshot=await query.get({source:'server'});
+      if(snapshot.metadata?.fromCache||snapshot.metadata?.hasPendingWrites)throw new Error('SERVER_PAGE_NOT_CONFIRMED');
+      const records=snapshot.docs.map(document=>{
+        const record=document.data();assertIdentity(record,expected,`${moduleName}/${document.id}`);
+        if(record.id!==document.id)throw new Error('PAGE_RECORD_IDENTITY_CONFLICT');
+        return record;
+      });
+      return {source:'server',identity:expected,records,nextCursor:records.length===limit?snapshot.docs.at(-1).id:null};
+    }
+
     return Object.freeze({
       projectId,
       identity:expected,
@@ -452,7 +469,8 @@
       prepareOperation,
       lookupOperation,
       commitSale,
-      closeCashSession
+      closeCashSession,
+      readPage
     });
   }
 
