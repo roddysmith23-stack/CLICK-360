@@ -158,8 +158,8 @@ async function run() {
   const browser = await browserType.launch(browserChannel ? { channel:browserChannel } : {});
   try {
     const rejected = await createPage(browser);
-    const rejectedInitial = await rejected.page.evaluate(fixtureSource(), { targetBytes:841500 });
-    assert(rejectedInitial.beforeBytes < 850000 && rejectedInitial.beforeBytes > 849000, `rejection fixture must sit immediately below the guard, got ${rejectedInitial.beforeBytes}`);
+    const rejectedInitial = await rejected.page.evaluate(fixtureSource(), { targetBytes:8 * 1024 * 1024 + 1000 });
+    assert(rejectedInitial.beforeBytes > 8 * 1024 * 1024, `rejection fixture must exceed the device guard, got ${rejectedInitial.beforeBytes}`);
     await openAndSubmitCashClose(rejected.page);
     try {
       await rejected.page.getByRole('heading', { name:'Cierre rechazado' }).waitFor({ state:'visible', timeout:uiTimeout });
@@ -176,7 +176,7 @@ async function run() {
     assert(rejectedResult.diagnostic?.stage === 'cash_close_verify_closed', `rejection must retain the failing stage, got ${rejectedResult.diagnostic?.stage}`);
     assert(rejectedResult.diagnostic?.errorCode === 'local_state_too_large', `rejection must expose the real save error, got ${rejectedResult.diagnostic?.errorCode}`);
     assert(rejectedResult.diagnostic?.saveFailure?.code === 'local_state_too_large', 'diagnostic must expose the concrete save failure');
-    assert(rejectedResult.diagnostic?.saveFailure?.payloadBytes > 850000 && rejectedResult.diagnostic?.saveFailure?.limitBytes === 850000, 'diagnostic must include attempted bytes and unchanged guard');
+    assert(rejectedResult.diagnostic?.saveFailure?.payloadBytes > 8 * 1024 * 1024 && rejectedResult.diagnostic?.saveFailure?.limitBytes === 8 * 1024 * 1024, 'diagnostic must include attempted bytes and independent device guard');
     assert(rejectedResult.diagnostic?.writeGate?.allowed === true, 'diagnostic must retain the evaluated write gate');
     assert(rejectedResult.diagnostic?.cashSessionId, 'diagnostic must retain the real session fingerprint');
     assert(rejectedResult.diagnostic?.displayMode === (standaloneMode ? 'standalone' : 'browser'), `${platformLabel} must expose its real display mode`);
@@ -211,6 +211,32 @@ async function run() {
     await page.screenshot({ path:path.join(root, 'output/playwright/shary-cash-close-save-rejected-webkit.png'), fullPage:true });
     assert(pageErrors.length === 0, `unexpected page errors: ${JSON.stringify(pageErrors)}`);
     await successful.context.close();
+
+    const capacity = await createPage(browser);
+    await capacity.page.evaluate(fixtureSource(), { targetBytes:1200000 });
+    assert(await capacity.page.evaluate(() => window.click360RetryTenantStorage()), 'capacity fixture requires verified real IndexedDB');
+    await openAndSubmitCashClose(capacity.page, { doubleClick:true });
+    await capacity.page.getByRole('heading', { name:'Resumen de Cierre' }).waitFor({ state:'visible', timeout:uiTimeout });
+    const capacityResult = await stateOutcome(capacity.page);
+    assert(capacityResult.reports.length === 1 && capacityResult.session.status === 'closed', 'capacity close persists exactly one local report/session');
+    assert(capacityResult.sales === 30 && capacityResult.movements === 107 && capacityResult.product0.stock === 0, 'capacity bridge never repeats the sale or inventory mutation');
+    const pending = await capacity.page.evaluate(async () => {
+      const before = window.click360GetCapacityStatus();
+      const noPush = window.__syntheticRemote === null;
+      const ctx = window.click360TenantContext;
+      window.click360SetTenantContext(ctx,{deferLocalLoad:true});
+      const restored = await window.click360LoadIndexedTenantCache(ctx);
+      const after = window.click360GetTenantState();
+      window.click360Route('backup');
+      return {before,noPush,restored,reports:after.dailyReports.filter(r=>r.date==='2026-09-03').length,
+        sessionStatus:after.cashSessions.find(s=>s.id==='cash-0903')?.status,capacity:window.click360GetCapacityStatus(),
+        layout:{viewport:innerWidth,width:document.documentElement.scrollWidth}};
+    });
+    assert(pending.before.cloudCapacityBlocked && pending.noPush, 'large state is explicitly pending and never sent to legacy cloud');
+    assert(pending.restored && pending.reports === 1 && pending.sessionStatus === 'closed' && pending.capacity.cloudCapacityBlocked, 'application cold hydration recovers the capacity outbox from IndexedDB');
+    assert(pending.layout.width <= pending.layout.viewport + 1, 'capacity-pending backup UI must not overflow the viewport: '+JSON.stringify(pending.layout));
+    assert(capacity.pageErrors.length === 0, `capacity page errors: ${JSON.stringify(capacity.pageErrors)}`);
+    await capacity.context.close();
 
     if (smokeOnly) {
       console.log(`PASS cash-close platform smoke ${platformLabel}: rejected=${rejectedResult.diagnostic.saveFailure.payloadBytes}, compact=${result.bytes}, one report and no inventory/sale/movement duplication`);

@@ -182,6 +182,7 @@
   window.click360CanWriteByAccess = () => !accessInfo().readOnly;
   let lastWriteBlock = null;
   let lastSaveFailure = null;
+  let deviceSavePending = false;
   function publishSaveFailure(code = '', stage = '', details = {}) {
     lastSaveFailure = code ? Object.freeze({
       code:String(code).slice(0, 80),
@@ -195,6 +196,7 @@
     return lastSaveFailure;
   }
   function writeGateStatus() {
+    if (deviceSavePending) return { allowed: false, reason: 'device_save_pending' };
     // r37 (legacy consent grace): a legacy owner whose 7-day grace period
     // has expired without accepting the updated Terms/Privacy is blocked
     // from NEW commercial mutations here -- but this must never touch
@@ -830,6 +832,10 @@ function parseMoney(value) {
     return window.CLICK360_V16_STORAGE.putSnapshot(context, cloneState(snapshot), metadata).then(() => {
       if (activeTenantContext !== context) return false;
       indexedTenantCacheMeta = {
+        cloudCapacityBlocked: metadata.cloudCapacityBlocked === true,
+        pendingOperations: metadata.pendingOperations || [],
+        payloadBytes: stateSizeBytes(snapshot),
+        deviceRevision: String(metadata.deviceRevision || ''),
         pendingRemoteSync: metadata.pendingRemoteSync === true,
         baseRevision: Number(metadata.baseRevision || 0),
         operationId: String(metadata.operationId || ''),
@@ -900,9 +906,12 @@ function parseMoney(value) {
       const serialized = JSON.stringify(state);
       attemptedBytes = stateSizeBytes(serialized);
       const localOnlyPersistence = localOnlyPersistenceMode();
-      persistenceLimitBytes = localOnlyPersistence
-        ? MAX_LOCAL_ONLY_TENANT_STATE_BYTES
-        : MAX_LOCAL_TENANT_STATE_BYTES;
+      // Device durability and the legacy Firestore document are different budgets.
+      persistenceLimitBytes = MAX_LOCAL_ONLY_TENANT_STATE_BYTES;
+      const cloudPayloadBytes = Number(window.click360GetCloudPayloadBytes?.() || attemptedBytes);
+      const legacyDocumentPersistence = window.click360IsModularBoundarySession?.() !== true;
+      const cloudCapacityBlocked = legacyDocumentPersistence && !localOnlyPersistence
+        && Math.max(attemptedBytes, cloudPayloadBytes) > MAX_LOCAL_TENANT_STATE_BYTES;
       if (attemptedBytes > persistenceLimitBytes) {
         const error = new Error(localOnlyPersistence
           ? 'El estado supera el espacio seguro disponible en este dispositivo.'
@@ -913,10 +922,15 @@ function parseMoney(value) {
       }
       let localPersisted = false;
       let storageError = null;
+      if (cloudCapacityBlocked && !storageState.indexedDbReady) {
+        throw Object.assign(new Error('Se necesita almacenamiento IndexedDB verificado para conservar este cambio.'), { code:'click360/indexeddb-required' });
+      }
       try {
-        localStorage.setItem(stateStorageKey(), serialized);
-        localPersisted = true;
-        writeCacheMeta('localstorage', stateSizeBytes(serialized));
+        if (!cloudCapacityBlocked) {
+          localStorage.setItem(stateStorageKey(), serialized);
+          localPersisted = true;
+          writeCacheMeta('localstorage', stateSizeBytes(serialized));
+        }
       } catch (error) {
         storageError = error;
         if (!navigator.onLine && (!options.allowIndexedDbOffline || !storageState.indexedDbReady)) throw error;
@@ -927,12 +941,20 @@ function parseMoney(value) {
       const context = activeTenantContext;
       const snapshot = cloneState(state);
       const operationId = String(options.operationId || uid('persist'));
-      const baseRevision = Number(window.click360DebugSyncIdentity?.().revision || 0);
-      const pendingRemoteSync = options.nonBlockingSync === true ? false : true;
+      const baseRevision = Number(indexedTenantCacheMeta?.cloudCapacityBlocked
+        ? indexedTenantCacheMeta.baseRevision : window.click360DebugSyncIdentity?.().revision || 0);
+      let pendingRemoteSync = options.nonBlockingSync === true ? false : true;
+      if (cloudCapacityBlocked) pendingRemoteSync = true;
+      const pendingOperations = cloudCapacityBlocked
+        ? [...new Set([...(indexedTenantCacheMeta?.pendingOperations || []), operationId])] : [];
       const syncSource = String(options.syncSource || (pendingRemoteSync
         ? (navigator.onLine ? 'local_change' : 'offline_pending')
         : 'non_blocking_local_change'));
       const indexedPromise = queueIndexedSnapshot(snapshot, {
+        expectedDeviceRevision: indexedTenantCacheMeta?.deviceRevision || '',
+        deviceRevision: operationId,
+        cloudCapacityBlocked,
+        pendingOperations,
         source: syncSource,
         pendingRemoteSync,
         baseRevision,
@@ -948,8 +970,29 @@ function parseMoney(value) {
         localPersisted,
         indexedPromise,
         storageError,
-        localOnlyPersistence
+        localOnlyPersistence,
+        cloudCapacityBlocked
       };
+      if (cloudCapacityBlocked) {
+        // No cloud fallback is possible here. Never acknowledge before the IDB
+        // transaction commits; serialize device mutations until that point.
+        deviceSavePending = true;
+        indexedPromise.then((durable) => {
+          if (activeTenantContext !== context) return;
+          deviceSavePending = false;
+          if (!durable) {
+            state = previousState || state;
+            publishSaveFailure('indexeddb_commit_failed', 'save_device_commit', { payloadBytes:attemptedBytes, limitBytes:persistenceLimitBytes });
+            toast('No se pudo conservar el último cambio. Los datos anteriores siguen intactos.', 'err');
+            return;
+          }
+          state = snapshot;
+          rememberPersistedState();
+          dispatchLocalStateSaved({ operationId, indexedPersisted:true, cloudCapacityBlocked:true, pendingRemoteSync:true });
+          toast('Guardado en este dispositivo · respaldo en nube pendiente', 'ok');
+        });
+        return true;
+      }
       if (localPersisted) {
         writeCacheMeta('localstorage', stateSizeBytes(serialized), {
           pendingRemoteSync,
@@ -1059,6 +1102,12 @@ function parseMoney(value) {
         };
       }
       const persistence = lastSavePersistence?.operationId === operationId ? lastSavePersistence : null;
+      if (persistence?.cloudCapacityBlocked) {
+        const durable = await persistence.indexedPromise;
+        if (activeTenantContext !== context) return { ok:false, pending:false, stale:true };
+        if (!durable) return { ok:false, pending:false, reason:'indexeddb_commit_failed' };
+        return { ok:true, pending:true, cloudCapacityBlocked:true };
+      }
       if (persistence?.localOnlyPersistence === true) {
         let devicePersisted = persistence.localPersisted === true;
         if (!devicePersisted) {
@@ -1447,6 +1496,7 @@ function parseMoney(value) {
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
+    deviceSavePending = false;
     onlineOnlyCommitCheckpoints.clear();
     resolveCriticalActionGate()?.clear?.();
     window.CLICK360_RUNTIME_GUARD?.setContext(activeTenantContext);
@@ -1510,14 +1560,17 @@ function parseMoney(value) {
     }
 
     const serialized = JSON.stringify(snapshot);
-    if (stateSizeBytes(serialized) > MAX_LOCAL_TENANT_STATE_BYTES) {
+    const cloudCapacityBlocked = stateSizeBytes(serialized) > MAX_LOCAL_TENANT_STATE_BYTES;
+    if (stateSizeBytes(serialized) > MAX_LOCAL_ONLY_TENANT_STATE_BYTES) {
       return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'snapshot_too_large' };
     }
 
     let localPersisted = false;
     try {
-      localStorage.setItem(stateStorageKey(), serialized);
-      localPersisted = true;
+      if (!cloudCapacityBlocked) {
+        localStorage.setItem(stateStorageKey(), serialized);
+        localPersisted = true;
+      }
       writeCacheMeta('initial_tenant_snapshot', stateSizeBytes(serialized), {
         pendingRemoteSync: true,
         baseRevision: 0,
@@ -1526,6 +1579,10 @@ function parseMoney(value) {
     } catch {}
 
     const indexedPersisted = await queueIndexedSnapshot(snapshot, {
+      cloudCapacityBlocked,
+      pendingOperations:cloudCapacityBlocked ? ['initial_tenant_seed'] : [],
+      expectedDeviceRevision:indexedTenantCacheMeta?.deviceRevision || '',
+      deviceRevision:'initial_tenant_seed',
       source: 'initial_tenant_snapshot',
       pendingRemoteSync: true,
       baseRevision: 0,
@@ -1537,6 +1594,7 @@ function parseMoney(value) {
       || activeTenantContext.tenantKey !== context.tenantKey) {
       return { prepared: false, localPersisted: false, indexedPersisted: false, reason: 'tenant_context_changed' };
     }
+    if (cloudCapacityBlocked && !indexedPersisted) return { prepared:false, localPersisted:false, indexedPersisted:false, reason:'indexeddb_required' };
 
     state = snapshot;
     tenantStateDeferred = false;
@@ -1577,6 +1635,7 @@ function parseMoney(value) {
   window.click360IsTenantStateDeferred = () => tenantStateDeferred;
   window.click360LoadDeferredTenantCache = function() {
     if (!activeTenantContext) return false;
+    if (indexedTenantCacheMeta?.cloudCapacityBlocked) return true;
     state = loadState();
     tenantStateDeferred = false;
     tenantDataHydrated = lastLoadStateWasRealCache;
@@ -1592,9 +1651,17 @@ function parseMoney(value) {
       const candidate = record?.snapshot;
       if (!candidate || !sameTenantIdentity(candidate.identity, context)
         || !tenantRuntime?.validBusinessPayload({ identity: candidate.identity, data: candidate }, context)) return false;
+      // A normal old IDB mirror must not replace a newer LS cache. Capacity
+      // pending snapshots are authoritative locally, even when LS is stale.
+      if (!record.cloudCapacityBlocked && lastPersistedState
+        && Number(candidate.updatedAtMs || 0) < Number(lastPersistedState.updatedAtMs || 0)) return false;
       state = normalizeState(candidate);
       state.identity = tenantIdentity();
       indexedTenantCacheMeta = {
+        cloudCapacityBlocked: record.cloudCapacityBlocked === true,
+        pendingOperations: record.pendingOperations || [],
+        payloadBytes: stateSizeBytes(candidate),
+        deviceRevision: String(record.deviceRevision || ''),
         pendingRemoteSync: record.pendingRemoteSync === true,
         baseRevision: Number(record.baseRevision || record.revision || 0),
         operationId: String(record.operationId || ''),
@@ -1635,8 +1702,21 @@ function parseMoney(value) {
   window.click360GetIndexedTenantCacheMeta = function() {
     return indexedTenantCacheMeta ? { ...indexedTenantCacheMeta } : null;
   };
+  window.click360GetCapacityStatus = function() {
+    const payloadBytes = stateSizeBytes(state);
+    return {
+      payloadBytes, cloudLimitBytes:MAX_LOCAL_TENANT_STATE_BYTES,
+      cloudPayloadBytes:Number(window.click360GetCloudPayloadBytes?.() || payloadBytes),
+      occupancyLevel:payloadBytes >= MAX_LOCAL_TENANT_STATE_BYTES * .95 ? 'critical' : payloadBytes >= MAX_LOCAL_TENANT_STATE_BYTES * .8 ? 'warning' : 'normal',
+      deviceLimitBytes:MAX_LOCAL_ONLY_TENANT_STATE_BYTES, storageMode:storageState.mode,
+      cloudCapacityBlocked:indexedTenantCacheMeta?.cloudCapacityBlocked === true,
+      deviceSavePending,
+      pendingOperations:(indexedTenantCacheMeta?.pendingOperations || []).length
+    };
+  };
   window.click360MarkTenantCacheSynced = function(metadata = {}) {
     if (!activeTenantContext) return Promise.resolve(false);
+    if (indexedTenantCacheMeta?.cloudCapacityBlocked) return Promise.resolve(false);
     indexedTenantCacheMeta = {
       pendingRemoteSync: false,
       baseRevision: Number(metadata.revision || 0),
@@ -1674,7 +1754,7 @@ function parseMoney(value) {
     }
     const key = `${STATE_PREFIX}${context.authUid}:${context.tenantKey}`;
     const corruptKey = `CLICK360_TENANT:${context.tenantKey}:CORRUPT`;
-    if (storageState.localReady === false && storageState.indexedDbReady
+    if ((storageState.localReady === false || indexedTenantCacheMeta?.cloudCapacityBlocked) && storageState.indexedDbReady
       && storageState.mode === 'indexeddb_cache' && storageState.tenantKey === context.tenantKey
       && indexedTenantCacheMeta) {
       return { valid: true, source: 'indexeddb_memory', key, updatedAtMs: Number(state.updatedAtMs || 0), ...indexedTenantCacheMeta };
@@ -1988,6 +2068,8 @@ function parseMoney(value) {
     const rawSyncState = typeof window.click360GetSyncState === 'function'
       ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
     const effectiveStatus = (() => {
+      if (rawSyncState?.cloudCapacityBlocked && rawSyncState.blocking) return 'error';
+      if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) return 'cloud_capacity_blocked';
       if (rawSyncState?.status === 'needs_review') return 'needs_review';
       if (rawSyncState?.status === 'pending_write') return 'pending';
       if (rawSyncState?.status === 'real_conflict') return 'error';
@@ -1995,6 +2077,7 @@ function parseMoney(value) {
       return s.status;
     })();
     const map = {
+      cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. El respaldo cloud requiere almacenamiento modular; no borres los datos del dispositivo.'],
 	      synced: ['Guardado en nube', 'Tus datos están guardados en este dispositivo y confirmados en la nube.'],
 	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
       pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando confirmación de nube.'],
@@ -9504,6 +9587,7 @@ function parseMoney(value) {
 		      appVersion: APP_RELEASE_VERSION,
 		      buildSha: APP_BUILD_SHA && APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__' ? APP_BUILD_SHA : '',
 		      assetVersion: APP_ASSET_VERSION,
+          capacity: window.click360GetCapacityStatus(),
 		      displayMode: syncState.displayMode || (window.matchMedia?.('(display-mode: standalone)')?.matches ? 'standalone' : 'browser'),
 		      route,
 		      activeBusinessId: anonFingerprint(syncState.activeBusinessId || currentBusiness()?.id || state.activeBusinessId),
@@ -12463,9 +12547,7 @@ function parseMoney(value) {
     return true;
   }
   function validateBackupData(data) {
-    const limitBytes = localOnlyPersistenceMode()
-      ? MAX_LOCAL_ONLY_TENANT_STATE_BYTES
-      : MAX_LOCAL_TENANT_STATE_BYTES;
+    const limitBytes = MAX_LOCAL_ONLY_TENANT_STATE_BYTES;
     if (!data || typeof data !== 'object' || stateSizeBytes(data) > limitBytes) return false;
     return tenantRuntime?.validBusinessPayload({ identity: data.identity, data }, activeTenantContext) === true;
   }
@@ -12891,13 +12973,26 @@ function parseMoney(value) {
     if (!isDayStarted()) return toast('Debes iniciar caja diaria antes de registrar abonos', 'err');
     if (isDayClosed()) return toast('La caja de hoy ya está cerrada', 'err');
     const businessId = currentBusiness()?.id;
-    const sale = salesForBiz(businessId).find(s=>s.id === saleId);
+    let sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(!['layaway','pending_payment'].includes(sale.status)) return toast('Esta cuenta no tiene saldo pendiente', 'err');
 
-	  const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
+	  const paymentScope = contextScope();
+	  const paymentDate = today();
+	  const paymentSessionId = currentOpenCashSession(businessId)?.id || '';
 	  const request = await requestLayawayPayment(sale);
 	  if (!request) return;
+	  // Remote hydration can replace the entire object graph while the dialog is open.
+	  // Revalidate context and resolve live records before mutating any payment fields.
+	  if (contextScope() !== paymentScope || currentBusiness()?.id !== businessId
+	      || today() !== paymentDate || !isDayStarted() || isDayClosed()
+	      || (currentOpenCashSession(businessId)?.id || '') !== paymentSessionId) {
+	    return toast('La caja o el negocio cambió. Revisa el estado actual antes de registrar el abono.', 'err');
+	  }
+	  if (!writeGateStatus().allowed) return toast('No se puede registrar el abono hasta conciliar el estado actual.', 'err');
+	  sale = salesForBiz(businessId).find((item) => item.id === saleId);
+	  if (!sale || !['layaway', 'pending_payment'].includes(sale.status)) return toast('Esta cuenta ya no tiene saldo pendiente.', 'err');
+	  const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
 	  const decision = window.CLICK360_V16_DOMAIN?.layawayPaymentDecision(linkedLayaway || sale, request.amount, request.method);
 	  if (!decision?.allowed) return toast(decision?.reason === 'amount_exceeds_balance' ? 'El abono no puede superar el saldo pendiente.' : 'No se pudo validar el abono.', 'err');
 	  const { amount, method } = decision;
