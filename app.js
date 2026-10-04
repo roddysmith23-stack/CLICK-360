@@ -197,6 +197,7 @@
   }
   function writeGateStatus() {
     if (deviceSavePending) return { allowed: false, reason: 'device_save_pending' };
+    if (window.click360IsMixedBuild?.()) return { allowed:false, reason:'client_data_protection' };
     // r37 (legacy consent grace): a legacy owner whose 7-day grace period
     // has expired without accepting the updated Terms/Privacy is blocked
     // from NEW commercial mutations here -- but this must never touch
@@ -223,6 +224,7 @@
   }
   function writeBlockMessage(gate = {}) {
     const reason = String(gate.reason || 'unknown');
+    if (reason === 'client_data_protection') return 'CLICK 360 está terminando de proteger tus datos. No registres cambios todavía.';
     if (reason === 'legal_acceptance_required') return 'Necesitamos que aceptes los Términos y la Política de privacidad actualizados para seguir registrando cambios. Puedes revisarlos y aceptarlos ahora.';
     if (reason === 'read_only') return 'Tu acceso está en modo lectura. Contacta a CLICK 360 para activar tu plan.';
     if (reason === 'pending_remote_sync') return 'Sincronizando cambios...';
@@ -1714,6 +1716,44 @@ function parseMoney(value) {
       pendingOperations:(indexedTenantCacheMeta?.pendingOperations || []).length
     };
   };
+  // Internal, read-only startup/support check. No tenant identifiers, contact
+  // details, tokens or commercial records are exposed or uploaded here.
+  window.click360IsMixedBuild = () => APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__'
+    && ['app.js','firebase-service.js','tenant-quota-overrides.js','v16-storage.js']
+      .some(file => window.CLICK360_RELEASE_ASSETS?.[file] !== APP_BUILD_SHA);
+  window.click360GetClientReadiness = function() {
+    const capacity = window.click360GetCapacityStatus();
+    const sync = window.click360GetSyncState?.({ reason:'client_readiness' }) || {};
+    const access = accessInfo();
+    const entitlements = tenantPlanEntitlements();
+    const pending = indexedTenantCacheMeta?.pendingOperations || [];
+    const mixedBuild = window.click360IsMixedBuild();
+    const syncConflict = sync.status === 'real_conflict' || sync.status === 'needs_review';
+    const unsafeStorage = !!activeTenantContext && capacity.payloadBytes > capacity.cloudLimitBytes
+      && !storageState.indexedDbReady;
+    return Object.freeze({
+      buildSha:APP_BUILD_SHA, assetVersion:APP_ASSET_VERSION,
+      serviceWorkerBuildSha:window.click360ServiceWorkerRelease?.buildSha || null,
+      authenticatedTenant:!!activeTenantContext && !!window.click360User,
+      effectiveAccess:{ mode:access.mode, readOnly:access.readOnly },
+      effectiveLimits:entitlements ? { businesses:entitlements.limits.businesses,
+        workers:entitlements.limits.workerSeatsMax, productsActive:entitlements.limits.productsActive } : null,
+      ...capacity, indexedDbAvailable:storageState.indexedDbReady,
+      pendingOperations:pending.length,
+      // A legacy snapshot journal is not an operation ledger: don't claim
+      // that unknown remote outcomes have been independently reconciled.
+      unknownOperations:Number.isFinite(sync.unknownOperations) ? sync.unknownOperations : null,
+      syncConflict, unsafeStorage, mixedBuild, lastSaveFailure:lastSaveFailure,
+      ready:!!activeTenantContext && !access.readOnly && !deviceSavePending && !syncConflict && !unsafeStorage && !mixedBuild
+    });
+  };
+  const refreshClientReadiness = () => {
+    window.click360ClientReadiness = window.click360GetClientReadiness();
+    if (window.click360ClientReadiness.mixedBuild) toast(writeBlockMessage({reason:'client_data_protection'}),'err');
+  };
+  window.addEventListener('click360:ready', refreshClientReadiness);
+  window.addEventListener('click360-storage-mode', refreshClientReadiness);
+  window.addEventListener('click360-sync-status', refreshClientReadiness);
   window.click360MarkTenantCacheSynced = function(metadata = {}) {
     if (!activeTenantContext) return Promise.resolve(false);
     if (indexedTenantCacheMeta?.cloudCapacityBlocked) return Promise.resolve(false);

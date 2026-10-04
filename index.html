@@ -231,6 +231,14 @@
 <script>
   if ('serviceWorker' in navigator) {
     const hadServiceWorkerController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('message', event => {
+      if (event.data?.type === 'CLICK360_RELEASE_STATUS') {
+        window.click360ServiceWorkerRelease = { buildSha:event.data.buildSha };
+      }
+    });
+    const requestWorkerIdentity = () => navigator.serviceWorker.controller?.postMessage?.({ type:'CLICK360_RELEASE_STATUS' });
+    navigator.serviceWorker.addEventListener('controllerchange', requestWorkerIdentity);
+    requestWorkerIdentity();
     // r37 (Section 5, automatic self-heal): a new active Service Worker
     // means fresh assets are already cached and ready -- the client used to
     // ONLY show a passive "will apply next time you open CLICK 360" toast,
@@ -258,7 +266,8 @@
       // reload while a sync/hydration is actively in flight; defer briefly
       // and only reload once it's genuinely idle (or give up quietly and
       // fall back to the passive "apply on next open" toast).
-      const isSyncBusy = () => window.click360SyncStatus?.status === 'syncing';
+      const isSyncBusy = () => window.click360SyncStatus?.status === 'syncing'
+        || window.click360GetCapacityStatus?.().deviceSavePending === true;
       const stillSafeToReload = () => !isSyncBusy()
         && !document.body.classList.contains('has-modal')
         && (location.hash === '' || location.hash === '#home');

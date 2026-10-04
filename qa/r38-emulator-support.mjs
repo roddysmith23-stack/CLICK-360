@@ -15,7 +15,9 @@ const authPort = Number(process.env.CLICK360_R38_CORE_AUTH_PORT || 49108);
 const projectId = process.env.CLICK360_R38_CORE_PROJECT || 'demo-click360-r38-core';
 if(!/^demo-click360-r38-(core|restaurant)$/.test(projectId))throw new Error('Dedicated emulator project required');
 const apiKey = 'fake-api-key';
-const url = `http://127.0.0.1:${port}/index.html`;
+const hostedUrl = process.env.CLICK360_R38_CORE_HTTP_URL || '';
+if (hostedUrl && !/^https:\/\/click360-staging-7620168025(?:--[a-z0-9-]+)?\.web\.app\//.test(hostedUrl)) throw new Error('Only isolated CLICK360 staging is allowed for hosted synthetic QA');
+const url = hostedUrl || `http://127.0.0.1:${port}/index.html`;
 const rules = readFileSync(path.join(root, 'firestore.rules'), 'utf8');
 const password = 'click360-local-emulator-only';
 const email = `owner-r37-2-4-${Date.now().toString(36)}@example.test`;
@@ -167,8 +169,13 @@ async function readCloud(testEnv, uid) {
 }
 
 async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
-  const context = await browser.newContext({ viewport });
-  await context.addInitScript(({ projectId: targetProject, apiKey: key, firestorePortNumber, authPortNumber }) => {
+  const emulatorOrigin = process.env.CLICK360_R38_EMULATOR_ORIGIN || '';
+  if (emulatorOrigin && !/^https:\/\/127\.0\.0\.1:\d+$/.test(emulatorOrigin)) throw new Error('Only loopback HTTPS emulator origin allowed');
+  const context = await browser.newContext({ viewport, ...(hostedUrl ? {serviceWorkers:'block',ignoreHTTPSErrors:!!emulatorOrigin} : {}) });
+  if (emulatorOrigin && context.browser()?.browserType()?.name() === 'chromium') {
+    await context.grantPermissions(['local-network-access'], { origin:new URL(hostedUrl).origin });
+  }
+  await context.addInitScript(({ projectId: targetProject, apiKey: key, firestorePortNumber, authPortNumber, emulatorOrigin }) => {
     let namespace;
     Object.defineProperty(window, 'firebase', {
       configurable: true,
@@ -180,13 +187,14 @@ async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
         const originalInitializeApp = value.initializeApp.bind(value);
         value.initializeApp = (_config, name) => {
           const app = originalInitializeApp({ apiKey: key, projectId: targetProject, appId: '1:1:web:r3724', authDomain: `${targetProject}.firebaseapp.com`, messagingSenderId: '1' }, name);
-          app.auth().useEmulator(`http://127.0.0.1:${authPortNumber}`, { disableWarnings: true });
+          app.auth().useEmulator(emulatorOrigin || `http://127.0.0.1:${authPortNumber}`, { disableWarnings: true });
           app.firestore().useEmulator('127.0.0.1', firestorePortNumber);
+          if (emulatorOrigin) app.firestore().settings({host:new URL(emulatorOrigin).host,ssl:true});
           return app;
         };
       }
     });
-  }, { projectId, apiKey, firestorePortNumber: firestorePort, authPortNumber: authPort });
+  }, { projectId, apiKey, firestorePortNumber: firestorePort, authPortNumber: authPort, emulatorOrigin });
   return context;
 }
 
@@ -214,6 +222,8 @@ async function openSignedIn(browser, viewport) {
   await page.route('**/*', (route) => {
     const requestUrl = route.request().url();
     const local = requestUrl.startsWith(`http://127.0.0.1:${port}/`)
+      || (hostedUrl && new URL(requestUrl).origin === new URL(hostedUrl).origin)
+      || (process.env.CLICK360_R38_EMULATOR_ORIGIN && requestUrl.startsWith(process.env.CLICK360_R38_EMULATOR_ORIGIN + '/'))
       || requestUrl.startsWith(`http://127.0.0.1:${firestorePort}/`)
       || requestUrl.startsWith(`http://127.0.0.1:${authPort}/`);
     return local ? route.continue() : route.abort();
@@ -241,7 +251,11 @@ async function openSignedIn(browser, viewport) {
   await step('goto', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }));
   await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 }));
   await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
-  await step('hydrated-and-synced', () => page.waitForFunction(() => window.click360IsTenantDataHydrated?.() === true && window.click360SyncStatus?.status === 'synced', { timeout: 60000 }));
+  await step('hydrated-and-synced', () => page.waitForFunction(hosted => window.click360IsTenantDataHydrated?.() === true
+    && (window.click360SyncStatus?.status === 'synced'
+      || (hosted && window.click360GetCapacityStatus?.().cloudCapacityBlocked === true
+        && window.click360GetSyncState?.().blocking === false
+        && window.click360GetStorageState?.().indexedDbReady === true)), !!hostedUrl || process.env.CLICK360_R38_ALLOW_CAPACITY_PENDING === '1', { timeout: 60000 }));
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };

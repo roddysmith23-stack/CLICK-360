@@ -67,7 +67,7 @@ async function run(name, browserType, options = {}) {
         ]);
       });
       const caches = await page.evaluate(() => window.caches.keys());
-      if (!caches.includes('click360-commercial-1-0-5-r38-mvp-candidate')) {
+      if (!caches.includes(`click360-commercial-1-0-5-r38-mvp-candidate-${release.buildSha}`)) {
         throw new Error(`Chromium Service Worker cache mismatch: ${JSON.stringify(caches)}`);
       }
     }
