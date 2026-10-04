@@ -1,20 +1,40 @@
 // Served staging application + REAL demo Auth/Firestore emulators. No production transport.
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
-import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
+import {spawn,execFileSync} from 'node:child_process';
+import {request} from 'node:http';
+import {createServer} from 'node:https';
+import {mkdtemp,mkdir,writeFile,readFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {chromium,webkit} from 'playwright';
 import {initializeTestEnvironment} from '@firebase/rules-unit-testing';
 import {doc,setDoc} from 'firebase/firestore';
-import {root,firestorePort,authPort,projectId,javaDirs,url,rules,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
-assert(url.startsWith('https://click360-staging-7620168025'),'Served isolated staging URL required');
+import {root,port,firestorePort,authPort,projectId,javaDirs,url,rules,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
+assert(url.startsWith('https://click360-staging-7620168025')||url.startsWith('http://127.0.0.1:'),'Only isolated staging or local built artifact allowed');
+process.env.CLICK360_R38_ALLOW_CAPACITY_PENDING='1';
+const server=url.startsWith('http:')?spawn(process.execPath,[path.join(root,'node_modules/http-server/bin/http-server'),'dist','-p',String(port),'-c-1'],{cwd:root,detached:true,stdio:'ignore'}):null;
+let proxy;
+if(url.startsWith('https:')){
+  const tlsDirectory=await mkdtemp(path.join(os.tmpdir(),'click360-demo-tls-'));
+  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',path.join(tlsDirectory,'key.pem'),'-out',path.join(tlsDirectory,'cert.pem'),'-days','1','-subj','/CN=127.0.0.1'],{stdio:'ignore'});
+  proxy=createServer({key:await readFile(path.join(tlsDirectory,'key.pem')),cert:await readFile(path.join(tlsDirectory,'cert.pem'))},(req,res)=>{
+    const targetPort=/^\/(identitytoolkit|securetoken)\.googleapis\.com\//.test(req.url)?authPort:firestorePort;
+    const upstream=request({hostname:'127.0.0.1',port:targetPort,path:req.url,method:req.method,headers:req.headers},response=>{
+      const headers={...response.headers,'access-control-allow-origin':req.headers.origin||new URL(url).origin,'access-control-allow-credentials':'true','access-control-allow-private-network':'true'};
+      res.writeHead(response.statusCode,headers);response.pipe(res);
+    });
+    upstream.on('error',()=>{res.statusCode=502;res.end();});req.pipe(upstream);res.on('close',()=>upstream.destroy());
+  });
+  await new Promise(resolve=>proxy.listen(0,'127.0.0.1',resolve));
+  process.env.CLICK360_R38_EMULATOR_ORIGIN=`https://127.0.0.1:${proxy.address().port}`;
+}
 const config=writeEmulatorConfig();
 const emulators=spawn(path.join(root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',projectId,'--config',config],{cwd:path.dirname(config),detached:true,stdio:'ignore',env:{...process.env,PATH:`${javaDirs.join(':')}:${process.env.PATH}`}});
 let env;
 const results=[];
 try{
   await waitForUrl(`http://127.0.0.1:${firestorePort}/`,'demo Firestore'); await waitForUrl(`http://127.0.0.1:${authPort}/`,'demo Auth');
+  await waitForUrl(url,'served build');
   env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:firestorePort,rules}});
   const uid=await createEmulatorUser();
   for(const [name,engine]of [['WebKit mobile',webkit],['Chromium mobile',chromium]]){
@@ -63,4 +83,4 @@ try{
     }finally{await device.context.close();}
   }
   await mkdir(path.join(root,'output/playwright'),{recursive:true});await writeFile(path.join(root,'output/playwright/founder-hosted-commerce.json'),JSON.stringify({url,results},null,2));
-}finally{await env?.cleanup();stopProcessTree(emulators);}
+}finally{await env?.cleanup();stopProcessTree(emulators);stopProcessTree(server);proxy?.closeAllConnections();if(proxy)await new Promise(resolve=>proxy.close(resolve));}

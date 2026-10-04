@@ -16,15 +16,26 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install chromium firefox webkit
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
       - run: npm run qa:capacity
       - run: npm run qa:capacity:e2e
       - run: npm run build:static
       - run: node qa/founder-opening-readiness-e2e.mjs
+      - run: node qa/founder-hosted-commerce-e2e.mjs
       - name: Preserve a real previous PWA build for upgrade regression
         run: |
           git worktree add --detach "$RUNNER_TEMP/click360-before-founder" 6f83372c89fc44a000a1f30876998d3522dbd6d2
           cd "$RUNNER_TEMP/click360-before-founder"
           node scripts/build-static-release.mjs
+          git worktree add --detach "$RUNNER_TEMP/click360-before-capacity" dc77604d9a9f9dd602a61b24a20c5070eee853c7
+          cd "$RUNNER_TEMP/click360-before-capacity"
+          node scripts/build-static-release.mjs
       - run: node qa/founder-pwa-upgrade-e2e.mjs
         env:
           CLICK360_OLD_BUILD_DIR: ${{ runner.temp }}/click360-before-founder/dist
+      - run: node qa/founder-pwa-upgrade-e2e.mjs
+        env:
+          CLICK360_OLD_BUILD_DIR: ${{ runner.temp }}/click360-before-capacity/dist

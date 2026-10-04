@@ -197,7 +197,7 @@
   }
   function writeGateStatus() {
     if (deviceSavePending) return { allowed: false, reason: 'device_save_pending' };
-    if (window.click360GetClientReadiness?.().mixedBuild) return { allowed:false, reason:'client_data_protection' };
+    if (window.click360IsMixedBuild?.()) return { allowed:false, reason:'client_data_protection' };
     // r37 (legacy consent grace): a legacy owner whose 7-day grace period
     // has expired without accepting the updated Terms/Privacy is blocked
     // from NEW commercial mutations here -- but this must never touch
@@ -1718,15 +1718,16 @@ function parseMoney(value) {
   };
   // Internal, read-only startup/support check. No tenant identifiers, contact
   // details, tokens or commercial records are exposed or uploaded here.
+  window.click360IsMixedBuild = () => APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__'
+    && ['app.js','firebase-service.js','tenant-quota-overrides.js','v16-storage.js']
+      .some(file => window.CLICK360_RELEASE_ASSETS?.[file] !== APP_BUILD_SHA);
   window.click360GetClientReadiness = function() {
     const capacity = window.click360GetCapacityStatus();
     const sync = window.click360GetSyncState?.({ reason:'client_readiness' }) || {};
     const access = accessInfo();
     const entitlements = tenantPlanEntitlements();
     const pending = indexedTenantCacheMeta?.pendingOperations || [];
-    const mixedBuild = APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__'
-      && ['app.js','firebase-service.js','tenant-quota-overrides.js','v16-storage.js']
-        .some(file => window.CLICK360_RELEASE_ASSETS?.[file] !== APP_BUILD_SHA);
+    const mixedBuild = window.click360IsMixedBuild();
     const syncConflict = sync.status === 'real_conflict' || sync.status === 'needs_review';
     const unsafeStorage = !!activeTenantContext && capacity.payloadBytes > capacity.cloudLimitBytes
       && !storageState.indexedDbReady;

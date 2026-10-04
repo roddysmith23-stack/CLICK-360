@@ -38,11 +38,12 @@ try {
       await page.reload();
       await page.waitForFunction(()=>navigator.serviceWorker.controller&&window.CLICK360_V16_STORAGE);
       const identity={authUid:'upgrade-owner',ownerId:'upgrade-owner',businessId:'upgrade-business',tenantKey:'upgrade-owner:upgrade-business'};
-      await page.evaluate(async ctx=>{
+      const beforeRecord = await page.evaluate(async ctx=>{
         localStorage.setItem('qa-valid-local','retain-me');
         await window.CLICK360_V16_STORAGE.putSnapshot(ctx,{products:[{id:'p',stock:4,qty:4}],padding:'x'.repeat(900000)},
-          {cloudCapacityBlocked:true,pendingRemoteSync:true,pendingOperations:['pending-opening'],deviceRevision:'pending-opening'});
+          {cloudCapacityBlocked:true,pendingRemoteSync:true,operationId:'pending-opening',pendingOperations:['pending-opening'],deviceRevision:'pending-opening'});
         location.hash='#cash'; // Existing automatic update must not reload a working form.
+        return window.CLICK360_V16_STORAGE.getSnapshot(ctx);
       },identity);
       active=path.join(root,'dist'); corrupt=true;
       const first=await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration();return new Promise(resolve=>{
@@ -73,8 +74,9 @@ try {
       assert.equal(evidence.build,manifest.buildSha);
       assert.equal(evidence.local,'retain-me');
       assert.equal(evidence.records.snapshot.products[0].stock,4);
-      assert.deepEqual(evidence.records.pendingOperations,['pending-opening']);
-      assert.equal(evidence.records.cloudCapacityBlocked,true);
+      assert.deepEqual(evidence.records,beforeRecord,'upgrade must retain EVERY field written by the actual old schema');
+      assert.equal(evidence.records.pendingRemoteSync,true);
+      assert.equal(evidence.records.operationId,'pending-opening');
       assert(evidence.cacheKeys.some(key=>key.endsWith(manifest.buildSha)));
       results.push({name,from:JSON.parse(await readFile(path.join(oldRoot,'release-manifest.json'))).buildSha,to:manifest.buildSha,result:'PASS'});
       console.log(`PASS ${name}: real old build -> certified release, mixed install rejected, IDB/LS/outbox retained`);

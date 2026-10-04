@@ -16,6 +16,11 @@ const server = external ? null : spawn(process.execPath, [path.join(root, 'node_
 const ctx = { authUid:'synthetic-shary-owner', ownerUid:'synthetic-shary-owner', ownerId:'synthetic-shary-owner', businessId:'synthetic-shary-owner', tenantKey:'owner:synthetic-shary-owner:business:synthetic-shary-owner', schemaVersion:10 };
 async function open(engine, profile, directory) {
   const context = await engine.launchPersistentContext(directory, { ...profile, serviceWorkers:'block' });
+  if (profile.isMobile) await context.addInitScript(() => {
+    Object.defineProperty(navigator,'standalone',{configurable:true,value:true});
+    const native=window.matchMedia.bind(window);
+    window.matchMedia=query=>query==='(display-mode: standalone)' ? {matches:true,media:query,addListener(){},removeListener(){},addEventListener(){},removeEventListener(){}} : native(query);
+  });
   // Fixtures intentionally replace only remote transport. Never contact production.
   await context.route(/googleapis\.com|firebaseio\.com|\/__\/auth\//, route => route.abort());
   const page = context.pages()[0] || await context.newPage();
@@ -53,6 +58,7 @@ try {
       // historical sale/movement/stock remain intact throughout the new opening.
       const before = await page.evaluate(() => {
         const state = window.click360GetTenantState();
+        state.businesses.push({id:'synthetic-secondary',name:'Secondary synthetic business',status:'activo',type:'ropa',settings:{timeZone:'America/Guayaquil'}});
         state.cashSessions.find(s=>s.id==='cash-0903').status='closed';
         window.click360ApplyTenantState(state,window.click360TenantContext);
         return {products:state.products,sales:state.sales,movements:state.movements,closed:state.dailyReports};
