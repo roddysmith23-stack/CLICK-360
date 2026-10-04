@@ -22,9 +22,11 @@
     const workerSeatsMax = sanitizeOverrideLimit(overrides?.workers ?? overrides?.workerSeatsMax);
     const productsActive = sanitizeOverrideLimit(overrides?.productsActive);
     const storageBytes = sanitizeOverrideLimit(overrides?.storageBytes);
-    if (businesses != null) limits.businesses = businesses;
-    if (workerSeatsMax != null) limits.workerSeatsMax = workerSeatsMax;
-    if (productsActive != null) limits.productsActive = productsActive;
+    // Acquired Founder rights are a floor; historical overrides may only expand them.
+    const founder = base.code === 'founder_legacy';
+    if (businesses != null) limits.businesses = founder ? Math.max(2, businesses) : businesses;
+    if (workerSeatsMax != null) limits.workerSeatsMax = founder ? Math.max(2, workerSeatsMax) : workerSeatsMax;
+    if (productsActive != null) limits.productsActive = founder ? Math.max(2000, productsActive) : productsActive;
     if (storageBytes != null) limits.storageBytes = storageBytes;
     return { ...base, limits };
   }

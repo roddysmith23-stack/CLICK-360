@@ -1,5 +1,6 @@
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,6 +61,14 @@ await writeFile(appPath, appSource.replace(
   "const APP_BUILD_SHA = '__CLICK360_BUILD_SHA__';",
   `const APP_BUILD_SHA = '${shortSha}';`
 ));
+const swPath = join(output, 'service-worker.js');
+await writeFile(swPath, (await readFile(swPath, 'utf8')).replace('__CLICK360_SW_BUILD_SHA__', shortSha));
+// Catch a first upgrade boot served partly by an older network-first worker.
+for (const entry of ['app.js', 'firebase-service.js', 'tenant-quota-overrides.js', 'v16-storage.js']) {
+  const file = join(output, entry);
+  const stamp = `globalThis.CLICK360_RELEASE_ASSETS ||= {}; globalThis.CLICK360_RELEASE_ASSETS[${JSON.stringify(entry)}] = ${JSON.stringify(shortSha)};\n`;
+  await writeFile(file, stamp + await readFile(file, 'utf8'));
+}
 
 // r37.1 (P0-A safe update): release-manifest.json (a real, tracked source
 // file -- see build note below) is stamped with the real buildSha. Use an
@@ -77,6 +86,13 @@ if (!generatedAt) {
   }
 }
 manifest.generatedAt = new Date(generatedAt).toISOString();
+manifest.assetHashes = {};
+const swSource = await readFile(swPath, 'utf8');
+const precache = swSource.match(/const ASSETS = \[([\s\S]*?)\];/)[1];
+for (const [, asset] of precache.matchAll(/'\.\/([^']*)'/g)) {
+  const entry = asset || 'index.html';
+  manifest.assetHashes[entry] = createHash('sha256').update(await readFile(join(output, entry))).digest('hex');
+}
 await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
 
 console.log(`CLICK 360 static release: ${files.length} allowlisted entries copied to dist/, release-manifest.json stamped (version=${manifest.version})`);

@@ -2,6 +2,15 @@
 // the Service Worker bytes so installed PWAs fetch and pre-cache the corrected
 // app.js without changing the already-certified R38 cache/version contract.
 const CACHE = 'click360-commercial-1-0-5-r38-mvp-candidate';
+// Build tooling stamps a separate, immutable asset cache for each release.
+// Development keeps the existing cache/network policy below.
+const RELEASE_SHA = '__CLICK360_SW_BUILD_SHA__';
+const RELEASE_CACHE = RELEASE_SHA.startsWith('__') ? CACHE : `${CACHE}-${RELEASE_SHA}`;
+self.addEventListener('message', event => {
+  if (event.data?.type === 'CLICK360_RELEASE_STATUS') {
+    event.source?.postMessage({ type:'CLICK360_RELEASE_STATUS', buildSha:RELEASE_SHA, cache:RELEASE_CACHE });
+  }
+});
 const ASSETS = [
   './',
   './index.html',
@@ -57,10 +66,33 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+  event.waitUntil((async () => {
+    const cache = await caches.open(RELEASE_CACHE);
+    if (RELEASE_CACHE === CACHE) await cache.addAll(ASSETS);
+    else {
+      const manifestResponse = await fetch('./release-manifest.json', { cache:'no-store' });
+      if (!manifestResponse.ok) throw new Error('Release manifest unavailable');
+      const manifest = await manifestResponse.json();
+      if (manifest.buildSha !== RELEASE_SHA || !manifest.assetHashes) throw new Error('Release identity mismatch');
+      // Never activate a partially downloaded or mixed release.
+      await Promise.all(ASSETS.map(async path => {
+        const response = await fetch(path, { cache:'no-store' });
+        if (!response.ok) throw new Error('Asset unavailable: ' + path);
+        const key = path === './' ? 'index.html' : path.slice(2);
+        const digest = await crypto.subtle.digest('SHA-256', await response.clone().arrayBuffer());
+        const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+        if (hash !== manifest.assetHashes[key]) throw new Error('Asset identity mismatch: ' + key);
+        await cache.put(path, response);
+      }));
+    }
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', event => {
+  // Retain earlier versioned caches: an already-open old client must not lose
+  // its offline shell during activation. User data stores are never touched.
+  if (RELEASE_CACHE !== CACHE) { event.waitUntil(self.clients.claim()); return; }
   event.waitUntil(caches.keys().then(keys => Promise.all(keys
     .filter(key => key.startsWith('click360-') && key !== CACHE)
     .map(key => caches.delete(key))
@@ -81,6 +113,19 @@ self.addEventListener('fetch', event => {
   // state (a stale/broken worker answering from its own cache would defeat
   // the entire point of the check), so it gets the same bypass.
   if (url.pathname.endsWith('/repair.html') || url.pathname.endsWith('/release-manifest.json')) return;
+
+  if (RELEASE_CACHE !== CACHE && url.origin === location.origin) {
+    event.respondWith(caches.open(RELEASE_CACHE).then(async cache => {
+      const match = await cache.match(request, { ignoreSearch:true });
+      if (match) return match;
+      if (request.mode === 'navigate' && (url.pathname === '/' || url.pathname.endsWith('/index.html'))) {
+        const shell = await cache.match('./index.html');
+        if (shell) return shell;
+      }
+      return fetch(request);
+    }));
+    return;
+  }
 
   if (request.mode === 'navigate') {
     event.respondWith(
