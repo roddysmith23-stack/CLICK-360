@@ -14,6 +14,12 @@ assert.equal(founderDefault.limits.workerSeatsMax, 2);
 assert.equal(founderDefault.limits.productsActive, 2000);
 assert.deepEqual(domain.PLAN_CATALOG.founder_legacy.limits, catalogBefore,
   'effective Founder contract must not mutate the frozen shared catalog');
+for(const productsActive of [1,600,1200,1600,1900,1999,2000]){
+  const acquired=quota.planEntitlements(domain,'founder_legacy',{businesses:1,workers:1,productsActive});
+  assert.equal(acquired.limits.businesses,2);assert.equal(acquired.limits.workerSeatsMax,2);
+  assert.equal(acquired.limits.productsActive,2000,'old overrides cannot reduce acquired Founder rights');
+}
+assert.equal(quota.planEntitlements(domain,'base',{productsActive:600}).limits.productsActive,600,'other plans retain existing override policy');
 
 const overridden = quota.planEntitlements(domain, 'founder_legacy', {
   businesses:12,

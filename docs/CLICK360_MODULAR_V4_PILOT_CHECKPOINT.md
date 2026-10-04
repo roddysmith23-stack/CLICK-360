@@ -6,6 +6,8 @@ Selective provenance: #91 `2a7d35eb9405aa80288afdc8300c72ff69c10b1a`: transactio
 
 Owner-approved future modular canonical contract is `modular-capacity-policy.js`: Founder 2 businesses / 2 workers / 2000 active products + 100 MiB structured data. 1200/1600/1900 are advisory, never cash/sync gates. 75/90/100 MiB levels are informational; usage must first be independently certified. Not loaded by legacy UI, no account writes and no pricing changes. Existing frozen core and `tenant-quota-overrides` remain the temporary legacy bridge.
 
+Fresh read-only entitlement check found a stale real-account product override of 600. Production #90 still honors that old override, so do not claim the customer already has 2000 effective products there. V4's reviewed bridge now treats acquired Founder 2/2/2000 as a floor while retaining authorized expansions and unchanged non-Founder behavior. No entitlement document was edited, no account name is coded, frozen catalog unchanged, 100 MiB not injected into legacy Firestore guards. This code change requires its own full CI and approved release before taking effect in production; the bridge remains temporary pending canonical modular policy activation.
+
 ## Mandatory completion matrix (not an activation certificate)
 
 | Gate | Current status |
