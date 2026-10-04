@@ -15,7 +15,9 @@ const authPort = Number(process.env.CLICK360_R38_CORE_AUTH_PORT || 49108);
 const projectId = process.env.CLICK360_R38_CORE_PROJECT || 'demo-click360-r38-core';
 if(!/^demo-click360-r38-(core|restaurant)$/.test(projectId))throw new Error('Dedicated emulator project required');
 const apiKey = 'fake-api-key';
-const url = `http://127.0.0.1:${port}/index.html`;
+const hostedUrl = process.env.CLICK360_R38_CORE_HTTP_URL || '';
+if (hostedUrl && !/^https:\/\/click360-staging-7620168025(?:--[a-z0-9-]+)?\.web\.app\//.test(hostedUrl)) throw new Error('Only isolated CLICK360 staging is allowed for hosted synthetic QA');
+const url = hostedUrl || `http://127.0.0.1:${port}/index.html`;
 const rules = readFileSync(path.join(root, 'firestore.rules'), 'utf8');
 const password = 'click360-local-emulator-only';
 const email = `owner-r37-2-4-${Date.now().toString(36)}@example.test`;
@@ -167,7 +169,7 @@ async function readCloud(testEnv, uid) {
 }
 
 async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
-  const context = await browser.newContext({ viewport });
+  const context = await browser.newContext({ viewport, ...(hostedUrl ? {serviceWorkers:'block'} : {}) });
   await context.addInitScript(({ projectId: targetProject, apiKey: key, firestorePortNumber, authPortNumber }) => {
     let namespace;
     Object.defineProperty(window, 'firebase', {
@@ -214,6 +216,7 @@ async function openSignedIn(browser, viewport) {
   await page.route('**/*', (route) => {
     const requestUrl = route.request().url();
     const local = requestUrl.startsWith(`http://127.0.0.1:${port}/`)
+      || (hostedUrl && new URL(requestUrl).origin === new URL(hostedUrl).origin)
       || requestUrl.startsWith(`http://127.0.0.1:${firestorePort}/`)
       || requestUrl.startsWith(`http://127.0.0.1:${authPort}/`);
     return local ? route.continue() : route.abort();
