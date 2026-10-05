@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
+import {readFile} from 'node:fs/promises';
 import {initializeApp,deleteApp} from 'firebase/app';
 import {getAuth,connectAuthEmulator,signInAnonymously} from 'firebase/auth';
 import {getFirestore,connectFirestoreEmulator,doc,setDoc,getDocFromServer,getDocsFromServer,collection,serverTimestamp} from 'firebase/firestore';
@@ -14,6 +15,7 @@ const app=initializeApp({projectId,apiKey:'synthetic-emulator-only-key'},'synthe
 const auth=getAuth(app),db=getFirestore(app);
 connectAuthEmulator(auth,'http://127.0.0.1:59099',{disableWarnings:true});connectFirestoreEmulator(db,'127.0.0.1',58080);
 const endpoint=`http://127.0.0.1:55001/${projectId}/us-central1/finalizeCloudSafetyBackup`;
+const buildSha=JSON.parse(await readFile('dist/release-manifest.json','utf8')).buildSha;
 async function call(data,token){
   const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify({data})});
   return {status:response.status,data:await response.json()};
@@ -25,7 +27,7 @@ try{
   const context={authUid:owner,ownerId:owner,businessId:owner,tenantKey:`owner:${owner}:business:${owner}`};
   const api=globalThis.CLICK360_CLOUD_SAFETY;
   const record={...context,schemaVersion:10,deviceRevision:'pending-op',pendingOperations:['pending-op','unknown-op'],snapshot:{identity:{ownerUid:owner,tenantKey:context.tenantKey},businesses:[{id:'alpha'},{id:'beta'}],products:[{id:'p',businessId:'alpha',stock:19}],sales:[],movements:[],settings:{padding:'x'.repeat(900000)}}};
-  const prepared=await api.prepare(context,record,{deviceId:'synthetic-http-device',sequence:1,buildSha:'676aba896f4d'});
+  const prepared=await api.prepare(context,record,{deviceId:'synthetic-http-device',sequence:1,buildSha});
   const path=`businesses/${owner}/safetyBackups/${prepared.manifest.backupId}`;
   const transport={
     getManifest:async id=>{const snap=await getDocFromServer(doc(db,`businesses/${owner}/safetyBackups/${id}`));return snap.exists()?snap.data():null;},
@@ -40,10 +42,17 @@ try{
   assert.deepEqual(await api.reconstruct(confirmed,await transport.getParts(prepared.manifest.backupId)),record);
   assert.equal((await call({backupId:prepared.manifest.backupId},token)).status,200);
   assert.equal((await adminDb.doc(`businesses/${owner}/state/main`).get()).exists,false);
-  const incomplete=await api.prepare(context,{...record,deviceRevision:'incomplete'},{deviceId:'synthetic-http-device',sequence:2,buildSha:'676aba896f4d'});
+  const incomplete=await api.prepare(context,{...record,deviceRevision:'incomplete'},{deviceId:'synthetic-http-device',sequence:2,buildSha});
   await transport.begin(incomplete.manifest);
   assert.equal((await call({backupId:incomplete.manifest.backupId},token)).status,400);
   assert.equal((await transport.getManifest(incomplete.manifest.backupId)).status,'UPLOADING');
   assert.equal((await call({backupId:'b'.repeat(64),ownerUid:owner},token)).status,400);
+  const largeRecord={...record,deviceRevision:'large-7MiB',snapshot:{...record.snapshot,settings:{padding:'x'.repeat(7*1024*1024)}}};
+  const large=await api.prepare(context,largeRecord,{deviceId:'synthetic-http-device',sequence:3,buildSha});
+  assert(large.chunks.every(part=>Buffer.byteLength(JSON.stringify(part))<300000));
+  const largeConfirmation=await api.upload(large,transport);
+  assert.deepEqual(await api.reconstruct(largeConfirmation,await transport.getParts(large.manifest.backupId)),largeRecord);
+  assert.equal((await adminDb.doc(`businesses/${owner}/state/main`).get()).exists,false);
+  console.log('PASS 7 MiB actual client Rules + callable/server readback: bounded documents, exact reconstruction, no legacy write');
   console.log('PASS callable HTTP + real Auth/client Rules: unauth denied, server SHA reconstruction, forged owner ignored, lost response reconciled, incomplete/missing denied, no legacy commercial writes');
 }finally{await deleteApp(app);await admin.deleteApp(adminApp);}
