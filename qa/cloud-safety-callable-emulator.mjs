@@ -47,12 +47,13 @@ try{
   assert.equal((await call({backupId:incomplete.manifest.backupId},token)).status,400);
   assert.equal((await transport.getManifest(incomplete.manifest.backupId)).status,'UPLOADING');
   assert.equal((await call({backupId:'b'.repeat(64),ownerUid:owner},token)).status,400);
-  const largeRecord={...record,deviceRevision:'large-7MiB',snapshot:{...record.snapshot,settings:{padding:'x'.repeat(7*1024*1024)}}};
+  const largeRecord={...record,deviceRevision:'large-7MiB',snapshot:{...record.snapshot,
+    businesses:[...record.snapshot.businesses,...Array.from({length:23},(_,i)=>({id:`enterprise-${i}`}))],settings:{padding:'x'.repeat(7*1024*1024)}}};
   const large=await api.prepare(context,largeRecord,{deviceId:'synthetic-http-device',sequence:3,buildSha});
   assert(large.chunks.every(part=>Buffer.byteLength(JSON.stringify(part))<300000));
   const largeConfirmation=await api.upload(large,transport);
   assert.deepEqual(await api.reconstruct(largeConfirmation,await transport.getParts(large.manifest.backupId)),largeRecord);
   assert.equal((await adminDb.doc(`businesses/${owner}/state/main`).get()).exists,false);
-  console.log('PASS 7 MiB actual client Rules + callable/server readback: bounded documents, exact reconstruction, no legacy write');
+  console.log('PASS 7 MiB / Enterprise 25 businesses actual client Rules + callable/server readback: bounded documents, exact reconstruction, no legacy write');
   console.log('PASS callable HTTP + real Auth/client Rules: unauth denied, server SHA reconstruction, forged owner ignored, lost response reconciled, incomplete/missing denied, no legacy commercial writes');
 }finally{await deleteApp(app);await admin.deleteApp(adminApp);}

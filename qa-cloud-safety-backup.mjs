@@ -18,6 +18,14 @@ for(const bytes of [850000,860000,1048576,1258291,3145728,7340032]){
   console.log('PASS cloud safety canonical reconstruction / corrupt-missing-hash rejection / business partition:',bytes);
 }
 await assert.rejects(api.prepare({...context,authUid:'other-owner'},fixture(860000),options));
+// Independent commercial contract: the frozen Enterprise plan includes 25
+// businesses. Archive scopes cannot introduce a hidden lower business quota.
+const enterprise=fixture(860000);
+enterprise.snapshot.businesses.push(...Array.from({length:23},(_,i)=>({id:`enterprise-${i}`})));
+const enterprisePrepared=await api.prepare(context,enterprise,options);
+assert.equal(enterprisePrepared.manifest.businessIds.length,25);
+assert.deepEqual(await api.reconstruct(enterprisePrepared.manifest,enterprisePrepared.chunks),enterprise);
+console.log('PASS frozen Enterprise 25-business contract: all logical scopes preserved, no new commercial quota');
 await assert.rejects(api.prepare(context,fixture(8*1024*1024+1),options));
 await assert.rejects(api.prepare(context,{...fixture(1),unsafeNativeDate:new Date()},options),/unsupported_snapshot_object_type/);
 const prepared=await api.prepare(context,fixture(860000),options),parts=new Map();let manifest,creates=0,failOnce=true;

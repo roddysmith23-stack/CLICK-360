@@ -92,7 +92,7 @@
     const {createdAt,completedAt,...boundedManifest}=manifest;
     if(!Number.isSafeInteger(manifest.payloadBytes)||manifest.payloadBytes<1||manifest.payloadBytes>LIMIT+128*1024
       ||!Number.isSafeInteger(manifest.partCount)||manifest.partCount<1||manifest.partCount>96
-      ||!Array.isArray(manifest.scopes)||manifest.scopes.length>16
+      ||!Array.isArray(manifest.scopes)||manifest.scopes.length>96
       ||encoder.encode(json(boundedManifest)).length>60000)fail('backup_manifest_limit_exceeded');
     if(json(manifest.scopeIds)!==json(manifest.scopes.map(s=>s.scopeId))
       ||new Set(manifest.scopeIds).size!==manifest.scopeIds.length)fail('backup_scope_list_mismatch');

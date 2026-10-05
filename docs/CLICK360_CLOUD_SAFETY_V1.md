@@ -10,6 +10,8 @@ La copia local mantiene 8 MiB; `state/main` mantiene 850000 bytes. Founder adqui
 
 Firestore fragmentado fue elegido porque las dos denominaciones del bucket de producción inspeccionadas devolvieron 404. No se introduce un bucket ni permisos de Storage innecesarios. Cada fragmento tiene como máximo 180000 bytes crudos; su documento codificado permanece por debajo de 300000 bytes. El manifiesto está acotado a 60000 bytes y 96 fragmentos.
 
+La revisión contra el catálogo congelado encontró y reprodujo un guard inicial de 16 scopes incompatible con Enterprise (25 negocios incluidos). Se corrigió a un máximo de 96 scopes, derivado del mismo presupuesto de 96 partes, no de una cuota comercial nueva. Se prueba Enterprise completo con 7 MiB mediante Rules cliente y verificador HTTP. El archivo conserva los límites de tamaño anteriores; nunca aumenta la capacidad de `state/main` ni modifica derechos adquiridos.
+
 ## Identidad y privacidad
 
 `businesses/{ownerUid}/safetyBackups/{backupId}/parts/{partId}`. Las filas se separan por negocio, manteniendo sus posiciones originales; configuraciones compartidas y filas huérfanas no se descartan. Como el snapshot legacy puede incluir varios negocios, el archivo completo es privado del propietario. Un trabajador no obtiene acceso a los negocios hermanos. El journal modular necesita autorización separada por negocio; no se amplían permisos legacy para resolverlo.

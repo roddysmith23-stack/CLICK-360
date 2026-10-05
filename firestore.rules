@@ -1450,9 +1450,9 @@ service cloud.firestore {
         && request.resource.data.schemaVersion == 10
         && request.resource.data.scopes is list
         && request.resource.data.scopeIds is list
-        && request.resource.data.scopeIds.size() <= 16
+        && request.resource.data.scopeIds.size() <= 96
         && request.resource.data.businessIds is list
-        && request.resource.data.businessIds.size() <= 15
+        && request.resource.data.businessIds.size() <= 95
         && request.resource.data.payloadSha256.matches('[a-f0-9]{64}')
         && request.resource.data.canonicalMaterialHash.matches('[a-f0-9]{64}')
         && request.resource.data.deviceId.matches('[a-zA-Z0-9_-]{8,96}')
