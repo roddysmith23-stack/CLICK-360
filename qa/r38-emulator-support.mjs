@@ -37,6 +37,20 @@ function stopProcessTree(child) {
   }
 }
 
+async function stopProcessTreeAndWait(child) {
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+  // Firebase launches Java in its own process group. Killing the CLI group
+  // without awaiting its shutdown can orphan Java and poison the next test.
+  let timer;
+  try {
+    await new Promise((resolve, reject) => {
+      child.once('close', resolve);
+      timer = setTimeout(() => reject(new Error(`Owned QA process ${child.pid} did not shut down gracefully`)), 15000);
+      child.kill('SIGTERM');
+    });
+  } finally { clearTimeout(timer); }
+}
+
 async function waitForUrl(target, label) {
   for (let attempt = 0; attempt < 180; attempt += 1) {
     try { if ((await fetch(target)).ok) return; } catch {}
@@ -361,4 +375,4 @@ function writeEmulatorConfig() {
 }
 
 
-export {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,identity,assert,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig};
+export {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,identity,assert,stopProcessTree,stopProcessTreeAndWait,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig};

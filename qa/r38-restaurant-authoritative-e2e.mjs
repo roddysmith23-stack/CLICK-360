@@ -64,4 +64,4 @@ try{
   if(env&&uid)diagnostics.cloud=await h.readCloud(env,uid).catch(()=>null);
   const dir=path.join(h.root,'output/playwright/r38-restaurant');mkdirSync(dir,{recursive:true});writeFileSync(path.join(dir,'failure.json'),JSON.stringify(diagnostics,null,2));
   throw error;
-}finally{await browser?.close();await env?.cleanup();h.stopProcessTree(server);h.stopProcessTree(emulators);}
+}finally{await browser?.close();await env?.cleanup();await Promise.all([h.stopProcessTreeAndWait(server),h.stopProcessTreeAndWait(emulators)]);}

@@ -38,6 +38,10 @@ Cada ejecución prueba puertos aislados cerrados antes/después; `emulators:exec
 
 Cancelaciones sin pasos tienen anotación de GitHub: runner no adquirido tras varios intentos. Se fijaron imágenes ubuntu-24.04/macOS-15 Intel y se escalonaron requests de runners manteniendo nombres, assertions y gate final obligatorio. Ningún cancelado cuenta como PASS.
 
+El fallo de `labels-e2e` en 412fcea fue `one abono` en WebKit 390, no impresión. La prueba ahora espera la promesa de la mutación real antes de exigir el resultado servidor; no reintenta el abono ni elimina assertions. Se valida por separado del timeout de segundo reinicio: no se declara que ambos tengan la misma causa.
+
+Una reproducción local adicional encontró un Java Firestore huérfano después del timeout de arranque de Auth. Firebase crea Java en un grupo propio; el cleanup anterior señalaba el grupo del CLI y regresaba sin esperar. La matriz comercial ahora pide SIGTERM al CLI y espera su cierre ordenado, permitiéndole terminar sus emuladores hijos. Un fallo de shutdown es un error de prueba, no PASS. No se aumentan deadlines de operaciones.
+
 ## Preparación de staging (no ejecutar todavía)
 
 Primero todos los controles del HEAD exacto deben estar verdes. Inspeccionar HEAD y diff, árbol limpio, build exacto y rollback. Estos comandos son un plan, no evidencia de deploy:
