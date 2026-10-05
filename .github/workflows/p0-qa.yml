@@ -7,6 +7,7 @@ on:
 
 jobs:
   changes:
+    needs: web-runtime-qa
     runs-on: ubuntu-24.04
     outputs:
       admin: ${{ steps.scope.outputs.admin }}
@@ -58,6 +59,7 @@ jobs:
           ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- . ':!fixtures/**' ':!vendor/**' ':!.github/workflows/p0-qa.yml'
 
   web-audit:
+    needs: web-runtime-qa
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +71,7 @@ jobs:
       - run: npm audit --omit=dev --audit-level=moderate
 
   web-rules-qa:
+    needs: changes
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +87,7 @@ jobs:
       - run: npm run qa:rules
 
   web-simulators:
+    needs: web-audit
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -96,6 +100,7 @@ jobs:
       - run: npm run qa:simulator:full
 
   labels-e2e:
+    needs: web-runtime-qa
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -124,6 +129,7 @@ jobs:
           exit 1
 
   inventory-conflict-e2e:
+    needs: labels-e2e
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -141,6 +147,7 @@ jobs:
         run: node qa/r37-2-5-two-device-same-product-conflict-e2e.mjs
 
   recovery-tooling:
+    needs: web-simulators
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
