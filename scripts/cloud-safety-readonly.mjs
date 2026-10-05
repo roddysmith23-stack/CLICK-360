@@ -7,6 +7,7 @@ import {connectAdmin} from './lib/firebase-admin-connect.mjs';
 import '../cloud-safety-backup.js';
 const args=Object.fromEntries(process.argv.slice(2).map(arg=>{const [key,...value]=arg.replace(/^--/,'').split('=');return [key,value.join('=')||true];}));
 if(args['read-only']!==true||!args.project||!args.owner)throw Error('Required: --read-only --project=<project> --owner=<owner>.');
+if(String(args.owner).includes('/')||String(args.owner).length>128)throw Error('Invalid owner identity.');
 const db=await connectAdmin(String(args.project),'cloud-safety-readonly'),owner=db.collection('businesses').doc(String(args.owner));
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const archives=await owner.collection('safetyBackups').get();

@@ -27,6 +27,7 @@ async function retainRecent(db,parent){
   });
 }
 async function verify(db,ownerUid,backupId){
+  if(typeof ownerUid!=='string'||!ownerUid||ownerUid.length>128||ownerUid.includes('/'))reject('invalid-owner-identity');
   if(!/^[a-f0-9]{64}$/.test(backupId||''))reject('invalid-backup-id');
   const parent=db.doc(`businesses/${ownerUid}`),ref=parent.collection('safetyBackups').doc(backupId);
   const captured=await ref.get(),manifest=captured.data();
