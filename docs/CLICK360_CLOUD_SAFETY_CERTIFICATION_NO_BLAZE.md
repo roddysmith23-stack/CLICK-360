@@ -42,6 +42,8 @@ El fallo de `labels-e2e` en 412fcea fue `one abono` en WebKit 390, no impresión
 
 Una reproducción local adicional encontró un Java Firestore huérfano después del timeout de arranque de Auth. Firebase crea Java en un grupo propio; el cleanup anterior señalaba el grupo del CLI y regresaba sin esperar. La matriz comercial ahora pide SIGTERM al CLI y espera su cierre ordenado, permitiéndole terminar sus emuladores hijos. Un fallo de shutdown es un error de prueba, no PASS. No se aumentan deadlines de operaciones.
 
+La actualización PWA reprodujo además una espera incorrecta de QA: observar solamente `updatefound` futuro ignora un worker ya instalándose. La regresión inicia primero el update, registra el estado del worker existente y luego observa su activación; exige un mensaje del worker activo con el SHA esperado. Tres repeticiones en Chromium/WebKit conservaron íntegramente IndexedDB, localStorage y outbox; el release mezclado sigue rechazándose. No se altera el worker productivo ni el motor Safe Update congelado para corregir el observador del test.
+
 ## Preparación de staging (no ejecutar todavía)
 
 Primero todos los controles del HEAD exacto deben estar verdes. Inspeccionar HEAD y diff, árbol limpio, build exacto y rollback. Estos comandos son un plan, no evidencia de deploy:

@@ -54,14 +54,54 @@ try {
       assert.equal(first,'rejected','mixed release must fail installation, preserving old worker');
       assert.equal(await page.evaluate(()=>localStorage.getItem('qa-valid-local')),'retain-me');
       corrupt=false;
-      await page.evaluate(async()=>{
+      const activation=await page.evaluate(async expectedSha=>{
         const reg=await navigator.serviceWorker.getRegistration();
-        await new Promise((resolve,reject)=>{
-          const timer=setTimeout(()=>reject(Error('activation timeout')),30000);
-          reg.addEventListener('updatefound',()=>{const worker=reg.installing;worker.addEventListener('statechange',()=>{if(worker.state==='activated'){clearTimeout(timer);resolve();}});},{once:true});
-          reg.update().catch(reject);
+        // Reproduce an update that already started (e.g. automatic update).
+        // A listener for FUTURE updatefound alone misses this worker entirely.
+        let startTimer,onFound,rejectStart,updateFoundBeforeListener=false;
+        const started=new Promise((resolve,reject)=>{
+          rejectStart=reject;
+          onFound=()=>{updateFoundBeforeListener=true;resolve();};reg.addEventListener('updatefound',onFound,{once:true});
+          startTimer=setTimeout(()=>reject(Error('update did not start')),30000);
+          if(reg.installing&&reg.installing.state!=='redundant')resolve();
         });
-      });
+        const update=reg.update();
+        update.catch(rejectStart);
+        try{await started;}finally{clearTimeout(startTimer);reg.removeEventListener('updatefound',onFound);}
+        const existing=reg.installing||reg.waiting||reg.active;
+        const initialState=existing?.state;
+        await new Promise((resolve,reject)=>{
+          const tracked=new Map();let finished=false;
+          const finish=(error)=>{
+            if(finished)return;finished=true;clearTimeout(timer);
+            reg.removeEventListener('updatefound',found);
+            navigator.serviceWorker.removeEventListener('message',message);
+            for(const [worker,listener]of tracked)worker.removeEventListener('statechange',listener);
+            error?reject(error):resolve();
+          };
+          const message=event=>{
+            if(event.data?.type==='CLICK360_RELEASE_STATUS'&&event.data.buildSha===expectedSha
+              &&event.source===reg.active&&reg.active?.state==='activated')finish();
+          };
+          const track=worker=>{
+            if(!worker||tracked.has(worker))return;
+            const state=()=>{
+              if(worker.state==='activated')worker.postMessage({type:'CLICK360_RELEASE_STATUS'});
+              else if(worker.state==='redundant')finish(Error('new release worker rejected'));
+            };
+            tracked.set(worker,state);worker.addEventListener('statechange',state);state();
+          };
+          const found=()=>track(reg.installing);
+          const timer=setTimeout(()=>finish(Error(`activation timeout: ${JSON.stringify({initialState,installing:reg.installing?.state,waiting:reg.waiting?.state,active:reg.active?.state})}`)),30000);
+          navigator.serviceWorker.addEventListener('message',message);
+          reg.addEventListener('updatefound',found);
+          track(existing);
+          update.then(()=>track(reg.installing||reg.waiting||reg.active),finish);
+        });
+        return {initialState,existingWorkerHandled:!!existing,updateFoundBeforeListener,confirmedSha:expectedSha};
+      },manifest.buildSha);
+      assert.equal(activation.existingWorkerHandled,true);
+      assert.equal(activation.confirmedSha,manifest.buildSha,'activation requires the exact new worker, never the old active worker');
       assert.equal(await page.evaluate(()=>location.hash),'#cash');
       await page.close();
       page=await context.newPage(); await page.goto(url,{waitUntil:'domcontentloaded'});
@@ -78,7 +118,7 @@ try {
       assert.equal(evidence.records.pendingRemoteSync,true);
       assert.equal(evidence.records.operationId,'pending-opening');
       assert(evidence.cacheKeys.some(key=>key.endsWith(manifest.buildSha)));
-      results.push({name,from:JSON.parse(await readFile(path.join(oldRoot,'release-manifest.json'))).buildSha,to:manifest.buildSha,result:'PASS'});
+      results.push({name,from:JSON.parse(await readFile(path.join(oldRoot,'release-manifest.json'))).buildSha,to:manifest.buildSha,activation,result:'PASS'});
       console.log(`PASS ${name}: real old build -> certified release, mixed install rejected, IDB/LS/outbox retained`);
     }finally{await browser.close();}
   }
