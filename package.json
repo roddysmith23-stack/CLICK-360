@@ -8,6 +8,7 @@
     "qa:modular:policy": "node qa-modular-capacity-policy.mjs && node qa-modular-shadow-plan.mjs",
     "qa:modular:shadow": "firebase emulators:exec --only firestore --project demo-click360-modular-capacity --config qa/fixtures/modular-emulator.json 'node qa-modular-shadow-emulator.mjs'",
     "qa:modular:coordinator": "node --check modular-operation-coordinator.js && node qa-modular-coordinator-e2e.mjs",
+    "qa:modular:ui": "node --check modular-ui-adapter.js && node qa-modular-ui-adapter-e2e.mjs",
     "qa:modular:journal": "node --check modular-operation-journal.js && node qa-modular-journal-e2e.mjs",
     "qa:modular-persistence": "node --check modular-persistence.js && node qa-modular-persistence-v2-harness.cjs",
     "qa:modular:emulator": "firebase emulators:exec --only firestore --project demo-click360-modular-capacity --config qa/fixtures/modular-emulator.json 'node qa-modular-persistence-emulator.mjs'",

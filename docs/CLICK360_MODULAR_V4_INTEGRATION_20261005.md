@@ -9,6 +9,8 @@ El repositorio transaccional, journal, coordinador, importer shadow nativo, comp
 
 El harness portado pasó: venta/movimiento/stock idempotentes, cierre exacto compacto, respuesta perdida, aislamiento, flag por negocio y lectura acotada con 5000 ventas + 5000 movimientos + 5000 auditorías. Esto no certifica todavía Rules cliente modulares, UI ni cutover.
 
+Se añadió la frontera DEV de UI `modular-ui-adapter.js`: enqueue durable antes del envío, doble clic con identidad/payload estable, replay acotado, revisión autoritativa incluso para un journal previamente confirmado, estados PENDING/UNKNOWN/CONFIRMED y rechazo de cambios de tenant. Pasó en Chromium/WebKit/Firefox con IndexedDB real y transporte transaccional sintético. Todavía no está conectada a los formularios productivos ni certifica el backend real. Las proyecciones deben ser upsert por operationId/recordId, nunca append ciego.
+
 Prioridad de integración: adapters explícitos de comandos comerciales → journal durable → reconciliación server ledger → proyección UI/paginación → importer de fuente reconciliada → Rules cliente/fence → staging y ensayo forward-safe. Ninguna operación UNKNOWN autoriza replay ciego. Un archivo de seguridad no constituye sincronización operacional.
 
 Fuente de una migración real: legacy remoto + último respaldo COMPLETE del dispositivo + outbox + operaciones confirmadas, nunca el legacy antiguo por sí solo. Sin respaldo actualizado e igualdad semántica independiente, el piloto sigue bloqueado.
