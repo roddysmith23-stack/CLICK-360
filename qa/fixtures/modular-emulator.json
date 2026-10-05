@@ -1,0 +1,2 @@
+{"firestore":{"rules":"modular-emulator.rules"},"emulators":{"firestore":{"host":"127.0.0.1","port":48940,"websocketPort":48941},"hub":{"host":"127.0.0.1","port":48942},"logging":{"host":"127.0.0.1","port":48943},"ui":{"enabled":false},"singleProjectMode":true}}
+
