@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "qa:safety-backup": "node --check cloud-safety-backup.js && node --check cloud-safety-backup-client.js && node --check functions/index.cjs && node --check functions/safety-verifier.cjs && node qa-cloud-safety-backup.mjs",
+    "qa:safety-backup:e2e": "node qa/cloud-safety-durable-e2e.mjs",
     "build:static": "node scripts/build-static-release.mjs",
     "qa:capacity": "node qa-device-cloud-capacity-harness.mjs",
     "qa:capacity:e2e": "node qa/device-cloud-capacity-e2e.mjs",

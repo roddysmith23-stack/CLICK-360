@@ -1719,7 +1719,7 @@ function parseMoney(value) {
   // Internal, read-only startup/support check. No tenant identifiers, contact
   // details, tokens or commercial records are exposed or uploaded here.
   window.click360IsMixedBuild = () => APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__'
-    && ['app.js','firebase-service.js','tenant-quota-overrides.js','v16-storage.js']
+    && ['app.js','firebase-service.js','tenant-quota-overrides.js','v16-storage.js','cloud-safety-backup.js','cloud-safety-backup-client.js']
       .some(file => window.CLICK360_RELEASE_ASSETS?.[file] !== APP_BUILD_SHA);
   window.click360GetClientReadiness = function() {
     const capacity = window.click360GetCapacityStatus();
@@ -1739,6 +1739,10 @@ function parseMoney(value) {
       effectiveLimits:entitlements ? { businesses:entitlements.limits.businesses,
         workers:entitlements.limits.workerSeatsMax, productsActive:entitlements.limits.productsActive } : null,
       ...capacity, indexedDbAvailable:storageState.indexedDbReady,
+      safetyBackup:{status:window.click360CloudSafetyStatus?.status || 'PENDING',
+        payloadSha256:window.click360CloudSafetyStatus?.payloadSha256 || null,
+        completedAt:window.click360CloudSafetyStatus?.completedAt || null,
+        errorCode:window.click360CloudSafetyStatus?.errorCode || null},
       pendingOperations:pending.length,
       // A legacy snapshot journal is not an operation ledger: don't claim
       // that unknown remote outcomes have been independently reconciled.
@@ -2109,7 +2113,11 @@ function parseMoney(value) {
       ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
     const effectiveStatus = (() => {
       if (rawSyncState?.cloudCapacityBlocked && rawSyncState.blocking) return 'error';
-      if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) return 'cloud_capacity_blocked';
+      if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) {
+        if (window.click360CloudSafetyStatus?.status === 'CONFIRMED') return 'cloud_safety_confirmed';
+        if (window.click360CloudSafetyStatus?.status === 'UPLOADING') return 'cloud_safety_uploading';
+        return 'cloud_capacity_blocked';
+      }
       if (rawSyncState?.status === 'needs_review') return 'needs_review';
       if (rawSyncState?.status === 'pending_write') return 'pending';
       if (rawSyncState?.status === 'real_conflict') return 'error';
@@ -2117,7 +2125,9 @@ function parseMoney(value) {
       return s.status;
     })();
     const map = {
-      cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. El respaldo cloud requiere almacenamiento modular; no borres los datos del dispositivo.'],
+      cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. Conserva los datos del dispositivo mientras se confirma el respaldo de seguridad.'],
+      cloud_safety_uploading: ['Guardado en este dispositivo · respaldando en nube…', 'Tus operaciones permanecen protegidas en este dispositivo. Se está verificando su respaldo de seguridad.'],
+      cloud_safety_confirmed: ['Guardado en este dispositivo · respaldo de seguridad en nube confirmado', 'El respaldo íntegro fue verificado. No es todavía sincronización operacional entre dispositivos.'],
 	      synced: ['Guardado en nube', 'Tus datos están guardados en este dispositivo y confirmados en la nube.'],
 	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
       pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando confirmación de nube.'],
@@ -9671,6 +9681,11 @@ function parseMoney(value) {
 		  }
 		  window.click360GetLocalBusinessSyncStats = localBusinessSyncStats;
 		  function showSyncConflictRecovery(gate = {}) {
+        if (window.click360GetCapacityStatus?.().cloudCapacityBlocked) {
+          toast('Tu copia local está protegida. No se reemplazará con una copia de nube anterior; se verificará su respaldo de seguridad.', 'err');
+          window.click360RunCloudSafetyBackup?.();
+          return;
+        }
 		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
 		    const localStats = localBusinessSyncStats();
 		    const localProds = localStats.products;
@@ -9750,6 +9765,7 @@ function parseMoney(value) {
 		  }
 		  window.click360ShowSyncConflictRecovery = showSyncConflictRecovery;
 		  async function clearLocalAppStateRecovery() {
+    if (window.click360GetCapacityStatus?.().cloudCapacityBlocked) return toast('La copia pendiente de este dispositivo está protegida. No se reemplazará con datos antiguos.', 'err');
 		    if (!window.click360ClearLocalRecoveryState) return toast('Recuperación local no disponible en este entorno.', 'err');
 		    if (!confirm('Esto actualiza los datos guardados en este dispositivo y los vuelve a traer desde la nube. No borra tus negocios ni tus productos. ¿Continuar?')) return;
 		    downloadBackup('antes-de-reparar-sincronizacion');
@@ -12593,7 +12609,15 @@ function parseMoney(value) {
   }
 	  function bindBackup(){
 	    $('#backupBtn').onclick=downloadBackup;
+    const capacityPending=window.click360GetCapacityStatus?.().cloudCapacityBlocked===true;
+    if(capacityPending){
+      for(const id of ['refreshCloudBtn','clearLocalAppStateBtn']){const button=$('#'+id);if(button){button.disabled=true;button.title='La copia local pendiente no puede reemplazarse con datos anteriores de nube.';}}
+      const backupButton=$('#forceSyncCloud');if(backupButton)backupButton.textContent='Respaldar copia de seguridad';
+    }
 	    $('#forceSyncCloud')?.addEventListener('click', async ()=>{
+      if(window.click360GetCapacityStatus?.().cloudCapacityBlocked){
+        await window.click360RunCloudSafetyBackup?.();return;
+      }
 	      if(window.click360SyncNow) {
 	        toast('Guardando en nube...');
 	        const synced = await window.click360SyncNow();
@@ -12601,6 +12625,7 @@ function parseMoney(value) {
 	      } else toast('Nube no disponible en este entorno', 'err');
 	    });
 		    $('#refreshCloudBtn')?.addEventListener('click', async ()=>{
+      if(window.click360GetCapacityStatus?.().cloudCapacityBlocked)return toast('Tus cambios pendientes permanecen protegidos en este dispositivo.', 'err');
 		      if(!window.click360RefreshNow) return toast('Nube no disponible en este entorno', 'err');
 		      if(!confirm('Actualizar desde nube reemplazará la copia local actual. Se descargará un respaldo antes de continuar. ¿Deseas seguir?')) return;
 		      if(prompt('Escribe exactamente REEMPLAZAR LOCAL para confirmar:') !== 'REEMPLAZAR LOCAL') return toast('Actualización cancelada', 'err');
@@ -12621,6 +12646,10 @@ function parseMoney(value) {
 		      }
 		    });
 	    $('#restoreFile').onchange = (e) => {
+        if (window.click360GetCapacityStatus?.().cloudCapacityBlocked) {
+          e.target.value = '';
+          return toast('Hay operaciones locales pendientes. Restaurar requiere conciliación supervisada; ningún dato fue reemplazado.', 'err');
+        }
 	        if(!isOwnerUser()) {
 	          e.target.value = '';
 	          return toast('Solo el dueño puede restaurar respaldos.', 'err');
@@ -13373,6 +13402,7 @@ function parseMoney(value) {
 
 	  window.click360Route=renderApp;
 	  window.click360SetSession = setSession;
+  window.addEventListener('click360-cloud-safety-status', () => window.dispatchEvent(new CustomEvent('click360-sync-status')));
 	  window.addEventListener('click360-sync-status', () => {
 	    const info = syncStatusInfo();
 	    const side = $('#syncStatusPill');

@@ -17,3 +17,5 @@ firebase-debug.log
 ui-debug.log
 scripts/recovery/__pycache__/
 recovery-package-ci/
+functions/generated/
+functions/node_modules/

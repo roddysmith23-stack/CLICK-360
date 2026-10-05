@@ -53,6 +53,7 @@ jobs:
           java-version: '21'
       - run: npm ci
       - run: npm run qa
+      - run: npm run qa:safety-backup
       - name: Basic secret check
         run: |
           ! git grep -nE '(BEGIN PRIVATE KEY|private_key"[[:space:]]*:)' -- . ':!fixtures/**' ':!vendor/**' ':!.github/workflows/p0-qa.yml'
@@ -81,6 +82,7 @@ jobs:
           distribution: temurin
           java-version: '21'
       - run: npm ci
+      - run: npm ci --prefix functions --ignore-scripts
       - run: npm run qa:rules
 
   web-simulators:
@@ -111,6 +113,7 @@ jobs:
       - name: Install PDF rendering tools
         run: brew install poppler
       - run: npx --no-install playwright install chromium webkit firefox
+      - run: npm run qa:safety-backup:e2e
       - run: npm run qa:integration
 
   admin-jobs:
@@ -167,10 +170,22 @@ jobs:
     if: needs.changes.outputs.functions == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Reject Functions scope in web release
-        run: |
-          echo "Functions changes are outside this web-only release."
-          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npm ci --prefix functions --ignore-scripts
+      - run: npm audit --prefix functions --omit=dev --audit-level=moderate
+      - run: npm run qa:safety-backup
+      - run: npm run qa:rules
 
   web-release-gate:
     if: always()
@@ -182,6 +197,7 @@ jobs:
       - labels-e2e
       - recovery-tooling
       - inventory-conflict-e2e
+      - functions-jobs
     runs-on: ubuntu-latest
     steps:
       - name: Emit release decision
@@ -193,11 +209,16 @@ jobs:
           LABELS: ${{ needs.labels-e2e.result }}
           RECOVERY: ${{ needs.recovery-tooling.result }}
           CONFLICTS: ${{ needs.inventory-conflict-e2e.result }}
+          FUNCTIONS: ${{ needs.functions-jobs.result }}
         run: |
           results="$WEB_RUNTIME $WEB_AUDIT $RULES_QA $SIMULATORS $LABELS $RECOVERY $CONFLICTS"
           if [ "$results" != "success success success success success success success" ]; then
             echo "NO_GO"
             echo "Required web checks: $results"
+            exit 1
+          fi
+          if [ "$FUNCTIONS" != "success" ] && [ "$FUNCTIONS" != "skipped" ]; then
+            echo "NO_GO: necessary server scope failed validation"
             exit 1
           fi
           echo "GO"
