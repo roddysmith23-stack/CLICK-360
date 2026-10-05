@@ -33,6 +33,7 @@ try{
   await assertFails(deleteDoc(ref));
   await assert.rejects(verifier.complete(db,owner,prepared.manifest.backupId));
   for(const part of prepared.chunks)await assertSucceeds(setDoc(doc(client,`${path}/parts/${part.id}`),part));
+  await assertFails(setDoc(doc(client,`${path}/parts/undeclared-part`),{...prepared.chunks[0],id:'undeclared-part'}));
   const partRef=doc(client,`${path}/parts/${prepared.chunks[0].id}`);
   await assertFails(updateDoc(partRef,{text:'corrupt'}));await assertFails(deleteDoc(partRef));
   await assertFails(setDoc(doc(client,`${path}/parts/wrong-scope`),{...prepared.chunks[0],id:'wrong-scope',scopeId:'not-a-business'}));
@@ -40,6 +41,10 @@ try{
   assert.equal(result.status,'COMPLETE');assert.equal(result.payloadSha256,prepared.manifest.payloadSha256);
   assert.deepEqual((await verifier.verify(db,owner,prepared.manifest.backupId)).reconstructed,record);
   assert.deepEqual(await verifier.complete(db,owner,prepared.manifest.backupId),result);
+  let receiptReads=0;
+  const receiptDb={doc:()=>({get:async()=>{receiptReads++;return db.doc(path).get();}})};
+  assert.deepEqual(await verifier.complete(receiptDb,owner,prepared.manifest.backupId),result);
+  assert.equal(receiptReads,1,'Confirmed retry must not reread chunks or rerun retention');
   await assertFails(setDoc(doc(client,`${path}/parts/late-part`),{...prepared.chunks[0],id:'late-part'}));
   await assert.rejects(verifier.complete(db,other,prepared.manifest.backupId));
   const old=await api.prepare(context,{...record,deviceRevision:'older',snapshot:{...record.snapshot,settings:{padding:'old'}}},{deviceId:'device-safety-a',sequence:1,buildSha:'21409a1d2dc7'});

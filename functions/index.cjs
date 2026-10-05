@@ -3,7 +3,7 @@ const {getFirestore}=require('firebase-admin/firestore');
 const {onCall,HttpsError}=require('firebase-functions/v2/https');
 const verifier=require('./safety-verifier.cjs');
 initializeApp();
-exports.finalizeCloudSafetyBackup=onCall({region:'us-central1',memory:'512MiB',timeoutSeconds:120,maxInstances:3},async request=>{
+exports.finalizeCloudSafetyBackup=onCall({region:'us-central1',memory:'512MiB',timeoutSeconds:60,minInstances:0,maxInstances:3,concurrency:1},async request=>{
   if(!request.auth?.uid)throw new HttpsError('unauthenticated','Se necesita una sesión verificada.');
   try{
     return await verifier.complete(getFirestore(),request.auth.uid,String(request.data?.backupId||''));

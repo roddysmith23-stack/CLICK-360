@@ -26,11 +26,11 @@ async function retainRecent(db,parent){
     return remove.length;
   });
 }
-async function verify(db,ownerUid,backupId){
+async function verify(db,ownerUid,backupId,captured){
   if(typeof ownerUid!=='string'||!ownerUid||ownerUid.length>128||ownerUid.includes('/'))reject('invalid-owner-identity');
   if(!/^[a-f0-9]{64}$/.test(backupId||''))reject('invalid-backup-id');
   const parent=db.doc(`businesses/${ownerUid}`),ref=parent.collection('safetyBackups').doc(backupId);
-  const captured=await ref.get(),manifest=captured.data();
+  captured ||= await ref.get();const manifest=captured.data();
   if(!manifest||manifest.ownerUid!==ownerUid||manifest.backupId!==backupId||manifest.partCount>96||manifest.payloadBytes>api.LIMIT+128*1024||manifest.schemaVersion!==10)reject('backup-manifest-invalid');
   const parts=await ref.collection('parts').get();
   if(parts.docs.some(d=>d.id!==d.data().id||Buffer.byteLength(JSON.stringify(d.data()))>300000))reject('backup-part-invalid');
@@ -40,7 +40,14 @@ async function verify(db,ownerUid,backupId){
   return {parent,ref,manifest,reconstructed};
 }
 async function complete(db,ownerUid,backupId){
-  const {parent,ref,manifest}=await verify(db,ownerUid,backupId);
+  if(typeof ownerUid!=='string'||!ownerUid||ownerUid.length>128||ownerUid.includes('/')||!/^[a-f0-9]{64}$/.test(backupId||''))reject('invalid-backup-identity');
+  const captured=await db.doc(`businesses/${ownerUid}/safetyBackups/${backupId}`).get(),prior=captured.data();
+  // Server-created COMPLETE is immutable to clients, including all its parts.
+  // A retry needs one receipt read, not another full 7MiB verification/cleanup.
+  if(prior?.status==='COMPLETE'&&prior.verifiedBy==='server-sha256-v1'&&prior.ownerUid===ownerUid&&prior.backupId===backupId&&prior.completedAt){
+    return receipt(prior);
+  }
+  const {parent,ref,manifest}=await verify(db,ownerUid,backupId,captured);
   if(!/^[a-zA-Z0-9_-]{8,96}$/.test(manifest.deviceId)||!Number.isSafeInteger(manifest.sequence)||manifest.sequence<1)reject('backup-device-sequence-invalid');
   const head=parent.collection('safetyBackupHeads').doc(manifest.deviceId);
   await db.runTransaction(async tx=>{
@@ -61,6 +68,7 @@ async function complete(db,ownerUid,backupId){
   // Retention failure must not turn a confirmed backup into a rejected save.
   // Retry is safe; it never deletes device heads or unverified snapshots.
   try{await retainRecent(db,parent);}catch{}
-  return {status:'COMPLETE',backupId,payloadSha256:confirmed.payloadSha256,canonicalMaterialHash:confirmed.canonicalMaterialHash,payloadBytes:confirmed.payloadBytes,completedAt:confirmed.completedAt.toDate().toISOString()};
+  return receipt(confirmed);
 }
+function receipt(confirmed){return {status:'COMPLETE',backupId:confirmed.backupId,payloadSha256:confirmed.payloadSha256,canonicalMaterialHash:confirmed.canonicalMaterialHash,payloadBytes:confirmed.payloadBytes,completedAt:confirmed.completedAt.toDate().toISOString()};}
 module.exports={verify,complete,retainRecent};

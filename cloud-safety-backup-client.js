@@ -1,6 +1,7 @@
 (function(root){
   'use strict';
   let running=false, timer, phase='IDLE', lastFailurePhase=null, confirmedContextId=null, verifiedSourceKey=null, statusContextId=null;
+  let retryKey=null, attempts=0, retryAfterMs=0;
   const fail=code=>{throw Object.assign(new Error(code),{code});};
   function bounded(promise){
     let timeout;
@@ -34,7 +35,7 @@
       if(!record)return false;
       const capacity=root.click360GetCapacityStatus?.() || {};
       const legacyBlocked=record.cloudCapacityBlocked || capacity.cloudCapacityBlocked
-        || new TextEncoder().encode(api.json(record.snapshot)).length>Number(capacity.cloudLimitBytes||850000);
+        || new TextEncoder().encode(api.json(record.snapshot)).length>=Number(capacity.cloudLimitBytes||850000)*.95;
       if(!legacyBlocked)return false;
       if(root.click360GetCapacityStatus?.().deviceSavePending)return false;
       phase='HASHING';const sourceKey=await api.sha(api.json(record));
@@ -47,6 +48,13 @@
       }
       publish('PENDING');
       if(!root.navigator.onLine)return false;
+      const nextRetryKey=`${storage.contextId(context)}:${sourceKey}`;
+      if(retryKey!==nextRetryKey){retryKey=nextRetryKey;attempts=0;retryAfterMs=0;}
+      // Local scheduling is not cloud polling. At most three network attempts
+      // per unchanged capture/session; render/access events cannot reset it.
+      if(attempts>=3||Date.now()<retryAfterMs)return false;
+      attempts++;
+      retryAfterMs=Date.now()+Math.min(60000*2**(attempts-1),240000);
       const buildSha=root.CLICK360_RUNTIME_GUARD?.getReleaseMetadata?.().buildSha;
       phase='ALLOCATING_CAPTURE';const allocated=await storage.allocateSafetyMetadata(context,record,sourceKey);
       phase='PREPARING';
@@ -108,6 +116,7 @@
       assertIdentity();
       confirmedContextId=storage.contextId(context);
       verifiedSourceKey=sourceKey;
+      attempts=0;retryAfterMs=0;lastFailurePhase=null;
       publish('CONFIRMED',{payloadSha256:sourceKey,backupId:confirmed.backupId,payloadBytes:confirmed.payloadBytes,completedAt});
       return true;
     }catch(error){
@@ -118,10 +127,10 @@
   // Leading-edge bounded scheduling: frequent access/health notifications must
   // not keep postponing protection of an already-existing durable snapshot.
   function schedule(){if(timer)return;timer=setTimeout(()=>{timer=null;run();},1500);}
-  root.click360RunCloudSafetyBackup=run;
-  root.click360GetCloudSafetyHealth=()=>({phase,lastFailurePhase,running,status:root.click360CloudSafetyStatus?.status||'PENDING',errorCode:root.click360CloudSafetyStatus?.errorCode||null});
+  root.click360RunCloudSafetyBackup=()=>{retryKey=null;return run();};
+  root.click360GetCloudSafetyHealth=()=>({phase,lastFailurePhase,running,attempts,automaticRetryExhausted:attempts>=3,status:root.click360CloudSafetyStatus?.status||'PENDING',errorCode:root.click360CloudSafetyStatus?.errorCode||null});
   for(const event of ['click360-local-state-saved','online']){
-    root.addEventListener(event,()=>{publish('PENDING');schedule();});
+    root.addEventListener(event,()=>{if(event==='online')retryKey=null;publish('PENDING');schedule();});
   }
   root.addEventListener('click360-access-changed',()=>{
     const context=root.click360TenantContext;

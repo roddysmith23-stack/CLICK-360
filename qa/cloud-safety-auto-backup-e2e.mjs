@@ -3,7 +3,7 @@ import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
-import {chromium,webkit,devices} from 'playwright';
+import {chromium,webkit,firefox,devices} from 'playwright';
 import {largeTenantData,stateDocument,accountAccess} from './r38-emulator-support.mjs';
 import '../cloud-safety-backup.js';
 const projectId='demo-click360-safety',root=path.resolve('dist');
@@ -24,7 +24,7 @@ const server=createServer(async(req,res)=>{
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 try{
-  for(const [name,engine,options] of [['iPhone WebKit',webkit,devices['iPhone 15']],['Chromium mobile',chromium,devices['Pixel 7']],['Chromium desktop',chromium,{}]]){
+  for(const [name,engine,options] of [['iPhone WebKit',webkit,devices['iPhone 15']],['Chromium mobile',chromium,devices['Pixel 7']],['Chromium desktop',chromium,{}],['Firefox desktop',firefox,{}]]){
     const email=`safety-${Date.now()}-${Math.random().toString(16).slice(2)}@example.invalid`,password='Synthetic-emulator-only-123!';
     const signup=await fetch('http://127.0.0.1:59099/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-api-key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password,returnSecureToken:true})});
     const credentials=await signup.json();assert(signup.ok&&credentials.localId);
@@ -70,6 +70,8 @@ try{
       await page.waitForFunction(()=>window.click360Auth?.signInWithEmailAndPassword,null,{timeout:60000});
       await page.evaluate(({email,password})=>window.click360Auth.signInWithEmailAndPassword(email,password),{email,password});
       await page.waitForFunction(()=>window.click360TenantContext&&window.click360GetTenantState?.()?.products?.length===436,null,{timeout:60000});
+      await page.evaluate(()=>navigator.serviceWorker.ready);
+      await page.waitForFunction(()=>!!navigator.serviceWorker.controller);
       const fixture=await page.evaluate(async()=>{
         const ctx=window.click360TenantContext,storage=window.CLICK360_V16_STORAGE;
         const existing=await storage.getSnapshot(ctx),snapshot=structuredClone(window.click360GetTenantState());
@@ -82,6 +84,13 @@ try{
       });
       // Existing device-only operations are protected without a new user action.
       await page.close();page=await context.newPage();await page.goto(url);
+      // Pause connectivity before the automatic upload, then recover without
+      // commercial replay, a new mutation, or deleting any device storage.
+      await context.setOffline(true);
+      const offlineRecord=await page.evaluate(ctx=>window.CLICK360_V16_STORAGE.getSnapshot(ctx),fixture.ctx);
+      assert.equal(offlineRecord.snapshot.products[0].stock,fixture.stock);
+      assert.deepEqual(offlineRecord.pendingOperations,['local-only-op','unknown-not-replayed']);
+      await context.setOffline(false);
       try{await page.waitForFunction(()=>window.click360CloudSafetyStatus?.status==='CONFIRMED',null,{timeout:90000});}
       catch(error){
         console.log('BACKUP TRANSPORT',JSON.stringify(network));
@@ -123,7 +132,7 @@ try{
         throw error;
       }
       assert.equal((await db.collection(`businesses/${owner}/safetyBackups`).get()).size,1,'Cold restart does not duplicate an unchanged capture');
-      console.log(`PASS ${name}: actual served build automatic existing-state backup, durable cold restart, server reconstruction equality, Founder 600→2000, local-only sale/stock/outbox preserved; no commercial replay`);
+      console.log(`PASS ${name}: actual served build automatic existing-state backup, offline/reconnect, durable cold restart, server reconstruction equality, Founder 600→2000, local-only sale/stock/outbox preserved; no commercial replay`);
     }finally{await browser.close();}
   }
-}finally{await new Promise(resolve=>server.close(resolve));await admin.deleteApp(adminApp);}
+}finally{await new Promise(resolve=>server.close(resolve));await db.terminate();await admin.deleteApp(adminApp);}

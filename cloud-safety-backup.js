@@ -84,7 +84,7 @@
       scopeManifest.push({scopeId,businessId,bytes:bytes.length,sha256:await sha(bytes),parts});
     }
     const backupId=await sha(json({ownerUid,tenantKey:context.tenantKey,deviceId,sequence,payloadSha256}));
-    const manifest={format:FORMAT,backupId,ownerUid,tenantKey:context.tenantKey,contextBusinessId:context.businessId,businessIds:split.businessIds,deviceId,sequence,buildSha,schemaVersion:normalized.schemaVersion,snapshotRevision:String(normalized.deviceRevision||normalized.operationId||''),baseRevision:Number(normalized.baseRevision||0),payloadBytes,payloadSha256,canonicalMaterialHash:materialHash,partCount:chunks.length,scopes:scopeManifest,scopeIds:scopeManifest.map(s=>s.scopeId),pendingOperationsCount:(normalized.pendingOperations||[]).length,unknownOperationsCount:null};
+    const manifest={format:FORMAT,backupId,ownerUid,tenantKey:context.tenantKey,contextBusinessId:context.businessId,businessIds:split.businessIds,deviceId,sequence,buildSha,schemaVersion:normalized.schemaVersion,snapshotRevision:String(normalized.deviceRevision||normalized.operationId||''),baseRevision:Number(normalized.baseRevision||0),payloadBytes,payloadSha256,canonicalMaterialHash:materialHash,partCount:chunks.length,partIds:chunks.map(part=>part.id),scopes:scopeManifest,scopeIds:scopeManifest.map(s=>s.scopeId),pendingOperationsCount:(normalized.pendingOperations||[]).length,unknownOperationsCount:null};
     if(chunks.length>96||encoder.encode(json(manifest)).length>60000)fail('backup_manifest_limit_exceeded');
     return {manifest,chunks};
   }
@@ -96,6 +96,9 @@
       ||encoder.encode(json(boundedManifest)).length>60000)fail('backup_manifest_limit_exceeded');
     if(json(manifest.scopeIds)!==json(manifest.scopes.map(s=>s.scopeId))
       ||new Set(manifest.scopeIds).size!==manifest.scopeIds.length)fail('backup_scope_list_mismatch');
+    if(!Array.isArray(manifest.partIds)||manifest.partIds.length!==manifest.partCount
+      ||new Set(manifest.partIds).size!==manifest.partCount
+      ||json(manifest.partIds)!==json(manifest.scopes.flatMap(scope=>scope.parts.map(part=>part.id))))fail('backup_part_list_mismatch');
     if(manifest.format!==FORMAT||!Array.isArray(chunks)||chunks.length!==manifest.partCount)fail('backup_missing_or_extra_part');
     const ids=new Map(chunks.map(part=>[part.id,part]));
     if(ids.size!==chunks.length)fail('backup_duplicate_part');

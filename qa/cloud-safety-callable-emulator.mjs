@@ -3,7 +3,7 @@ import {createRequire} from 'node:module';
 import {readFile} from 'node:fs/promises';
 import {initializeApp,deleteApp} from 'firebase/app';
 import {getAuth,connectAuthEmulator,signInAnonymously} from 'firebase/auth';
-import {getFirestore,connectFirestoreEmulator,doc,setDoc,getDocFromServer,getDocsFromServer,collection,serverTimestamp} from 'firebase/firestore';
+import {getFirestore,connectFirestoreEmulator,doc,setDoc,getDocFromServer,getDocsFromServer,collection,serverTimestamp,terminate} from 'firebase/firestore';
 import '../cloud-safety-backup.js';
 const projectId='demo-click360-safety';
 assert.equal(process.env.FIRESTORE_EMULATOR_HOST,'127.0.0.1:58080');
@@ -42,6 +42,16 @@ try{
   assert.deepEqual(await api.reconstruct(confirmed,await transport.getParts(prepared.manifest.backupId)),record);
   assert.equal((await call({backupId:prepared.manifest.backupId},token)).status,200);
   assert.equal((await adminDb.doc(`businesses/${owner}/state/main`).get()).exists,false);
+  let sequence=4;
+  for(const bytes of [850000,860000,1048576,1258291,3145728]){
+    const sizedRecord={...record,deviceRevision:`size-${bytes}`,snapshot:{...record.snapshot,settings:{padding:'x'.repeat(bytes)}}};
+    const sized=await api.prepare(context,sizedRecord,{deviceId:'synthetic-http-device',sequence:sequence++,buildSha});
+    const receipt=await api.upload(sized,transport);
+    assert.equal(receipt.status,'COMPLETE');assert.equal(receipt.payloadSha256,sized.manifest.payloadSha256);
+    assert.deepEqual(await api.reconstruct(receipt,await transport.getParts(sized.manifest.backupId)),sizedRecord);
+    assert.equal((await adminDb.doc(`businesses/${owner}/state/main`).get()).exists,false);
+    console.log(`PASS actual server callable/client Rules size ${bytes}: COMPLETE, exact SHA reconstruction, outbox/sales/stock untouched`);
+  }
   const incomplete=await api.prepare(context,{...record,deviceRevision:'incomplete'},{deviceId:'synthetic-http-device',sequence:2,buildSha});
   await transport.begin(incomplete.manifest);
   assert.equal((await call({backupId:incomplete.manifest.backupId},token)).status,400);
@@ -56,4 +66,4 @@ try{
   assert.equal((await adminDb.doc(`businesses/${owner}/state/main`).get()).exists,false);
   console.log('PASS 7 MiB / Enterprise 25 businesses actual client Rules + callable/server readback: bounded documents, exact reconstruction, no legacy write');
   console.log('PASS callable HTTP + real Auth/client Rules: unauth denied, server SHA reconstruction, forged owner ignored, lost response reconciled, incomplete/missing denied, no legacy commercial writes');
-}finally{await deleteApp(app);await admin.deleteApp(adminApp);}
+}finally{await terminate(db);await deleteApp(app);await adminDb.terminate();await admin.deleteApp(adminApp);}
