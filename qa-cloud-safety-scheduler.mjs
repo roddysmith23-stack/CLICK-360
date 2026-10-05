@@ -24,3 +24,10 @@ root.click360TenantContext={...context,authUid:'synthetic-b',ownerId:'synthetic-
 root.dispatchEvent({type:'click360-access-changed'});
 assert.equal(root.click360CloudSafetyStatus.status,'PENDING');assert.equal(root.click360CloudSafetyStatus.payloadSha256,undefined);
 console.log('PASS backup scheduler: access event storm bounded; unrelated access preserves receipt; new save/account switch invalidates it safely');
+const app=await readFile('app.js','utf8');
+const statusSource=app.slice(app.indexOf('  function syncStatusInfo() {'),app.indexOf('  function syncPillHtml('));
+const renderStatus=new Function('window','navigator','deviceSavePending','indexedTenantCacheMeta',`${statusSource};return syncStatusInfo();`);
+const statusWindow={click360GetSyncStatus:()=>({status:'synced'}),click360GetSyncState:()=>({cloudCapacityBlocked:true}),click360CloudSafetyStatus:{status:'CONFIRMED'}};
+assert.equal(renderStatus(statusWindow,{onLine:true},true,{cloudCapacityBlocked:true}).status,'device_saving');
+assert.equal(renderStatus(statusWindow,{onLine:true},false,{cloudCapacityBlocked:true}).status,'cloud_safety_confirmed');
+console.log('PASS actual UI status: prior backup receipt cannot confirm a new uncommitted IndexedDB mutation');

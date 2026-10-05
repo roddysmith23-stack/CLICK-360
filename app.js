@@ -2112,6 +2112,9 @@ function parseMoney(value) {
     const rawSyncState = typeof window.click360GetSyncState === 'function'
       ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
     const effectiveStatus = (() => {
+      // A receipt protects the previous durable snapshot, not an in-flight
+      // device mutation. Never show its confirmation for an uncommitted save.
+      if (deviceSavePending) return 'device_saving';
       if (rawSyncState?.cloudCapacityBlocked && rawSyncState.blocking) return 'error';
       if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) {
         if (window.click360CloudSafetyStatus?.status === 'CONFIRMED') return 'cloud_safety_confirmed';
@@ -2125,6 +2128,7 @@ function parseMoney(value) {
       return s.status;
     })();
     const map = {
+      device_saving: ['Guardando en este dispositivo…', 'Espera mientras se protege el último cambio. Su respaldo en nube todavía no está confirmado.'],
       cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. Conserva los datos del dispositivo mientras se confirma el respaldo de seguridad.'],
       cloud_safety_uploading: ['Guardado en este dispositivo · respaldando en nube…', 'Tus operaciones permanecen protegidas en este dispositivo. Se está verificando su respaldo de seguridad.'],
       cloud_safety_confirmed: ['Guardado en este dispositivo · respaldo de seguridad en nube confirmado', 'El respaldo íntegro fue verificado. No es todavía sincronización operacional entre dispositivos.'],
