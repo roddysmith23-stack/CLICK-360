@@ -3,6 +3,8 @@ import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {chromium,webkit,firefox,devices} from 'playwright';
 const sources={};
+const appSource=await readFile('app.js','utf8');
+const pillSource=appSource.slice(appSource.indexOf('  function syncPillHtml('),appSource.indexOf('  function currentBusiness(){'));
 for(const file of ['v16-storage.js','cloud-safety-backup.js'])sources[`/${file}`]=await readFile(file,'utf8');
 const server=createServer((req,res)=>{
   const source=sources[req.url];res.setHeader('Content-Type',source?'application/javascript':'text/html');
@@ -49,6 +51,27 @@ try{
       assert.equal(second.stale,true);assert.equal(second.staleConfirmation,false);assert.equal(second.other,null);
       assert.equal(second.allocated.sequence,2);assert.equal(second.allocated.deviceId,first.metadata.deviceId);
       assert.deepEqual(second.pending,['operation-1','unknown-op','operation-2']);assert.equal(second.stock,12);
+      // Test the actual app renderer, not a copied approximation. This widget
+      // regression complements the separately served whole-app backup E2E.
+      for(const width of [320,390,1280]){
+        await page.setViewportSize({width,height:844});
+        for(const title of ['Guardado en este dispositivo · respaldando en nube…','Guardado en este dispositivo · respaldo de seguridad en nube confirmado','Guardado en este dispositivo · respaldo en nube pendiente']){
+          for(const compact of [false,true]){
+            const dimensions=await page.evaluate(({pillSource,title,compact})=>{
+              const syncStatusInfo=()=>({status:'cloud_safety_confirmed',title,detail:'Synthetic backup status'});
+              const escapeHtml=value=>value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;');
+              const renderer=eval(`(${pillSource.trim()})`);
+              document.body.style.margin='16px';
+              document.body.innerHTML=`<main id="status-box">${renderer(compact)}</main>`;
+              const pill=document.querySelector('[id^="syncStatusPill"]');
+              return {pill:pill.getBoundingClientRect().width,parent:document.querySelector('#status-box').getBoundingClientRect().width,scroll:document.documentElement.scrollWidth,viewport:innerWidth,text:pill.textContent.trim()};
+            },{pillSource,title,compact});
+            assert(dimensions.pill<=dimensions.parent+1,`${name}: status exceeds parent at ${width}px`);
+            assert(dimensions.scroll<=dimensions.viewport,`${name}: status creates horizontal overflow at ${width}px`);
+            assert.equal(dimensions.text,title);
+          }
+        }
+      }
       console.log(`PASS ${name}: real durable IDB backup capture/reconstruction, cold restart, sequence CAS, stale confirmation rejection, journal and stock preserved`);
     }finally{await browser.close();}
   }

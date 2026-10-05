@@ -111,7 +111,17 @@ try{
       assert.equal(remote.sales.filter(s=>s.id==='local-only-historical-sale').length,0,'Safety archive never replays a local sale into legacy');
       assert.equal(remote.products[0].stock,initial.products[0].stock);
       await page.close();page=await context.newPage();await page.goto(url);
-      await page.waitForFunction(()=>window.click360CloudSafetyStatus?.status==='CONFIRMED',null,{timeout:90000});
+      try{await page.waitForFunction(()=>window.click360CloudSafetyStatus?.status==='CONFIRMED',null,{timeout:90000});}
+      catch(error){
+        console.log('SECOND COLD START FAILURE',JSON.stringify(await page.evaluate(async()=>{
+          const ctx=window.click360TenantContext,storage=window.CLICK360_V16_STORAGE;
+          const record=ctx?await storage.getSnapshot(ctx):null;
+          return {status:window.click360CloudSafetyStatus,runner:window.click360GetCloudSafetyHealth?.(),capacity:window.click360GetCapacityStatus?.(),
+            authReady:!!window.firebase.auth().currentUser,durablePresent:!!record,durableBlocked:record?.cloudCapacityBlocked,
+            pendingCount:record?.pendingOperations?.length,safety:ctx?await storage.getSafetyMetadata(ctx):null};
+        })));
+        throw error;
+      }
       assert.equal((await db.collection(`businesses/${owner}/safetyBackups`).get()).size,1,'Cold restart does not duplicate an unchanged capture');
       console.log(`PASS ${name}: actual served build automatic existing-state backup, durable cold restart, server reconstruction equality, Founder 600→2000, local-only sale/stock/outbox preserved; no commercial replay`);
     }finally{await browser.close();}

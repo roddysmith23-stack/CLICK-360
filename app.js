@@ -2152,8 +2152,8 @@ function parseMoney(value) {
     const info = syncStatusInfo();
     const color = info.status === 'synced' ? '#37d57e' : info.status === 'error' ? '#ff5c62' : info.status === 'offline' ? '#d6aa2c' : 'var(--gold)';
     const label = compact ? info.title.replace('Nube ', '') : info.title;
-    return `<div id="${compact ? 'syncStatusPillTop' : 'syncStatusPill'}" title="${escapeHtml(info.detail)}" style="display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:6px 10px;color:${color};font-size:12px;font-weight:700;background:rgba(255,255,255,.04);white-space:nowrap;">
-      <span style="width:7px;height:7px;border-radius:999px;background:${color};box-shadow:0 0 10px ${color};"></span>${escapeHtml(label)}
+    return `<div id="${compact ? 'syncStatusPillTop' : 'syncStatusPill'}" title="${escapeHtml(info.detail)}" style="display:inline-flex;max-width:100%;min-width:0;box-sizing:border-box;align-items:center;gap:7px;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:6px 10px;color:${color};font-size:12px;font-weight:700;background:rgba(255,255,255,.04);white-space:normal;">
+      <span style="flex-shrink:0;width:7px;height:7px;border-radius:999px;background:${color};box-shadow:0 0 10px ${color};"></span><span style="min-width:0;overflow-wrap:anywhere;">${escapeHtml(label)}</span>
     </div>`;
   }
   function currentBusiness(){
