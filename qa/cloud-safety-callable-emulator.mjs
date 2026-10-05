@@ -57,6 +57,23 @@ try{
   assert.equal((await call({backupId:incomplete.manifest.backupId},token)).status,400);
   assert.equal((await transport.getManifest(incomplete.manifest.backupId)).status,'UPLOADING');
   assert.equal((await call({backupId:'b'.repeat(64),ownerUid:owner},token)).status,400);
+  const hostile=await api.prepare(context,{...record,deviceRevision:'invalid-declared-length',snapshot:{...record.snapshot,settings:{}}},
+    {deviceId:'synthetic-http-device',sequence:99,buildSha});
+  const scope=hostile.manifest.scopes.find(s=>s.scopeId==='tenant-shared'),part=hostile.chunks.find(p=>p.scopeId==='tenant-shared');
+  assert.equal(scope.parts.length,1);
+  const header=JSON.parse(Buffer.from(part.text,'base64').toString('utf8'));
+  header.arrayLengths.sales=10000000;
+  const hostileBytes=Buffer.from(api.json(header));
+  Object.assign(part,{text:hostileBytes.toString('base64'),bytes:hostileBytes.length,sha256:await api.sha(hostileBytes)});
+  Object.assign(scope,{bytes:part.bytes,sha256:part.sha256});
+  Object.assign(scope.parts[0],{bytes:part.bytes,sha256:part.sha256});
+  await transport.begin(hostile.manifest);
+  for(const chunk of hostile.chunks)await transport.createPart(hostile.manifest.backupId,chunk);
+  const rejected=await call({backupId:hostile.manifest.backupId},token);
+  assert.equal(rejected.status,400);
+  assert.equal(rejected.data.error.details.reason,'backup_missing_row','Reject false length before reserving its array');
+  assert.equal((await transport.getManifest(hostile.manifest.backupId)).status,'UPLOADING');
+  console.log('PASS actual authenticated verifier: tiny hostile header cannot allocate ten-million-row array or become COMPLETE');
   const largeRecord={...record,deviceRevision:'large-7MiB',snapshot:{...record.snapshot,
     businesses:[...record.snapshot.businesses,...Array.from({length:23},(_,i)=>({id:`enterprise-${i}`}))],settings:{padding:'x'.repeat(7*1024*1024)}}};
   const large=await api.prepare(context,largeRecord,{deviceId:'synthetic-http-device',sequence:3,buildSha});

@@ -55,8 +55,18 @@
     const snapshot={...shared.snapshotFields};
     for(const [key,length]of Object.entries(shared.arrayLengths)){
       if(!Number.isSafeInteger(length)||length<0)fail('backup_invalid_array_length');
+      const buckets=[shared,...Object.values(scopes)];
+      let count=0;
+      for(const bucket of buckets){
+        const entries=Object.hasOwn(bucket.rows,key)?bucket.rows[key]:[];
+        if(!Array.isArray(entries))fail('backup_invalid_rows');
+        count+=entries.length;
+      }
+      // A tiny hostile header must not reserve an enormous array before the
+      // missing-row check. Only actual, bounded part contents justify length.
+      if(count!==length)fail('backup_missing_row');
       const rows=new Array(length),seen=new Set();
-      for(const bucket of [shared,...Object.values(scopes)])for(const entry of bucket.rows[key]||[]){
+      for(const bucket of buckets)for(const entry of Object.hasOwn(bucket.rows,key)?bucket.rows[key]:[]){
         if(!Number.isSafeInteger(entry.index)||entry.index<0||entry.index>=length||seen.has(entry.index))fail('backup_duplicate_or_invalid_row');
         seen.add(entry.index);rows[entry.index]=entry.value;
       }

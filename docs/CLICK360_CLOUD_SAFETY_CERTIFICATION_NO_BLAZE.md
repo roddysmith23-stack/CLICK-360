@@ -16,6 +16,8 @@ Se evaluó Rules+cliente: no cumple por sí solo esa garantía integral con este
 
 Una regresión cliente del emulador demostró que el guard inicial permitía un `undeclared-part` antes de COMPLETE. El manifiesto ahora declara `partIds` únicos, acotados e iguales a las partes de sus scopes. Rules permite crear exclusivamente esos IDs; las partes y manifiesto son inmutables. Tras reconstruir todas las partes declaradas, no puede aparecer una parte adicional entre verificación y confirmación.
 
+La revisión de seguridad encontró además que una cabecera pequeña podía declarar diez millones de filas antes de validarse su existencia. La regresión instrumenta el constructor de Array: antes del fix alcanza la asignación injustificada; después falla con `backup_missing_row` sin reservar ese array. La reconstrucción ahora cuenta las filas realmente contenidas en los fragmentos antes de asignar. No se aumentan límites ni se descartan registros. El escenario autenticado HTTP verifica también que esa cabecera nunca recibe COMPLETE.
+
 ## Recursos y frecuencia
 
 - Node 22, región us-central1, 512 MiB, timeout 60 s, minInstances 0, maxInstances 3, concurrency 1. La memoria mantiene margen para reconstrucción/canonicalización de 7 MiB y SDK; no se reduce sin certificar el peor caso.
