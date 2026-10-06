@@ -108,9 +108,9 @@
     }
     async function prepareShadow(){
       const selected=await source();
-      const manifest=await api.plan({ownerUid,snapshot:selected.snapshot,remoteRevision:selected.remoteRevision,deviceRevision:selected.deviceRevision||''});
+      const manifest=await api.plan({ownerUid,snapshot:selected.snapshot,identity:selected.identity,remoteRevision:selected.remoteRevision,deviceRevision:selected.deviceRevision||''});
       await assertGuard(manifest);
-      await recovery.pin({sourceHash:manifest.sourceHash,snapshot:selected.snapshot,deviceRevision:manifest.deviceRevision,
+      await recovery.pin({sourceHash:manifest.sourceHash,snapshot:selected.snapshot,identity:selected.identity,deviceRevision:manifest.deviceRevision,
         remoteRevision:selected.remoteRevision,pendingOperations:selected.pendingOperations,buildSha});
       await assertPinned(manifest);
       let phase=await begin(manifest,selected);

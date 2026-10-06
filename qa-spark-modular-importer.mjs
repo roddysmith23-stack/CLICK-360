@@ -25,12 +25,14 @@ const remote={identity,businesses:[{id:businessId,name:'Synthetic import'}],prod
 const local=structuredClone(remote);local.products[0].stock=1;local.products[0].qty=1;
 local.sales.push({id:'historical-sale',operationId:'historical-sale',businessId,total:30,businessDate:'2026-09-03',items:[{id:'p-0',qty:1}]});
 local.movements.push({id:'historical-movement',businessId,saleId:'historical-sale',amount:30});
+// Match the real published envelope: identity is outside the commercial body.
+delete remote.identity;delete local.identity;
 const rootState={...identity,revision:42,payload:{schemaVersion:10,identity,data:remote}};
 const pins=new Map();let interrupt=true,currentUser={uid:ownerUid};
 const input={db,firebase,projectId,ownerUid,buildSha:'21409a1d2dc710315ab8c3c27e5da566f004cc8e',deviceId:'synthetic-device',resolveUser:()=>currentUser,
   readGuard:async()=>({ownerUid,deviceRevision:'device-43',unknownOperations:0,mutationLockHeld:true}),
-  readSource:async()=>{const snap=await getDocFromServer(doc(client,`businesses/${ownerUid}/state/main`));return {remote:{source:'server',revision:snap.data().revision,snapshot:snap.data().payload.data},
-    local:{durable:true,snapshot:local,deviceRevision:'device-43',baseRevision:42,pendingRemoteSync:true,pendingOperations:[{operationId:'persist-existing'}]},unknownOperations:0};},
+  readSource:async()=>{const snap=await getDocFromServer(doc(client,`businesses/${ownerUid}/state/main`));return {remote:{source:'server',identity:snap.data().payload.identity,revision:snap.data().revision,snapshot:snap.data().payload.data},
+    local:{identity,durable:true,snapshot:local,deviceRevision:'device-43',baseRevision:42,pendingRemoteSync:true,pendingOperations:[{operationId:'persist-existing'}]},unknownOperations:0};},
   // Synthetic recovery adapter here; physical IndexedDB belongs to PWA E2E.
   recovery:{pin:async row=>pins.set(row.sourceHash,structuredClone(row)),read:async key=>({...structuredClone(pins.get(key)),durable:true})},
   onProgress:event=>{if(interrupt&&event.completed===25){interrupt=false;throw Error('SIMULATED_INTERRUPTED_UPLOAD');}}};

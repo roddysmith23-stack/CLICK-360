@@ -40,12 +40,15 @@
     if(typeof value!=='string'||!value||value.length>120||value==='.'||value==='..'||value.includes('/'))throw Error('MIGRATION_INVALID_ID');
     return value;
   }
-  function assertSource(ownerUid, source) {
+  function assertSource(ownerUid, source, envelopeIdentity) {
     id(ownerUid);
-    const identity=source?.identity;
+    const identity=envelopeIdentity||source?.identity;
     if(!identity||identity.ownerUid!==ownerUid||identity.ownerId!==ownerUid
       ||identity.businessId!==ownerUid||identity.tenantKey!==`owner:${ownerUid}:business:${ownerUid}`
       ||identity.schemaVersion!==10)throw Error('MIGRATION_SOURCE_IDENTITY_MISMATCH');
+    // Published snapshots normally keep identity in payload.identity, outside
+    // payload.data. Never inject it into data just to satisfy migration hashes.
+    if(source?.identity&&['ownerUid','ownerId','businessId','tenantKey','schemaVersion'].some(key=>source.identity[key]!==identity[key]))throw Error('MIGRATION_SOURCE_IDENTITY_MISMATCH');
     if(!Array.isArray(source.businesses)||!source.businesses.length)throw Error('MIGRATION_NO_BUSINESSES');
     const businessIds=source.businesses.map(b=>id(b.id));
     if(new Set(businessIds).size!==businessIds.length)throw Error('MIGRATION_DUPLICATE_BUSINESS');
@@ -55,19 +58,19 @@
   async function selectSource({ownerUid,remote,local,unknownOperations}) {
     if(!remote||remote.source!=='server'||!Number.isSafeInteger(remote.revision))throw Error('MIGRATION_FRESH_SERVER_SOURCE_REQUIRED');
     if(!Number.isSafeInteger(unknownOperations)||unknownOperations!==0)throw Error('MIGRATION_UNKNOWN_OPERATIONS_STOP');
-    const remoteBusinesses=assertSource(ownerUid,remote.snapshot);
+    const remoteBusinesses=assertSource(ownerUid,remote.snapshot,remote.identity);
     const remoteHash=await hash(remote.snapshot);
-    if(!local)return {snapshot:clone(remote.snapshot),source:'server',remoteRevision:remote.revision,remoteHash,sourceHash:remoteHash,businessIds:remoteBusinesses,pendingOperations:[]};
+    if(!local)return {snapshot:clone(remote.snapshot),identity:clone(remote.identity||remote.snapshot.identity),source:'server',remoteRevision:remote.revision,remoteHash,sourceHash:remoteHash,businessIds:remoteBusinesses,pendingOperations:[]};
     if(local.durable!==true||typeof local.deviceRevision!=='string'||!local.deviceRevision)throw Error('MIGRATION_DURABLE_DEVICE_REQUIRED');
     if(!Array.isArray(local.pendingOperations)||local.pendingOperations.some(row=>['unknown','inflight'].includes(row?.state)))throw Error('MIGRATION_UNKNOWN_OPERATIONS_STOP');
-    const localBusinesses=assertSource(ownerUid,local.snapshot);
+    const localBusinesses=assertSource(ownerUid,local.snapshot,local.identity);
     const localHash=await hash(local.snapshot);
     const pending=local.pendingRemoteSync===true||local.cloudCapacityBlocked===true||(local.pendingOperations||[]).length>0;
-    if(localHash===remoteHash)return {snapshot:clone(local.snapshot),source:'device_equal',remoteRevision:remote.revision,remoteHash,sourceHash:localHash,businessIds:localBusinesses,pendingOperations:[...(local.pendingOperations||[])],deviceRevision:local.deviceRevision};
+    if(localHash===remoteHash)return {snapshot:clone(local.snapshot),identity:clone(local.identity||local.snapshot.identity),source:'device_equal',remoteRevision:remote.revision,remoteHash,sourceHash:localHash,businessIds:localBusinesses,pendingOperations:[...(local.pendingOperations||[])],deviceRevision:local.deviceRevision};
     if(pending){
       // Wall-clock timestamps cannot authorize selecting a conflicting fork.
       if(local.baseRevision!==remote.revision)throw Error('MIGRATION_REMOTE_DRIFT_STOP');
-      return {snapshot:clone(local.snapshot),source:'durable_pending_device',remoteRevision:remote.revision,remoteHash,sourceHash:localHash,businessIds:localBusinesses,pendingOperations:[...(local.pendingOperations||[])],deviceRevision:local.deviceRevision};
+      return {snapshot:clone(local.snapshot),identity:clone(local.identity||local.snapshot.identity),source:'durable_pending_device',remoteRevision:remote.revision,remoteHash,sourceHash:localHash,businessIds:localBusinesses,pendingOperations:[...(local.pendingOperations||[])],deviceRevision:local.deviceRevision};
     }
     // A clean but materially different copy is not proof of safety. Preserve it
     // and require reconciliation rather than silently fetching over it.
@@ -101,8 +104,8 @@
     }
     return output;
   }
-  async function plan({ownerUid,snapshot,remoteRevision,deviceRevision=''}) {
-    const businessIds=assertSource(ownerUid,snapshot);
+  async function plan({ownerUid,snapshot,identity,remoteRevision,deviceRevision=''}) {
+    const businessIds=assertSource(ownerUid,snapshot,identity);
     if(!Number.isSafeInteger(remoteRevision)||remoteRevision<0)throw Error('MIGRATION_INVALID_REVISION');
     const sourceHash=await hash(snapshot),records=[],seen=new Set();
     function partition(row){
@@ -149,12 +152,13 @@
     for(const scope of new Set(records.map(r=>`${r.content.businessId}/${r.content.module}`))){
       moduleHashes[scope]=await hash(records.filter(r=>`${r.content.businessId}/${r.content.module}`===scope).map(r=>({id:r.content.id,hash:r.content.dataHash})).sort((a,b)=>a.id.localeCompare(b.id)));
     }
-    return {schemaVersion:SCHEMA_VERSION,ownerUid,businessIds,sourceHash,remoteRevision,deviceRevision,
+    return {schemaVersion:SCHEMA_VERSION,ownerUid,identity:clone(identity||snapshot.identity),businessIds,sourceHash,remoteRevision,deviceRevision,
       counts:stats(snapshot,businessIds),records,moduleHashes,recordCount:records.length,payloadBytes:bytes(snapshot)};
   }
   // Deliberately independent of the planner's record traversal: remote records
   // must recreate the source, not merely repeat the planner's expected objects.
   async function compare({manifest,remoteRecords,source}){
+    assertSource(manifest.ownerUid,source,manifest.identity);
     if(!Array.isArray(remoteRecords)||remoteRecords.length!==manifest.recordCount)throw Error('MIGRATION_REMOTE_COUNT_MISMATCH');
     const rebuilt={},seen=new Set(),actualModules={};
     const expectedPaths=new Set(manifest.records.map(r=>r.path));

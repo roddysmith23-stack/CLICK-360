@@ -23,6 +23,13 @@ pending.movements.push({id:'new-movement',operationId:'new-op',businessId:'busin
 pending.products[0].stock=pending.products[0].qty=3;
 const local={snapshot:pending,durable:true,deviceRevision:'device-revision-2',baseRevision:12,pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['persist-local-2']};
 const fresh={snapshot:remote,revision:12,source:'server'};
+const envelopeBody=structuredClone(remote);delete envelopeBody.identity;
+const envelopePlan=await api.plan({ownerUid:owner,snapshot:envelopeBody,identity,remoteRevision:12});
+const envelopeComparison=await api.compare({manifest:envelopePlan,remoteRecords:envelopePlan.records,source:envelopeBody});
+assert.equal(envelopeComparison.sourceHash,await api.hash(envelopeBody));
+assert.equal(Object.hasOwn(envelopeBody,'identity'),false);
+await assert.rejects(()=>api.plan({ownerUid:owner,snapshot:envelopeBody,remoteRevision:12}),/SOURCE_IDENTITY/);
+await assert.rejects(()=>api.plan({ownerUid:owner,snapshot:envelopeBody,identity:{...identity,ownerUid:'other'},remoteRevision:12}),/SOURCE_IDENTITY/);
 const chosen=await api.selectSource({ownerUid:owner,remote:fresh,local,unknownOperations:0});
 assert.equal(chosen.source,'durable_pending_device');
 assert.equal(chosen.snapshot.sales.length,1);
