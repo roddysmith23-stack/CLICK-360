@@ -19,6 +19,8 @@ const transport=globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create(input);
 await assert.rejects(()=>transport.run(async tx=>tx.update('products','p.1',{})),/PRIOR_READ_REQUIRED/);
 await assert.rejects(()=>transport.run(async tx=>{const row=await tx.get('products','p.1');tx.update('products','p.1',{...row,recordVersion:3});}),/REVISION_CONFLICT/);
 assert.equal(commits,0);assert.equal(rows.get(`${base}/products/p.1`).data.stock,2);
+await assert.rejects(()=>transport.run(async tx=>{const row=await tx.get('products','p.1');tx.update('products','p.1',{...row,recordVersion:2,stock:1});}),/STOCK_MIRROR_MISMATCH/);
+assert.equal(commits,0);assert.equal(rows.get(`${base}/products/p.1`).data.stock,2);
 const native={toDate(){return new Date();}};
 await transport.run(async tx=>{
   const product=await tx.get('products','p.1');const ledger=await tx.get('operationLedger','op-1');assert.equal(ledger,null);
