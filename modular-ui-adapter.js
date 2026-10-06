@@ -68,7 +68,10 @@
       return results;
     }
     async function health(){
-      assertContext();const rows=await journal.listPending(identity,100);assertContext();
+      assertContext();
+      if(journal.countPending){const counts=await journal.countPending(identity);assertContext();
+        return {...counts,online:isOnline(),activeRequests:inFlight.size};}
+      const rows=await journal.listPending(identity,100);assertContext();
       return {pendingCount:rows.filter(row=>row.state==='queued').length,
         unknownCount:rows.filter(row=>row.state==='unknown'||row.state==='inflight').length,
         countIsBounded:true,maxObserved:100,online:isOnline(),activeRequests:inFlight.size};

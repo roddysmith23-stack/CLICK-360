@@ -50,14 +50,25 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
       const projected=views.size;
       active=api.identity('another-owner','alpha');let isolated=false;
       try{await adapter.submit('sale',input('wrong-tenant',7,4));}catch(error){isolated=error.message==='MODULAR_UI_CONTEXT_CHANGED';}
+      // A migration guard must not mistake a truncated replay page for an
+      // empty/clean outbox. Count directly through the scoped IDB index.
+      for(let i=0;i<101;i++)await journal.enqueue(identity,`count-${i}`,{test:'count-only',index:i});
+      const claimed=await journal.claim(identity,'count-100','synthetic-device');
+      await journal.markUnknown(identity,'count-100',claimed.revision);
+      const counts=await journal.countPending(identity);
+      const foreignCounts=await journal.countPending(active);
+      active=identity;
+      const largeHealth=await adapter.health();
       journal.close();
       return {double:double.map(value=>value.status),once,rechecked,pending:pending.status,pendingCount:health.pendingCount,
         survived:survived.state,replay:replay[0].status,unknown:unknown.status,uncertain:uncertain.state,recovered:recovered[0].status,
         finalStock:db.store.get(paths.record('products','p')).stock,projected,isolated,
-        falseConfirmation:statuses.some(detail=>detail.status!=='CONFIRMED'&&detail.operationalCloudConfirmed)};
+        falseConfirmation:statuses.some(detail=>detail.status!=='CONFIRMED'&&detail.operationalCloudConfirmed),counts,foreignCounts,largeHealth};
     });
     assert.deepEqual(result,{double:['CONFIRMED','CONFIRMED'],once:9,rechecked:true,pending:'PENDING',pendingCount:1,survived:'queued',
-      replay:'CONFIRMED',unknown:'UNKNOWN',uncertain:'unknown',recovered:'CONFIRMED',finalStock:7,projected:3,isolated:true,falseConfirmation:false});
+      replay:'CONFIRMED',unknown:'UNKNOWN',uncertain:'unknown',recovered:'CONFIRMED',finalStock:7,projected:3,isolated:true,falseConfirmation:false,
+      counts:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false},foreignCounts:{pendingCount:0,unknownCount:0,total:0,countIsBounded:false},
+      largeHealth:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false,online:true,activeRequests:0}});
     console.log(`PASS ${name} DEV UI adapter + real IndexedDB: button double click, durable pending/reopen, fresh server evidence, bounded replay, UNKNOWN preservation, tenant switch denied (synthetic transactional transport)`);
   }finally{await browser.close();}
 }

@@ -62,6 +62,20 @@
     return Object.freeze({
       close: () => db.close(),
       get: (identity, operationId) => read(key(identity, operationId)),
+      async countPending(identity) {
+        key(identity,'identity-check');
+        return new Promise((resolve,reject)=>{
+          const tx=db.transaction('operations','readonly');
+          const index=tx.objectStore('operations').index('tenantState'),counts={};
+          for(const state of ['queued','unknown','inflight']){
+            const request=index.count(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,state]));
+            request.onsuccess=()=>{counts[state]=request.result;};
+          }
+          tx.oncomplete=()=>resolve({pendingCount:counts.queued,unknownCount:counts.unknown+counts.inflight,
+            total:counts.queued+counts.unknown+counts.inflight,countIsBounded:false});
+          tx.onabort=()=>reject(tx.error||Error('JOURNAL_READ_ABORTED'));
+        });
+      },
       async listPending(identity, limit=25) {
         key(identity,'identity-check');
         if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
