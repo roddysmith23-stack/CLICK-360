@@ -84,7 +84,19 @@ async function run() {
       window.click360SetTenantContext(context, { deferLocalLoad: true });
       window.click360User = { uid, email: 'owner@example.com', role: 'owner', name: 'Owner', photoURL: '', status: 'active', approved: true, businessLimit: 10, workerLimit: 25, ownerId: uid, isOwner: true, source: 'accountAccess' };
       window.click360CurrentOwnerWorkersEnabled = async () => true;
-      window.click360InviteWorkerEmail = async (email, name, options) => ({ inviteHash: 'test-hash-123', inviteToken: 'test-token-456', permissions: options.permissions || {} });
+      // This UX fixture has no signed-in server directory. Keep that boundary
+      // synthetic and deliberately delayed: visible fields do NOT imply the
+      // async bindWorkers() has attached its submit handler yet.
+      window.click360ListWorkers = async () => {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return [];
+      };
+      window.click360ListWorkerAccessRequests = async () => [];
+      window.__inviteCalls = 0;
+      window.click360InviteWorkerEmail = async (email, name, options) => {
+        window.__inviteCalls++;
+        return { inviteHash: 'test-hash-123', inviteToken: 'test-token-456', permissions: options.permissions || {} };
+      };
       window.click360ApplyTenantState({
         businesses: [{ id: 'biz_main', name: 'Industrias Omega', status: 'activo', type: 'ropa', settings: {} }],
         activeBusinessId: 'biz_main',
@@ -110,11 +122,13 @@ async function run() {
       });
     }, uid);
 
+    await page.waitForFunction(() => typeof document.getElementById('addWorkerForm')?.onsubmit === 'function', null, { timeout: 15000 });
     await page.fill('#workerName', 'Juan Pérez');
     await page.fill('#workerEmail', 'juan@gmail.com');
     await page.selectOption('#workerRole', 'cajero');
     await page.click('#addWorkerForm button[type="submit"]');
-    await page.waitForFunction(() => document.getElementById('inviteLinkBox')?.style.display === 'block', { timeout: 15000 });
+    await page.waitForFunction(() => document.getElementById('inviteLinkBox')?.style.display === 'block', null, { timeout: 15000 });
+    assert(await page.evaluate(() => window.__inviteCalls) === 1, 'Exactly one invitation request; never retry a commercial action to make the test pass');
 
     const inviteLink = await page.$eval('#inviteLinkVal', (el) => el.value);
     assert(inviteLink.includes('inviteHash=test-hash-123') && inviteLink.includes('inviteToken=test-token-456'), `the raw link field must contain the real invite hash/token, got ${inviteLink}`);

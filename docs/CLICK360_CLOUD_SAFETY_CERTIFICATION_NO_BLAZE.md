@@ -46,6 +46,8 @@ Una reproducción local adicional encontró un Java Firestore huérfano después
 
 La actualización PWA reprodujo además una espera incorrecta de QA: observar solamente `updatefound` futuro ignora un worker ya instalándose. La regresión inicia primero el update, registra el estado del worker existente y luego observa su activación; exige un mensaje del worker activo con el SHA esperado. Tres repeticiones en Chromium/WebKit conservaron íntegramente IndexedDB, localStorage y outbox; el release mezclado sigue rechazándose. No se altera el worker productivo ni el motor Safe Update congelado para corregir el observador del test.
 
+CI de 9e4220c pasó capacidad, Functions (tres lifecycles), Rules y simuladores, pero el gate release rechazó correctamente un timeout de `worker-invite-message` esperando el link. Se reprodujo una carrera concreta del fixture: `bindWorkers()` muestra el formulario antes de esperar el directorio y enlazar `onsubmit`; con un directorio sintético demorado 500 ms el formulario visible tiene handler null. El test UX ahora usa un directorio sintético explícito y espera el handler real antes de enviar, no un sleep para ocultarlo. Tres repeticiones conservaron clipboard/WhatsApp/mensaje completo y exigieron exactamente una petición de invitación. No se elimina el control ni se aumenta su timeout; sus opciones de Playwright pasan correctamente como tercer argumento.
+
 ## Preparación de staging (no ejecutar todavía)
 
 Primero todos los controles del HEAD exacto deben estar verdes. Inspeccionar HEAD y diff, árbol limpio, build exacto y rollback. Estos comandos son un plan, no evidencia de deploy:
