@@ -31,7 +31,7 @@
     async function pin(input){
       context();const candidate=structuredClone(input);
       if(await api.hash(candidate.snapshot)!==candidate.sourceHash)throw Error('SPARK_RECOVERY_SOURCE_HASH_MISMATCH');
-      if(api.byteLength(candidate)>8*1024*1024)throw Error('SPARK_RECOVERY_DEVICE_CAPACITY_EXCEEDED');
+      if(api.byteLength(candidate.snapshot)>8*1024*1024)throw Error('SPARK_RECOVERY_DEVICE_CAPACITY_EXCEEDED');
       const {snapshot,...content}=candidate;
       const row={key:key(candidate.sourceHash),ownerUid,sourceHash:candidate.sourceHash,snapshot,content,contentHash:await api.hash(content)};
       await new Promise((resolve,reject)=>{

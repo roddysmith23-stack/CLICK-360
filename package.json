@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "qa:spark": "node --check spark-modular-migration.js && node --check spark-modular-importer.js && node --check spark-modular-recovery.js && node qa-spark-modular-migration.mjs && node qa-spark-modular-recovery-e2e.mjs",
+    "qa:spark": "node --check spark-modular-migration.js && node --check spark-modular-importer.js && node --check spark-modular-recovery.js && node --check spark-modular-record-codec.js && node qa-spark-modular-record-codec.mjs && node qa-spark-modular-migration.mjs && node qa-spark-modular-recovery-e2e.mjs",
     "qa:spark:rules": "firebase emulators:exec --config firebase.spark-emulator.json --only firestore --project demo-click360-spark-modular 'node qa-spark-modular-rules.mjs && node qa-spark-modular-importer.mjs'",
     "qa:spark:legacy-rules": "CLICK360_EMULATOR_RULES=firestore.spark.rules firebase emulators:exec --config firebase.spark-legacy-emulator.json --only firestore --project demo-click360-p0-rules 'node qa-firestore-emulator.cjs && node qa-worker-data-boundary-emulator.cjs && node qa-ceo-admin-web-rules-emulator.cjs && node qa-r37-2-dual-device-conflict-emulator.cjs && node qa-p0-shary-cash-session-reconciliation-emulator.cjs && node qa-r37-2-logistics-worker-permissions-emulator.cjs' && node qa-spark-rule-budget.mjs",
     "qa:modular-persistence": "node qa-modular-persistence-v2-harness.cjs && node qa-modular-capacity-policy.mjs && node qa-modular-journal-e2e.mjs && node qa-modular-coordinator-e2e.mjs && node qa-modular-ui-adapter-e2e.mjs",

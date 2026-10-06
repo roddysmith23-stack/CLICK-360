@@ -18,12 +18,16 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
         const input={sourceHash,snapshot,deviceRevision:'device-43',remoteRevision:42,pendingOperations:[{operationId:'existing-persist-op',state:'unknown'}],buildSha:'21409a1d2dc7'};
         await recovery.pin(input);await recovery.pin(input);
         let conflict=false;try{await recovery.pin({...input,pendingOperations:[]});}catch{conflict=true;}
+        let oversizedRejected=false;
+        const oversized={padding:'x'.repeat(8*1024*1024)};
+        try{await recovery.pin({...input,snapshot:oversized,sourceHash:await CLICK360_SPARK_MIGRATION.hash(oversized)});}catch(error){oversizedRejected=error.message==='SPARK_RECOVERY_DEVICE_CAPACITY_EXCEEDED';}
         // The copy is not mutable by callers after enqueueing it.
         input.snapshot.products[0].stock=999;
         const row=await recovery.read(sourceHash);recovery.close();
-        return {sourceHash,stock:row.snapshot.products[0].stock,pending:row.pendingOperations,conflict};
+        return {sourceHash,stock:row.snapshot.products[0].stock,pending:row.pendingOperations,conflict,oversizedRejected};
       });
       assert.equal(initial.stock,1);assert.equal(initial.conflict,true);
+      assert.equal(initial.oversizedRejected,true);
       await page.close();
       const reopened=await context.newPage();await reopened.goto('https://spark-recovery.example.test/');
       for(const content of sources)await reopened.addScriptTag({content});
