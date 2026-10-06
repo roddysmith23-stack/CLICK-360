@@ -6969,6 +6969,7 @@ function parseMoney(value) {
 	    const p=product || {id:null,code:normalizeCode(initialCode),category:'',name:'',qty:0,cost:0,price:0,taxMode:'inherit',notes:'',imageData:''};
     const modalTenantKey = activeTenantContext?.tenantKey;
     const editOpenBaseline = product ? cloneState(product) : null;
+    let productSubmitInFlight = false;
     const productFingerprint = (candidate) => candidate ? JSON.stringify({
       id:candidate.id, businessId:candidate.businessId, code:candidate.code,
       category:candidate.category || '', name:candidate.name || '',
@@ -7032,6 +7033,14 @@ function parseMoney(value) {
 
     $('#productForm').onsubmit=async e=>{
       e.preventDefault();
+      // Ignore this form's own duplicate tap before comparing the baseline:
+      // the first submit has already changed stock while IDB is committing.
+      if (productSubmitInFlight) return;
+      productSubmitInFlight = true;
+      const submitButton = $('#productForm button[type="submit"]');
+      const submitLabel = submitButton?.textContent;
+      if (submitButton) { submitButton.disabled = true; submitButton.textContent = 'Procesando…'; }
+      try {
       if (activeTenantContext?.tenantKey !== modalTenantKey || currentBusiness()?.id !== b.id) {
         return toast('El negocio activo cambió. Cierra este formulario antes de continuar.', 'err');
       }
@@ -7259,7 +7268,11 @@ function parseMoney(value) {
 	      closeModal();
 	      renderApp('inventory');
 	      if (!committed.pending) toast(product ? 'Producto actualizado y confirmado en la nube' : 'Producto creado y confirmado en la nube', 'ok');
-	    };
+      } finally {
+        productSubmitInFlight = false;
+        if (submitButton) { submitButton.disabled = false; submitButton.textContent = submitLabel; }
+      }
+    };
 	  }
 	  async function deleteProduct(id){
 	    if(confirm('¿Borrar este producto? Se guardará una huella para que no reaparezca desde otro dispositivo.')){

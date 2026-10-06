@@ -67,19 +67,22 @@ try{
       await device.page.locator('#newProduct').click();
       for(const [id,value]of [['pCode','FOUNDER-HOSTED'],['pName','Synthetic hosted product'],['pQty','5'],['pCost','4'],['pPrice','12'],['pCardPrice','12.5']])await device.page.locator('#'+id).fill(value);
       await observeProductSubmit(device.page);
-      await device.page.locator('#productForm button[type="submit"]').click();
+      await device.page.locator('#productForm button[type="submit"]').evaluate(button=>{button.click();button.click();});
       await awaitProductSubmit(device.page);
       await device.page.waitForFunction(()=>window.click360GetTenantState().products.some(p=>p.code==='FOUNDER-HOSTED')&&!window.click360GetCapacityStatus().deviceSavePending);
+      assert.equal(await device.page.evaluate(()=>window.click360GetTenantState().products.filter(p=>p.code==='FOUNDER-HOSTED').length),1);
       const product=await device.page.evaluate(()=>window.click360GetTenantState().products.find(p=>p.code==='FOUNDER-HOSTED'));
+      assert.equal(product.stock,5);
       phase='product-edit-identical-rehydration';
       await device.page.locator('#productSearch').fill('FOUNDER-HOSTED'); await device.page.locator(`[data-edit="${product.id}"]`).click();
       await device.page.locator('#pQty').fill('6');
       assert.equal(await device.page.locator('#pQty').inputValue(),'6');
       await observeProductSubmit(device.page);
       await rehydrateAtSubmit(device.page);
-      await device.page.locator('#productForm button[type="submit"]').click();
+      await device.page.locator('#productForm button[type="submit"]').evaluate(button=>{button.click();button.click();});
       await awaitProductSubmit(device.page);
       assert.equal(await device.page.evaluate(()=>window.FOUNDER_REHYDRATIONS),1);
+      assert.equal(await device.page.evaluate(()=>window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS.outcome),'confirmed','own duplicate tap must not become a false material conflict');
       try{
         await device.page.waitForFunction(id=>window.click360GetTenantState().products.find(p=>p.id===id)?.stock===6&&!window.click360GetCapacityStatus().deviceSavePending,product.id);
       }catch(error){
@@ -123,7 +126,7 @@ try{
       assert.deepEqual(conflict.state,conflict.baseline,'rejected edit adds no sale/movement/audit or other material mutation');
       assert.deepEqual(await readCloud(env,uid),original,'conflict test never writes the legacy server document');
       await device.page.evaluate(()=>window.click360Route('backup'));assert.equal(await device.page.getByText('Nube sincronizada',{exact:false}).count(),0);
-      results.push({platform:name,result:'PASS',auth:'real demo emulator',bytes:final.readiness.payloadBytes,openingOnce:true,coldRestart:true,productCRUD:true,saleOnce:true,stockExact:true,legacyUnchanged:true,identicalRehydrationEdit:true,concurrentEditRejected:true});
+      results.push({platform:name,result:'PASS',auth:'real demo emulator',bytes:final.readiness.payloadBytes,openingOnce:true,coldRestart:true,productCRUD:true,saleOnce:true,stockExact:true,legacyUnchanged:true,identicalRehydrationEdit:true,concurrentEditRejected:true,duplicateProductSubmitIgnored:true});
       console.log('PASS hosted '+name+': real Auth, old override600->2000, durable opening/cold restart/product create-edit/sale/stock; cloud pending truthfully');
     }catch(error){
       const evidence=await device.page.evaluate(()=>{
