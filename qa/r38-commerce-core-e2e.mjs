@@ -6,7 +6,7 @@ import path from 'node:path';
 import {chromium,webkit} from 'playwright';
 import {initializeTestEnvironment} from '@firebase/rules-unit-testing';
 import {doc,setDoc} from 'firebase/firestore';
-import {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,assert,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
+import {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,assert,stopProcessTreeAndWait,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId.startsWith('demo-'),'Emulator-only project required');
 mkdirSync(outputDir,{recursive:true});
 const results=[];
@@ -70,4 +70,4 @@ try{
     writeFileSync(path.join(outputDir,'failure-'+Date.now()+'.json'),JSON.stringify({error:error.message,diagnostic,syncTrace,authoritative},null,2));
   }
   throw error;
-}finally{for(const browser of browsers)await browser.close().catch(()=>{});await testEnv?.cleanup().catch(()=>{});stopProcessTree(server);stopProcessTree(emulators);}
+}finally{for(const browser of browsers)await browser.close().catch(()=>{});await testEnv?.cleanup().catch(()=>{});await Promise.all([stopProcessTreeAndWait(server),stopProcessTreeAndWait(emulators)]);}

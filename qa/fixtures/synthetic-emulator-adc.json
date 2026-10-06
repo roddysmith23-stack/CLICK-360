@@ -1,0 +1,6 @@
+{
+  "type":"authorized_user",
+  "client_id":"synthetic-emulator-invalid-client",
+  "client_secret":"synthetic-emulator-invalid-secret",
+  "refresh_token":"synthetic-emulator-invalid-token"
+}

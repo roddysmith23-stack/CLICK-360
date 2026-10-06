@@ -54,6 +54,11 @@
       }
     ]
   },
+  "functions": {
+    "source": "functions",
+    "codebase": "cloud-safety",
+    "predeploy": ["node \"$PROJECT_DIR/scripts/build-cloud-safety-functions.mjs\""]
+  },
   "firestore": {
     "rules": "firestore.rules"
   }

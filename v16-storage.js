@@ -116,11 +116,79 @@
     return true;
   }
 
+  async function getSafetyMetadata(context) {
+    return (await transact(HEALTH_STORE, 'readonly', store => store.get(`safety:${contextId(context)}`))) || null;
+  }
+
+  // Allocate capture order atomically against the durable snapshot. Hashing is
+  // performed BEFORE this transaction; no async crypto can expire an IDB tx.
+  async function allocateSafetyMetadata(context, captured, sourceKey) {
+    if (!captured || !/^[a-f0-9]{64}$/.test(sourceKey || '')) throw new Error('Invalid safety capture.');
+    const id = contextId(context), healthId = `safety:${id}`, db = await openDatabase();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction([SNAPSHOT_STORE, HEALTH_STORE], 'readwrite');
+        const snapshots = tx.objectStore(SNAPSHOT_STORE), health = tx.objectStore(HEALTH_STORE);
+        let result, failure;
+        const read = snapshots.get(id);
+        read.onsuccess = () => {
+          const current = read.result;
+          if (!current || current.authUid !== context.authUid || current.ownerId !== context.ownerId
+            || current.tenantKey !== context.tenantKey || current.businessId !== context.businessId
+            || current.savedAtMs !== captured.savedAtMs || current.deviceRevision !== captured.deviceRevision
+            || JSON.stringify(current) !== JSON.stringify(captured)) {
+            failure = Object.assign(new Error('Durable snapshot changed before capture.'), { code:'safety-capture-stale' });
+            tx.abort(); return;
+          }
+          const previous = health.get(healthId);
+          previous.onsuccess = () => {
+            const old = previous.result;
+            result = old?.sourceKey === sourceKey ? old : {
+              id:healthId, deviceId:old?.deviceId || root.crypto.randomUUID(),
+              sequence:Number(old?.sequence || 0) + 1, sourceKey, status:'PENDING'
+            };
+            health.put(result);
+          };
+        };
+        tx.oncomplete = () => resolve(result);
+        tx.onabort = () => reject(failure || tx.error || new Error('Safety capture aborted.'));
+        tx.onerror = () => reject(tx.error || new Error('Safety capture failed.'));
+      });
+    } finally { db.close(); }
+  }
+
+  async function confirmSafetyMetadata(context, sourceKey, confirmation, captured) {
+    if (!captured) return false;
+    const db = await openDatabase(), id = `safety:${contextId(context)}`;
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction([HEALTH_STORE,SNAPSHOT_STORE], 'readwrite'), store = tx.objectStore(HEALTH_STORE);
+        let confirmed = false;
+        const snapshotRead = tx.objectStore(SNAPSHOT_STORE).get(contextId(context));
+        snapshotRead.onsuccess = () => {
+          if (JSON.stringify(snapshotRead.result) !== JSON.stringify(captured)) return;
+          const read = store.get(id);
+          read.onsuccess = () => {
+          const current = read.result;
+          if (current?.sourceKey !== sourceKey || confirmation?.status !== 'COMPLETE'
+            || confirmation?.payloadSha256 !== sourceKey || !confirmation?.completedAt) return;
+          store.put({...current, status:'COMPLETE', backupId:confirmation.backupId,
+            completedAt:confirmation.completedAt, payloadSha256:sourceKey});
+          confirmed = true;
+          };
+        };
+        tx.oncomplete = () => resolve(confirmed);
+        tx.onabort = tx.onerror = () => reject(tx.error || new Error('Safety confirmation failed.'));
+      });
+    } finally { db.close(); }
+  }
+
   async function estimate() {
     if (!root.navigator?.storage?.estimate) return null;
     const value = await root.navigator.storage.estimate();
     return { usage: Number(value.usage || 0), quota: Number(value.quota || 0) };
   }
 
-  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, getSnapshot, deleteSnapshot, estimate, contextId });
+  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, getSnapshot, deleteSnapshot, estimate, contextId,
+    getSafetyMetadata, allocateSafetyMetadata, confirmSafetyMetadata });
 })(typeof window !== 'undefined' ? window : globalThis);

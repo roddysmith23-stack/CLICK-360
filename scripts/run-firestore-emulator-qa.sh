@@ -20,7 +20,8 @@ if ! has_java; then
 fi
 
 rm -f firestore-debug.log
-./node_modules/.bin/firebase emulators:exec --only firestore --project demo-click360-p0-rules "node qa-firestore-emulator.cjs && node qa-worker-data-boundary-emulator.cjs && node qa-ceo-admin-web-rules-emulator.cjs && node qa-r37-2-dual-device-conflict-emulator.cjs && node qa-p0-shary-cash-session-reconciliation-emulator.cjs && node qa-r37-2-logistics-worker-permissions-emulator.cjs"
+node scripts/build-cloud-safety-functions.mjs
+./node_modules/.bin/firebase emulators:exec --only firestore --project demo-click360-p0-rules "node qa-firestore-emulator.cjs && node qa-worker-data-boundary-emulator.cjs && node qa-ceo-admin-web-rules-emulator.cjs && node qa-r37-2-dual-device-conflict-emulator.cjs && node qa-p0-shary-cash-session-reconciliation-emulator.cjs && node qa-r37-2-logistics-worker-permissions-emulator.cjs && node qa-cloud-safety-backup-emulator.mjs"
 
 if [ ! -f firestore-debug.log ]; then
   echo "Firestore emulator did not produce firestore-debug.log; expression-limit verification is incomplete." >&2

@@ -24,6 +24,8 @@ const ASSETS = [
   './v16-domain.js',
   './tenant-quota-overrides.js',
   './v16-storage.js',
+  './cloud-safety-backup.js',
+  './cloud-safety-backup-client.js',
   './access-flow.js',
   './firebase-service.js',
   './printing-service.js',

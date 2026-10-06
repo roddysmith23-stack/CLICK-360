@@ -30,7 +30,6 @@ assert(changed.length > 0, 'the release must contain a reviewable web diff');
 
 const forbidden = [
   /^tools\/admin\//,
-  /^functions\//,
   // admin-access-v16.mjs deliberately removed from this list: the Commercial
   // MVP release explicitly scopes in CEO Admin activation/onboarding tooling
   // (5-tier plan activation, founder_legacy, onboarding profile fields) as a
@@ -41,6 +40,7 @@ const forbidden = [
 ];
 for (const file of changed) {
   assert(!forbidden.some((pattern) => pattern.test(file)), `forbidden release path: ${file}`);
+  if(file.startsWith('functions/'))assert(['functions/package.json','functions/package-lock.json','functions/index.cjs','functions/safety-verifier.cjs'].includes(file),`Unreviewed server scope: ${file}`);
 }
 
 const packageJson = JSON.parse(read('package.json'));

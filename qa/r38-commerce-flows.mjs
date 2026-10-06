@@ -98,9 +98,13 @@ async function charge(page,method){
 }
 async function payment(page,saleId,amount,method){
   const previous=(await cloud()).payload.data;
-  await page.evaluate(saleId=>{void window.payLayaway(saleId);},saleId);
+  await page.evaluate(saleId=>{window.R38_PAYMENT_COMPLETION=window.payLayaway(saleId);},saleId);
   await page.locator('#layawayPaymentAmount').fill(String(amount));await page.locator('#layawayPaymentMethod').selectOption(method);
   await page.evaluate(()=>{const b=document.getElementById('confirmLayawayPayment');for(let i=0;i<5;i++)b.click();});
+  // Await the real mutation, not a second, competing 30s server-poll deadline.
+  // A rejection still fails the authoritative assertion below; never retry the
+  // commercial action merely because its response took longer than the poll.
+  await page.evaluate(()=>window.R38_PAYMENT_COMPLETION);
   const after=(await cloudUntil(data=>data.movements.length===previous.movements.length+1,'one abono')).payload.data;
   await sync(page);
   const sale=after.sales.find(s=>s.id===saleId),before=previous.sales.find(s=>s.id===saleId);

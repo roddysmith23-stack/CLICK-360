@@ -1,0 +1,12 @@
+{
+  "firestore": {"rules":"firestore.rules"},
+  "functions": {"source":"functions","codebase":"cloud-safety"},
+  "emulators": {
+    "auth":{"host":"127.0.0.1","port":59099},
+    "firestore":{"host":"127.0.0.1","port":58080,"websocketPort":58081},
+    "functions":{"host":"127.0.0.1","port":55001},
+    "hub":{"host":"127.0.0.1","port":54400},
+    "logging":{"host":"127.0.0.1","port":54401},
+    "ui":{"enabled":false}
+  }
+}

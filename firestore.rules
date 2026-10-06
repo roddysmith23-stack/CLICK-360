@@ -1423,6 +1423,67 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // BEGIN CLOUD SAFETY BACKUP ADDITIVE RULES
+    // Owner-private disaster archive, NOT an operational synchronization writer.
+    // COMPLETE/head writes are exclusively performed by the server verifier.
+    // Expired read-only owners retain data protection; safety is not a paid add-on.
+    match /businesses/{ownerUid}/safetyBackups/{backupId} {
+      allow read: if tenantReadable(ownerUid);
+      allow create: if tenantReadable(ownerUid)
+        && backupId.matches('[a-f0-9]{64}')
+        && request.resource.data.ownerUid == ownerUid
+        && request.resource.data.backupId == backupId
+        && request.resource.data.format == 'click360-cloud-safety-v1'
+        && request.resource.data.status == 'UPLOADING'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.keys().hasOnly(['format','backupId','ownerUid','tenantKey','contextBusinessId','businessIds','deviceId','sequence','buildSha','schemaVersion','snapshotRevision','baseRevision','payloadBytes','payloadSha256','canonicalMaterialHash','partCount','partIds','scopes','scopeIds','pendingOperationsCount','unknownOperationsCount','status','createdAt'])
+        && request.resource.data.tenantKey == 'owner:' + ownerUid + ':business:' + ownerUid
+        && request.resource.data.contextBusinessId == ownerUid
+        && request.resource.data.buildSha.matches('[a-f0-9]{12,40}')
+        && !request.resource.data.keys().hasAny(['completedAt', 'verifiedBy'])
+        && request.resource.data.payloadBytes is int
+        && request.resource.data.payloadBytes > 0
+        && request.resource.data.payloadBytes <= 8519680
+        && request.resource.data.partCount is int
+        && request.resource.data.partCount > 0
+        && request.resource.data.partCount <= 96
+        && request.resource.data.partIds is list
+        && request.resource.data.partIds.size() == request.resource.data.partCount
+        && request.resource.data.partIds.toSet().size() == request.resource.data.partCount
+        && request.resource.data.schemaVersion == 10
+        && request.resource.data.scopes is list
+        && request.resource.data.scopeIds is list
+        && request.resource.data.scopeIds.size() <= 96
+        && request.resource.data.businessIds is list
+        && request.resource.data.businessIds.size() <= 95
+        && request.resource.data.payloadSha256.matches('[a-f0-9]{64}')
+        && request.resource.data.canonicalMaterialHash.matches('[a-f0-9]{64}')
+        && request.resource.data.deviceId.matches('[a-zA-Z0-9_-]{8,96}')
+        && request.resource.data.sequence is int && request.resource.data.sequence > 0;
+      allow update, delete: if false;
+      match /parts/{partId} {
+        allow read: if tenantReadable(ownerUid);
+        allow create: if tenantReadable(ownerUid)
+          && exists(/databases/$(database)/documents/businesses/$(ownerUid)/safetyBackups/$(backupId))
+          && get(/databases/$(database)/documents/businesses/$(ownerUid)/safetyBackups/$(backupId)).data.status == 'UPLOADING'
+          && request.resource.data.keys().hasOnly(['id','scopeId','index','text','bytes','sha256'])
+          && request.resource.data.id == partId
+          && get(/databases/$(database)/documents/businesses/$(ownerUid)/safetyBackups/$(backupId)).data.partIds.hasAny([partId])
+          && get(/databases/$(database)/documents/businesses/$(ownerUid)/safetyBackups/$(backupId)).data.scopeIds.hasAny([request.resource.data.scopeId])
+          && request.resource.data.index is int
+          && request.resource.data.index >= 0 && request.resource.data.index < 96
+          && request.resource.data.bytes is int
+          && request.resource.data.bytes > 0 && request.resource.data.bytes <= 180000
+          && request.resource.data.text is string && request.resource.data.text.size() <= 240000
+          && request.resource.data.sha256.matches('[a-f0-9]{64}');
+        allow update, delete: if false;
+      }
+    }
+    match /businesses/{ownerUid}/safetyBackupHeads/{deviceId} {
+      allow read: if tenantReadable(ownerUid);
+      allow write: if false;
+    }
+    // END CLOUD SAFETY BACKUP ADDITIVE RULES
     match /businesses/{businessId}/legacyBackups/{backupId} {
       allow read, write: if false;
     }

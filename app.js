@@ -1719,7 +1719,7 @@ function parseMoney(value) {
   // Internal, read-only startup/support check. No tenant identifiers, contact
   // details, tokens or commercial records are exposed or uploaded here.
   window.click360IsMixedBuild = () => APP_BUILD_SHA !== '__CLICK360_BUILD_SHA__'
-    && ['app.js','firebase-service.js','tenant-quota-overrides.js','v16-storage.js']
+    && ['app.js','firebase-service.js','tenant-quota-overrides.js','v16-storage.js','cloud-safety-backup.js','cloud-safety-backup-client.js']
       .some(file => window.CLICK360_RELEASE_ASSETS?.[file] !== APP_BUILD_SHA);
   window.click360GetClientReadiness = function() {
     const capacity = window.click360GetCapacityStatus();
@@ -1739,6 +1739,10 @@ function parseMoney(value) {
       effectiveLimits:entitlements ? { businesses:entitlements.limits.businesses,
         workers:entitlements.limits.workerSeatsMax, productsActive:entitlements.limits.productsActive } : null,
       ...capacity, indexedDbAvailable:storageState.indexedDbReady,
+      safetyBackup:{status:window.click360CloudSafetyStatus?.status || 'PENDING',
+        payloadSha256:window.click360CloudSafetyStatus?.payloadSha256 || null,
+        completedAt:window.click360CloudSafetyStatus?.completedAt || null,
+        errorCode:window.click360CloudSafetyStatus?.errorCode || null},
       pendingOperations:pending.length,
       // A legacy snapshot journal is not an operation ledger: don't claim
       // that unknown remote outcomes have been independently reconciled.
@@ -2108,8 +2112,15 @@ function parseMoney(value) {
     const rawSyncState = typeof window.click360GetSyncState === 'function'
       ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
     const effectiveStatus = (() => {
+      // A receipt protects the previous durable snapshot, not an in-flight
+      // device mutation. Never show its confirmation for an uncommitted save.
+      if (deviceSavePending) return 'device_saving';
       if (rawSyncState?.cloudCapacityBlocked && rawSyncState.blocking) return 'error';
-      if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) return 'cloud_capacity_blocked';
+      if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) {
+        if (window.click360CloudSafetyStatus?.status === 'CONFIRMED') return 'cloud_safety_confirmed';
+        if (window.click360CloudSafetyStatus?.status === 'UPLOADING') return 'cloud_safety_uploading';
+        return 'cloud_capacity_blocked';
+      }
       if (rawSyncState?.status === 'needs_review') return 'needs_review';
       if (rawSyncState?.status === 'pending_write') return 'pending';
       if (rawSyncState?.status === 'real_conflict') return 'error';
@@ -2117,7 +2128,10 @@ function parseMoney(value) {
       return s.status;
     })();
     const map = {
-      cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. El respaldo cloud requiere almacenamiento modular; no borres los datos del dispositivo.'],
+      device_saving: ['Guardando en este dispositivo…', 'Espera mientras se protege el último cambio. Su respaldo en nube todavía no está confirmado.'],
+      cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. Conserva los datos del dispositivo mientras se confirma el respaldo de seguridad.'],
+      cloud_safety_uploading: ['Guardado en este dispositivo · respaldando en nube…', 'Tus operaciones permanecen protegidas en este dispositivo. Se está verificando su respaldo de seguridad.'],
+      cloud_safety_confirmed: ['Guardado en este dispositivo · respaldo de seguridad en nube confirmado', 'El respaldo íntegro fue verificado. No es todavía sincronización operacional entre dispositivos.'],
 	      synced: ['Guardado en nube', 'Tus datos están guardados en este dispositivo y confirmados en la nube.'],
 	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
       pending: ['Pendiente de sincronizar', 'Hay cambios locales esperando confirmación de nube.'],
@@ -2138,8 +2152,8 @@ function parseMoney(value) {
     const info = syncStatusInfo();
     const color = info.status === 'synced' ? '#37d57e' : info.status === 'error' ? '#ff5c62' : info.status === 'offline' ? '#d6aa2c' : 'var(--gold)';
     const label = compact ? info.title.replace('Nube ', '') : info.title;
-    return `<div id="${compact ? 'syncStatusPillTop' : 'syncStatusPill'}" title="${escapeHtml(info.detail)}" style="display:inline-flex;align-items:center;gap:7px;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:6px 10px;color:${color};font-size:12px;font-weight:700;background:rgba(255,255,255,.04);white-space:nowrap;">
-      <span style="width:7px;height:7px;border-radius:999px;background:${color};box-shadow:0 0 10px ${color};"></span>${escapeHtml(label)}
+    return `<div id="${compact ? 'syncStatusPillTop' : 'syncStatusPill'}" title="${escapeHtml(info.detail)}" style="display:inline-flex;max-width:100%;min-width:0;box-sizing:border-box;align-items:center;gap:7px;border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:6px 10px;color:${color};font-size:12px;font-weight:700;background:rgba(255,255,255,.04);white-space:normal;">
+      <span style="flex-shrink:0;width:7px;height:7px;border-radius:999px;background:${color};box-shadow:0 0 10px ${color};"></span><span style="min-width:0;overflow-wrap:anywhere;">${escapeHtml(label)}</span>
     </div>`;
   }
   function currentBusiness(){
@@ -6953,6 +6967,16 @@ function parseMoney(value) {
 	  function openProductModal(product=null, initialCode=''){
 	    const b=currentBusiness(), v=businessVocabulary(b.type);
 	    const p=product || {id:null,code:normalizeCode(initialCode),category:'',name:'',qty:0,cost:0,price:0,taxMode:'inherit',notes:'',imageData:''};
+    const modalTenantKey = activeTenantContext?.tenantKey;
+    const editOpenBaseline = product ? cloneState(product) : null;
+    let productSubmitInFlight = false;
+    const productFingerprint = (candidate) => candidate ? JSON.stringify({
+      id:candidate.id, businessId:candidate.businessId, code:candidate.code,
+      category:candidate.category || '', name:candidate.name || '',
+      qty:Number(candidate.qty ?? candidate.stock ?? 0), stock:Number(candidate.stock ?? candidate.qty ?? 0),
+      cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
+      taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
+    }) : '';
 	    const linkedRecipe = product ? restaurantRecipesForBiz().find((recipe) => recipe.productId === product.id) : null;
     const productImage = safeImageSrc(p.imageData);
     showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
@@ -7009,6 +7033,31 @@ function parseMoney(value) {
 
     $('#productForm').onsubmit=async e=>{
       e.preventDefault();
+      // Ignore this form's own duplicate tap before comparing the baseline:
+      // the first submit has already changed stock while IDB is committing.
+      if (productSubmitInFlight) return;
+      productSubmitInFlight = true;
+      const submitButton = $('#productForm button[type="submit"]');
+      const submitLabel = submitButton?.textContent;
+      if (submitButton) { submitButton.disabled = true; submitButton.textContent = 'Procesando…'; }
+      try {
+      if (activeTenantContext?.tenantKey !== modalTenantKey || currentBusiness()?.id !== b.id) {
+        return toast('El negocio activo cambió. Cierra este formulario antes de continuar.', 'err');
+      }
+      if (product) {
+        const liveProduct = state.products.find((candidate) => candidate.id === editOpenBaseline.id && candidate.businessId === b.id);
+        // Hydration replaces object references. Mutate the current record only
+        // if its commercial baseline is unchanged; never edit a detached object
+        // and announce a successful durable save of the old stock.
+        if (!liveProduct || productFingerprint(liveProduct) !== productFingerprint(editOpenBaseline)) {
+          window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS = {
+            conflictDetected:true, targetChangedRemotely:true, retryAttempted:false,
+            outcome:'safe_conflict', reason:'product_changed_while_editing'
+          };
+          return toast(writeBlockMessage({ reason:'sync_conflict' }), 'err');
+        }
+        product = liveProduct;
+      }
       const name=$('#pName').value.trim();
       const qty=parseInt($('#pQty').value||'0',10);
       const cost=parseMoney($('#pCost').value);
@@ -7043,14 +7092,8 @@ function parseMoney(value) {
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
 	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
-	      // r37.2.5 (P0, real SHARY incident): `product` is the same object
-	      // reference this modal opened with. Snapshot it before the mutation
-	      // below -- a background remote update while the modal was open
-	      // replaces `state` wholesale but never touches this object, so this
-	      // is the true pre-edit value the user actually saw, unlike
-	      // re-deriving "baseline" from a fresh clone of the (possibly
-	      // already-rebased) current `state` at submit time.
-	      const editOpenBaseline = product ? cloneState(product) : null;
+	      // Keep the immutable baseline captured when the editor opened, not a
+	      // freshly rehydrated product that could hide a concurrent stock edit.
 	      let savedProduct = product;
 	      // Write both 'stock' (canonical, read by modular gateway) and 'qty' (legacy UI field) so both paths stay in sync.
 	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
@@ -7072,13 +7115,6 @@ function parseMoney(value) {
 	      const desiredProduct = cloneState(savedProduct);
 	      const desiredRecipe = cloneState(state.restaurantRecipes.find((recipe) => recipe.productId === savedProduct.id && recipe.businessId === b.id) || null);
 	      const baselineProduct = editOpenBaseline || previousState.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
-	      const productFingerprint = (candidate) => candidate ? JSON.stringify({
-	        id:candidate.id, businessId:candidate.businessId, code:candidate.code,
-	        category:candidate.category || '', name:candidate.name || '',
-	        qty:Number(candidate.qty ?? candidate.stock ?? 0), stock:Number(candidate.stock ?? candidate.qty ?? 0),
-	        cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
-	        taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
-	      }) : '';
 	      const remoteApplied = (next) => {
 	        const remoteProduct = next.products?.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id);
 	        const fieldMatches = remoteProduct ? {
@@ -7232,7 +7268,11 @@ function parseMoney(value) {
 	      closeModal();
 	      renderApp('inventory');
 	      if (!committed.pending) toast(product ? 'Producto actualizado y confirmado en la nube' : 'Producto creado y confirmado en la nube', 'ok');
-	    };
+      } finally {
+        productSubmitInFlight = false;
+        if (submitButton) { submitButton.disabled = false; submitButton.textContent = submitLabel; }
+      }
+    };
 	  }
 	  async function deleteProduct(id){
 	    if(confirm('¿Borrar este producto? Se guardará una huella para que no reaparezca desde otro dispositivo.')){
@@ -9671,6 +9711,11 @@ function parseMoney(value) {
 		  }
 		  window.click360GetLocalBusinessSyncStats = localBusinessSyncStats;
 		  function showSyncConflictRecovery(gate = {}) {
+        if (window.click360GetCapacityStatus?.().cloudCapacityBlocked) {
+          toast('Tu copia local está protegida. No se reemplazará con una copia de nube anterior; se verificará su respaldo de seguridad.', 'err');
+          window.click360RunCloudSafetyBackup?.();
+          return;
+        }
 		    const syncState = gate.syncState || window.click360GetSyncState?.({ reason: 'ui_conflict_modal' }) || {};
 		    const localStats = localBusinessSyncStats();
 		    const localProds = localStats.products;
@@ -9750,6 +9795,7 @@ function parseMoney(value) {
 		  }
 		  window.click360ShowSyncConflictRecovery = showSyncConflictRecovery;
 		  async function clearLocalAppStateRecovery() {
+    if (window.click360GetCapacityStatus?.().cloudCapacityBlocked) return toast('La copia pendiente de este dispositivo está protegida. No se reemplazará con datos antiguos.', 'err');
 		    if (!window.click360ClearLocalRecoveryState) return toast('Recuperación local no disponible en este entorno.', 'err');
 		    if (!confirm('Esto actualiza los datos guardados en este dispositivo y los vuelve a traer desde la nube. No borra tus negocios ni tus productos. ¿Continuar?')) return;
 		    downloadBackup('antes-de-reparar-sincronizacion');
@@ -12593,7 +12639,15 @@ function parseMoney(value) {
   }
 	  function bindBackup(){
 	    $('#backupBtn').onclick=downloadBackup;
+    const capacityPending=window.click360GetCapacityStatus?.().cloudCapacityBlocked===true;
+    if(capacityPending){
+      for(const id of ['refreshCloudBtn','clearLocalAppStateBtn']){const button=$('#'+id);if(button){button.disabled=true;button.title='La copia local pendiente no puede reemplazarse con datos anteriores de nube.';}}
+      const backupButton=$('#forceSyncCloud');if(backupButton)backupButton.textContent='Respaldar copia de seguridad';
+    }
 	    $('#forceSyncCloud')?.addEventListener('click', async ()=>{
+      if(window.click360GetCapacityStatus?.().cloudCapacityBlocked){
+        await window.click360RunCloudSafetyBackup?.();return;
+      }
 	      if(window.click360SyncNow) {
 	        toast('Guardando en nube...');
 	        const synced = await window.click360SyncNow();
@@ -12601,6 +12655,7 @@ function parseMoney(value) {
 	      } else toast('Nube no disponible en este entorno', 'err');
 	    });
 		    $('#refreshCloudBtn')?.addEventListener('click', async ()=>{
+      if(window.click360GetCapacityStatus?.().cloudCapacityBlocked)return toast('Tus cambios pendientes permanecen protegidos en este dispositivo.', 'err');
 		      if(!window.click360RefreshNow) return toast('Nube no disponible en este entorno', 'err');
 		      if(!confirm('Actualizar desde nube reemplazará la copia local actual. Se descargará un respaldo antes de continuar. ¿Deseas seguir?')) return;
 		      if(prompt('Escribe exactamente REEMPLAZAR LOCAL para confirmar:') !== 'REEMPLAZAR LOCAL') return toast('Actualización cancelada', 'err');
@@ -12621,6 +12676,10 @@ function parseMoney(value) {
 		      }
 		    });
 	    $('#restoreFile').onchange = (e) => {
+        if (window.click360GetCapacityStatus?.().cloudCapacityBlocked) {
+          e.target.value = '';
+          return toast('Hay operaciones locales pendientes. Restaurar requiere conciliación supervisada; ningún dato fue reemplazado.', 'err');
+        }
 	        if(!isOwnerUser()) {
 	          e.target.value = '';
 	          return toast('Solo el dueño puede restaurar respaldos.', 'err');
@@ -13373,6 +13432,7 @@ function parseMoney(value) {
 
 	  window.click360Route=renderApp;
 	  window.click360SetSession = setSession;
+  window.addEventListener('click360-cloud-safety-status', () => window.dispatchEvent(new CustomEvent('click360-sync-status')));
 	  window.addEventListener('click360-sync-status', () => {
 	    const info = syncStatusInfo();
 	    const side = $('#syncStatusPill');

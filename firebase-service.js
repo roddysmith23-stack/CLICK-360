@@ -3853,13 +3853,17 @@
 	    }
 	  };
 	  window.click360SyncNow = () => MODULAR_MODE ? pushModularState("manual") : pushLocalToFirestore("manual");
-	  window.click360RefreshNow = () => MODULAR_MODE ? pullModularState() : pullRemoteOnce({ force: true, reload: true });
+	  window.click360RefreshNow = () => window.click360GetCapacityStatus?.().cloudCapacityBlocked
+      ? Promise.resolve(false) : MODULAR_MODE ? pullModularState() : pullRemoteOnce({ force: true, reload: true });
 	  // r37.2.5 (P0, real SHARY incident): a caller with an active
 	  // conflict-retry CAS window (see listenRemoteChanges below) sets this
 	  // so a same-tick background snapshot can't silently fast-forward
 	  // LAST_REMOTE_REVISION out from under it.
 	  window.click360SetCriticalWriteGuard = (active) => { CRITICAL_WRITE_GUARD_ACTIVE = !!active; };
 	  window.click360ClearLocalRecoveryState = async function() {
+    if (window.click360GetCapacityStatus?.().cloudCapacityBlocked) {
+      return { ok:false, refreshed:false, reason:'capacity_pending_local_protected' };
+    }
 	    const before = getSyncState({ cleanup: false, reason: 'manual_local_recovery_before' });
 	    maybeClearStaleSyncGuard({ reason: 'manual_local_recovery', force: true });
 	    LOCAL_WRITE_PENDING_UNTIL = 0;
@@ -3873,6 +3877,9 @@
 	    return { ok: refreshed === true || after.blocking === false, refreshed: refreshed === true, before, after };
 	  };
 	  window.click360ResolveSyncConflict = async function(action = 'cancel') {
+    if (window.click360GetCapacityStatus?.().cloudCapacityBlocked && action !== 'cancel') {
+      return { ok:false, action, reason:'capacity_pending_local_protected' };
+    }
 	    if (action === 'refresh_cloud') return window.click360ClearLocalRecoveryState();
 	    if (action === 'keep_local') {
 	      const localStats = window.click360GetLocalBusinessSyncStats?.();
