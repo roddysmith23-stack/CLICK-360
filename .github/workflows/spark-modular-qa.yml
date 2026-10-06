@@ -1,0 +1,29 @@
+name: Spark modular client safety regression
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  spark-client-safety-required:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npm run qa:spark
+      - run: npm run qa:spark:rules
+      - run: npm run qa:spark:legacy-rules
+      - name: Repeat client transactions and lifecycle with a fresh emulator
+        run: npm run qa:spark:rules
+      - run: npm run qa:modular-persistence
+      - run: npm audit --omit=dev --audit-level=moderate

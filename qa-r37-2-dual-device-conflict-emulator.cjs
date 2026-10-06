@@ -3,7 +3,9 @@ const fs = require('fs');
 const { initializeTestEnvironment } = require('@firebase/rules-unit-testing');
 const { doc, getDoc, runTransaction, setDoc } = require('firebase/firestore');
 
-const RULES = fs.readFileSync('firestore.rules', 'utf8');
+const rulesFile = process.env.CLICK360_EMULATOR_RULES || 'firestore.rules';
+if (!['firestore.rules', 'firestore.spark.rules'].includes(rulesFile)) throw Error('UNREVIEWED_EMULATOR_RULES_FILE');
+const RULES = fs.readFileSync(rulesFile, 'utf8');
 const PROJECT_ID = 'demo-click360-p0-rules';
 
 /**
