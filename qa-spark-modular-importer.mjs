@@ -4,6 +4,8 @@ import {initializeTestEnvironment,assertFails} from '@firebase/rules-unit-testin
 import {doc,setDoc,deleteDoc,getDocFromServer,getDocsFromServer,collection,query,orderBy,documentId,limit,startAfter,runTransaction,serverTimestamp} from 'firebase/firestore';
 import './spark-modular-migration.js';
 import './spark-modular-importer.js';
+import './spark-modular-record-codec.js';
+import './spark-modular-transaction-transport.js';
 if(process.env.FIRESTORE_EMULATOR_HOST!=='127.0.0.1:48944')throw Error('EXACT_SPARK_DEMO_EMULATOR_REQUIRED');
 const projectId='demo-click360-spark-modular',ownerUid='spark-import-owner',businessId='import-business';
 const env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:48944,rules:await readFile('firestore.spark.rules','utf8')}});
@@ -47,6 +49,18 @@ try{
   const result=await importer.prepareShadow();
   assert.equal(result.cutoverPerformed,false);assert.equal(result.equality.status,'SEMANTIC_EQUALITY_PASS');
   assert.equal(result.equality.sourceHash,await api.hash(local));
+  // The real authenticated SDK must not bypass the pending operational Rules
+  // gate. Even a transport in verified modular mode cannot mutate commercial
+  // records until those Rules/domain operations are explicitly certified.
+  const transport=globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,resolveUser:()=>currentUser});
+  await assert.rejects(()=>transport.run(()=>{}),/CUTOVER_NOT_VERIFIED/);
+  const storageRef=doc(client,`businesses/${ownerUid}/metadata/storage`);
+  const savedControl=(await getDocFromServer(storageRef)).data();
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),{...savedControl,storageMode:'modular',phase:'MODULAR'}));
+  await transport.run(async tx=>{const p=await tx.get('products','p-0');assert.equal(p.stock,1);assert.equal(p.qty,1);});
+  await assertFails(transport.run(async tx=>{const p=await tx.get('products','p-0');tx.update('products','p-0',{...p,stock:0,qty:0,recordVersion:2});}));
+  assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/products/p-0`))).data().data.stock,1);
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),savedControl));
   const retry=await importer.prepareShadow();assert.deepEqual(retry.equality,result.equality);
   await assert.rejects(globalThis.CLICK360_SPARK_IMPORTER.create({...input,deviceId:'different-device'}).prepareShadow(),/ALREADY_CLAIMED/);
   await assert.rejects(globalThis.CLICK360_SPARK_IMPORTER.create({...input,readGuard:async()=>({ownerUid,deviceRevision:'device-43',unknownOperations:0,mutationLockHeld:false})}).prepareShadow(),/DEVICE_GUARD_CHANGED_STOP/);

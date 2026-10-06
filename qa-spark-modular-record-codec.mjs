@@ -21,6 +21,10 @@ await assert.rejects(()=>codec.unpack({...shadow,dataHash:'wrong'},scope),/HASH_
 await assert.rejects(()=>codec.pack({...flat,recordVersion:3},{...scope,previous:shadow}),/REVISION_CONFLICT/);
 await assert.rejects(()=>codec.pack({...flat,ownerUid:'other'},scope),/IDENTITY_MISMATCH/);
 const newRecord=await codec.pack({...flat,recordVersion:1},scope);assert.equal(newRecord.sourceHash,undefined);
+const newProjection=await codec.unpack(newRecord,scope);
+const secondEdit=await codec.pack({...newProjection,stock:1,qty:1,recordVersion:2},{...scope,previous:newRecord});
+assert(!Object.hasOwn(secondEdit,'sourceHash'));assert(!Object.hasOwn(secondEdit,'sourcePath'));
+assert.equal(secondEdit.data.stock,1);assert.equal(await api.hash(secondEdit.data),secondEdit.dataHash);
 const business={id:identity.businessId,name:'Existing business',settings:{timeZone:'America/Guayaquil'}};
 const config={id:'main',...identity,schemaVersion:2,module:'config',sourceHash:shadow.sourceHash,sourcePath:['businesses',0],data:business,dataHash:await api.hash(business)};
 const configScope={identity,moduleName:'config',recordId:'main'};

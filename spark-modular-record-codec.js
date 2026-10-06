@@ -44,7 +44,12 @@
     const raw={id:recordId,ownerUid:identity.ownerUid,businessId:identity.businessId,schemaVersion:2,module:moduleName,
       data,dataHash:await api.hash(data)};
     for(const field of metadata)if(Object.hasOwn(flat,field))raw[field]=flat[field];
-    if(previous){raw.sourceHash=previous.sourceHash;raw.sourcePath=structuredClone(previous.sourcePath);}
+    // New operational records have no legacy origin. Do not manufacture
+    // undefined fields on their second edit: Firestore rejects undefined.
+    if(previous){
+      if(Object.hasOwn(previous,'sourceHash'))raw.sourceHash=previous.sourceHash;
+      if(Object.hasOwn(previous,'sourcePath'))raw.sourcePath=structuredClone(previous.sourcePath);
+    }
     if(api.byteLength(data)>api.MAX_RECORD_BYTES)throw Error('SPARK_CODEC_RECORD_TOO_LARGE');
     return raw;
   }
