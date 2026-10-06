@@ -259,6 +259,10 @@ async function openSignedIn(browser, viewport) {
         toast: document.querySelector('#toast')?.textContent
       })).catch(() => null);
       console.error('R38 emulator-only new-device failure evidence '+JSON.stringify({ label, viewport, diagnostic, pageErrors }));
+      // A failure before openSignedIn returns means the caller never acquired
+      // this context. Close it here instead of leaving a persistent browser
+      // alive after the owning emulator has already shut down.
+      await context.close().catch(closeError=>console.error('Failed QA browser cleanup: '+closeError.message));
       throw new Error(`openSignedIn step "${label}" failed: ${error.message}`);
     }
   };

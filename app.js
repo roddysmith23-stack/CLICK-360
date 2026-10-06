@@ -6967,6 +6967,15 @@ function parseMoney(value) {
 	  function openProductModal(product=null, initialCode=''){
 	    const b=currentBusiness(), v=businessVocabulary(b.type);
 	    const p=product || {id:null,code:normalizeCode(initialCode),category:'',name:'',qty:0,cost:0,price:0,taxMode:'inherit',notes:'',imageData:''};
+    const modalTenantKey = activeTenantContext?.tenantKey;
+    const editOpenBaseline = product ? cloneState(product) : null;
+    const productFingerprint = (candidate) => candidate ? JSON.stringify({
+      id:candidate.id, businessId:candidate.businessId, code:candidate.code,
+      category:candidate.category || '', name:candidate.name || '',
+      qty:Number(candidate.qty ?? candidate.stock ?? 0), stock:Number(candidate.stock ?? candidate.qty ?? 0),
+      cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
+      taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
+    }) : '';
 	    const linkedRecipe = product ? restaurantRecipesForBiz().find((recipe) => recipe.productId === product.id) : null;
     const productImage = safeImageSrc(p.imageData);
     showModal(`<div class="modalHeader"><h2>${product?'Editar':'Nuevo'} ${escapeHtml(v.singular)}</h2><button class="closeBtn" data-close>×</button></div>
@@ -7023,6 +7032,23 @@ function parseMoney(value) {
 
     $('#productForm').onsubmit=async e=>{
       e.preventDefault();
+      if (activeTenantContext?.tenantKey !== modalTenantKey || currentBusiness()?.id !== b.id) {
+        return toast('El negocio activo cambió. Cierra este formulario antes de continuar.', 'err');
+      }
+      if (product) {
+        const liveProduct = state.products.find((candidate) => candidate.id === editOpenBaseline.id && candidate.businessId === b.id);
+        // Hydration replaces object references. Mutate the current record only
+        // if its commercial baseline is unchanged; never edit a detached object
+        // and announce a successful durable save of the old stock.
+        if (!liveProduct || productFingerprint(liveProduct) !== productFingerprint(editOpenBaseline)) {
+          window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS = {
+            conflictDetected:true, targetChangedRemotely:true, retryAttempted:false,
+            outcome:'safe_conflict', reason:'product_changed_while_editing'
+          };
+          return toast(writeBlockMessage({ reason:'sync_conflict' }), 'err');
+        }
+        product = liveProduct;
+      }
       const name=$('#pName').value.trim();
       const qty=parseInt($('#pQty').value||'0',10);
       const cost=parseMoney($('#pCost').value);
@@ -7057,14 +7083,8 @@ function parseMoney(value) {
 	      const updatedAtMs = Date.now();
 	      const taxMode = $('#pTaxMode').value;
 	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
-	      // r37.2.5 (P0, real SHARY incident): `product` is the same object
-	      // reference this modal opened with. Snapshot it before the mutation
-	      // below -- a background remote update while the modal was open
-	      // replaces `state` wholesale but never touches this object, so this
-	      // is the true pre-edit value the user actually saw, unlike
-	      // re-deriving "baseline" from a fresh clone of the (possibly
-	      // already-rebased) current `state` at submit time.
-	      const editOpenBaseline = product ? cloneState(product) : null;
+	      // Keep the immutable baseline captured when the editor opened, not a
+	      // freshly rehydrated product that could hide a concurrent stock edit.
 	      let savedProduct = product;
 	      // Write both 'stock' (canonical, read by modular gateway) and 'qty' (legacy UI field) so both paths stay in sync.
 	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
@@ -7086,13 +7106,6 @@ function parseMoney(value) {
 	      const desiredProduct = cloneState(savedProduct);
 	      const desiredRecipe = cloneState(state.restaurantRecipes.find((recipe) => recipe.productId === savedProduct.id && recipe.businessId === b.id) || null);
 	      const baselineProduct = editOpenBaseline || previousState.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
-	      const productFingerprint = (candidate) => candidate ? JSON.stringify({
-	        id:candidate.id, businessId:candidate.businessId, code:candidate.code,
-	        category:candidate.category || '', name:candidate.name || '',
-	        qty:Number(candidate.qty ?? candidate.stock ?? 0), stock:Number(candidate.stock ?? candidate.qty ?? 0),
-	        cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
-	        taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
-	      }) : '';
 	      const remoteApplied = (next) => {
 	        const remoteProduct = next.products?.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id);
 	        const fieldMatches = remoteProduct ? {
