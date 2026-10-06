@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { chromium } from 'playwright';
@@ -85,7 +86,10 @@ async function run() {
       window.click360SetTenantContext(context, { deferLocalLoad: true });
       window.click360User = { uid, email: 'owner@example.com', role: 'owner', name: 'Industrias Omega', photoURL: '', status: 'active', approved: true, businessLimit: 10, workerLimit: 25, ownerId: uid, isOwner: true, source: 'accountAccess' };
       window.click360CurrentOwnerWorkersEnabled = async () => true;
-      window.click360InviteWorkerEmail = async (email, name, options) => ({ inviteHash: 'a'.repeat(64), inviteToken: 'b'.repeat(64), permissions: options.permissions || {} });
+      window.click360ListWorkers = async () => { await new Promise(resolve => setTimeout(resolve, 500)); return []; };
+      window.click360ListWorkerAccessRequests = async () => [];
+      window.__inviteCalls = 0;
+      window.click360InviteWorkerEmail = async (email, name, options) => { window.__inviteCalls++; return { inviteHash: 'a'.repeat(64), inviteToken: 'b'.repeat(64), permissions: options.permissions || {} }; };
       window.click360ApplyTenantState({
         businesses: [{ id: 'biz_main', name: 'Industrias Omega', status: 'activo', type: 'ropa', settings: {} }],
         activeBusinessId: 'biz_main',
@@ -101,11 +105,13 @@ async function run() {
       window.click360Route('workers');
     }, ownerUid);
     await ownerPage.waitForSelector('#workerName', { state: 'visible', timeout: 15000 });
+    await ownerPage.waitForFunction(() => typeof document.getElementById('addWorkerForm')?.onsubmit === 'function', null, { timeout:15000 });
     await ownerPage.fill('#workerName', 'Mamá de SHARY');
     await ownerPage.fill('#workerEmail', 'mama.shary@example.com');
     await ownerPage.selectOption('#workerRole', 'cajero');
     await ownerPage.click('#addWorkerForm button[type="submit"]');
     await ownerPage.waitForFunction(() => document.getElementById('inviteLinkBox')?.style.display === 'block', { timeout: 15000 });
+    assert(await ownerPage.evaluate(() => window.__inviteCalls) === 1, 'Exactly one real invitation handler request');
     const realInviteUrl = await ownerPage.$eval('#inviteLinkVal', (el) => el.value);
     assert(realInviteUrl.includes('invite=true'), `sanity: the real generated URL must use the real invite=true shape, got: ${realInviteUrl}`);
     assert(!realInviteUrl.includes('flow=invite') && !realInviteUrl.includes('inviteSession'), `the shareable link itself must NEVER embed flow/inviteSession -- those must always be generated fresh, locally, per device. Got: ${realInviteUrl}`);
@@ -123,8 +129,25 @@ async function run() {
     });
     const freshErrors = [];
     freshPage.on('pageerror', (e) => freshErrors.push(e.message));
+    // Hold the real SDK persistence await: diagnostic API availability is
+    // synchronous, but external invitation bootstrap runs AFTER this await.
+    // This reproduces the CI race without sleep/retry or changing app code.
+    const serviceSource = await readFile(path.join(root, 'firebase-service.js'), 'utf8');
+    assert(serviceSource.includes('const auth = firebase.auth();'), 'Persistence latch must patch the known fixture boundary');
+    await freshPage.route('**/firebase-service.js*', route => route.fulfill({ contentType:'application/javascript', body:serviceSource.replace('const auth = firebase.auth();', `const auth = firebase.auth();
+      const originalSetPersistence = auth.setPersistence.bind(auth);
+      auth.setPersistence = async (...args) => {
+        await new Promise(resolve => { window.__releaseSyntheticPersistence = resolve; });
+        return originalSetPersistence(...args);
+      };`) }));
     await freshPage.goto(realInviteUrl, { waitUntil: 'networkidle' });
     await freshPage.waitForFunction(() => typeof window.click360GetPublicAuthDiagnostics === 'function', { timeout: 15000 });
+    assert(await freshPage.evaluate(() => window.click360GetPublicAuthDiagnostics().intent) === 'login', 'Pre-bootstrap diagnostic must reproduce the old premature login observation');
+    await freshPage.evaluate(() => window.__releaseSyntheticPersistence());
+    await freshPage.waitForFunction(() => {
+      const state = window.click360GetAccessUiState?.()?.state;
+      return state && state !== 'loading' && state !== 'authenticated_resolving';
+    }, null, { timeout:15000 });
 
     const diagnostics = await freshPage.evaluate(() => window.click360GetPublicAuthDiagnostics());
     assert(diagnostics.intent === 'invite', `a fresh browser opening the REAL invite URL must be recognized as an invite intent, got intent="${diagnostics.intent}" -- this is the exact bug SHARY's mother hit ("la página le cargó hasta aquí")`);
@@ -152,6 +175,10 @@ async function run() {
     });
     await badPage.goto(`${url}?invite=true&ownerId=${ownerUid}&inviteHash=not-a-real-hash&inviteToken=also-not-real`, { waitUntil: 'networkidle' });
     await badPage.waitForFunction(() => typeof window.click360GetPublicAuthDiagnostics === 'function', { timeout: 15000 });
+    await badPage.waitForFunction(() => {
+      const state = window.click360GetAccessUiState?.()?.state;
+      return state && state !== 'loading' && state !== 'authenticated_resolving';
+    }, null, { timeout:15000 });
     const badDiagnostics = await badPage.evaluate(() => window.click360GetPublicAuthDiagnostics());
     assert(badDiagnostics.explicitInvitationIntent === false, `a malformed invite URL (non-hex token/hash) must NEVER be bootstrapped as a valid invitation, got explicitInvitationIntent=${badDiagnostics.explicitInvitationIntent}`);
     await badContext.close();

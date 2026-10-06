@@ -54,6 +54,10 @@ La corrección compartida conserva la línea base comercial al abrir el editor, 
 
 Antes de publicar se reprodujo además un doble tap del mismo editor: el stock se guardaba una vez, pero el segundo submit confundía la modificación propia en vuelo con un conflicto y reemplazaba el diagnóstico del primero. La protección local del formulario ignora reentradas y deshabilita el botón mientras espera, restaurándolo siempre en finally. La regresión dispara dos clicks reales y exige una sola invocación, stock exacto y diagnóstico de la operación local sin falso conflicto; cloud sigue pendiente. Un cambio material ajeno sigue rechazándose. No se cambian los gates de persistencia ni se reintenta la edición.
 
+El gate de 09526d0 rechazó correctamente otra carrera de QA: el test de invitación externa leía `intent=login` apenas existía la API de diagnóstico, antes del `await auth.setPersistence()` que precede al bootstrap. Un latch sintético alrededor del SDK real reproduce esa observación prematura; tras liberar la persistencia, el arranque real reconoce la invitación. La prueba espera el estado de acceso resuelto, exige una sola petición del formulario y conserva el rechazo de links malformados. Tres repeticiones PASS sin cambios runtime ni aumento de deadlines.
+
+La integración local observó un timeout de arranque de Auth en el fixture de cierre, antes de la mutación. No se atribuye retrospectivamente una causa exacta sin evidencia del fallo original. Se agregó diagnóstico de arranque y cierre del contexto fallido, se corrige el argumento de opciones de Playwright sin elevar su límite, y se aisla todo transporte externo: ese fixture tiene identidad y respuestas de servidor sintéticas, no necesita llamar a un proyecto real. La autorización y persistencia remota reales siguen certificándose por las suites de Auth/Rules/Functions emuladas; no se sustituyen por este fixture.
+
 ## Preparación de staging (no ejecutar todavía)
 
 Primero todos los controles del HEAD exacto deben estar verdes. Inspeccionar HEAD y diff, árbol limpio, build exacto y rollback. Estos comandos son un plan, no evidencia de deploy:

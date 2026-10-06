@@ -106,18 +106,28 @@ async function createPage(browser) {
   const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
-  // This cash-close fixture supplies its own synthetic tenant identity and
-  // does not exercise Google sign-in. Isolate the unrelated cross-origin
-  // Firebase Auth iframe for both a local server and a published staging URL:
-  // otherwise runner network variance can manufacture an AuthError (or a
-  // `fireauth` ReferenceError while offline) outside the operation under test.
-  await page.route('**/__/auth/iframe**', (route) => route.abort('blockedbyclient'));
+  // This fixture supplies synthetic identity AND server reconciliation.
+  // It must never contact a real Auth/Firestore project; those boundaries
+  // are certified separately with real client Rules and Auth emulators.
+  // Aborting only the iframe left other SDK requests network-dependent.
+  const fixtureOrigin = new URL(url).origin;
+  const blockedHosts = new Set();
+  await page.route('**/*', route => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.origin === fixtureOrigin) return route.continue();
+    blockedHosts.add(requestUrl.hostname);
+    return route.abort('blockedbyclient');
+  });
   await page.goto(url, { waitUntil:'domcontentloaded', timeout:externalUrl ? 60000 : 30000 });
   await page.waitForFunction(() => typeof window.click360SetTenantContext === 'function' && !!window.CLICK360_CASH_RECONCILIATION, { timeout:uiTimeout });
-  await page.waitForFunction(() => {
+  try { await page.waitForFunction(() => {
     const accessState = window.click360GetAccessUiState?.()?.state;
     return accessState && !['loading', 'authenticated_resolving'].includes(String(accessState));
-  }, { timeout:uiTimeout });
+  }, null, { timeout:uiTimeout }); } catch (error) {
+    const evidence = await page.evaluate(() => ({ access:window.click360GetAccessUiState?.(), auth:window.click360GetPublicAuthDiagnostics?.(), gate:document.getElementById('click360-auth-gate')?.innerText }));
+    await context.close();
+    throw new Error(`cash-close bootstrap did not settle: ${JSON.stringify({ evidence, pageErrors, blockedHosts:[...blockedHosts] })}`, { cause:error });
+  }
   await page.clock.pauseAt(new Date('2026-09-26T17:45:00.000Z'));
   return { context, page, pageErrors };
 }
