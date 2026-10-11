@@ -21,3 +21,4 @@ for(const route of ['inventory','cash'])for(const sameBusiness of [true,false]){
 }
 console.log('PASS actual renderApp: search and cash opening survive same-business refresh and never cross business context');
 require('./qa-r38-cash-opening-refresh.cjs');
+require('./qa-r38-modal-focus.cjs');

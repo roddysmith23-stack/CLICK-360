@@ -100,6 +100,14 @@ async function charge(page,method){
 async function payment(page,saleId,amount,method){
   const previous=(await cloud()).payload.data;
   await page.evaluate(saleId=>{void window.payLayaway(saleId);},saleId);
+  // Flush the actual modal's deferred focus, not a network/sleep timeout.
+  // Old code deterministically refocused the heading after the caller had
+  // focused the amount. Filling during that frame could insert no text.
+  await page.evaluate(async()=>{
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    if(document.activeElement!==document.getElementById('layawayPaymentAmount'))
+      throw new Error('Deferred modal focus stole the payment input');
+  });
   await page.locator('#layawayPaymentAmount').fill(String(amount));await page.locator('#layawayPaymentMethod').selectOption(method);
   await page.evaluate(expected=>{
     const amount=document.getElementById('layawayPaymentAmount');

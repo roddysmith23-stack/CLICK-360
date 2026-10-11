@@ -9572,7 +9572,16 @@ function parseMoney(value) {
 	    document.addEventListener('keydown', modalKeyHandler);
 	    $('.modalOverlay', root).addEventListener('pointerdown', (event) => { if (event.target === event.currentTarget) closeModal(); });
 	    refreshIcons(root);
-	    requestAnimationFrame(() => (heading || focusable()[0] || dialog).focus());
+    requestAnimationFrame(() => {
+      // A form can explicitly focus its input immediately after showModal.
+      // Do not steal that focus in a later frame (WebKit fill/typing can then
+      // land on the heading and leave the amount empty). Preserve customer
+      // focus too; never focus a detached modal after it has been closed.
+      if (!dialog.isConnected) return;
+      const active = document.activeElement;
+      if (dialog.contains(active) && active?.matches?.('input,select,textarea,button,a[href]')) return;
+      (heading || focusable()[0] || dialog).focus();
+    });
 	  }
 		  function closeModal(restoreFocus = true){
 		    if (modalKeyHandler) document.removeEventListener('keydown', modalKeyHandler);
