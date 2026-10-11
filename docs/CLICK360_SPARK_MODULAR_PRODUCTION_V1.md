@@ -12,6 +12,10 @@ Local full commercial matrix passed Chromium desktop/mobile and WebKit desktop/m
 
 Owner-wide legacy fence audit: `validBoundaryCreate/Update` and the legacy V1 writer already honor the root storage control; no Rules bypass is added. Source selection now stops with `MIGRATION_OWNER_BUSINESS_COVERAGE_STOP` if a durable device snapshot omits any remote business. This prevents a one-business import from fencing an omitted second business. The regression preserves both source objects and verifies that full business coverage does not restore locally deleted products. `qa:spark` passed, including 2000 products / 5000 sales / 5000 movements / 5000 audits across two businesses, exact semantic hashes, 850 KB–7 MiB fixtures and recovery in Chromium/WebKit/Firefox. These are synthetic component tests, not real staging or production cutover.
 
+### Imported instalment summaries: cumulative received is not initial deposit
+
+A production-shaped synthetic source (initial deposit $2, abonos $3 + $7, live `sale.received = 12`) reproduced `MIGRATION_CASH_SALE_RECEIPT_UNVERIFIED` before the fix. Summary derivation now verifies the payment sum and each subsequent exact operation/movement, then compares the initial movement only with the initial deposit. It rejects missing receipts, changed amounts/methods, repeated operation IDs, unexplained receipt movements and cumulative totals that do not match. A later-session abono belongs only to that exact session: the first session has $5 in receipts, the second $7, with zero extra sales in the second. Source objects/stock are not mutated, commercial operations are not replayed, Rules are unchanged. This certifies the pure reconciler, not imported operational initialization or public UI activation.
+
 ## Latest implementation evidence — 2026-10-10 Guayaquil
 
 ### Durable UI projection recovery

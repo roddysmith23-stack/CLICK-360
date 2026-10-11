@@ -229,11 +229,37 @@
           if(!Array.isArray(sale.items)||!sale.items.length)throw Error('MIGRATION_CASH_ITEMS_UNVERIFIED');
           for(const line of sale.items){if(!Number.isSafeInteger(line.qty)||line.qty<1)throw Error('MIGRATION_CASH_ITEMS_UNVERIFIED');items+=line.qty;}
           const receipts=linkedMoves.filter(row=>row.saleId===sale.id);
-          const initial=receipts.filter(row=>row.operationId===sale.operationId
-            ||(!row.operationId&&receipts.length===1&&(!sale.payments?.length||sale.payments.length===1)));
           const received=cents(sale.received);
-          if(!sale.operationId||(received>0?(initial.length!==1||cents(initial[0].amount)!==received):initial.some(row=>cents(row.amount)!==0)))
+          let initialReceived=received;
+          // The live UI accumulates sale.received after every abono. It is
+          // not the initial deposit. Prove each subsequent receipt by its
+          // stable operation, including receipts in a later exact session.
+          if(Array.isArray(sale.payments)){
+            unique(sale.payments);
+            const initialPayments=sale.payments.filter(row=>!row.operationId||row.operationId===sale.operationId);
+            if(initialPayments.length>1||sale.payments.reduce((sum,row)=>sum+cents(row.amount),0)!==received)
+              throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            initialReceived=initialPayments.reduce((sum,row)=>sum+cents(row.amount),0);
+            const paymentOperations=new Set();
+            for(const payment of sale.payments){
+              if(!['Efectivo','Tarjeta','Transferencia'].includes(payment.method))throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+              if(!payment.operationId||payment.operationId===sale.operationId)continue;
+              if(paymentOperations.has(payment.operationId))throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+              paymentOperations.add(payment.operationId);
+              const matches=movements.filter(row=>row.status!=='cancelled'&&row.operationId===payment.operationId);
+              if(matches.length!==1||matches[0].saleId!==sale.id||matches[0].kind!=='ingreso'
+                ||matches[0].paymentType!=='receivable_payment'||matches[0].paymentMethod!==payment.method
+                ||cents(matches[0].amount)!==cents(payment.amount)||!sessionIds.has(matches[0].cashSessionId)
+                ||(payment.date!==undefined&&matches[0].date!==payment.date))throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            }
+          }
+          const initial=receipts.filter(row=>row.operationId===sale.operationId
+            ||(!row.operationId&&receipts.length===1&&(!sale.payments?.length||initialReceived>0)));
+          if(!sale.operationId||(initialReceived>0?(initial.length!==1||cents(initial[0].amount)!==initialReceived):initial.some(row=>cents(row.amount)!==0)))
             throw Error('MIGRATION_CASH_SALE_RECEIPT_UNVERIFIED');
+          const initialPayment=sale.payments?.find(row=>!row.operationId||row.operationId===sale.operationId);
+          if(initialPayment&&initial.length===1&&initial[0].paymentMethod!==undefined
+            &&initial[0].paymentMethod!==initialPayment.method)throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
           if(initial.length===1)verifiedInitial.add(initial[0].id);
         }
         for(const movement of linkedMoves){
@@ -249,6 +275,14 @@
             const type=movement.paymentType||(legacyInitial?(sale.method==='Apartado'?'receivable_payment':'sale'):null);
             const paymentMethod=movement.paymentMethod||(legacyInitial?sale.payments?.[0]?.method||sale.method:null);
             if(!['sale','receivable_payment'].includes(type))throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            if(legacyInitial||movement.operationId===sale.operationId){
+              if(sale.cashSessionId!==session.id||!verifiedInitial.has(movement.id))throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            }else{
+              const matchedPayments=(sale.payments||[]).filter(row=>row.operationId&&row.operationId===movement.operationId);
+              if(type!=='receivable_payment'||matchedPayments.length!==1
+                ||cents(matchedPayments[0].amount)!==amount||matchedPayments[0].method!==paymentMethod)
+                throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            }
             const method={Efectivo:'cash',Tarjeta:'card',Transferencia:'transfer'}[paymentMethod];
             if(!method&&amount>0)throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
             if(method)payments[method]+=amount;

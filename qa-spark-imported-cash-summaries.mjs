@@ -44,4 +44,35 @@ const oldReceipt=structuredClone(published);delete oldReceipt.movements[1].opera
 assert.equal((await api.deriveCashSummaries({snapshot:oldReceipt,businessId})).canProceed,true);
 const receiptFork=structuredClone(oldReceipt);receiptFork.movements.push({...receiptFork.movements[1],id:'duplicate-receipt'});
 assert.equal((await api.deriveCashSummaries({snapshot:receiptFork,businessId})).canProceed,false);
+const instalments=structuredClone(source);
+instalments.cashSessions[0].status='open';instalments.dailyReports=[];
+Object.assign(instalments.sales[0],{method:'Apartado',total:12,received:12,status:'paid',balance:0,
+  payments:[{id:'deposit',amount:2,method:'Transferencia'},
+    {id:'pay-3',operationId:'pay-3',amount:3,method:'Transferencia',date:'2026-09-03'},
+    {id:'pay-7',operationId:'pay-7',amount:7,method:'Transferencia',date:'2026-09-03'}]});
+Object.assign(instalments.movements[1],{amount:2,paymentType:'receivable_payment'});
+for(const amount of [3,7])instalments.movements.push({...instalments.movements[1],id:`pay-${amount}`,operationId:`pay-${amount}`,amount});
+const instalmentsBefore=structuredClone(instalments);
+const paidSummary=await api.deriveCashSummaries({snapshot:instalments,businessId});
+assert.equal(paidSummary.canProceed,true,JSON.stringify(paidSummary.failures));
+assert.equal(paidSummary.verified['exact-session'].summary.salesTotal,12);
+assert.equal(paidSummary.verified['exact-session'].summary.paymentTotals.receivablePayments,12);
+assert.deepEqual(instalments,instalmentsBefore);
+for(const mutate of [s=>{s.movements[2].amount=4;},s=>{s.movements.splice(2,1);},
+  s=>{s.sales[0].payments[2].operationId='pay-3';},s=>{s.sales[0].received=11;},
+  s=>{s.sales[0].payments[0].method='Efectivo';},
+  s=>{s.movements.push({...s.movements[2],id:'extra',operationId:'unmatched-payment'});}]){
+  const bad=structuredClone(instalments);mutate(bad);
+  assert.equal((await api.deriveCashSummaries({snapshot:bad,businessId})).canProceed,false);
+}
+const laterSession=structuredClone(instalments);
+laterSession.cashSessions.push({...laterSession.cashSessions[0],id:'later-session',operationId:'later-opening',date:'2026-09-04'});
+laterSession.movements.push({...laterSession.movements[0],id:'later-opening',operationId:'later-opening',cashSessionId:'later-session',date:'2026-09-04'});
+Object.assign(laterSession.movements[3],{cashSessionId:'later-session',date:'2026-09-04'});
+laterSession.sales[0].payments[2].date='2026-09-04';
+const laterSummary=await api.deriveCashSummaries({snapshot:laterSession,businessId});
+assert.equal(laterSummary.canProceed,true,JSON.stringify(laterSummary.failures));
+assert.equal(laterSummary.verified['exact-session'].summary.paymentTotals.receivablePayments,5);
+assert.equal(laterSummary.verified['later-session'].summary.paymentTotals.receivablePayments,7);
+assert.equal(laterSummary.verified['later-session'].summary.saleCount,0);
 console.log('PASS imported cash summary derivation: exact IDs, verified opening/payment/report, reused sale references counted once, no default zero, same-date isolation, ambiguous source stops. Pure source validation; no remote initialization/cutover.');
