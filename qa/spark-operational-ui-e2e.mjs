@@ -118,12 +118,25 @@ try{
     await resetStatus();await page.locator('#moveForm button[type="submit"]').click();await confirmed();
     const cashSession=await record('cashSessions',session.id);
     assert(cashSession.cashBalance===5&&cashSession.incomeCash===5,'Cash movement/session atomic delta');
+    await page.locator('#closeDayBtn').click();await page.locator('#efectivoFisico').fill('5');
+    await resetStatus();await page.locator('#closeDaySubmitBtn').click();await confirmed();
+    const closed=await record('cashSessions',session.id),closeReport=await record('dailyReports',closed.reportId);
+    assert(closed.status==='closed'&&closeReport.cashSessionId===session.id,'Exact cash session/report closed');
+    assert(closeReport.saleCount===3&&closeReport.total===54&&closeReport.totalItems===3
+      &&closeReport.paymentTotals.transfer===32&&closeReport.theoreticalCash===5&&closeReport.declaredCash===5,'Authoritative close counters');
+    assert((await record('products',created.id)).stock===9&&(await record('products',data.products[0].id)).stock===1,'Cash close cannot decrement stock again');
+    const localReport=await page.evaluate(id=>click360GetTenantState().dailyReports.find(r=>r.id===id),closed.reportId);
+    assert(localReport.productQuantity===3&&localReport.paymentTotals.transfer===32&&!localReport.html,'Derived report uses authoritative compact data');
+    const existingClose=await page.evaluate(target=>window.click360SparkOperationalSession.verifyCashClose(target),
+      {businessId:uid,cashSessionId:session.id,date:session.date});
+    assert(existingClose.closed&&existingClose.source==='server'&&existingClose.reportId===closed.reportId,'Retry preflight recognizes and durably projects existing close');
+    assert((await record('dailyReports',closed.reportId)).operationId===existingClose.operationId,'Recovery cannot create another close');
     const health=await page.evaluate(()=>window.click360SparkOperationalSession.health());
     assert(health.pendingCount===0&&health.unknownCount===0&&health.projectionPendingCount===0,'Durable local projection completed');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'No legacy overwrite');
     const runtime=await page.evaluate(()=>({global:!!CLICK360_SPARK_OPERATIONAL_UI,hash:CLICK360_RELEASE_ASSETS['app.js'],sale:click360GetTenantState().sales.at(-1).id}));
     assert(runtime.sale,'Existing receipt ID preserved');
-    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,inventoryAdjust:true,cashOpeningZero:true,sale:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
+    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,authoritativeReport:true,sale:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       durableProjection:true,fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
     await device.context.close();device=null;console.log(`PASS served Spark UI ${label}`);

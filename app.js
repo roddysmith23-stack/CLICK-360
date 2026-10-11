@@ -1744,13 +1744,17 @@ function parseMoney(value) {
       next[moduleName]||=[];
       for(const record of records){
         if(record.businessId!==businessId)throw Error('SPARK_UI_PROJECTION_BUSINESS_INVALID');
-        const value=cloneState(record),id=moduleName==='sales'?(record.legacyId||record.id):record.id;
+        const value=cloneState(moduleName==='dailyReports'&&record.status==='closed'
+          ?window.CLICK360_MODULAR_UI_ADAPTER.cashReportView(record):record),id=moduleName==='sales'?(record.legacyId||record.id):record.id;
         value.id=id;
         // Preserve receipt/layaway relationships used by the existing UI.
         if(value.saleId){const sale=projection.records.sales?.find(s=>s.id===value.saleId)||next.sales?.find(s=>s.operationId===value.saleId);value.saleId=sale?.legacyId||sale?.id||value.saleId;}
         const index=next[moduleName].findIndex(item=>item.businessId===businessId&&(item.id===id
           ||(moduleName==='movements'&&item.operationId===value.operationId)));
-        if(index<0)next[moduleName].push(value);else next[moduleName][index]={...next[moduleName][index],...value};
+        if(index<0)next[moduleName].push(value);else {
+          next[moduleName][index]={...next[moduleName][index],...value};
+          if(moduleName==='dailyReports'&&record.status==='closed')delete next[moduleName][index].html;
+        }
       }
     }
     await window.click360PersistSparkCandidate(next,{operationId:projection.operationId,pendingRemoteSync:false});
@@ -8331,7 +8335,7 @@ function parseMoney(value) {
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(paymentTotals.cash)}</span></div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(paymentTotals.card)}</span></div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(paymentTotals.transfer)}</span></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(paymentTotals.layawayPayments)}</span></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado${paymentTotals.receivableIncluded?' (incluidos arriba)':''}:</span><span>${fmt(paymentTotals.layawayPayments)}</span></div>
 	      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
 	      <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingresos en efectivo:</span><span>+${fmt(report.income)}</span></div>
@@ -8419,6 +8423,7 @@ function parseMoney(value) {
 	    let inFlightKey = '';
 	    let commitStarted = false;
 	    let reportId = '';
+    let verifiedModularReportId = '';
 	    let evaluatedGate = null;
 	    let diagnosticContext = {};
 	    let cashCloseTarget = null;
@@ -8505,7 +8510,7 @@ function parseMoney(value) {
 	      }
 	      if (navigator.onLine !== false) {
 	        stage = 'cash_close_verify_server_before_write';
-	        const verifyServerClose = window.click360VerifyCashCloseOnServer;
+	        const verifyServerClose = window.click360SparkOperationalSession?.verifyCashClose || window.click360VerifyCashCloseOnServer;
 	        if (typeof verifyServerClose !== 'function') {
 	          const error = new Error('Server cash-close verification is unavailable.');
 	          error.code = 'cash_close_server_preflight_unavailable';
@@ -8513,6 +8518,7 @@ function parseMoney(value) {
 	          throw error;
 	        }
 	        const serverCheck = await verifyServerClose(cashCloseTarget);
+        if(window.click360SparkOperationalSession)verifiedModularReportId=serverCheck?.reportId||'';
 	        if (!serverCheck?.ok) {
 	          const error = new Error('Server cash-close verification failed.');
 	          error.code = serverCheck?.errorCode || 'cash_close_server_preflight_failed';
@@ -8548,7 +8554,8 @@ function parseMoney(value) {
 	        error.code = 'cash_close_invalid_amounts';
 	        throw error;
 	      }
-	      reportId = uid('rep');
+	      reportId = window.click360SparkOperationalSession ? verifiedModularReportId : uid('rep');
+      if(!reportId)throw Object.assign(Error('SPARK_UI_CASH_CLOSE_SERVER_ID_REQUIRED'),{code:'cash_close_server_preflight_unavailable',outcome:'unknown'});
 	      const summary = buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId });
 	      stage = 'cash_close_persist_summary';
 	      previousState = cloneState(state);
@@ -8604,7 +8611,8 @@ function parseMoney(value) {
 	        const reportClosed = (next.dailyReports || []).some((report) => report.id === reportId && report.businessId === basis.businessId && report.status === 'closed');
 	        const sessionClosed = !resolvedSessionId || (next.cashSessions || []).some((session) => session.id === resolvedSessionId && session.businessId === basis.businessId && session.status === 'closed' && session.reportId === reportId);
 	        return reportClosed && sessionClosed;
-	      });
+	      },{sparkCommand:{kind:'cash_close',input:{operationId:reportId,cashSessionId:resolvedSessionId,
+        date:cashCloseTarget.date,declaredCash:eFisico,observations}}});
 	      if (!committed.ok) {
 	        const error = new Error(writeBlockMessage(window.click360LastWriteBlock || { reason: committed.reason || 'cash_close_commit_not_confirmed' }));
 	        error.code = committed.reason || 'cash_close_commit_not_confirmed';
@@ -8615,9 +8623,10 @@ function parseMoney(value) {
 	          error.outcome = classifyOutcome({ localRejected:true });
 	          throw error;
 	        }
-	        if (navigator.onLine !== false && typeof window.click360VerifyCashCloseOnServer === 'function') {
+	        const verifyClosed=window.click360SparkOperationalSession?.verifyCashClose||window.click360VerifyCashCloseOnServer;
+	        if (navigator.onLine !== false && typeof verifyClosed === 'function') {
 	          stage = 'cash_close_verify_server_after_failure';
-	          const serverCheck = await window.click360VerifyCashCloseOnServer(cashCloseTarget);
+	          const serverCheck = await verifyClosed(cashCloseTarget);
 	          if (serverCheck?.ok && serverCheck.closed) {
 	            const confirmed = updateCashCloseDiagnostic('cash_close_confirmed_after_response_failure', {
 	              ...diagnosticContext,
@@ -8637,6 +8646,9 @@ function parseMoney(value) {
 	        }
 	        throw error;
 	      }
+      if(window.click360SparkOperationalSession&&committed.operationalCloudConfirmed){
+        Object.assign(closeDetails,state.dailyReports.find(report=>report.id===reportId));delete closeDetails.html;
+      }
 	      updateCashCloseDiagnostic('cash_close_verify_closed', { business: basis.business, closeDetails, reportId, status: committed.pending ? 'pending' : 'confirmed' });
 	      window.click360RecordTelemetry?.('cash_close', { requestId: reportId, mode: summary.diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
 	      closeModal(false);

@@ -63,6 +63,17 @@
     return delta?{kind:'inventory_adjust',input:{operationId,productId:product.id,quantityDelta:delta,date,reason:'Ajuste de inventario',...revision}}
       :{kind:'product_edit',input:{operationId,productId:product.id,changes,...revision}};
   }
+  function cashReportView(report){
+    const fields=['openingAmount','declaredCash','theoreticalCash','difference','saleCount','total','totalItems','totalIva','incomeCash','expenseCash'];
+    if(!report?.cashSessionId||report.status!=='closed'||!report.paymentTotals
+      ||fields.some(key=>typeof report[key]!=='number'||!Number.isFinite(report[key]))
+      ||['cash','card','transfer','receivablePayments'].some(key=>typeof report.paymentTotals[key]!=='number'||!Number.isFinite(report.paymentTotals[key])))
+      throw Error('MODULAR_REPORT_AUTHORITATIVE_SUMMARY_REQUIRED');
+    return {...report,productQuantity:report.totalItems,taxTotal:report.totalIva,
+      expectedCash:report.theoreticalCash,countedCash:report.declaredCash,
+      income:Math.round((report.paymentTotals.cash+report.incomeCash)*100)/100,expenses:report.expenseCash,
+      paymentTotals:{...report.paymentTotals,layawayPayments:report.paymentTotals.receivablePayments,receivableIncluded:true}};
+  }
   function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed}){
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
@@ -159,7 +170,14 @@
         unknownCount:rows.filter(row=>row.state==='unknown'||row.state==='inflight').length,
         countIsBounded:true,maxObserved:100,online:isOnline(),activeRequests:inFlight.size};
     }
-    return Object.freeze({submit,replay,health});
+    async function reconcileOperation(operationId){
+      assertContext();const row=await journal.get(identity,operationId);assertContext();
+      if(!row)throw Error('MODULAR_UI_OPERATION_NOT_JOURNALED');
+      // Settle only this immutable operation. The coordinator checks the
+      // authoritative ledger before any resend; unrelated rows are untouched.
+      return settle(row);
+    }
+    return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,cashReportView});
 })(typeof window==='undefined'?globalThis:window);

@@ -46,10 +46,10 @@
     async function commit({reason,command,candidate}){
       assertActive();
       if(busy)throw Error('SPARK_UI_OPERATION_IN_PROGRESS');
-      if(!command||!['cash_open','sale','product_create','product_edit','inventory_adjust','cash_movement'].includes(command.kind)
+      if(!command||!['cash_open','cash_close','sale','product_create','product_edit','inventory_adjust','cash_movement'].includes(command.kind)
         ||!((reason==='cash_opened'&&command.kind==='cash_open')||(reason==='sale_created'&&command.kind==='sale')
           ||(reason==='product_saved'&&['product_create','product_edit','inventory_adjust'].includes(command.kind))
-          ||(reason==='cash_movement_created'&&command.kind==='cash_movement')))
+          ||(reason==='cash_movement_created'&&command.kind==='cash_movement')||(reason==='cash_closed'&&command.kind==='cash_close')))
         return {ok:false,pending:false,reason:'spark_ui_flow_not_certified',notQueued:true};
       const snapshot=structuredClone(candidate),input=structuredClone(command.input);
       busy=true;
@@ -79,7 +79,41 @@
         return {ok:false,pending:true,reason};
       }finally{busy=false;}
     }
-    return Object.freeze({identity,commit,replay:async()=>{assertActive();return adapter.replay();},
+    async function verifyCashClose(target){
+      assertActive();
+      if(target?.businessId!==businessId||!target.cashSessionId)throw Error('SPARK_UI_EXACT_CASH_TARGET_REQUIRED');
+      const result=await transport.run(async tx=>{
+        const session=await tx.get('cashSessions',target.cashSessionId);
+        if(!session||session.date!==target.date||session.summaryVersion!==1)throw Error('SPARK_UI_CASH_SESSION_NOT_VERIFIED');
+        const reportId=session.status==='closed'?session.reportId:`report-${session.id}-${session.closeCycle}`;
+        if(!reportId)throw Error('SPARK_UI_CASH_REPORT_ID_REQUIRED');
+        const report=await tx.get('dailyReports',reportId);
+        if(session.status==='closed'){
+          if(report?.cashSessionId!==session.id||report.status!=='closed')throw Error('SPARK_UI_CASH_CLOSE_INCONSISTENT');
+          const ledger=await tx.get('operationLedger',report.operationId);
+          if(ledger?.kind!=='cash_close'||ledger.status!=='committed'||ledger.result?.cashSessionId!==session.id
+            ||ledger.result?.reportId!==reportId)throw Error('SPARK_UI_CASH_CLOSE_LEDGER_REQUIRED');
+          return {ok:true,closed:true,reportId,operationId:report.operationId,payloadHash:ledger.payloadHash,source:'server'};
+        }
+        if(session.status!=='open'||report)throw Error('SPARK_UI_CASH_CLOSE_INCONSISTENT');
+        return {ok:true,closed:false,reportId,source:'server'};
+      });
+      if(result.closed){
+        const row=await journal.get(identity,result.operationId);assertActive();
+        if(row){
+          if(row.payloadHash!==result.payloadHash||row.payload.kind!=='cash_close')throw Error('SPARK_UI_CASH_CLOSE_JOURNAL_CONFLICT');
+          const reconciled=await adapter.reconcileOperation(result.operationId);
+          if(reconciled.status!=='CONFIRMED')throw Error('SPARK_UI_CASH_CLOSE_LOCAL_RECOVERY_REQUIRED');
+        }else{
+          const counts=await journal.countPending(identity),projections=await journal.countProjectionPending(identity);
+          if(counts.pendingCount+counts.unknownCount+projections>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
+          const projection=await repository.readOperationProjection(result.operationId,'cash_close',result.payloadHash);
+          assertActive();await projectConfirmed(projection);assertActive();
+        }
+      }
+      return result;
+    }
+    return Object.freeze({identity,commit,verifyCashClose,replay:async()=>{assertActive();return adapter.replay();},
       isBusy:()=>busy,
       health:async()=>{assertActive();return adapter.health();},
       close:()=>{closed=true;journal.close();},certificationOnly:true});

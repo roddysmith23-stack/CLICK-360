@@ -14,6 +14,14 @@ assert.equal(adapt({product:{...product,name:'Nuevo'},previous:product}).kind,'p
 assert.equal(adapt({product:{...product,stock:3,qty:3},previous:product}).input.quantityDelta,1);
 assert.throws(()=>adapt({product:{...product,stock:3,qty:3,name:'Nuevo'},previous:product}),/COMPOUND/);
 assert.throws(()=>adapt({product:{...product,businessId:'other'}}),/CONTEXT/);
+const report={id:'report-exact-1',businessId:'b',cashSessionId:'exact',status:'closed',openingAmount:0,
+  declaredCash:5,theoreticalCash:5,difference:0,saleCount:3,total:54,totalItems:3,totalIva:0,incomeCash:5,expenseCash:0,
+  paymentTotals:{cash:0,card:0,transfer:32,receivablePayments:2}};
+const reportView=globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView(report);
+assert.equal(reportView.productQuantity,3);assert.equal(reportView.income,5);
+assert.equal(reportView.paymentTotals.transfer,32);assert.equal(reportView.paymentTotals.receivableIncluded,true);
+assert.throws(()=>globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView({...report,totalItems:undefined}),/AUTHORITATIVE_SUMMARY/);
+assert.equal(report.paymentTotals.layawayPayments,undefined,'Derived print view cannot mutate server report');
 // Extract the real PWA commit entry point: Spark never falls through to save,
 // legacy sync or legacy refresh, including an unsupported command and failure.
 const source=await readFile('app.js','utf8');

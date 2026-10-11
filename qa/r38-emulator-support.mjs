@@ -209,6 +209,20 @@ async function openSignedIn(browser, viewport) {
   // can time out.
   page.setDefaultTimeout(60000);
   const pageErrors = [];
+  const transportTrace = [], pendingRequests = new Map();
+  const endpoint = request => {
+    const parsed = new URL(request.url());
+    if (![String(firestorePort), String(authPort)].includes(parsed.port)) return null;
+    // Never record headers, tokens, bodies, document identities or query data.
+    return {service:parsed.port===String(authPort)?'auth':'firestore',
+      endpoint:parsed.pathname.includes('/Listen/')?'listen':parsed.pathname.includes('/Write/')?'write':
+        parsed.pathname.includes('batchGet')?'batchGet':parsed.pathname.includes('signIn')?'signIn':'rpc',method:request.method()};
+  };
+  const trace = entry => {transportTrace.push({at:Date.now(),...entry});if(transportTrace.length>80)transportTrace.shift();};
+  page.on('request', request => {const info=endpoint(request);if(info){pendingRequests.set(request,info);trace({event:'request',...info});}});
+  page.on('response', response => {const info=endpoint(response.request());if(info)trace({event:'response',status:response.status(),...info});});
+  page.on('requestfinished', request => {const info=pendingRequests.get(request);if(info)trace({event:'finished',...info});pendingRequests.delete(request);});
+  page.on('requestfailed', request => {const info=pendingRequests.get(request);if(info)trace({event:'failed',error:request.failure()?.errorText,...info});pendingRequests.delete(request);});
   await context.addInitScript(()=>{
     window.R38_SYNC_TRACE=[];
     window.addEventListener('click360-sync-status',event=>{
@@ -244,7 +258,11 @@ async function openSignedIn(browser, viewport) {
           sales: window.click360GetTenantState?.()?.sales?.length },
         toast: document.querySelector('#toast')?.textContent
       })).catch(() => null);
-      console.error('R38 emulator-only new-device failure evidence '+JSON.stringify({ label, viewport, diagnostic, pageErrors }));
+      console.error('R38 emulator-only new-device failure evidence '+JSON.stringify({ label, viewport, diagnostic, pageErrors,
+        transportTrace,pendingRequests:[...pendingRequests.values()] }));
+      // The caller never receives this context when bootstrap fails. Close it
+      // here so failed startup cannot leave WebChannel/browser handles alive.
+      await context.close();
       throw new Error(`openSignedIn step "${label}" failed: ${error.message}`);
     }
   };
