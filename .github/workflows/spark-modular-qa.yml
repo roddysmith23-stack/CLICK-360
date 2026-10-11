@@ -38,4 +38,13 @@ jobs:
           path: artifacts/spark-rules-proof/*.json
           if-no-files-found: error
       - run: npm run qa:modular-persistence
+      - name: Existing served PWA against real client Rules in Chromium and WebKit
+        run: npm run qa:spark:ui
+      - name: Preserve served PWA operational evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-served-operational-ui
+          path: output/playwright/spark-operational-ui/
+          if-no-files-found: error
       - run: npm audit --omit=dev --audit-level=moderate

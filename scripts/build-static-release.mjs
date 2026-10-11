@@ -15,6 +15,14 @@ const files = [
   'runtime-guard.js',
   'safe-update.js',
   'app.js',
+  'spark-modular-migration.js',
+  'spark-modular-record-codec.js',
+  'spark-modular-transaction-transport.js',
+  'modular-operation-journal.js',
+  'modular-persistence.js',
+  'modular-operation-coordinator.js',
+  'modular-ui-adapter.js',
+  'spark-operational-ui-runtime.js',
   'firebase-config.js',
   'p0-tenant-guard.js',
   'worker-data-boundary.js',
@@ -64,7 +72,10 @@ await writeFile(appPath, appSource.replace(
 const swPath = join(output, 'service-worker.js');
 await writeFile(swPath, (await readFile(swPath, 'utf8')).replace('__CLICK360_SW_BUILD_SHA__', shortSha));
 // Catch a first upgrade boot served partly by an older network-first worker.
-for (const entry of ['app.js', 'firebase-service.js', 'tenant-quota-overrides.js', 'v16-storage.js']) {
+for (const entry of ['app.js', 'firebase-service.js', 'tenant-quota-overrides.js', 'v16-storage.js',
+  'spark-modular-migration.js','spark-modular-record-codec.js','spark-modular-transaction-transport.js',
+  'modular-operation-journal.js','modular-persistence.js','modular-operation-coordinator.js',
+  'modular-ui-adapter.js','spark-operational-ui-runtime.js']) {
   const file = join(output, entry);
   const stamp = `globalThis.CLICK360_RELEASE_ASSETS ||= {}; globalThis.CLICK360_RELEASE_ASSETS[${JSON.stringify(entry)}] = ${JSON.stringify(shortSha)};\n`;
   await writeFile(file, stamp + await readFile(file, 'utf8'));

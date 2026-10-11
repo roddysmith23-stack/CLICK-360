@@ -46,6 +46,23 @@
     // The initial movement is the deposit received, never the full sale total.
     return {...command,paymentMethod:input.initialPaymentMethod,layaway};
   }
+  function productMutationCommand({product,previous,identity,operationId,date}){
+    if(!operationId||!product?.id||product.businessId!==identity?.businessId
+      ||(previous&&(previous.id!==product.id||previous.businessId!==identity.businessId)))throw Error('MODULAR_PRODUCT_COMMAND_CONTEXT_INVALID');
+    const stock=product.stock??product.qty;
+    if(typeof stock!=='number'||!Number.isSafeInteger(stock)||stock<0
+      ||(product.qty!==undefined&&product.qty!==stock))throw Error('MODULAR_PRODUCT_STOCK_INVALID');
+    if(!previous)return {kind:'product_create',input:{operationId,date,product:structuredClone(product)}};
+    const fields=['code','name','category','cost','price','cardPrice','taxMode','notes','imageData'];
+    const changes=Object.fromEntries(fields.filter(key=>product[key]!==previous[key]).map(key=>[key,product[key]]));
+    const delta=stock-(previous.stock??previous.qty);
+    // Existing UI allows stock + metadata in one form. Never split this into
+    // two non-atomic commits; its compound domain/Rules adapter is still a gate.
+    if(delta&&Object.keys(changes).length)throw Error('MODULAR_COMPOUND_PRODUCT_CHANGE_NOT_CERTIFIED');
+    const revision=previous.recordVersion===undefined?{}:{expectedRecordVersion:previous.recordVersion};
+    return delta?{kind:'inventory_adjust',input:{operationId,productId:product.id,quantityDelta:delta,date,reason:'Ajuste de inventario',...revision}}
+      :{kind:'product_edit',input:{operationId,productId:product.id,changes,...revision}};
+  }
   function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed}){
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
@@ -144,5 +161,5 @@
     }
     return Object.freeze({submit,replay,health});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand});
 })(typeof window==='undefined'?globalThis:window);

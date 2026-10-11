@@ -874,6 +874,12 @@ function parseMoney(value) {
     });
   }
   function save(options = {}) {
+    // A connected Spark certification session must never fall through to the
+    // monolithic auto-save writer. Unsupported UI flows stay fail-closed.
+    if (window.click360SparkOperationalSession) {
+      publishSaveFailure('spark_ui_explicit_command_required', 'save_spark_command');
+      return false;
+    }
     if (!activeTenantContext || !stateStorageKey()) {
       console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
       publishSaveFailure('tenant_not_active', 'save_context');
@@ -1095,6 +1101,21 @@ function parseMoney(value) {
     }
     const operationId = uid('persist');
     try {
+      if (window.click360SparkOperationalSession) {
+        const sparkIdentity=window.click360SparkOperationalSession.identity;
+        if(sparkIdentity.ownerUid!==(context.ownerUid||context.ownerId)||sparkIdentity.businessId!==currentBusiness()?.id){
+          restoreCriticalSnapshot(previousState);return {ok:false,pending:false,notQueued:true,reason:'spark_ui_business_context_changed'};
+        }
+        let command;
+        try { command=typeof options.sparkCommand==='function'?options.sparkCommand():options.sparkCommand; }
+        catch(error) { restoreCriticalSnapshot(previousState);return {ok:false,pending:false,notQueued:true,reason:'spark_ui_command_invalid'}; }
+        const committed = await window.click360SparkOperationalSession.commit({
+          reason, command, candidate:cloneState(state)
+        });
+        if (committed.notQueued) restoreCriticalSnapshot(previousState);
+        if(!committed.ok)toast('No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.','err');
+        return committed;
+      }
       if (!save({ allowIndexedDbOffline: true, operationId, deferSync: true })) {
         return {
           ok:false,
@@ -1166,10 +1187,10 @@ function parseMoney(value) {
     // already-committed product/sale with the pre-operation state.
     if (!refreshed && !synced) restoreCriticalSnapshot(previousState);
     if (!options.suppressFailureToast) toast('El cambio no fue confirmado y no se registró como completado.', 'err');
-    const reason = !synced
+    const confirmationReason = !synced
       ? (refreshed ? 'remote_commit_rejected' : 'remote_commit_unknown')
       : (refreshed ? 'remote_state_mismatch' : 'remote_confirmation_failed');
-    return { ok: false, pending: false, reason };
+    return { ok: false, pending: false, reason:confirmationReason };
     } finally {
       actionLock.release();
     }
@@ -1698,6 +1719,48 @@ function parseMoney(value) {
     if (!activeTenantContext) return null;
     return JSON.parse(JSON.stringify(state));
   };
+  window.click360PersistSparkCandidate = async function(candidate, metadata) {
+    const context=activeTenantContext;
+    if(!window.click360SparkOperationalSession||!context||!candidate
+      ||candidate.identity?.tenantKey!==context.tenantKey)throw Error('SPARK_UI_LOCAL_SCOPE_INVALID');
+    if(stateSizeBytes(candidate)>MAX_LOCAL_ONLY_TENANT_STATE_BYTES)throw Error('SPARK_UI_DEVICE_CAPACITY_EXCEEDED');
+    const durable=await queueIndexedSnapshot(candidate,{
+      ...metadata,source:'spark_operational_candidate',storageArchitecture:'spark_modular',
+      expectedDeviceRevision:indexedTenantCacheMeta?.deviceRevision||'',
+      deviceRevision:metadata.operationId,cloudCapacityBlocked:false
+    });
+    if(!durable||context!==activeTenantContext)throw Error('SPARK_UI_DEVICE_COMMIT_FAILED');
+    publishSaveFailure();
+    state=cloneState(candidate);rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
+    return true;
+  };
+  window.click360ProjectSparkOperation = async function(projection) {
+    const session=window.click360SparkOperationalSession,context=activeTenantContext;
+    if(!session||projection.source!=='server'||projection.identity?.tenantKey!==session.identity.tenantKey
+      ||currentBusiness()?.id!==projection.identity.businessId)throw Error('SPARK_UI_PROJECTION_SCOPE_INVALID');
+    const next=cloneState(state),businessId=projection.identity.businessId;
+    for(const [moduleName,records]of Object.entries(projection.records)){
+      if(!['products','sales','movements','cashSessions','dailyReports','layaways'].includes(moduleName))throw Error('SPARK_UI_PROJECTION_MODULE_INVALID');
+      next[moduleName]||=[];
+      for(const record of records){
+        if(record.businessId!==businessId)throw Error('SPARK_UI_PROJECTION_BUSINESS_INVALID');
+        const value=cloneState(record),id=moduleName==='sales'?(record.legacyId||record.id):record.id;
+        value.id=id;
+        // Preserve receipt/layaway relationships used by the existing UI.
+        if(value.saleId){const sale=projection.records.sales?.find(s=>s.id===value.saleId)||next.sales?.find(s=>s.operationId===value.saleId);value.saleId=sale?.legacyId||sale?.id||value.saleId;}
+        const index=next[moduleName].findIndex(item=>item.businessId===businessId&&(item.id===id
+          ||(moduleName==='movements'&&item.operationId===value.operationId)));
+        if(index<0)next[moduleName].push(value);else next[moduleName][index]={...next[moduleName][index],...value};
+      }
+    }
+    await window.click360PersistSparkCandidate(next,{operationId:projection.operationId,pendingRemoteSync:false});
+    if(context!==activeTenantContext)throw Error('SPARK_UI_CONTEXT_CHANGED');
+    // The initiating live handler still owns its DOM (checkout inputs,
+    // product form, cash button). Projection must not detach those controls
+    // before that handler finishes. Replay without a handler may refresh.
+    if(!window.click360DebugCriticalActionGate?.().size)
+      renderApp(location.hash.replace('#','')||'home',{preserveActiveModal:true});
+  };
   window.click360PersistTenantState = function() {
     return save();
   };
@@ -1832,6 +1895,7 @@ function parseMoney(value) {
     }
   };
   window.click360ApplyTenantState = function(nextState, context) {
+    if(window.click360SparkOperationalSession)throw Error('SPARK_UI_LEGACY_OVERWRITE_BLOCKED');
     const candidatePayload = { identity: nextState?.identity || context, data: nextState || {} };
     if (!activeTenantContext || !context || context.tenantKey !== activeTenantContext.tenantKey
       || !tenantRuntime?.validBusinessPayload(candidatePayload, activeTenantContext)) {
@@ -2106,7 +2170,7 @@ function parseMoney(value) {
     // without real evidence. When click360GetSyncState is available and
     // returns needs_review/pending_write, we surface those explicitly.
     const rawSyncState = typeof window.click360GetSyncState === 'function'
-      ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
+      && !window.click360SparkOperationalSession ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
     const effectiveStatus = (() => {
       if (rawSyncState?.cloudCapacityBlocked && rawSyncState.blocking) return 'error';
       if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) return 'cloud_capacity_blocked';
@@ -2117,6 +2181,8 @@ function parseMoney(value) {
       return s.status;
     })();
     const map = {
+      modular_confirmed:['Guardado y respaldado en nube','La última operación y su copia local fueron verificadas.'],
+      modular_pending:['Guardado en este dispositivo · respaldo en nube pendiente','No repitas la operación. CLICK 360 comprobará su confirmación.'],
       cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. El respaldo cloud requiere almacenamiento modular; no borres los datos del dispositivo.'],
 	      synced: ['Guardado en nube', 'Tus datos están guardados en este dispositivo y confirmados en la nube.'],
 	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
@@ -7159,8 +7225,14 @@ function parseMoney(value) {
       window.click360SetCriticalWriteGuard?.(true);
       let committed;
       try {
-      committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
-	      if (!committed.ok && navigator.onLine) {
+      committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), {
+        suppressFailureToast:true,
+        sparkCommand:()=>window.CLICK360_MODULAR_UI_ADAPTER.productMutationCommand({
+          product:desiredProduct,previous:previousState.products.find(item=>item.id===desiredProduct.id&&item.businessId===b.id),
+          identity:window.click360SparkOperationalSession.identity,operationId:uid('productop'),date:today()
+        })
+      });
+	      if (!committed.ok && navigator.onLine && !window.click360SparkOperationalSession) {
 	        const failedSyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_prepare' });
 	        diagnostics.conflictDetected = failedSyncState?.status === 'real_conflict';
 	        if (diagnostics.conflictDetected && typeof window.click360ResolveSyncConflict === 'function') {
@@ -7177,7 +7249,7 @@ function parseMoney(value) {
 	        }
 	        if (wait.confirmed) committed = { ok:true, pending:false, recovered:true };
 	      }
-      if (!committed.ok && diagnostics.retryBaselineAuthoritative === true && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
+      if (!committed.ok && !window.click360SparkOperationalSession && diagnostics.retryBaselineAuthoritative === true && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
 	        const refreshedProduct = state.products.find((candidate) => candidate.id === desiredProduct.id && candidate.businessId === b.id) || null;
 	        const codeTakenByAnotherProduct = state.products.some((candidate) => candidate.businessId === b.id && candidate.id !== desiredProduct.id && normalizeCode(candidate.code) === normalizeCode(desiredProduct.code));
 	        // The ONLY safe automatic retry: the target product, per an
@@ -7223,8 +7295,9 @@ function parseMoney(value) {
 	      } finally {
 	        window.click360SetCriticalWriteGuard?.(false);
 	      }
-	      diagnostics.confirmedAtMs = committed.ok ? Date.now() : null;
-	      diagnostics.outcome = committed.ok ? 'confirmed' : (diagnostics.targetChangedRemotely ? 'safe_conflict' : 'not_confirmed');
+	      const cloudConfirmed=committed.ok&&(!window.click360SparkOperationalSession||!committed.pending);
+	      diagnostics.confirmedAtMs = cloudConfirmed ? Date.now() : null;
+	      diagnostics.outcome = cloudConfirmed ? 'confirmed' : (committed.ok?'pending':(diagnostics.targetChangedRemotely ? 'safe_conflict' : 'not_confirmed'));
 	      // A detected, safe conflict (the target product genuinely changed
 	      // remotely, so we correctly declined to auto-retry) must surface
 	      // its own explicit, recoverable message -- never the generic
@@ -7572,7 +7645,15 @@ function parseMoney(value) {
 	      state.operationLedger.push({ operationId:sale.operationId, type:method === 'Apartado' ? 'layaway_created' : 'sale_created', businessId:sale.businessId, entityId:sale.id, createdAt:sale.createdAt });
 	      addAudit(method === 'Apartado' ? 'layaway_created' : 'sale_created', { saleId: sale.id, total: sale.total, method: sale.method, paymentMethod:layawayInitialMethod, status: sale.status, operationId:sale.operationId, entityType:method === 'Apartado' ? 'layaway' : 'sale', entityId:sale.id });
       const committed = await commitCriticalMutation(previousState, 'sale_created', (next) =>
-        next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId));
+        next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId), {
+          sparkCommand:window.click360SparkOperationalSession ? () => ({kind:'sale',input:(method==='Apartado'
+            ? window.CLICK360_MODULAR_UI_ADAPTER.layawayCommand
+            : method==='Pendiente'?window.CLICK360_MODULAR_UI_ADAPTER.pendingPaymentCommand
+            : window.CLICK360_MODULAR_UI_ADAPTER.liveSaleCommand)({sale,cartLines:cart,
+                identity:window.click360SparkOperationalSession.identity,cashSessionId:sale.cashSessionId,
+                workingDate:sale.date,initialPaymentMethod:layawayInitialMethod,
+                layaway:state.layaways?.find(item=>item.saleId===sale.id)})}) : undefined
+        });
       if(!committed.ok) {
         // Confirmation failure may follow an already-committed write. Do not
         // leave this cart chargeable under a new sale operation ID.
@@ -8705,7 +8786,9 @@ function parseMoney(value) {
 	             addAudit('cash_opened', { amount: amt, businessId: currentBusiness().id });
 	             const businessId = currentBusiness().id;
 	             const committed = await commitCriticalMutation(previousState, 'cash_opened', (next) =>
-	               next.cashSessions.some((session) => session.id === cashSessionId && session.businessId === businessId));
+	               next.cashSessions.some((session) => session.id === cashSessionId && session.businessId === businessId), {
+                 sparkCommand:{kind:'cash_open',input:{operationId,cashSessionId,date:today(),openingAmount:amt}}
+               });
 	             if (!committed.ok) { renderApp('cash'); return; }
 	             window.click360RecordTelemetry?.('cash_open', { mode: authUser().role || 'owner' }).catch?.(() => {});
 	             renderApp('cash');
@@ -8751,7 +8834,10 @@ function parseMoney(value) {
 	          state.movements.push({id:movementId,operationId:movementId,businessId,date:today(),when:nowLabel(),kind:k,amount:a,note:n,paymentMethod:k==='ingreso'?'Efectivo':null,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy:authUser().name});
           addAudit('cash_movement_created', { kind:k, amount:a, note:n });
 	          const committed = await commitCriticalMutation(previousState, 'cash_movement_created', (next) =>
-	            next.movements.some((movement) => movement.id === movementId && movement.businessId === businessId));
+	            next.movements.some((movement) => movement.id === movementId && movement.businessId === businessId), {
+              sparkCommand:{kind:'cash_movement',input:{operationId:movementId,cashSessionId:currentOpenCashSession(businessId)?.id||'',
+                date:today(),movementKind:k,amount:a,note:n}}
+            });
 	          if (!committed.ok) { closeModal(); renderApp('cash'); return; }
 	          closeModal(); renderApp('cash'); toast(committed.pending ? 'Movimiento guardado; sincronización pendiente.' : 'Movimiento guardado');
           } finally {

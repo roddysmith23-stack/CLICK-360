@@ -13,7 +13,7 @@ const port = Number(process.env.CLICK360_R38_CORE_HTTP_PORT || 4798);
 const firestorePort = Number(process.env.CLICK360_R38_CORE_FIRESTORE_PORT || 48098);
 const authPort = Number(process.env.CLICK360_R38_CORE_AUTH_PORT || 49108);
 const projectId = process.env.CLICK360_R38_CORE_PROJECT || 'demo-click360-r38-core';
-if(!/^demo-click360-r38-(core|restaurant)$/.test(projectId))throw new Error('Dedicated emulator project required');
+if(!/^demo-click360-(r38-(core|restaurant)|spark-modular)$/.test(projectId))throw new Error('Dedicated emulator project required');
 const apiKey = 'fake-api-key';
 const hostedUrl = process.env.CLICK360_R38_CORE_HTTP_URL || '';
 if (hostedUrl && !/^https:\/\/click360-staging-7620168025(?:--[a-z0-9-]+)?\.web\.app\//.test(hostedUrl)) throw new Error('Only isolated CLICK360 staging is allowed for hosted synthetic QA');

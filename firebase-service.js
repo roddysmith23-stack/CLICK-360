@@ -729,6 +729,15 @@
 	    window.dispatchEvent(new CustomEvent("click360-sync-status", { detail: syncStatus }));
 	  }
 	  window.click360GetSyncStatus = () => ({ ...syncStatus });
+  window.addEventListener('click360-spark-operation-status',event=>{
+    if(!window.click360SparkOperationalSession)return;
+    const detail=event.detail||{};
+    const confirmed=detail.status==='CONFIRMED'&&detail.operationalCloudConfirmed===true;
+    setSyncStatus(confirmed?'modular_confirmed':'modular_pending',confirmed
+      ?'Guardado y respaldado en nube'
+      :'Tu información permanece guardada en este dispositivo. La confirmación en nube está pendiente.',
+      {storageArchitecture:'spark_modular',operationalCloudConfirmed:confirmed});
+  });
 	  window.click360OnSyncStatus = (fn) => {
 	    if (typeof fn !== "function") return () => {};
 	    const handler = (event) => fn(event.detail);
@@ -2871,6 +2880,7 @@
   }
 
 	  async function pushLocalToFirestoreOnce(reason = 'auto', forceWrite = false) {
+    if(window.click360SparkOperationalSession)return false;
 	    const user = auth.currentUser;
 	    const context = ACTIVE_CONTEXT;
 	    const stateDoc = STATE_DOC;
@@ -3731,6 +3741,7 @@
 	  }
 
 	  async function pushModularState(reason = 'local_change') {
+    if(window.click360SparkOperationalSession)return false;
 	    if (!MODULAR_MODE || !MODULAR_GATEWAY || !ACTIVE_CONTEXT || !AUTH_APPROVED || !PULL_COMPLETE) return false;
 	    if (!navigator.onLine) {
 	      setSyncStatus('offline', 'Cambio modular pendiente de conexión.', { reason });
@@ -3768,6 +3779,7 @@
 	  }, 1200);
 
 			  window.addEventListener('click360-local-state-saved', (event) => {
+              if(window.click360SparkOperationalSession)return;
               if (event.detail?.tenantKey === ACTIVE_CONTEXT?.tenantKey && event.detail?.cloudCapacityBlocked) {
                 setSyncStatus('cloud_capacity_blocked', 'Guardado en este dispositivo · respaldo en nube pendiente');
                 return;

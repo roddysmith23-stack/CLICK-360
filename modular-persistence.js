@@ -699,7 +699,28 @@
         }
         return {source:'server',exists:true,record:{ownerUid:expected.ownerUid,businessId:expected.businessId,operationId,payloadHash,status:'committed'},result:record.result};});
     }
-    return Object.freeze({identity:expected,supportedKinds:kinds,prepareOperation,commitOperation,lookupOperation,ensureDerivedAudit,
+    async function readOperationProjection(operationId,kind,payloadHash){
+      // Read a bounded, consistent view after confirmation. Never reconstruct
+      // a tenant or scan historical collections to project one operation.
+      return transport.run(async tx=>{
+        const ledger=await tx.get('operationLedger',safeId(operationId,'operationId'));
+        if(!ledger||ledger.status!=='committed'||ledger.kind!==kind||ledger.payloadHash!==payloadHash)throw Error('SPARK_PROJECTION_LEDGER_CONFLICT');
+        const records={},r=ledger.result||{};
+        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways']]){
+          if(!r[key])continue;
+          const value=await tx.get(moduleName,r[key]);
+          if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
+          (records[moduleName]??=[]).push(value);
+        }
+        for(const productId of records.sales?.[0]?.stockOrder||[]){
+          const value=await tx.get('products',productId);
+          if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
+          (records.products??=[]).push(value);
+        }
+        return {source:'server',operationId,identity:{...expected},records};
+      });
+    }
+    return Object.freeze({identity:expected,supportedKinds:kinds,prepareOperation,commitOperation,lookupOperation,ensureDerivedAudit,readOperationProjection,
       readPage:(moduleName,options)=>transport.readPage(moduleName,options),
       commitSale:input=>commitOperation('sale',input),closeCashSession:input=>commitOperation('cash_close',input)});
   }
