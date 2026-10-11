@@ -42,6 +42,7 @@ try{
     const workerProof=await page.evaluate(()=>({controlled:!!navigator.serviceWorker.controller,
       sameRelease:click360ServiceWorkerRelease.buildSha===CLICK360_RELEASE_ASSETS['app.js']}));
     assert(workerProof.controlled&&workerProof.sameRelease,'Actual installed worker must match the served app before signing in');
+    assert(await page.evaluate(()=>window.click360FirestoreTransport==='long_polling'),'Use the real app SDK transport, never a harness-only override');
     const legacyBefore=await readCloud(env,uid);
     await seed(env,async db=>{
       await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:'a'.repeat(64),reconstructedHash:'a'.repeat(64),businessIds:[uid]});
@@ -188,6 +189,7 @@ try{
     assert(runtime.sale,'Existing receipt ID preserved');
     results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
+      appFirestoreTransport:'long_polling',
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
     await device.context.close();device=null;console.log(`PASS served Spark UI ${label}`);

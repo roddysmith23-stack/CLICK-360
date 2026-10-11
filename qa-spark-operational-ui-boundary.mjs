@@ -26,6 +26,16 @@ assert.equal(reportView.paymentTotals.transfer,32);assert.equal(reportView.payme
 assert.throws(()=>globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView({...report,totalItems:undefined}),/AUTHORITATIVE_SUMMARY/);
 assert.equal(report.paymentTotals.layawayPayments,undefined,'Derived print view cannot mutate server report');
 const helper=await readFile('qa/r38-emulator-support.mjs','utf8');
+const firebaseSource=await readFile('firebase-service.js','utf8');
+const transportStart=firebaseSource.indexOf('const db = firebase.firestore();');
+const transportEnd=firebaseSource.indexOf('window.click360Auth = auth;',transportStart);
+assert(transportStart>0&&transportEnd>transportStart);
+const calls=[],transportContext={window:{},console,
+  firebase:{firestore:()=>({settings:options=>{assert.equal(options.merge,true,'Preserve the configured host/SSL/emulator scope');assert.equal(options.experimentalForceLongPolling,true);assert.equal(options.experimentalAutoDetectLongPolling,false);calls.push('settings');},
+    enablePersistence:options=>{assert.equal(options.synchronizeTabs,true);calls.push('persistence');return Promise.resolve();}})}};
+vm.createContext(transportContext);vm.runInContext(firebaseSource.slice(transportStart,transportEnd),transportContext);
+assert.deepEqual(calls,['settings','persistence'],'Configure transport before opening durable SDK persistence');
+assert.equal(transportContext.window.click360FirestoreTransport,'long_polling');
 const workerHandlers={},workerContext={URL,location:{origin:'http://127.0.0.1:4798'},
   self:{addEventListener:(name,fn)=>{workerHandlers[name]=fn;}},
   caches:{open:()=>{throw Error('Authenticated traffic must never touch SW cache');}},

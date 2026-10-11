@@ -29,6 +29,14 @@
 
 	  const auth = firebase.auth();
 	  const db = firebase.firestore();
+  // Supported WebChannel transport: close each hanging GET after delivering
+  // data instead of relying on indefinitely streaming Fetch responses. Linux
+  // WebKit reproduced a 200/header-only Listen stall even with no browser/SW
+  // interception. This changes connection framing, not queries, Rules, cache,
+  // transaction semantics or the evidence required for cloud confirmation.
+  // Configure before persistence or any read; never terminate/clear user data.
+  db.settings({ merge:true, experimentalForceLongPolling:true, experimentalAutoDetectLongPolling:false });
+  window.click360FirestoreTransport = 'long_polling';
 	  db.enablePersistence({ synchronizeTabs: true }).catch(err => {
 	    console.warn("Persistencia offline de Firestore no disponible:", err.message);
 	  });
