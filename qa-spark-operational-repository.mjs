@@ -1,0 +1,123 @@
+import assert from 'node:assert/strict';
+import './spark-modular-migration.js';
+import './spark-modular-record-codec.js';
+import './spark-modular-transaction-transport.js';
+import './modular-operation-journal.js';
+import './modular-persistence.js';
+const api=globalThis.CLICK360_MODULAR_PERSISTENCE,codec=globalThis.CLICK360_SPARK_RECORD_CODEC;
+const ownerUid='operation-owner',businessId='business-alpha',projectId='demo-click360-spark-modular',identity=api.identity(ownerUid,businessId);
+const base=`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2`,rows=new Map();let reads=0,lastReads=0,queue=Promise.resolve();
+let writeFaults=[];const transactions=[],transactionMetrics=[];
+rows.set(`businesses/${ownerUid}/metadata/storage`,{ownerUid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:'a'.repeat(64),reconstructedHash:'a'.repeat(64),businessIds:[businessId]});
+rows.set(`${base}/metadata/runtime`,await codec.pack({id:'runtime',...identity,module:'metadata',recordVersion:1,summaryVersion:1,openCashSessionId:''},{identity,moduleName:'metadata',recordId:'runtime'}));
+const db={app:{options:{projectId}},doc:path=>({path}),runTransaction:callback=>{
+  const run=async()=>{const staged=[],start=reads;let writing=false;
+    const result=await callback({get:async ref=>{assert(!writing);reads++;return {exists:rows.has(ref.path),data:()=>rows.get(ref.path)};},set:(ref,value)=>{writing=true;staged.push([ref.path,value]);}});
+    const fault=staged.length?writeFaults.shift():null;
+    transactions.push(staged.length?'write':'read');
+    if(!fault||fault.afterCommit)for(const [key,value]of staged)rows.set(key,value);
+    lastReads=reads-start;
+    transactionMetrics.push({reads:lastReads,core:staged.some(([path])=>path.startsWith(`${base}/operationLedger/`)),
+      modules:[...new Set(staged.map(([path])=>path.slice(base.length+1).split('/')[0]))]});
+    if(fault){fault.onFailure?.();const error=Error('SYNTHETIC_PERMISSION_RESPONSE');error.code='permission-denied';throw error;}
+    return result;};
+  const result=queue.then(run,run);queue=result.catch(()=>{});return result;
+}};
+const transport=globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,resolveUser:()=>({uid:ownerUid})});
+const repo=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,transport,serverTimestamp:()=> 'server-timestamp'});
+const get=async(moduleName,id)=>codec.unpack(rows.get(`${base}/${moduleName}/${id}`),{identity,moduleName,recordId:id});
+const open={operationId:'open-1',cashSessionId:'session-sep03',date:'2026-09-03',openingAmount:0};
+await repo.commitOperation('cash_open',open);assert.equal((await get('cashSessions',open.cashSessionId)).status,'open');
+await assert.rejects(()=>repo.commitOperation('cash_open',{...open,operationId:'open-second',cashSessionId:'other-session'}),/ALREADY_HAS_OPEN/);
+await repo.commitOperation('product_create',{operationId:'create-1',date:open.date,product:{id:'p1',businessId,name:'Perfume',stock:2,price:30}});
+assert.equal((await get('movements','create-1')).quantityDelta,2);
+const sale={operationId:'sale-1',sale:{id:'legacy-sale-1',cashSessionId:open.cashSessionId,date:open.date,businessId,total:30,received:30,iva:0,method:'Transferencia',items:[{id:'p1',qty:1,name:'Perfume'}]}};
+await assert.rejects(()=>repo.commitSale({...sale,operationId:'duplicate-lines',sale:{...sale.sale,items:[sale.sale.items[0],sale.sale.items[0]]}}),/DUPLICATE_LINE_ID/);
+await assert.rejects(()=>repo.commitSale({...sale,operationId:'over-line-budget',sale:{...sale.sale,
+  items:Array.from({length:13},(_,i)=>({id:`manual-${i}`,qty:1,isCustom:true}))}}),/LINE_BUDGET_EXCEEDED/);
+await assert.rejects(()=>repo.commitSale({...sale,operationId:'conflicting-line-id',sale:{...sale.sale,
+  items:[{id:'p1',productId:'p2',qty:1}]}}),/LINE_ID_CONFLICT/);
+assert.equal(rows.has(`${base}/operationLedger/over-line-budget`),false);
+assert.equal((await get('products','p1')).stock,2);
+await repo.commitSale(sale);const saleReads=transactionMetrics.findLast(metric=>metric.core).reads;
+assert(transactionMetrics.at(-1).modules.includes('auditEvents'));
+assert.equal((await get('products','p1')).stock,1);assert.equal((await get('cashSessions',open.cashSessionId)).paymentTotals.transfer,30);
+// An apparently open historical session must not authorize a sale when the
+// authoritative runtime points elsewhere. Failed validation stages no writes.
+const runtimePath=`${base}/metadata/runtime`,verifiedRuntime=rows.get(runtimePath);
+const conflictingRuntime=await get('metadata','runtime');
+rows.set(runtimePath,await codec.pack({...conflictingRuntime,recordVersion:conflictingRuntime.recordVersion+1,openCashSessionId:'different-session'},
+  {identity,moduleName:'metadata',recordId:'runtime',previous:verifiedRuntime}));
+await assert.rejects(()=>repo.commitSale({...sale,operationId:'stale-open-sale'}),/RUNTIME_SESSION_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('cash_movement',{operationId:'stale-open-movement',cashSessionId:open.cashSessionId,
+  date:open.date,movementKind:'ingreso',amount:1}),/RUNTIME_SESSION_CONFLICT/);
+assert.equal((await get('products','p1')).stock,1);
+assert.equal(rows.has(`${base}/sales/stale-open-sale`),false);
+assert.equal(rows.has(`${base}/operationLedger/stale-open-sale`),false);
+assert.equal(rows.has(`${base}/movements/stale-open-movement`),false);
+rows.set(runtimePath,verifiedRuntime);
+const first=await repo.prepareOperation('sale',sale);assert.equal((await repo.lookupOperation('sale-1','sale',first.payloadSha256)).exists,true);
+assert.equal((await repo.commitSale(sale)).status,'already_committed');assert.equal((await get('products','p1')).stock,1);
+await assert.rejects(()=>repo.commitSale({...sale,sale:{...sale.sale,total:31,received:31}}),/IDEMPOTENCY_KEY_CONFLICT/);
+const race=await Promise.allSettled([repo.commitSale({...sale,operationId:'sale-race-a'}),repo.commitSale({...sale,operationId:'sale-race-b'})]);
+assert.equal(race.filter(x=>x.status==='fulfilled').length,1);assert.equal((await get('products','p1')).stock,0);
+const manual={operationId:'manual-1',sale:{cashSessionId:open.cashSessionId,date:open.date,businessId,total:8,received:8,iva:0,method:'Efectivo',items:[{id:'manual-item',isCustom:true,qty:1}]}};
+await repo.commitSale(manual);assert.equal((await get('cashSessions',open.cashSessionId)).cashBalance,8);
+const pending={...manual,operationId:'pending-1',sale:{...manual.sale,total:10,received:0,method:'Pendiente'}};
+await repo.commitSale(pending);assert.equal((await get('movements','pending-1')).amount,0);
+const layaway={...manual,operationId:'layaway-1',paymentMethod:'Tarjeta',sale:{...manual.sale,total:20,received:5,method:'Apartado'}};
+await assert.rejects(()=>repo.commitSale(layaway),/layawayId/);
+layaway.layaway={id:'layaway-record',businessId,total:20,paid:5,balance:15};
+await repo.commitSale(layaway);assert.equal((await get('movements','layaway-1')).amount,5);
+assert.equal((await get('layaways','layaway-record')).saleId,'layaway-1');
+assert.equal((await get('layaways','layaway-record')).balance,15);
+assert.equal((await get('cashSessions',open.cashSessionId)).paymentTotals.receivablePayments,5);
+await repo.commitOperation('cash_movement',{operationId:'expense-1',cashSessionId:open.cashSessionId,date:open.date,movementKind:'egreso',amount:3});
+const close={operationId:'close-1',cashSessionId:open.cashSessionId,date:open.date,declaredCash:5};
+await repo.closeCashSession(close);const report=await get('dailyReports',`report-${open.cashSessionId}-1`);
+assert.equal(report.theoreticalCash,5);assert.equal(report.total,98);assert.equal(report.saleCount,5);assert(!Object.hasOwn(report,'html'));
+assert.equal((await repo.closeCashSession(close)).status,'already_committed');
+await assert.rejects(()=>repo.commitSale({...manual,operationId:'closed-sale'}),/SESSION_NOT_OPEN/);
+await repo.commitOperation('cash_reopen',{operationId:'reopen-1',cashSessionId:open.cashSessionId,date:open.date,reason:'Authorized correction'});
+await repo.closeCashSession({...close,operationId:'close-2'});assert.equal((await get('dailyReports',`report-${open.cashSessionId}-1`)).status,'reopened');
+assert.equal((await get('dailyReports',`report-${open.cashSessionId}-2`)).saleCount,5);assert.equal((await get('products','p1')).stock,0);
+await repo.commitOperation('inventory_adjust',{operationId:'adjust-1',productId:'p1',quantityDelta:1,date:open.date,reason:'Opening stock correction'});
+assert.equal((await get('products','p1')).stock,1);
+for(let i=0;i<15000;i++)rows.set(`${base}/sales/history-${i}`,{unused:true});
+await repo.commitOperation('cash_open',{...open,operationId:'open-current',cashSessionId:'current-session',date:'2026-10-06'});
+await repo.commitSale({...sale,operationId:'current-sale',sale:{...sale.sale,date:'2026-10-06',cashSessionId:'current-session'}});
+assert.equal(transactionMetrics.findLast(metric=>metric.core).reads,saleReads);
+assert.equal((await get('products','p1')).stock,0);
+await assert.rejects(()=>repo.commitOperation('product_edit',{operationId:'bad-edit',productId:'p1',changes:{stock:999}}),/EDIT_FIELDS_INVALID/);
+const recoverable={operationId:'recoverable-create',date:open.date,product:{id:'recoverable-product',businessId,name:'Pinned request',stock:0}};
+writeFaults=[{afterCommit:false,onFailure:()=>{recoverable.product.name='Caller changed during response';}}];
+const retryStart=transactions.length;
+await repo.commitOperation('product_create',recoverable);
+assert.deepEqual(transactions.slice(retryStart),['write','read','write','write']);
+assert.equal((await get('products','recoverable-product')).name,'Pinned request');
+writeFaults=[{afterCommit:true}];
+const lostStart=transactions.length;
+assert.equal((await repo.commitOperation('product_create',{operationId:'lost-response-create',date:open.date,
+  product:{id:'lost-response-product',businessId,name:'Response lost',stock:0}})).status,'already_committed');
+assert.deepEqual(transactions.slice(lostStart),['write','read','write']);
+writeFaults=[{afterCommit:false},{afterCommit:false}];
+const deniedStart=transactions.length;
+await assert.rejects(()=>repo.commitOperation('product_create',{operationId:'persistent-denial',date:open.date,
+  product:{id:'denied-product',businessId,name:'Denied',stock:0}}),e=>e.code==='permission-denied');
+assert.deepEqual(transactions.slice(deniedStart),['write','read','write']);
+assert.equal(rows.has(`${base}/products/denied-product`),false);
+assert.equal(rows.has(`${base}/operationLedger/persistent-denial`),false);
+writeFaults=[null,{afterCommit:false}];
+const auditInput={operationId:'audit-recovery',date:open.date,product:{id:'audit-product',businessId,name:'Confirmed independently of derived audit',stock:0}};
+const auditResult=await repo.commitOperation('product_create',auditInput);
+assert.equal(auditResult.status,'committed');assert.equal(auditResult.auditPending,true);
+const auditPrepared=await repo.prepareOperation('product_create',auditInput);
+assert.equal((await repo.lookupOperation('audit-recovery','product_create',auditPrepared.payloadSha256)).exists,true);
+assert.equal(rows.has(`${base}/auditEvents/audit-audit-recovery`),false);
+assert.equal((await repo.ensureDerivedAudit('audit-recovery','product_create',auditPrepared.payloadSha256)).status,'materialized');
+assert.equal((await repo.ensureDerivedAudit('audit-recovery','product_create',auditPrepared.payloadSha256)).status,'already_materialized');
+assert.equal((await get('products','audit-product')).stock,0);
+await assert.rejects(()=>repo.ensureDerivedAudit('audit-recovery','product_create','b'.repeat(64)),/CONFIRMED_LEDGER_REQUIRED/);
+console.log(JSON.stringify({status:'PASS',transport:'synthetic_atomic',historicalDate:true,manualSale:true,partialPayment:true,zeroPayment:true,
+  idempotent:true,sameProductRace:true,exactCashSession:true,reopenSeparateReport:true,historyIndependentCoreReads:saleReads,
+  derivedAuditRecoverable:true,auditFailureDoesNotRepeatCore:true,productionWrites:0}));

@@ -8,6 +8,8 @@ permissions:
 jobs:
   spark-client-safety-required:
     runs-on: ubuntu-latest
+    env:
+      CLICK360_QA_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,5 +27,15 @@ jobs:
       - run: npm run qa:spark:legacy-rules
       - name: Repeat client transactions and lifecycle with a fresh emulator
         run: npm run qa:spark:rules
+      - name: Certify worst-case Rules with stricter expression headroom
+        env:
+          SPARK_RULES_HEADROOM_PROBE: 'true'
+        run: npm run qa:spark:rules
+      - name: Preserve sanitized exact-source Rules evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: spark-rules-proof
+          path: artifacts/spark-rules-proof/*.json
+          if-no-files-found: error
       - run: npm run qa:modular-persistence
       - run: npm audit --omit=dev --audit-level=moderate

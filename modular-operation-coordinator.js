@@ -18,7 +18,7 @@
       if (row.state === 'confirmed') return { status:'confirmed', operationId };
       if (row.payload.tenantKey !== identity.tenantKey || row.payload.schemaVersion !== 2) throw Error('OUTBOX_TENANT_SCHEMA_CONFLICT');
       const kind = row.payload.kind;
-      if (!['sale', 'cash_close'].includes(kind)) throw Error('MODULAR_OPERATION_KIND_UNSUPPORTED');
+      if (!(repository.supportedKinds||['sale', 'cash_close']).includes(kind)) throw Error('MODULAR_OPERATION_KIND_UNSUPPORTED');
       // Prepare again on restart to independently verify the stored request hash.
       const prepared = await repository.prepareOperation(kind, row.payload.payload);
       if (prepared.operationId !== operationId || prepared.payloadSha256 !== row.payloadHash) throw Error('OUTBOX_REPOSITORY_HASH_DIVERGENCE');
@@ -40,7 +40,8 @@
           await journal.reconcile(identity, operationId, row.revision, before);
           return { status:'confirmed', operationId };
         }
-        if (kind === 'sale') await repository.commitSale(row.payload.payload);
+        if (repository.commitOperation) await repository.commitOperation(kind,row.payload.payload);
+        else if (kind === 'sale') await repository.commitSale(row.payload.payload);
         else await repository.closeCashSession(row.payload.payload);
         const after = await lookup();
         if (!after.exists) throw Error('MODULAR_COMMIT_NOT_CONFIRMED');

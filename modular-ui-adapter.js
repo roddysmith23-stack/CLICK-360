@@ -1,6 +1,51 @@
 // Shared DEV UI boundary. Not loaded by legacy production and no auto-cutover.
 (function(root){
   'use strict';
+  const paidMethods=new Set(['Efectivo','Tarjeta','Transferencia']);
+  function saleCommand({sale,cartLines,identity,cashSessionId,workingDate}){
+    if(!identity?.ownerUid||!identity.businessId||sale?.businessId!==identity.businessId
+      ||!sale.operationId||!cashSessionId||sale.cashSessionId!==cashSessionId
+      ||sale.date!==workingDate||!/^\d{4}-\d{2}-\d{2}$/.test(workingDate||''))throw Error('MODULAR_COMMAND_CONTEXT_INVALID');
+    if(!Array.isArray(sale.items)||!sale.items.length||!Array.isArray(cartLines)
+      ||cartLines.length!==sale.items.length)throw Error('MODULAR_COMMAND_CART_REQUIRED');
+    const translated=structuredClone(sale);
+    translated.items=sale.items.map((line,index)=>{
+      const cart=cartLines[index],id=cart?.productId||cart?.id,lineId=line.productId||line.id;
+      if(!id||lineId!==id||cart.qty!==line.qty||!Number.isSafeInteger(line.qty)||line.qty<1
+        ||(cart.businessId!==undefined&&cart.businessId!==identity.businessId)
+        ||(line.businessId!==undefined&&line.businessId!==identity.businessId))throw Error('MODULAR_COMMAND_LINE_CONFLICT');
+      // The real cart contains isCustom; receipt calculation lines can omit it.
+      // Never infer non-stock status from a name, barcode or ID prefix.
+      return {...structuredClone(line),productId:id,isCustom:cart.isCustom===true};
+    });
+    return {operationId:sale.operationId,sale:translated};
+  }
+  function liveSaleCommand(input){
+    const command=saleCommand(input);
+    if(!paidMethods.has(command.sale.method)||command.sale.received!==command.sale.total
+      ||command.sale.status!=='paid')throw Error('MODULAR_PAID_SALE_INVALID');
+    return command;
+  }
+  function manualSaleCommand(input){
+    if(!Array.isArray(input.cartLines)||!input.cartLines.length||input.cartLines.some(line=>line.isCustom!==true))
+      throw Error('MODULAR_MANUAL_SALE_REQUIRES_EXPLICIT_CUSTOM_LINES');
+    return liveSaleCommand(input);
+  }
+  function pendingPaymentCommand(input){
+    const command=saleCommand(input);
+    if(command.sale.method!=='Pendiente'||command.sale.status!=='pending_payment'
+      ||command.sale.received!==0||command.sale.balance!==command.sale.total)throw Error('MODULAR_PENDING_PAYMENT_INVALID');
+    return command;
+  }
+  function layawayCommand(input){
+    const command=saleCommand(input),layaway=structuredClone(input.layaway);
+    if(command.sale.method!=='Apartado'||command.sale.status!=='layaway'||!paidMethods.has(input.initialPaymentMethod)
+      ||!layaway?.id||layaway.businessId!==input.identity.businessId||layaway.saleId!==command.sale.id
+      ||layaway.total!==command.sale.total||layaway.paid!==command.sale.received
+      ||layaway.balance!==Math.round((layaway.total-layaway.paid)*100)/100)throw Error('MODULAR_LAYAWAY_COMMAND_INVALID');
+    // The initial movement is the deposit received, never the full sale total.
+    return {...command,paymentMethod:input.initialPaymentMethod,layaway};
+  }
   function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed=async()=>{}}){
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
@@ -78,5 +123,5 @@
     }
     return Object.freeze({submit,replay,health});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand});
 })(typeof window==='undefined'?globalThis:window);

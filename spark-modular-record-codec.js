@@ -2,8 +2,9 @@
   'use strict';
   // One record contract between preserved shadow data and the audited DEV
   // transaction kernel. No transport, migration activation or commercial write.
-  const metadata=['recordVersion','createdAt','updatedAt','closedAt','createdBy','updatedBy'];
-  const identityFields=['id','ownerUid','businessId','tenantKey','schemaVersion','storageSchemaVersion','module'];
+  const metadata=['recordVersion','createdAt','updatedAt','closedAt','createdBy','updatedBy','lastOperationId','saleStockIndex'];
+  const sessionOperational=['summaryVersion','saleCount','salesTotal','itemCount','taxTotal','cashBalance','openingAmount','incomeCash','expenseCash','paymentTotals','closeCycle'];
+  const identityFields=['id','ownerUid','businessId','tenantKey','schemaVersion','storageSchemaVersion','module','storageMetadataKeys'];
   const domainId=(identity,moduleName,recordId)=>moduleName==='config'&&recordId==='main'?identity.businessId:recordId;
   function stockMirror(data,moduleName){
     if(moduleName!=='products')return;
@@ -26,10 +27,16 @@
     if(raw.data.businessId!==undefined&&raw.data.businessId!==identity.businessId)throw Error('SPARK_CODEC_PAYLOAD_BUSINESS_MISMATCH');
     if(raw.data.id!==undefined&&raw.data.id!==domainId(identity,moduleName,recordId))throw Error('SPARK_CODEC_PAYLOAD_ID_MISMATCH');
     const flat=structuredClone(raw.data);
+    if(Object.hasOwn(raw,'operational')){
+      if(moduleName!=='cashSessions'||raw.operationalHash!==await api.hash(raw.operational)
+        ||Object.keys(raw.operational).some(k=>!sessionOperational.includes(k)))throw Error('SPARK_CODEC_OPERATIONAL_INTEGRITY_MISMATCH');
+      Object.assign(flat,structuredClone(raw.operational));
+    }
     Object.assign(flat,{id:domainId(identity,moduleName,recordId),ownerUid:identity.ownerUid,businessId:identity.businessId,tenantKey,storageSchemaVersion:2,module:moduleName});
     // Initial shadow has no operational metadata: the first mutation starts
     // at version 1. Server timestamps stay native outside material JSON.
     for(const field of metadata)if(Object.hasOwn(raw,field))flat[field]=raw[field];
+    flat.storageMetadataKeys=metadata.filter(field=>Object.hasOwn(raw,field));
     flat.recordVersion=raw.recordVersion??1;
     if(!Number.isSafeInteger(flat.recordVersion)||flat.recordVersion<1)throw Error('SPARK_CODEC_RECORD_VERSION_INVALID');
     return flat;
@@ -44,13 +51,19 @@
       if(flat.recordVersion!==(previous.recordVersion??1)+1)throw Error('SPARK_CODEC_REVISION_CONFLICT');
     }else if(flat.recordVersion!==1)throw Error('SPARK_CODEC_INITIAL_VERSION_INVALID');
     const data=previous?structuredClone(previous.data):{};
-    for(const [key,value]of Object.entries(flat))if(!metadata.includes(key)&&!identityFields.includes(key))data[key]=structuredClone(value);
+    for(const [key,value]of Object.entries(flat))if(!metadata.includes(key)&&!identityFields.includes(key)
+      &&!(moduleName==='cashSessions'&&sessionOperational.includes(key)))data[key]=structuredClone(value);
     // Preserve original embedded IDs/scopes in imported rows; newly created
     // records also expose these fields to legacy-compatible projections.
     data.id=domainId(identity,moduleName,recordId);data.businessId=identity.businessId;
     stockMirror(data,moduleName);
     const raw={id:recordId,ownerUid:identity.ownerUid,businessId:identity.businessId,schemaVersion:2,module:moduleName,
       data,dataHash:await api.hash(data)};
+    if(moduleName==='cashSessions'){
+      const operational={...(previous?.operational||{})};
+      for(const key of sessionOperational)if(Object.hasOwn(flat,key))operational[key]=structuredClone(flat[key]);
+      if(Object.keys(operational).length){raw.operational=operational;raw.operationalHash=await api.hash(operational);}
+    }
     for(const field of metadata)if(Object.hasOwn(flat,field))raw[field]=flat[field];
     // New operational records have no legacy origin. Do not manufacture
     // undefined fields on their second edit: Firestore rejects undefined.

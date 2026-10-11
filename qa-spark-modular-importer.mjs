@@ -59,13 +59,13 @@ try{
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),{...savedControl,storageMode:'modular',phase:'MODULAR'}));
   await transport.run(async tx=>{const p=await tx.get('products','p-0');assert.equal(p.stock,1);assert.equal(p.qty,1);});
   await assertFails(transport.run(async tx=>{const p=await tx.get('products','p-0');tx.update('products','p-0',{...p,stock:0,qty:0,recordVersion:2});}));
-  assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/products/p-0`))).data().data.stock,1);
+  assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/products/p-0`))).data().data.stock,1);
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),savedControl));
   const retry=await importer.prepareShadow();assert.deepEqual(retry.equality,result.equality);
   await assert.rejects(globalThis.CLICK360_SPARK_IMPORTER.create({...input,deviceId:'different-device'}).prepareShadow(),/ALREADY_CLAIMED/);
   await assert.rejects(globalThis.CLICK360_SPARK_IMPORTER.create({...input,readGuard:async()=>({ownerUid,deviceRevision:'device-43',unknownOperations:0,mutationLockHeld:false})}).prepareShadow(),/DEVICE_GUARD_CHANGED_STOP/);
   // An extra record in a source-empty module must not escape verification.
-  const orphanPath=`businesses/${ownerUid}/businessUnits/${businessId}/customers/orphan`;
+  const orphanPath=`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/customers/orphan`;
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),orphanPath),{unexpected:true}));
   await assert.rejects(importer.prepareShadow(),/REMOTE_COUNT_MISMATCH/);
   await env.withSecurityRulesDisabled(c=>deleteDoc(doc(c.firestore(),orphanPath)));

@@ -43,12 +43,14 @@
   function assertSource(ownerUid, source, envelopeIdentity) {
     id(ownerUid);
     const identity=envelopeIdentity||source?.identity;
+    const identityKeys=['ownerUid','ownerId','businessId','tenantKey','schemaVersion'];
+    if(!isPlain(identity)||Object.keys(identity).some(key=>!identityKeys.includes(key)))throw Error('MIGRATION_SOURCE_IDENTITY_MISMATCH');
     if(!identity||identity.ownerUid!==ownerUid||identity.ownerId!==ownerUid
       ||identity.businessId!==ownerUid||identity.tenantKey!==`owner:${ownerUid}:business:${ownerUid}`
       ||identity.schemaVersion!==10)throw Error('MIGRATION_SOURCE_IDENTITY_MISMATCH');
     // Published snapshots normally keep identity in payload.identity, outside
     // payload.data. Never inject it into data just to satisfy migration hashes.
-    if(source?.identity&&['ownerUid','ownerId','businessId','tenantKey','schemaVersion'].some(key=>source.identity[key]!==identity[key]))throw Error('MIGRATION_SOURCE_IDENTITY_MISMATCH');
+    if(source?.identity&&(!isPlain(source.identity)||Object.keys(source.identity).some(key=>!identityKeys.includes(key))||identityKeys.some(key=>source.identity[key]!==identity[key])))throw Error('MIGRATION_SOURCE_IDENTITY_MISMATCH');
     if(!Array.isArray(source.businesses)||!source.businesses.length)throw Error('MIGRATION_NO_BUSINESSES');
     const businessIds=source.businesses.map(b=>id(b.id));
     if(new Set(businessIds).size!==businessIds.length)throw Error('MIGRATION_DUPLICATE_BUSINESS');
@@ -65,8 +67,15 @@
     if(!Array.isArray(local.pendingOperations)||local.pendingOperations.some(row=>['unknown','inflight'].includes(row?.state)))throw Error('MIGRATION_UNKNOWN_OPERATIONS_STOP');
     const localBusinesses=assertSource(ownerUid,local.snapshot,local.identity);
     const localHash=await hash(local.snapshot);
+    // Only the fully validated transport identity may move between envelope and
+    // snapshot. Preserve both original snapshots/hashes for recovery and CAS;
+    // never ignore any commercial field when deciding material equivalence.
+    const material=value=>Object.fromEntries(Object.entries(value).filter(([key])=>key!=='identity'));
+    const remoteMaterialHash=await hash(material(remote.snapshot));
+    const localMaterialHash=await hash(material(local.snapshot));
     const pending=local.pendingRemoteSync===true||local.cloudCapacityBlocked===true||(local.pendingOperations||[]).length>0;
     if(localHash===remoteHash)return {snapshot:clone(local.snapshot),identity:clone(local.identity||local.snapshot.identity),source:'device_equal',remoteRevision:remote.revision,remoteHash,sourceHash:localHash,businessIds:localBusinesses,pendingOperations:[...(local.pendingOperations||[])],deviceRevision:local.deviceRevision};
+    if(localMaterialHash===remoteMaterialHash)return {snapshot:clone(local.snapshot),identity:clone(local.identity||local.snapshot.identity),source:'device_identity_equivalent',remoteRevision:remote.revision,remoteHash,sourceHash:localHash,remoteMaterialHash,localMaterialHash,businessIds:localBusinesses,pendingOperations:[...local.pendingOperations],deviceRevision:local.deviceRevision};
     if(pending){
       // Wall-clock timestamps cannot authorize selecting a conflicting fork.
       if(local.baseRevision!==remote.revision)throw Error('MIGRATION_REMOTE_DRIFT_STOP');
@@ -121,7 +130,7 @@
         sourceHash,sourcePath:clone(sourcePath),data:clone(data),dataHash:await hash(data)};
       if(bytes(content)>MAX_RECORD_BYTES)throw Error('MIGRATION_RECORD_TOO_LARGE_STOP');
       records.push({path:businessId===null?`businesses/${ownerUid}/legacyConfig/${recordId}`
-        :`businesses/${ownerUid}/businessUnits/${businessId}/${module}/${recordId}`,content});
+        :`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/${module}/${recordId}`,content});
     }
     async function visit(value,path){
       const module=arrays[path.join('.')];
@@ -183,5 +192,102 @@
     if(json(moduleHashes)!==json(manifest.moduleHashes)||json(stats(rebuilt,manifest.businessIds))!==json(manifest.counts))throw Error('MIGRATION_REMOTE_MODULE_MISMATCH');
     return {status:'SEMANTIC_EQUALITY_PASS',sourceHash,reconstructedHash,counts:stats(rebuilt,manifest.businessIds),moduleHashes,recordCount:remoteRecords.length};
   }
-  root.CLICK360_SPARK_MIGRATION=Object.freeze({SCHEMA_VERSION,MAX_RECORD_BYTES,arrays,canonicalJson:json,byteLength:bytes,hash,selectSource,plan,compare});
+  async function deriveCashSummaries({snapshot,businessId}){
+    if(!snapshot?.businesses?.some(b=>b.id===businessId))throw Error('MIGRATION_CASH_BUSINESS_REQUIRED');
+    const scoped=name=>(snapshot[name]||[]).filter(row=>row.businessId===businessId);
+    const sessions=scoped('cashSessions'),sales=scoped('sales'),movements=scoped('movements'),reports=scoped('dailyReports');
+    const unique=rows=>{const ids=new Set();for(const row of rows){if(!row.id||ids.has(row.id))throw Error('MIGRATION_CASH_DUPLICATE_ID');ids.add(row.id);}return ids;};
+    const sessionIds=unique(sessions);unique(sales);unique(movements);unique(reports);
+    const cents=value=>{if(typeof value!=='number'||!Number.isFinite(value)||value<0
+      ||Math.abs(value*100-Math.round(value*100))>0.00001)throw Error('MIGRATION_CASH_AMOUNT_UNVERIFIED');return Math.round(value*100);};
+    const saleById=new Map(sales.map(row=>[row.id,row])),verified={},failures=[];
+    for(const session of sessions){
+      try{
+        if(!['open','closed'].includes(session.status)||!session.date)throw Error('MIGRATION_CASH_STATE_UNVERIFIED');
+        // Date is only an ambiguity detector, NEVER an association key.
+        if(sales.some(row=>row.date===session.date&&(!row.cashSessionId||!sessionIds.has(row.cashSessionId)))
+          ||movements.some(row=>row.date===session.date&&!row.cashSessionId
+            &&!(row.kind==='apertura'&&row.operationId&&row.operationId===session.operationId)))
+          throw Error('MIGRATION_CASH_SESSION_ASSOCIATION_UNVERIFIED');
+        const linkedSales=sales.filter(row=>row.cashSessionId===session.id&&row.status!=='cancelled');
+        const linkedMoves=movements.filter(row=>row.cashSessionId===session.id
+          ||(!row.cashSessionId&&row.kind==='apertura'&&row.operationId&&row.operationId===session.operationId)).filter(row=>row.status!=='cancelled');
+        const linkedReports=reports.filter(row=>row.cashSessionId===session.id);
+        if(linkedSales.some(row=>row.date!==session.date)||linkedMoves.some(row=>row.date!==session.date)
+          ||linkedReports.some(row=>row.date!==session.date))throw Error('MIGRATION_CASH_DATE_CONFLICT');
+        const opening=cents(session.openingAmount),openMoves=linkedMoves.filter(row=>row.kind==='apertura');
+        if(openMoves.length!==1||cents(openMoves[0].amount)!==opening)throw Error('MIGRATION_CASH_OPENING_UNVERIFIED');
+        let total=0,tax=0,items=0,cash=opening,income=0,expense=0,saleCount=0;
+        const payments={cash:0,card:0,transfer:0,receivablePayments:0},verifiedInitial=new Set();
+        for(const sale of linkedSales){
+          total+=cents(sale.total);tax+=cents(sale.iva);saleCount++;
+          if(!Array.isArray(sale.items)||!sale.items.length)throw Error('MIGRATION_CASH_ITEMS_UNVERIFIED');
+          for(const line of sale.items){if(!Number.isSafeInteger(line.qty)||line.qty<1)throw Error('MIGRATION_CASH_ITEMS_UNVERIFIED');items+=line.qty;}
+          const receipts=linkedMoves.filter(row=>row.saleId===sale.id);
+          const initial=receipts.filter(row=>row.operationId===sale.operationId
+            ||(!row.operationId&&receipts.length===1&&(!sale.payments?.length||sale.payments.length===1)));
+          const received=cents(sale.received);
+          if(!sale.operationId||(received>0?(initial.length!==1||cents(initial[0].amount)!==received):initial.some(row=>cents(row.amount)!==0)))
+            throw Error('MIGRATION_CASH_SALE_RECEIPT_UNVERIFIED');
+          if(initial.length===1)verifiedInitial.add(initial[0].id);
+        }
+        for(const movement of linkedMoves){
+          const amount=cents(movement.amount);
+          if(movement.kind==='apertura')continue;
+          if(movement.saleId){
+            const sale=saleById.get(movement.saleId);
+            if(!sale||sale.status==='cancelled')throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            // Old initial receipts can omit paymentType/operationId. A unique
+            // exact saleId receipt already verified above may supply that
+            // provenance; never infer from date, note text or report amounts.
+            const legacyInitial=verifiedInitial.has(movement.id);
+            const type=movement.paymentType||(legacyInitial?(sale.method==='Apartado'?'receivable_payment':'sale'):null);
+            const paymentMethod=movement.paymentMethod||(legacyInitial?sale.payments?.[0]?.method||sale.method:null);
+            if(!['sale','receivable_payment'].includes(type))throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            const method={Efectivo:'cash',Tarjeta:'card',Transferencia:'transfer'}[paymentMethod];
+            if(!method&&amount>0)throw Error('MIGRATION_CASH_PAYMENT_UNVERIFIED');
+            if(method)payments[method]+=amount;
+            if(method==='cash')cash+=amount;
+            if(type==='receivable_payment')payments.receivablePayments+=amount;
+          }else if(movement.kind==='ingreso'){cash+=amount;income+=amount;}
+          else if(['egreso','retiro','compra'].includes(movement.kind)){cash-=amount;expense+=amount;}
+          else throw Error('MIGRATION_CASH_MOVEMENT_UNVERIFIED');
+        }
+        const activeReports=linkedReports.filter(row=>row.status!=='reopened');
+        if(session.status==='closed'&&activeReports.length!==1)throw Error('MIGRATION_CASH_REPORT_UNVERIFIED');
+        if(session.status==='open'&&activeReports.length)throw Error('MIGRATION_CASH_REPORT_STATE_CONFLICT');
+        if(activeReports.length){
+          const report=activeReports[0];
+          if(Object.hasOwn(report,'total')){
+            if(cents(report.total)!==total||report.saleCount!==saleCount
+              ||typeof report.theoreticalCash!=='number'||Math.round(report.theoreticalCash*100)!==cash)
+              throw Error('MIGRATION_CASH_REPORT_TOTAL_CONFLICT');
+          }else{
+            // Published v1 close stores saleIds/productQuantity/expectedCash,
+            // not v2 total/saleCount/theoreticalCash. Verify that exact schema
+            // against records; never manufacture absent counters as zero.
+            const ids=report.saleIds;
+            if(!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.length!==linkedSales.length
+              ||ids.some(id=>!linkedSales.some(sale=>sale.id===id))||report.productQuantity!==items
+              ||cents(report.taxTotal)!==tax||typeof report.expectedCash!=='number'
+              ||Math.round(report.expectedCash*100)!==cash||cents(report.openingAmount)!==opening
+              ||cents(report.income)!==cash-opening+expense||cents(report.expenses)!==expense)
+              throw Error('MIGRATION_CASH_REPORT_TOTAL_CONFLICT');
+            const expected={cash:0,card:0,transfer:0,layawayPayments:payments.receivablePayments};
+            for(const sale of linkedSales){const key={Efectivo:'cash',Tarjeta:'card',Transferencia:'transfer'}[sale.method];if(key)expected[key]+=cents(sale.total);}
+            if(!report.paymentTotals||Object.entries(expected).some(([key,value])=>cents(report.paymentTotals[key])!==value))
+              throw Error('MIGRATION_CASH_REPORT_PAYMENT_CONFLICT');
+          }
+        }
+        const summary={summaryVersion:1,saleCount,salesTotal:total/100,itemCount:items,taxTotal:tax/100,cashBalance:cash/100,
+          openingAmount:opening/100,incomeCash:income/100,expenseCash:expense/100,
+          paymentTotals:Object.fromEntries(Object.entries(payments).map(([key,value])=>[key,value/100])),
+          closeCycle:1+linkedReports.filter(row=>row.status==='reopened').length};
+        verified[session.id]={summary,summaryHash:await hash(summary),saleIds:linkedSales.map(row=>row.id),
+          movementIds:linkedMoves.map(row=>row.id),reportIds:linkedReports.map(row=>row.id)};
+      }catch(error){failures.push({cashSessionId:session.id,reason:error.message});}
+    }
+    return {canProceed:failures.length===0,verified,failures};
+  }
+  root.CLICK360_SPARK_MIGRATION=Object.freeze({SCHEMA_VERSION,MAX_RECORD_BYTES,arrays,canonicalJson:json,byteLength:bytes,hash,selectSource,plan,compare,deriveCashSummaries});
 })(typeof window==='undefined'?globalThis:window);

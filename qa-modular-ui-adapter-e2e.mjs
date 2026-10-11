@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chromium,webkit,firefox} from 'playwright';
+import './qa-spark-live-command-adapters.mjs';
 const harness=await readFile('qa-modular-persistence-v2-harness.cjs','utf8');
 const fakeDb=harness.slice(harness.indexOf('function clone('),harness.indexOf('function baseRecord('));
-const sources=await Promise.all(['modular-persistence.js','modular-operation-journal.js','modular-operation-coordinator.js','modular-ui-adapter.js'].map(file=>readFile(file,'utf8')));
+const sources=await Promise.all(['modular-persistence.js','modular-operation-journal.js','modular-operation-coordinator.js','modular-ui-adapter.js','spark-modular-reconciliation.js'].map(file=>readFile(file,'utf8')));
 for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
   const browser=await engine.launch();
   try{
@@ -59,16 +60,42 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
       const foreignCounts=await journal.countPending(active);
       active=identity;
       const largeHealth=await adapter.health();
+      const enumeration=[];
+      for(const size of [99,100,101,250,1000]){
+        const scoped={ownerUid:identity.ownerUid,businessId:`enumeration-${size}`};
+        for(let i=0;i<size;i++)await journal.enqueue(scoped,`row-${String(i).padStart(4,'0')}`,{index:i});
+        const tail=`row-${String(size-1).padStart(4,'0')}`;
+        const inflight=await journal.claim(scoped,tail,'enumeration-device');
+        await journal.markUnknown(scoped,tail,inflight.revision);
+        const exact=await journal.countPending(scoped),all=[];let after=null,pages=0;
+        do{
+          const page=await journal.listPendingPage(scoped,{limit:100,after});
+          if(page.rows.length>100)throw Error('UNBOUNDED_OUTBOX_PAGE');
+          all.push(...page.rows);after=page.next;pages++;
+          if(page.complete!==!after)throw Error('INCONSISTENT_OUTBOX_COMPLETENESS');
+        }while(after);
+        if(all.length!==size || new Set(all.map(row=>row.key)).size!==size
+          || all.filter(row=>row.state==='unknown').length!==1)throw Error('INCOMPLETE_OUTBOX_ENUMERATION');
+        const reconciled=await CLICK360_SPARK_RECONCILIATION.reconcileJournal({identity:scoped,journal,pageSize:100,
+          assertSourceStable:async()=>{},lookupOperation:async row=>{
+            if(row.operationId===tail)throw Error('SERVER_LEDGER_UNAVAILABLE');
+            return {source:'server',exists:false};
+          }});
+        if(!reconciled.enumerationComplete||reconciled.canProceed||reconciled.unknownCount!==1
+          ||reconciled.localPendingCount!==size-1)throw Error('HIDDEN_UNKNOWN_AFTER_PAGE_100');
+        enumeration.push({size,total:exact.total,unknown:exact.unknownCount,pages});
+      }
       journal.close();
       return {double:double.map(value=>value.status),once,rechecked,pending:pending.status,pendingCount:health.pendingCount,
         survived:survived.state,replay:replay[0].status,unknown:unknown.status,uncertain:uncertain.state,recovered:recovered[0].status,
         finalStock:db.store.get(paths.record('products','p')).stock,projected,isolated,
-        falseConfirmation:statuses.some(detail=>detail.status!=='CONFIRMED'&&detail.operationalCloudConfirmed),counts,foreignCounts,largeHealth};
+        falseConfirmation:statuses.some(detail=>detail.status!=='CONFIRMED'&&detail.operationalCloudConfirmed),counts,foreignCounts,largeHealth,enumeration};
     });
     assert.deepEqual(result,{double:['CONFIRMED','CONFIRMED'],once:9,rechecked:true,pending:'PENDING',pendingCount:1,survived:'queued',
       replay:'CONFIRMED',unknown:'UNKNOWN',uncertain:'unknown',recovered:'CONFIRMED',finalStock:7,projected:3,isolated:true,falseConfirmation:false,
       counts:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false},foreignCounts:{pendingCount:0,unknownCount:0,total:0,countIsBounded:false},
-      largeHealth:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false,online:true,activeRequests:0}});
+      largeHealth:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false,online:true,activeRequests:0},
+      enumeration:[99,100,101,250,1000].map(size=>({size,total:size,unknown:1,pages:Math.ceil(size/100)}))});
     console.log(`PASS ${name} DEV UI adapter + real IndexedDB: button double click, durable pending/reopen, fresh server evidence, bounded replay, UNKNOWN preservation, tenant switch denied (synthetic transactional transport)`);
   }finally{await browser.close();}
 }

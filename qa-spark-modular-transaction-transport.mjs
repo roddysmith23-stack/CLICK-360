@@ -4,7 +4,7 @@ import './spark-modular-record-codec.js';
 import './spark-modular-transaction-transport.js';
 const api=globalThis.CLICK360_SPARK_MIGRATION,codec=globalThis.CLICK360_SPARK_RECORD_CODEC;
 const ownerUid='transport-owner',businessId='transport-business',projectId='demo-click360-spark-modular';
-const controlPath=`businesses/${ownerUid}/metadata/storage`,base=`businesses/${ownerUid}/businessUnits/${businessId}`;
+const controlPath=`businesses/${ownerUid}/metadata/storage`,base=`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2`;
 const data={id:'p.1',businessId,stock:2,qty:2,custom:{preserved:true}};
 const rows=new Map([[controlPath,{ownerUid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:'a'.repeat(64),reconstructedHash:'a'.repeat(64),businessIds:[businessId]}],
   [`${base}/products/p.1`,{id:'p.1',ownerUid,businessId,schemaVersion:2,module:'products',data,dataHash:await api.hash(data)}]]);
@@ -40,4 +40,32 @@ assert.throws(()=>globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({...inp
 reads=[];await transport.run(async tx=>{await tx.get('products','p.1');await tx.get('products','p.1');});assert.equal(reads.length,2);
 let leaked;await transport.run(tx=>{leaked=tx;});await assert.rejects(()=>leaked.get('products','p.1'),/SCOPE_EXPIRED/);
 assert.equal(commits,2);
+let pageFault=null,requestedPageSize=0;
+db.collection=path=>{
+  let size=50,cursor=null;
+  const query={orderBy:field=>{assert.equal(field,'__name__');return query;},
+    limit:n=>{size=n;requestedPageSize=n;return query;},startAfter:id=>{cursor=id;return query;},
+    get:async options=>{
+      assert.deepEqual(options,{source:'server'});
+      const docs=[...rows].filter(([key])=>key.startsWith(`${path}/`)).map(([key,value])=>({
+        id:key.slice(path.length+1),ref:{path:key},data:()=>value})).sort((a,b)=>a.id<b.id?-1:1)
+        .filter(row=>cursor===null||row.id>cursor).slice(0,size);
+      if(pageFault==='scope'&&docs[0])docs[0].ref.path='businesses/foreign/products/p.1';
+      if(pageFault==='identity'&&docs[0]){const old=docs[0].data();docs[0].data=()=>({...old,businessId:'foreign'});}
+      if(pageFault==='auth')user={uid:'changed'};
+      return {docs,metadata:{fromCache:pageFault==='cache',hasPendingWrites:pageFault==='pending'}};
+    }};
+  return query;
+};
+const firstPage=await transport.readPage('products',{limit:1});
+assert.equal(requestedPageSize,1);assert.equal(firstPage.records[0].stock,0);assert.equal(firstPage.nextCursor,'p.1');
+assert.deepEqual((await transport.readPage('products',{limit:1,afterId:firstPage.nextCursor})).records,[]);
+for(const n of [0,101,1.5])await assert.rejects(()=>transport.readPage('products',{limit:n}),/PAGE_CONFIGURATION/);
+await assert.rejects(()=>transport.readPage('products',{afterId:'other/path'}),/RECORD_SCOPE/);
+for(const [fault,reason] of [['cache',/NOT_SERVER_CONFIRMED/],['pending',/NOT_SERVER_CONFIRMED/],
+  ['scope',/PAGE_SCOPE/],['identity',/RECORD_IDENTITY/],['auth',/AUTH_CHANGED/]]){
+  pageFault=fault;await assert.rejects(()=>transport.readPage('products'),reason);user={uid:ownerUid};
+}
+pageFault=null;assert.equal(commits,2);
+console.log('PASS bounded server pagination: scope/cursor/size, native codec, cache/pending rejection and auth changes; no writes');
 console.log('PASS bounded Spark transaction transport: codec integration, read-before-write, atomic validation, native timestamps, CAS, auth/scope/phase gates, constant record reads. Synthetic transport only; no operational Rules certification claimed.');

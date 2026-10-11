@@ -91,6 +91,43 @@
           tx.onabort=()=>reject(tx.error||Error('JOURNAL_READ_ABORTED'));
         });
       },
+      async listPendingPage(identity, {limit=100, after=null}={}) {
+        key(identity,'identity-check');
+        const states=['queued','unknown','inflight'];
+        if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
+        if(after && (after.ownerUid!==identity.ownerUid || after.businessId!==identity.businessId
+          || !states.includes(after.state) || typeof after.key!=='string'
+          || !after.key.startsWith(`${identity.ownerUid}:${identity.businessId}:`)))throw Error('INVALID_OUTBOX_CURSOR');
+        // Keyset pagination over the scoped state index. No offset or full-store
+        // scan; the extra row proves whether enumeration is complete.
+        return new Promise((resolve,reject)=>{
+          const tx=db.transaction('operations','readonly'),index=tx.objectStore('operations').index('tenantState');
+          const found=[];let stateIndex=after?states.indexOf(after.state):0;
+          const scan=()=>{
+            if(stateIndex>=states.length)return;
+            const state=states[stateIndex];
+            const request=index.openCursor(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,state]));
+            request.onsuccess=()=>{
+              const cursor=request.result;
+              if(!cursor){stateIndex++;scan();return;}
+              if(after && state===after.state && cursor.primaryKey<=after.key){
+                if(cursor.primaryKey===after.key)cursor.continue();
+                else cursor.continuePrimaryKey(cursor.key,after.key);
+                return;
+              }
+              found.push(cursor.value);
+              if(found.length<=limit)cursor.continue();
+            };
+          };
+          scan();
+          tx.oncomplete=()=>{
+            const rows=found.slice(0,limit),last=rows.at(-1),hasMore=found.length>limit;
+            resolve({rows,complete:!hasMore,next:hasMore?{ownerUid:identity.ownerUid,businessId:identity.businessId,
+              state:last.state,key:last.key}:null});
+          };
+          tx.onabort=()=>reject(tx.error||Error('JOURNAL_READ_ABORTED'));
+        });
+      },
       async enqueue(identity, operationId, payload) {
         const id = key(identity, operationId);
         // Clone before hashing: callers cannot mutate the queued request later.

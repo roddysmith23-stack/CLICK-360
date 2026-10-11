@@ -88,7 +88,7 @@
       // miss stale/orphan records and falsely certify semantic equality.
       for(const businessId of manifest.businessIds){
         for(const moduleName of new Set([...Object.values(api.arrays),'config'])){
-          scopes.add(`businesses/${ownerUid}/businessUnits/${businessId}/${moduleName}`);
+          scopes.add(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/${moduleName}`);
         }
       }
       scopes.add(`businesses/${ownerUid}/legacyConfig`);

@@ -1,0 +1,65 @@
+# PR #96 — Rules cost audit, continuation 2026-10-10
+
+Candidate only. Production remains `21409a1d2dc7`. The expanded owner/worker suite passed with zero budget errors, including the QA-only stricter expression probe, followed by exact-source and full legacy compatibility runs. New HEAD CI remains a separate gate. This document is NOT public UI, staging or production certification or a released cart-line limit.
+
+## Two separate budgets
+
+Document access and expression evaluation are different budgets. Reusing a cached document path does not make repeated predicates free. Coverage counts aggregate multiple evaluations/retries/readbacks and are not per-request expression counts. The strict emulator-log gate remains mandatory even if every positive/negative scenario assertion passes.
+
+## External accesses in the operational core
+
+Paths below are scoped to the authenticated owner/business. `before/after` represent distinct versions. Repeated references to the same path/version are listed once; caching must be confirmed by actual SDK tests, not assumed as release evidence.
+
+| Source | Reason | Reuse/removal decision |
+|---|---|---|
+| `metadata/storage` | Authoritative mode, phase, schema, equality and business scope | One logical source; reused across read/ledger checks. Fence retained. |
+| `accountAccess/{owner}` or approved owner fallback | Existing account readable/writable contract, including expiry | No owner membership lookup. Consolidated path-based functions retain account checks. Fallback also checks absence of accountAccess. |
+| Business `members/{actor}` + existing workers feature flag | Worker identity, active status, role and action permission/revocation | One membership/permissions source; no plan/owner/business-role traversal. Existing feature revocation is retained. |
+| `operationLedger/{operationId}` before/after | New operation required, immutable committed receipt and kind | Related writes bind to new ledger; authorization certified at ledger CREATE. Cannot remove. |
+| `sales/{operationId}` before/after | Unique sale and cross-record totals/stock declaration | Required for financial relationship; no history query. |
+| `movements/{operationId}` before/after | Unique payment/adjustment/opening and counter delta | Required; no whole-history scan. |
+| Exact `cashSessions/{cashSessionId}` before/after | Exact session relationship and a mandatory NEW atomic summary update | Never query by date; the sale proves revision +1, the session's own update checks use resource/request.resource. |
+| Affected products after | First-product proof and successor chain prevent omitted stock writes | Own stock/revision use resource/request.resource. Each successor proves a distinct atomic update. Still requires multi-line worst-case certification. |
+| `metadata/runtime` after | Single open-session pointer and exact open/close transition | Necessary cross-record invariant. |
+| Exact `dailyReports/{reportId}` before/after | Unique close report tied to exact session/cycle | No sale replay; no stock writes on close. |
+| `auditEvents/{audit-operationId}` after | Previously required by ledger in financial transaction | Removed ONLY from financial core. Derived event requires already committed immutable ledger, same actor/kind/hash, deterministic ID; recoverable idempotently after commit. |
+
+## Static distinct-path/version upper-bound worksheet
+
+`A=2` is the owner legacy fallback (account absence + approved owner), or worker membership + feature flag. An owner with accountAccess has `A=1`. These are logical source counts, NOT measured billed reads or guaranteed runtime cache counts.
+
+| Operation | Before audit deferral | Candidate core after deferral | Core external sources |
+|---|---:|---:|---|
+| SALE, N stock-bearing unique products | `9 + N + A` | `9 + N + A` | control 1, ledger 2, sale 2, movement 2, session before/after 2, products N, authorization A; the extra before-version proves the mandatory session update |
+| INVENTORY_ADJUSTMENT | `6 + A` | `5 + A` | control 1, ledger 2, product 1, movement 1, authorization A |
+| CASH_OPEN | `7 + A` | `6 + A` | control 1, ledger 2, session 1, runtime 1, opening movement 1, authorization A |
+| CASH_CLOSE | `8 + A` | `7 + A` | control 1, ledger 2, session 1, runtime 1, report before/after 2, authorization A |
+| PRODUCT_CREATE with opening stock | `6 + A` | `5 + A` | control 1, ledger 2, product 1, opening movement 1, authorization A |
+| PRODUCT_CREATE with zero stock | `5 + A` | `4 + A` | as above without movement |
+| PRODUCT_EDIT | `5 + A` | `4 + A` | control 1, ledger 2, product 1, authorization A |
+
+Derived audit is a separate bounded transaction: committed ledger read, audit existence read, deterministic audit create if absent. No sale/movement/stock/session changes and no commercial replay. Synthetic test verifies lost audit response/failure does not undo or repeat the financial operation, and the event can be repaired once. Client Rules test verifies worker audit materialization.
+
+## Observed evidence and remaining margin
+
+- Native IndexedDB enumeration/reconciliation tests cover 99/100/101/250/1000 rows in Chromium, WebKit and Firefox. UNKNOWN in the last row is not hidden by the first page. Enumeration is bounded to 100 rows, keyset-paginated, non-mutating and requires a source-stability guard.
+- Synthetic transaction instrumentation now distinguishes financial vs derived-audit reads. A one-product sale uses 7 core reads, unchanged after adding 15000 unused historical rows. This is transport instrumentation, not Rules cost certification.
+- Initial compact authorization/reordering attempts still produced 22 aggregate expression-limit errors in malformed compound transactions. The gate correctly failed; those attempts are not certification.
+- Exact ledger-kind ternary dispatch in cash/product/ledger predicates subsequently passed the original malformed-stock/cash/report/race tests with zero expression/access-limit errors. Owner and worker sales of 4/8/12 stock-bearing products passed. The optimization retains every branch's original validation, mode fence and permissions.
+- Expanding coverage to 12 manual lines exposed another budget failure. Rich-object set comparison, then an indexed-line proof in the sale CREATE validator, did not certify that case. These failures remain recorded; the supported limit is not released yet.
+- Current candidate stores compact stock/custom **array-index maps**, not duplicated rich item objects. Every stock product proves its exact sale-array line. Manual-line proofs are partitioned across mandatory NEW core records: ledger verifies custom rows 0–2, sale verifies 3–5, movement verifies 6–9 and the exact quantity sum, and the mandatory exact-session update verifies rows 10–11. All belong to the **same atomic financial transaction**. Ledger requires the new sale and movement; the sale proves a session revision increment even if an old malformed record carried the new operation ID. Rejection of any rejects all writes. Cash verifies exact session/date, sale/item/tax totals and received-payment deltas. No commercial record or invariant is deferred. Only derived audit is outside the financial core.
+- A compact authorization ternary produced an emulator internal `IllegalStateException: ternary operator predicate is always boolean`; SDK UNKNOWN-RPC retries then kept reads alive. Those executions failed and were stopped, not retried into a PASS or labeled flaky. The offending predicate shape was reverted. The candidate uses a flat worker permission helper with one membership source and retains worker-feature revocation; owner authorization uses auth/path without membership. An emulator-only log health guard now fails immediately on this internal exception or budget exhaustion and lets the CLI tear down owned emulators.
+- With that correction, the complete client suite exited normally: owner and worker stock-bearing sales 4/8/12 and manual sales 1/4/8/12, malformed stock/cash/report writes, exact historical session, last-stock race, immutable audit/ledger, permission revocation and isolation all passed with **zero** expression/access-limit or internal-evaluator errors. This is one run on an uncommitted candidate, not final HEAD CI, full UI, staging or physical-device certification.
+- A second expanded run rejected zero quantities at custom indices 0/2/3/5/6/8/9/11 even with matching forged quantity counters, plus custom provenance/index/identity/tax/count attacks. It exited 0 with the strict budget gate intact. A subsequent candidate also passed real Web SDK pending-payment and authorized reservation/deposit writes, immutable retries and reservation amount/relationship attacks. Sale permission alone does not grant reservation permission.
+- A QA-only stricter-source probe adds 16 request-dependent arithmetic predicates to each operational record validator. Its first run failed at manual-sale evaluation although the normal source passed. This exposed inadequate expression headroom, not a flaky test. The next candidate moves receipt/session/date/method/amount validation to the mandatory movement CREATE rule, which already reads the exact sale; the ledger still requires that NEW movement in the same atomic commit. No receipt proof is omitted or deferred. This removes a redundant sale-side movement read and repeated proof traversal. The stricter probe must pass before any margin is claimed; a probe PASS would demonstrate tolerance of this specific extra work, not an exact percentage of the evaluator's undocumented counting implementation.
+- Fresh 2026-10-10 checks still failed the stricter probe at the 12-manual-line session update with a balanced 3/3/3/3 split. A 4/4/3/1 attempt overloaded the sale validator at eight manual lines; that attempt also FAILED. The final 3/3/4/2 split accounts for the different financial validator costs; no line is omitted and no commit is split. Monetary comparison evaluates its numeric subtraction once (non-numeric/missing operands fail Rules evaluation), retaining both original tolerance bounds. The full stricter suite subsequently passed, then passed again with expanded worker worst-case reservations, pending payments, mixed carts and all 12 malformed manual quantity positions.
+- Latest stricter proof: exact candidate Rules SHA-256 `80d30beeb5eafd713e8b5dc9ad822c9c75f4ab4c5dea871f5ad6f21f1e262b0b`; RAM-only instrumented SHA-256 `4d0a7377b0c1681f23ee3ff0e59a06d80d1a852f8ae0106cc41a258b2b20e677`; captured `2026-10-11T02:24:38.909Z` (2026-10-10 Guayaquil). Owner/worker 12-stock, 12-manual, worker mixed 12, stock/manual reservation 12 and pending 12 passed, as did permission-scoped worker cash open/close and inventory/product mutations. Numeric strings, out-of-tolerance counter deltas and raw sale operation aliases reject the whole commit. Expression/access/internal-evaluator errors: zero. The proof demonstrates tolerance of 16 additional request-dependent predicates in each common operational record validator, NOT a guessed percentage of the 1000-expression budget.
+- CI now requires the stricter probe after exact-source, full legacy Rules, and fresh exact-source repeat. Only sanitized proof JSON in `artifacts/spark-rules-proof/` is uploaded; private tenant backups are excluded. No instrumented Rules file is written, installed or deployed.
+- Final local sequence exited 0: stricter full client suite (`02:24:38Z`), exact-source full client suite (`02:26:07Z`), and full legacy compatibility suite (`02:27:30Z`), all on Rules hash `80d30beeb5eafd713e8b5dc9ad822c9c75f4ab4c5dea871f5ad6f21f1e262b0b`. Both client proof JSON files explicitly mark `publicOperationalUI: false` and `physicalDeviceAcceptance: false`. No emulator remained running after CLI teardown. No production/deployment/cutover certificate is inferred.
+
+## Bounded operational reads
+
+The same Spark transaction transport now exposes server-only `readPage`: fixed scoped collection, document-ID ordering, maximum 100 records, strict cursor/order/scope/codec validation and auth checks after each asynchronous boundary. Cache/pending snapshots cannot be used as authoritative pages. Synthetic tests verify these failures cause no writes. Real client queries and a separate authenticated owner device are included in the operational Rules suite; this does not certify the full public UI or a physical second device.
+
+Reference: [Firebase atomic-operation access limits and caching](https://firebase.google.com/docs/firestore/security/rules-conditions#access_call_limits). The documented 20-per-atomic-operation and 10-per-single-operation limits are separate from the 1000-expression guard; cached access is not a guarantee of expression headroom.
+- No multi-line supported maximum or safety margin is declared until owner AND worker worst-case tests, including rejected payloads, pass the strict gate repeatedly. Do not activate these candidate Rules or public modular writers before that evidence exists.
