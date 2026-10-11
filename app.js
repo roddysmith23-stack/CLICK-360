@@ -8168,7 +8168,7 @@ function parseMoney(value) {
 	      const button = $('#verifyCashCloseStatusBtn');
 	      button?.setAttribute('disabled', 'disabled');
 	      try {
-	        const verifyServerClose = window.click360VerifyCashCloseOnServer;
+        const verifyServerClose = window.click360SparkOperationalSession?.verifyCashClose || window.click360VerifyCashCloseOnServer;
 	        const serverCheck = typeof verifyServerClose === 'function'
 	          ? await verifyServerClose(recovery.target || {})
 	          : { ok:false, errorCode:'cash_close_server_preflight_unavailable' };
@@ -8459,7 +8459,11 @@ function parseMoney(value) {
 	        ) || null;
 	        if (directSession && directSession.status !== 'closed') {
 	          resolvedSession = directSession;
-	        } else if (directSession && directSession.status === 'closed') {
+        } else if (directSession && directSession.status === 'closed' && window.click360SparkOperationalSession) {
+          // A pending local close is not authoritative. Preserve exact identity
+          // and consult/reconcile the modular ledger before announcing success.
+          resolvedSession = directSession;
+        } else if (directSession && directSession.status === 'closed') {
 	          // Session was closed between modal-open and submit. Treat as
 	          // already-closed success instead of letting the write proceed.
 	          const alreadyClosed = updateCashCloseDiagnostic('cash_close_already_confirmed_local', {

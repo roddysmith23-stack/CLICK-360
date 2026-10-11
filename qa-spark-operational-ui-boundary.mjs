@@ -70,5 +70,39 @@ assert.equal(renders,0,'Projection cannot detach live checkout controls');
 assert.equal(durable.products[0].stock,1);assert.equal(durable.products[1].stock,9);
 sandbox.window.click360DebugCriticalActionGate=()=>({size:0});
 await sandbox.window.click360ProjectSparkOperation(projection);assert.equal(renders,1,'Restart replay refreshes the actual route');
+// Exact preflight recovers the immutable pending close, not a replacement
+// command and not an unrelated outbox entry. This also covers a closed local
+// candidate while the server is still open (lost request/response).
+const runtimeSource=await readFile('spark-operational-ui-runtime.js','utf8');
+const verifyStart=runtimeSource.indexOf('    async function verifyCashClose(target)'),verifyEnd=runtimeSource.indexOf('    return Object.freeze',verifyStart);
+assert(verifyStart>0&&verifyEnd>verifyStart);
+const exactSession={id:'session-exact',date:'2026-09-03',summaryVersion:1,closeCycle:1,status:'open'};
+const closeId='report-session-exact-1',closeHash='a'.repeat(64);
+const immutableRow={payloadHash:closeHash,payload:{kind:'cash_close',payload:{cashSessionId:exactSession.id,date:exactSession.date,declaredCash:5}}};
+let financialCommits=0,closedProjection=0;
+const remote=new Map([['cashSessions/session-exact',exactSession]]);
+const verifySandbox={assertActive:()=>{},businessId:'b',identity:{businessId:'b'},
+  transport:{run:async callback=>callback({get:async(moduleName,id)=>remote.get(`${moduleName}/${id}`)||null})},
+  journal:{get:async()=>immutableRow,countPending:async()=>({pendingCount:0,unknownCount:0}),countProjectionPending:async()=>0},
+  adapter:{reconcileOperation:async id=>{
+    assert.equal(id,closeId);
+    if(exactSession.status==='open'){
+      financialCommits++;exactSession.status='closed';exactSession.reportId=closeId;
+      remote.set(`dailyReports/${closeId}`,{cashSessionId:exactSession.id,status:'closed',operationId:closeId});
+      remote.set(`operationLedger/${closeId}`,{kind:'cash_close',status:'committed',payloadHash:closeHash,result:{cashSessionId:exactSession.id,reportId:closeId}});
+    }
+    return {status:'CONFIRMED'};
+  }},repository:{readOperationProjection:async()=>({source:'server'}),ensureDerivedAudit:async()=>{}},projectConfirmed:async()=>{closedProjection++;}};
+vm.createContext(verifySandbox);vm.runInContext(`${runtimeSource.slice(verifyStart,verifyEnd)};globalThis.verify=verifyCashClose`,verifySandbox);
+const exactTarget={businessId:'b',cashSessionId:exactSession.id,date:exactSession.date};
+assert.equal((await verifySandbox.verify(exactTarget)).closed,true);assert.equal(financialCommits,1);
+assert.equal((await verifySandbox.verify(exactTarget)).closed,true);assert.equal(financialCommits,1,'Confirmed close cannot be repeated');
+verifySandbox.journal.get=async()=>null;
+await verifySandbox.verify(exactTarget);assert.equal(closedProjection,1,'Other-device confirmed close is projected durably');
+verifySandbox.journal.countPending=async()=>({pendingCount:1,unknownCount:0});
+await assert.rejects(()=>verifySandbox.verify(exactTarget),/PENDING_OVERLAY_REQUIRED/);
+assert.equal(closedProjection,1,'Server read cannot overwrite a different pending local operation');
+const unknownDialog=source.slice(source.indexOf('  function showCashCloseUnknown('),source.indexOf('  let cashCloseSessionOverride'));
+assert(unknownDialog.includes('click360SparkOperationalSession?.verifyCashClose'),'Unknown modal must not fall back to legacy cloud for a modular session');
 console.log(JSON.stringify({status:'PASS',actualPWACommit:true,noLegacyFallback:true,invalidCommandPreservesPrevious:true,
   productionActivationDenied:true,mixedBuildDenied:true,productionWrites:0}));

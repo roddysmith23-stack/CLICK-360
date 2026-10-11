@@ -40,6 +40,9 @@
         // A remote view cannot overwrite another still-pending local delta.
         // The complete projection-overlay implementation is a release gate.
         if(counts.pendingCount+counts.unknownCount>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
+        // A lost financial response can leave its reconstructible audit view
+        // absent. Materialize by ledger identity, never by replaying commerce.
+        await repository.ensureDerivedAudit(operationId,kind,row.payloadHash);
         const projection=await repository.readOperationProjection(operationId,kind,row.payloadHash);
         assertActive();await projectConfirmed(projection);assertActive();
       }});
@@ -98,6 +101,19 @@
         if(session.status!=='open'||report)throw Error('SPARK_UI_CASH_CLOSE_INCONSISTENT');
         return {ok:true,closed:false,reportId,source:'server'};
       });
+      if(!result.closed){
+        const pending=await journal.get(identity,result.reportId);assertActive();
+        if(pending){
+          if(pending.payload.kind!=='cash_close'||pending.payload.payload?.cashSessionId!==target.cashSessionId
+            ||pending.payload.payload?.date!==target.date)throw Error('SPARK_UI_CASH_CLOSE_JOURNAL_CONFLICT');
+          // Absence/open state was just read authoritatively. The coordinator
+          // still checks the ledger, then settles ONLY the original immutable
+          // command. A new declared amount must never replace an unknown close.
+          const reconciled=await adapter.reconcileOperation(result.reportId);
+          if(reconciled.status!=='CONFIRMED')throw Error('SPARK_UI_CASH_CLOSE_LOCAL_RECOVERY_REQUIRED');
+          return verifyCashClose(target);
+        }
+      }
       if(result.closed){
         const row=await journal.get(identity,result.operationId);assertActive();
         if(row){
@@ -107,6 +123,7 @@
         }else{
           const counts=await journal.countPending(identity),projections=await journal.countProjectionPending(identity);
           if(counts.pendingCount+counts.unknownCount+projections>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
+          await repository.ensureDerivedAudit(result.operationId,'cash_close',result.payloadHash);
           const projection=await repository.readOperationProjection(result.operationId,'cash_close',result.payloadHash);
           assertActive();await projectConfirmed(projection);assertActive();
         }

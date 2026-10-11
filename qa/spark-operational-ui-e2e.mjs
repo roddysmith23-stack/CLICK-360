@@ -118,10 +118,31 @@ try{
     await resetStatus();await page.locator('#moveForm button[type="submit"]').click();await confirmed();
     const cashSession=await record('cashSessions',session.id);
     assert(cashSession.cashBalance===5&&cashSession.incomeCash===5,'Cash movement/session atomic delta');
+    // Real financial commit succeeds under client Rules; lose only its
+    // response and all immediate confirmation reads. No server state is faked.
+    await page.evaluate(reportId=>{
+      const db=firebase.firestore(),original=db.runTransaction.bind(db);let responseLost=false;
+      window.SPARK_RESTORE_TRANSACTION_TRANSPORT=()=>{db.runTransaction=original;};
+      db.runTransaction=async(...args)=>{
+        if(responseLost)throw Object.assign(Error('SYNTHETIC_CONFIRMATION_UNAVAILABLE'),{code:'unavailable'});
+        const result=await original(...args);
+        if(result?.operationId===reportId&&result.status==='committed'){
+          responseLost=true;throw Object.assign(Error('SYNTHETIC_RESPONSE_LOST_AFTER_REAL_COMMIT'),{code:'unavailable'});
+        }
+        return result;
+      };
+    },`report-${session.id}-${cashSession.closeCycle}`);
     await page.locator('#closeDayBtn').click();await page.locator('#efectivoFisico').fill('5');
-    await resetStatus();await page.locator('#closeDaySubmitBtn').click();await confirmed();
+    await resetStatus();await page.locator('#closeDaySubmitBtn').click();
+    await page.waitForFunction(()=>window.SPARK_UI_COMMIT);
+    assert(await page.evaluate(()=>SPARK_UI_COMMIT.pending&&!SPARK_UI_COMMIT.operationalCloudConfirmed
+      &&SPARK_UI_STATUS.status==='UNKNOWN'),'Lost response cannot be called cloud confirmed');
     const closed=await record('cashSessions',session.id),closeReport=await record('dailyReports',closed.reportId);
     assert(closed.status==='closed'&&closeReport.cashSessionId===session.id,'Exact cash session/report closed');
+    assert((await page.evaluate(()=>click360SparkOperationalSession.health())).unknownCount===1,'Complete durable journal retains uncertain close');
+    await page.evaluate(()=>SPARK_RESTORE_TRANSACTION_TRANSPORT());
+    await page.evaluate(target=>click360SparkOperationalSession.verifyCashClose(target),{businessId:uid,cashSessionId:session.id,date:session.date});
+    await confirmed();
     assert(closeReport.saleCount===3&&closeReport.total===54&&closeReport.totalItems===3
       &&closeReport.paymentTotals.transfer===32&&closeReport.theoreticalCash===5&&closeReport.declaredCash===5,'Authoritative close counters');
     assert((await record('products',created.id)).stock===9&&(await record('products',data.products[0].id)).stock===1,'Cash close cannot decrement stock again');
@@ -131,12 +152,34 @@ try{
       {businessId:uid,cashSessionId:session.id,date:session.date});
     assert(existingClose.closed&&existingClose.source==='server'&&existingClose.reportId===closed.reportId,'Retry preflight recognizes and durably projects existing close');
     assert((await record('dailyReports',closed.reportId)).operationId===existingClose.operationId,'Recovery cannot create another close');
+    const closeAudit=await record('auditEvents',`audit-${existingClose.operationId}`);
+    assert(closeAudit.action==='cash_close'&&closeAudit.operationId===existingClose.operationId,'Lost-response recovery reconstructs audit from ledger');
+    await page.locator('#modalRoot [data-close]').first().click();
+    // The existing working-date control, not a DEV-only domain command.
+    await page.locator('#workingDateInput').fill('2026-09-03');
+    await page.locator('#workingDateInput').dispatchEvent('change');
+    await page.locator('#apertureAmountInput').fill('0');await resetStatus();await page.locator('#startDayBtnCash').click();await confirmed();
+    const historical=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
+    assert(historical.id!==session.id&&historical.date==='2026-09-03','Historical working date opens a different exact session');
+    await page.evaluate(()=>{location.hash='#sell';});await page.locator('#manualCode').fill('SPARK-LIVE');await page.locator('#addCode').click();
+    await page.locator('#payMethod').selectOption('Transferencia');await resetStatus();await page.locator('#chargeBtn').click();await confirmed();
+    const historicalSale=await page.evaluate(()=>click360GetTenantState().sales.at(-1));
+    const historicalSaleRecord=await record('sales',historicalSale.operationId),historicalMove=await record('movements',historicalSale.operationId);
+    assert(historicalSaleRecord.date==='2026-09-03'&&historicalMove.date==='2026-09-03'
+      &&historicalSaleRecord.cashSessionId===historical.id&&historicalMove.cashSessionId===historical.id,'Historical sale/movement use exact date and session');
+    await page.locator('#doneSaleBtn').click();await page.evaluate(()=>{location.hash='#cash';});
+    await page.locator('#closeDayBtn').click();await page.locator('#efectivoFisico').fill('0');await resetStatus();
+    await page.locator('#closeDaySubmitBtn').click();await confirmed();
+    const historicalClosed=await record('cashSessions',historical.id),historicalReport=await record('dailyReports',historicalClosed.reportId);
+    assert(historicalReport.saleCount===1&&historicalReport.total===30&&historicalReport.cashSessionId===historical.id
+      &&historicalReport.date==='2026-09-03','Historical close excludes sales from the other session');
+    assert((await record('products',data.products[0].id)).stock===0&&(await record('dailyReports',closed.reportId)).total===54,'Historical operation changes stock once and preserves earlier report');
     const health=await page.evaluate(()=>window.click360SparkOperationalSession.health());
     assert(health.pendingCount===0&&health.unknownCount===0&&health.projectionPendingCount===0,'Durable local projection completed');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'No legacy overwrite');
     const runtime=await page.evaluate(()=>({global:!!CLICK360_SPARK_OPERATIONAL_UI,hash:CLICK360_RELEASE_ASSETS['app.js'],sale:click360GetTenantState().sales.at(-1).id}));
     assert(runtime.sale,'Existing receipt ID preserved');
-    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,authoritativeReport:true,sale:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
+    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       durableProjection:true,fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
     await device.context.close();device=null;console.log(`PASS served Spark UI ${label}`);
