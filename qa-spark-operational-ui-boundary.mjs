@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
+import http from 'node:http';
+import {createEmulatorIsolation} from './qa/emulator-network-isolation.mjs';
 import './spark-operational-ui-runtime.js';
 import './modular-ui-adapter.js';
 const runtime=globalThis.CLICK360_SPARK_OPERATIONAL_UI;
@@ -23,14 +25,30 @@ assert.equal(reportView.paymentTotals.transfer,32);assert.equal(reportView.payme
 assert.throws(()=>globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView({...report,totalItems:undefined}),/AUTHORITATIVE_SUMMARY/);
 assert.equal(report.paymentTotals.layawayPayments,undefined,'Derived print view cannot mutate server report');
 const helper=await readFile('qa/r38-emulator-support.mjs','utf8');
-const patternFunction=helper.match(/function externalRequestPattern\(\) \{[\s\S]*?\n\}/)?.[0];assert(patternFunction);
-const network={port:4810,firestorePort:48098,authPort:49108,hostedUrl:'',process:{env:{}}};
-vm.createContext(network);vm.runInContext(`${patternFunction};globalThis.pattern=externalRequestPattern()`,network);
-assert.equal(network.pattern.test('http://127.0.0.1:48098/google.firestore.v1.Firestore/Listen/channel'),false,'WebChannel must not be intercepted');
-assert.equal(network.pattern.test('http://127.0.0.1:49108/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword'),false);
-for(const url of ['https://firestore.googleapis.com/v1/projects/click-360','https://click-360.web.app/',
-  'http://127.0.0.1:480981/','http://127.0.0.1:48098.evil.test/','http://127.0.0.1:48098@evil.test/'])
-  assert.equal(network.pattern.test(url),true,'Production/external network remains intercepted and denied');
+assert(!helper.includes('page.route('+'externalRequestPattern()'),'No browser interception of emulator streams');
+let upstreamResponse,hits=0;
+const upstream=http.createServer((request,response)=>{hits++;upstreamResponse=response;response.writeHead(200);response.write('first');});
+await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));
+const allowedOrigin=`http://127.0.0.1:${upstream.address().port}`;
+const isolation=await createEmulatorIsolation([allowedOrigin]);
+try {
+  const proxy=new URL(isolation.server);
+  const received=await new Promise((resolve,reject)=>{
+    const request=http.request({hostname:proxy.hostname,port:proxy.port,path:`${allowedOrigin}/Listen/channel`},response=>{
+      let body='';response.on('data',chunk=>{body+=chunk;if(body==='first')upstreamResponse.end('last');});
+      response.on('end',()=>resolve(body));response.on('error',reject);
+    });request.on('error',reject);request.end();
+  });
+  assert.equal(received,'firstlast','First WebChannel bytes arrive before upstream finishes');
+  for(const target of ['https://firestore.googleapis.com/v1/projects/click-360',`${allowedOrigin}.evil.test/`,
+    allowedOrigin.replace('127.0.0.1','user@127.0.0.1')+'/']) {
+    const status=await new Promise((resolve,reject)=>{
+      const request=http.request({hostname:proxy.hostname,port:proxy.port,path:target},response=>{response.resume();response.on('end',()=>resolve(response.statusCode));});
+      request.on('error',reject);request.end();
+    });assert([400,403].includes(status),'External/credential-bearing targets denied before upstream');
+  }
+  assert.equal(hits,1,'Blocked requests never contact upstream');
+} finally {await isolation.close();await new Promise(resolve=>upstream.close(resolve));}
 // Extract the real PWA commit entry point: Spark never falls through to save,
 // legacy sync or legacy refresh, including an unsupported command and failure.
 const source=await readFile('app.js','utf8');

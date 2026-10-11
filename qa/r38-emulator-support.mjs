@@ -6,6 +6,7 @@ import process from 'node:process';
 import { chromium, webkit } from 'playwright';
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { doc, getDocFromServer } from 'firebase/firestore';
+import { createEmulatorIsolation } from './emulator-network-isolation.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const outputDir = path.join(root, 'output', 'playwright', 'r38-commercial-core');
@@ -171,7 +172,14 @@ async function readCloud(testEnv, uid) {
 async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
   const emulatorOrigin = process.env.CLICK360_R38_EMULATOR_ORIGIN || '';
   if (emulatorOrigin && !/^https:\/\/127\.0\.0\.1:\d+$/.test(emulatorOrigin)) throw new Error('Only loopback HTTPS emulator origin allowed');
-  const context = await browser.newContext({ viewport, ...(hostedUrl ? {serviceWorkers:'block',ignoreHTTPSErrors:!!emulatorOrigin} : {}) });
+  const origins=[`http://127.0.0.1:${port}`,`http://127.0.0.1:${firestorePort}`,`http://127.0.0.1:${authPort}`];
+  if(hostedUrl)origins.push(new URL(hostedUrl).origin);
+  if(emulatorOrigin)origins.push(emulatorOrigin);
+  const isolation=await createEmulatorIsolation(origins);
+  let context;
+  try { context = await browser.newContext({ viewport, proxy:{server:isolation.server}, ...(hostedUrl ? {serviceWorkers:'block',ignoreHTTPSErrors:!!emulatorOrigin} : {}) }); }
+  catch(error) { await isolation.close(); throw error; }
+  context.once('close',()=>isolation.close());
   if (emulatorOrigin && context.browser()?.browserType()?.name() === 'chromium') {
     await context.grantPermissions(['local-network-access'], { origin:new URL(hostedUrl).origin });
   }
@@ -233,12 +241,8 @@ async function openSignedIn(browser, viewport) {
   });
   page.on('pageerror', (error) => pageErrors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
-  // Do not intercept allowed streaming WebChannel responses. In Linux
-  // WebKit the catch-all route/continue path buffers the long-lived GET:
-  // headers arrive (200) but bootstrap receives no document before the
-  // channel is cancelled at 45s. External traffic is still blocked; only
-  // exact synthetic/isolated origins bypass Playwright interception.
-  await page.route(externalRequestPattern(), route=>route.abort());
+  // Isolation is enforced by the exact-origin proxy, not page.route(): even
+  // unmatched routes enable browser interception and can stall WebChannel.
   const step = async (label, fn) => {
     try { return await fn(); } catch (error) {
       // A new page can fail before the caller assigns activeDevice. Capture
@@ -274,14 +278,6 @@ async function openSignedIn(browser, viewport) {
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };
-}
-
-function externalRequestPattern() {
-  const origins=[`http://127.0.0.1:${port}`,`http://127.0.0.1:${firestorePort}`,`http://127.0.0.1:${authPort}`];
-  if(hostedUrl)origins.push(new URL(hostedUrl).origin);
-  if(process.env.CLICK360_R38_EMULATOR_ORIGIN)origins.push(new URL(process.env.CLICK360_R38_EMULATOR_ORIGIN).origin);
-  const allowed=origins.map(origin=>`${origin.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}/`).join('|');
-  return new RegExp(`^(?!(?:${allowed}))https?://`);
 }
 
 // A same-tenant device left open elsewhere (this harness's own `reopenedA`)
