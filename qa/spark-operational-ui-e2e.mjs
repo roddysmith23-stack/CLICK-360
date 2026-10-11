@@ -39,6 +39,9 @@ try{
     await seed(env,async db=>{await setDoc(doc(db,'accountAccess',uid),accountAccess(uid));await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,1,data));});
     device=await openSignedIn(browser,{width:390,height:844});
     const page=device.page;
+    const workerProof=await page.evaluate(()=>({controlled:!!navigator.serviceWorker.controller,
+      sameRelease:click360ServiceWorkerRelease.buildSha===CLICK360_RELEASE_ASSETS['app.js']}));
+    assert(workerProof.controlled&&workerProof.sameRelease,'Actual installed worker must match the served app before signing in');
     const legacyBefore=await readCloud(env,uid);
     await seed(env,async db=>{
       await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:'a'.repeat(64),reconstructedHash:'a'.repeat(64),businessIds:[uid]});
@@ -74,8 +77,12 @@ try{
     await page.locator('#pName').fill('Editado sintético modular');await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
     assert((await record('products',created.id)).name==='Editado sintético modular','Product metadata edit committed');
     await page.locator('#productSearch').fill('SPARK-NEW');await page.locator(`[data-edit="${created.id}"]`).click();
-    await page.locator('#pQty').fill('11');await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
-    assert((await record('products',created.id)).stock===11,'Inventory adjustment exact');
+    await page.locator('#pQty').fill('11');await page.locator('#pName').fill('Edición y stock atómicos');
+    await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
+    const compoundProduct=await record('products',created.id);
+    assert(compoundProduct.stock===11&&compoundProduct.name==='Edición y stock atómicos','Same form commits metadata and stock atomically');
+    const compoundOp=await page.evaluate(()=>click360GetTenantState().products.find(p=>p.code==='SPARK-NEW').lastOperationId);
+    assert((await record('movements',compoundOp)).quantityDelta===1,'Compound form produces one exact adjustment movement');
     await resetStatus();
     await page.evaluate(()=>{location.hash='#cash';});await page.locator('#startDayBtnCash').waitFor();
     await page.locator('#apertureAmountInput').fill('0');await page.locator('#startDayBtnCash').click();
@@ -179,8 +186,9 @@ try{
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'No legacy overwrite');
     const runtime=await page.evaluate(()=>({global:!!CLICK360_SPARK_OPERATIONAL_UI,hash:CLICK360_RELEASE_ASSETS['app.js'],sale:click360GetTenantState().sales.at(-1).id}));
     assert(runtime.sale,'Existing receipt ID preserved');
-    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
-      durableProjection:true,fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
+    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
+      durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
+      fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
     await device.context.close();device=null;console.log(`PASS served Spark UI ${label}`);
   }

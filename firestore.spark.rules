@@ -750,8 +750,10 @@ service cloud.firestore {
       return d.id == recordId && d.businessId == businessId && d.stock is number && d.stock >= 0 && d.qty == d.stock
         && (ledger.kind == "product_create" ? (creating && ledger.result.productId == recordId)
           : ledger.kind == "product_edit" ? (!creating && ledger.result.productId == recordId
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData"])
               && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
           : ledger.kind == "inventory_adjust" ? (!creating && ledger.result.productId == recordId
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData", "stock", "qty"])
               && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.productId == recordId
               && d.stock == resource.data.data.stock + getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.quantityDelta)
           : ledger.kind == "sale" ? (!creating

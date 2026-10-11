@@ -95,6 +95,18 @@ await repo.commitSale({...sale,operationId:'current-sale',sale:{...sale.sale,dat
 assert.equal(transactionMetrics.findLast(metric=>metric.core).reads,saleReads);
 assert.equal((await get('products','p1')).stock,0);
 await assert.rejects(()=>repo.commitOperation('product_edit',{operationId:'bad-edit',productId:'p1',changes:{stock:999}}),/EDIT_FIELDS_INVALID/);
+await repo.commitOperation('product_create',{operationId:'compound-create',date:open.date,product:{id:'compound-product',businessId,name:'Before',stock:2,price:1}});
+const compound={operationId:'compound-edit',productId:'compound-product',quantityDelta:3,date:open.date,expectedRecordVersion:1,changes:{name:'After',price:12}};
+await repo.commitOperation('inventory_adjust',compound);
+assert.equal((await repo.commitOperation('inventory_adjust',compound)).status,'already_committed');
+assert.equal((await get('products','compound-product')).stock,5);
+assert.equal((await get('products','compound-product')).name,'After');
+assert.equal((await get('products','compound-product')).recordVersion,2);
+assert.equal((await get('movements','compound-edit')).quantityDelta,3);
+await assert.rejects(()=>repo.commitOperation('inventory_adjust',{...compound,changes:{name:'Another payload'}}),/IDEMPOTENCY_KEY_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('inventory_adjust',{...compound,operationId:'compound-stale'}),/REVISION_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('inventory_adjust',{...compound,operationId:'compound-invalid',expectedRecordVersion:2,changes:{stock:999}}),/EDIT_FIELDS_INVALID/);
+assert.equal(rows.has(`${base}/operationLedger/compound-invalid`),false);
 const recoverable={operationId:'recoverable-create',date:open.date,product:{id:'recoverable-product',businessId,name:'Pinned request',stock:0}};
 writeFaults=[{afterCommit:false,onFailure:()=>{recoverable.product.name='Caller changed during response';}}];
 const retryStart=transactions.length;

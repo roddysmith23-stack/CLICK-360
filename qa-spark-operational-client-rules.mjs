@@ -213,6 +213,29 @@ try{
   assert.equal((await get('products','p1')).name,'Edited');
   assert.equal((await get('products','p1')).stock,1);
   assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${secondBusinessId}/storage/v2/products/isolated`))).data().data.stock,9);
+  await repo.commitOperation('product_create',{operationId:'compound-create',date:open.date,product:{id:'compound-product',businessId,name:'Before',stock:2,price:1}});
+  const compound={operationId:'compound-edit',productId:'compound-product',quantityDelta:3,date:open.date,expectedRecordVersion:1,changes:{name:'After',price:12}};
+  await repo.commitOperation('inventory_adjust',compound);
+  assert.equal((await repo.commitOperation('inventory_adjust',compound)).status,'already_committed');
+  assert.equal((await get('products','compound-product')).stock,5);
+  assert.equal((await get('products','compound-product')).name,'After');
+  assert.equal((await get('products','compound-product')).recordVersion,2);
+  assert.equal((await get('movements','compound-edit')).quantityDelta,3);
+  const omitMovement=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/movements/compound-omit')?null:data),serverTimestamp});
+  await assertFails(omitMovement.commitOperation('inventory_adjust',{...compound,operationId:'compound-omit',expectedRecordVersion:2}));
+  assert.equal((await get('products','compound-product')).stock,5);
+  assert.equal((await get('products','compound-product')).recordVersion,2);
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/compound-omit`))).exists(),false);
+  const forgeProduct=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/products/compound-product')?{...data,data:{...data.data,unapprovedField:true}}:data),serverTimestamp});
+  await assertFails(forgeProduct.commitOperation('inventory_adjust',{...compound,operationId:'compound-forged',expectedRecordVersion:2}));
+  assert.equal((await get('products','compound-product')).stock,5);
+  assert.equal((await getDocFromServer(doc(client,`${base}/movements/compound-forged`))).exists(),false);
+  await assertFails(workerRepo.commitOperation('inventory_adjust',{...compound,operationId:'compound-worker-denied',expectedRecordVersion:2,quantityDelta:-1,changes:{name:'Worker edit'}}));
+  assert.equal((await get('products','compound-product')).stock,5);
+  assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${secondBusinessId}/storage/v2/products/isolated`))).data().data.stock,9);
+  await budgetObservation('compound_product_and_stock');
   await repo.commitOperation('cash_open',{operationId:'open-multiline',cashSessionId:'multiline-session',date:'2026-10-06',openingAmount:0});
   for(const lines of [4,8,12]){
     const ids=Array.from({length:lines},(_,index)=>`multiline-${lines}-${index}`);
@@ -373,6 +396,9 @@ try{
     product:{id:'worker-product',businessId,name:'Worker synthetic product',stock:2,price:1}});
   await workerRepo.commitOperation('product_edit',{operationId:'worker-edit',productId:'worker-product',changes:{name:'Worker edited'}});
   await workerRepo.commitOperation('inventory_adjust',{operationId:'worker-adjust',productId:'worker-product',quantityDelta:1,date:workerOpen.date});
+  await workerRepo.commitOperation('inventory_adjust',{...compound,operationId:'compound-worker',expectedRecordVersion:2,quantityDelta:-1,changes:{name:'Worker edit'}});
+  assert.equal((await get('products','compound-product')).stock,4);
+  assert.equal((await get('products','compound-product')).name,'Worker edit');
   assert.equal((await get('products','worker-product')).stock,3);
   await workerRepo.closeCashSession({operationId:'worker-close-historical',cashSessionId:workerOpen.cashSessionId,date:workerOpen.date,declaredCash:0});
   assert.equal((await get('cashSessions',workerOpen.cashSessionId)).status,'closed');
@@ -399,7 +425,8 @@ try{
     membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,immutableLedger:true,
     pendingPayment:true,layawayDeposit:true,serverPagination:true,secondDevice:true,
     workerTwelveLineMixed:true,workerTwelveLineReservations:true,workerTwelveLinePending:true,
-    workerCashOpenClose:true,workerProductCreateEditAdjust:true,allManualQuantityIndices:12,
+    workerCashOpenClose:true,workerProductCreateEditAdjust:true,compoundProductAndStock:true,
+    compoundMovementRequired:true,compoundFieldsEnforced:true,compoundWorkerPermissionEnforced:true,allManualQuantityIndices:12,
     headroomProbeAdditionalPredicates:headroomProbe?16:0,productionWrites:0,
     sourceRulesSha256,testedRulesSha256:createHash('sha256').update(candidateRules).digest('hex'),
     source:process.env.GITHUB_ACTIONS==='true'?'github-actions':'working-tree',

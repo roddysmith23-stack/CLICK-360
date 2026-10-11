@@ -56,11 +56,10 @@
     const fields=['code','name','category','cost','price','cardPrice','taxMode','notes','imageData'];
     const changes=Object.fromEntries(fields.filter(key=>product[key]!==previous[key]).map(key=>[key,product[key]]));
     const delta=stock-(previous.stock??previous.qty);
-    // Existing UI allows stock + metadata in one form. Never split this into
-    // two non-atomic commits; its compound domain/Rules adapter is still a gate.
-    if(delta&&Object.keys(changes).length)throw Error('MODULAR_COMPOUND_PRODUCT_CHANGE_NOT_CERTIFIED');
+    // One form means one immutable command and atomic stock/movement/metadata
+    // commit. Never split an edit into two independently retryable operations.
     const revision=previous.recordVersion===undefined?{}:{expectedRecordVersion:previous.recordVersion};
-    return delta?{kind:'inventory_adjust',input:{operationId,productId:product.id,quantityDelta:delta,date,reason:'Ajuste de inventario',...revision}}
+    return delta?{kind:'inventory_adjust',input:{operationId,productId:product.id,quantityDelta:delta,changes,date,reason:'Ajuste de inventario',...revision}}
       :{kind:'product_edit',input:{operationId,productId:product.id,changes,...revision}};
   }
   function cashReportView(report){

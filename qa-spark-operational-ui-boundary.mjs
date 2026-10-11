@@ -14,7 +14,8 @@ const adapt=input=>globalThis.CLICK360_MODULAR_UI_ADAPTER.productMutationCommand
 assert.equal(adapt({product}).kind,'product_create');
 assert.equal(adapt({product:{...product,name:'Nuevo'},previous:product}).kind,'product_edit');
 assert.equal(adapt({product:{...product,stock:3,qty:3},previous:product}).input.quantityDelta,1);
-assert.throws(()=>adapt({product:{...product,stock:3,qty:3,name:'Nuevo'},previous:product}),/COMPOUND/);
+const compound=adapt({product:{...product,stock:3,qty:3,name:'Nuevo'},previous:product});
+assert.equal(compound.kind,'inventory_adjust');assert.equal(compound.input.quantityDelta,1);assert.equal(compound.input.changes.name,'Nuevo');
 assert.throws(()=>adapt({product:{...product,businessId:'other'}}),/CONTEXT/);
 const report={id:'report-exact-1',businessId:'b',cashSessionId:'exact',status:'closed',openingAmount:0,
   declaredCash:5,theoreticalCash:5,difference:0,saleCount:3,total:54,totalItems:3,totalIva:0,incomeCash:5,expenseCash:0,
@@ -25,6 +26,15 @@ assert.equal(reportView.paymentTotals.transfer,32);assert.equal(reportView.payme
 assert.throws(()=>globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView({...report,totalItems:undefined}),/AUTHORITATIVE_SUMMARY/);
 assert.equal(report.paymentTotals.layawayPayments,undefined,'Derived print view cannot mutate server report');
 const helper=await readFile('qa/r38-emulator-support.mjs','utf8');
+const workerHandlers={},workerContext={URL,location:{origin:'http://127.0.0.1:4798'},
+  self:{addEventListener:(name,fn)=>{workerHandlers[name]=fn;}},
+  caches:{open:()=>{throw Error('Authenticated traffic must never touch SW cache');}},
+  fetch:()=>{throw Error('Streaming network must not be rewrapped by the SW');}};
+vm.createContext(workerContext);vm.runInContext(await readFile('service-worker.js','utf8'),workerContext);
+for(const url of ['http://127.0.0.1:48098/google.firestore.v1.Firestore/Listen/channel','https://firestore.googleapis.com/v1/projects/synthetic',
+  'http://127.0.0.1:49108/identitytoolkit.googleapis.com/v1/accounts:lookup']) {
+  workerHandlers.fetch({request:{method:'GET',url},respondWith:()=>{throw Error('Cross-origin response buffering');}});
+}
 assert(!helper.includes('page.route('+'externalRequestPattern()'),'No browser interception of emulator streams');
 let upstreamResponse,hits=0;
 const upstream=http.createServer((request,response)=>{hits++;upstreamResponse=response;response.writeHead(200);response.write('first');});

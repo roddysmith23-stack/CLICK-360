@@ -111,6 +111,11 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const request = event.request;
   const url = new URL(request.url);
+  // Auth, Firestore, and any other cross-origin request must stay network-only.
+  // Do not wrap streaming WebChannel in respondWith(fetch(...)): WebKit can
+  // buffer that service-worker response until the long-lived stream closes.
+  // Falling through also guarantees authenticated responses never enter cache.
+  if (url.origin !== location.origin) return;
 
   // P0-2 (SHARY laptop black screen, Track A): /repair.html is the
   // independent rescue path -- it must never depend on this worker (or on
@@ -191,7 +196,4 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Auth, Firestore, and any other cross-origin request must stay network-only.
-  // Caching them risks preserving authenticated responses beyond their session.
-  event.respondWith(fetch(request));
 });

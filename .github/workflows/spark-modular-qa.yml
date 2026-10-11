@@ -39,7 +39,10 @@ jobs:
           if-no-files-found: error
       - run: npm run qa:modular-persistence
       - name: Existing served PWA against real client Rules in Chromium and WebKit
-        run: npm run qa:spark:ui
+        run: |
+          for attempt in 1 2; do
+            npm run qa:spark:ui || exit $?
+          done
       - name: Preserve served PWA operational evidence
         if: always()
         uses: actions/upload-artifact@v4

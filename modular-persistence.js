@@ -526,14 +526,16 @@
           const id=safeId(p.productId,'productId'),old=await tx.get('products',id);
           if(!old)throw Error('PRODUCT_NOT_FOUND');
           if(p.expectedRecordVersion!==undefined&&p.expectedRecordVersion!==old.recordVersion)throw Error('PRODUCT_REVISION_CONFLICT');
+          const changes=p.changes??(kind==='inventory_adjust'?{}:null);
+          if(!changes||Array.isArray(changes)||typeof changes!=='object'
+            ||Object.keys(changes).some(k=>!['code','name','category','cost','price','cardPrice','taxMode','notes','imageData'].includes(k)))throw Error('PRODUCT_EDIT_FIELDS_INVALID');
           if(kind==='product_edit'){
-            if(!p.changes||Object.keys(p.changes).some(k=>['id','businessId','ownerUid','tenantKey','stock','qty','recordVersion','module','storageSchemaVersion','schemaVersion','createdAt','createdBy','updatedAt','updatedBy'].includes(k)))throw Error('PRODUCT_EDIT_FIELDS_INVALID');
-            stage('products',id,old,{...old,...p.changes,lastOperationId:op});
+            stage('products',id,old,{...old,...changes,lastOperationId:op});
           }else{
             const delta=number(p.quantityDelta,'STOCK_DELTA');if(!delta)throw Error('STOCK_DELTA_INVALID');
             const stock=number(Number(old.stock??old.qty),'STOCK')+delta;if(stock<0)throw Error('INSUFFICIENT_STOCK');
             if(await tx.get('movements',op))throw Error('MOVEMENT_ALREADY_EXISTS');
-            stage('products',id,old,{...old,stock,qty:stock,lastOperationId:op});
+            stage('products',id,old,{...old,...changes,stock,qty:stock,lastOperationId:op});
             stage('movements',op,null,{operationId:op,kind:'inventory_adjustment',productId:id,quantityDelta:delta,amount:0,date:date(p.date),note:String(p.reason||''),lastOperationId:op});
           }
           result={productId:id};

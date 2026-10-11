@@ -269,6 +269,10 @@ async function openSignedIn(browser, viewport) {
   };
   await step('goto', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }));
   await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 }));
+  // Certify the installed PWA, not a race where Firestore sometimes starts
+  // before clients.claim(). Hosted emulator QA explicitly blocks SW separately.
+  if(!hostedUrl)await step('service-worker-controlled',()=>page.waitForFunction(()=>!!navigator.serviceWorker?.controller
+    && window.click360ServiceWorkerRelease?.buildSha===window.CLICK360_RELEASE_ASSETS?.['app.js'], null, {timeout:60000}));
   await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
   await step('hydrated-and-synced', () => page.waitForFunction(hosted => window.click360IsTenantDataHydrated?.() === true
     && (window.click360SyncStatus?.status === 'synced'
