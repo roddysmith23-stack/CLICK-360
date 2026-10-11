@@ -50,12 +50,15 @@
   }
   async function reconcileJournal({identity,journal,lookupOperation,assertSourceStable,pageSize=100}){
     if(typeof journal?.listPendingPage!=='function'||typeof journal.countPending!=='function'
+      ||typeof journal.countProjectionPending!=='function'
       ||typeof lookupOperation!=='function'||typeof assertSourceStable!=='function')throw Error('SPARK_FULL_OUTBOX_GUARD_REQUIRED');
     // Caller must hold a durable migration/source fence. This helper never
     // claims, confirms, deletes or replays an operation during enumeration.
     await assertSourceStable();
     if(!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>100)throw Error('SPARK_OUTBOX_PAGE_SIZE_INVALID');
     const before=await journal.countPending(identity),results=[],seen=new Set(),cursors=new Set();
+    const projectionPendingCount=await journal.countProjectionPending(identity);
+    if(!Number.isSafeInteger(projectionPendingCount)||projectionPendingCount<0)throw Error('SPARK_PROJECTION_COUNT_REQUIRED');
     if(before.countIsBounded!==false||!Number.isSafeInteger(before.total)||before.total<0)throw Error('SPARK_FULL_OUTBOX_COUNT_REQUIRED');
     let after=null,pages=0;
     do{
@@ -79,14 +82,15 @@
     }while(after);
     await assertSourceStable();
     const final=await journal.countPending(identity);
+    if(await journal.countProjectionPending(identity)!==projectionPendingCount)throw Error('SPARK_OUTBOX_CHANGED_STOP');
     if(before.countIsBounded!==false||final.countIsBounded!==false||results.length!==before.total
       ||final.total!==before.total||final.pendingCount!==before.pendingCount||final.unknownCount!==before.unknownCount)
       throw Error('SPARK_OUTBOX_CHANGED_STOP');
     const unknownCount=results.filter(row=>row.status==='UNKNOWN').length,conflictCount=results.filter(row=>row.status==='CONFLICT').length;
-    return {results,pages,enumerationComplete:true,unknownCount,conflictCount,
+    return {results,pages,enumerationComplete:true,unknownCount,conflictCount,projectionPendingCount,
       confirmedCount:results.filter(row=>row.status==='CONFIRMED_REMOTE').length,
       localPendingCount:results.filter(row=>row.status==='LOCAL_PENDING').length,
-      canProceed:unknownCount===0&&conflictCount===0};
+      canProceed:unknownCount===0&&conflictCount===0&&projectionPendingCount===0};
   }
   root.CLICK360_SPARK_RECONCILIATION=Object.freeze({statuses,classify,reconcile,reconcileJournal,capacitySnapshotProof});
 })(typeof window==='undefined'?globalThis:window);

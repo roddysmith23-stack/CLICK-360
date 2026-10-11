@@ -27,11 +27,22 @@
   async function open(options = {}) {
     if (!root.indexedDB) throw Error('DURABLE_JOURNAL_UNAVAILABLE');
     const db = await new Promise((resolve, reject) => {
-      const request = root.indexedDB.open(options.databaseName || 'click360-modular-outbox-v1', 2);
+      const request = root.indexedDB.open(options.databaseName || 'click360-modular-outbox-v1', 3);
       request.onupgradeneeded = () => {
         const store=request.result.objectStoreNames.contains('operations')
           ?request.transaction.objectStore('operations'):request.result.createObjectStore('operations', { keyPath:'key' });
         if(!store.indexNames.contains('tenantState'))store.createIndex('tenantState',['ownerUid','businessId','state']);
+        if(!store.indexNames.contains('tenantProjection'))store.createIndex('tenantProjection',['ownerUid','businessId','projectionState']);
+        // Old confirmation proves the server commit, not that its local view
+        // finished durably. Preserve every request and recover conservatively.
+        const cursor=store.openCursor();
+        cursor.onsuccess=()=>{
+          const row=cursor.result;
+          if(!row)return;
+          if(row.value.state==='confirmed'&&!row.value.projectionState)
+            row.update({...row.value,projectionState:'pending'});
+          row.continue();
+        };
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -62,6 +73,39 @@
     return Object.freeze({
       close: () => db.close(),
       get: (identity, operationId) => read(key(identity, operationId)),
+      async countProjectionPending(identity) {
+        key(identity,'identity-check');
+        return new Promise((resolve,reject)=>{
+          const tx=db.transaction('operations','readonly');
+          const request=tx.objectStore('operations').index('tenantProjection')
+            .count(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,'pending']));
+          let count;
+          request.onsuccess=()=>{count=request.result;};
+          tx.oncomplete=()=>resolve(count);
+          tx.onabort=()=>reject(tx.error||Error('JOURNAL_READ_ABORTED'));
+        });
+      },
+      async listProjectionPending(identity,limit=25) {
+        key(identity,'identity-check');
+        if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
+        return new Promise((resolve,reject)=>{
+          const tx=db.transaction('operations','readonly');
+          const request=tx.objectStore('operations').index('tenantProjection')
+            .getAll(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,'pending']),limit);
+          let rows;
+          request.onsuccess=()=>{rows=request.result;};
+          tx.oncomplete=()=>resolve(rows);
+          tx.onabort=()=>reject(tx.error||Error('JOURNAL_READ_ABORTED'));
+        });
+      },
+      async markProjected(identity,operationId,expectedPayloadHash) {
+        return change(key(identity,operationId),current=>{
+          if(!current||current.state!=='confirmed'||current.payloadHash!==expectedPayloadHash)
+            throw Error('JOURNAL_PROJECTION_CONFLICT');
+          if(current.projectionState==='complete')return current;
+          return {...current,projectionState:'complete',projectedAt:Date.now(),revision:current.revision+1};
+        });
+      },
       async countPending(identity) {
         key(identity,'identity-check');
         return new Promise((resolve,reject)=>{
@@ -172,7 +216,7 @@
             const record = authoritative.record;
             if (!record || record.ownerUid !== identity.ownerUid || record.businessId !== identity.businessId
               || record.operationId !== operationId || record.payloadHash !== current.payloadHash) throw Error('REMOTE_LEDGER_IDENTITY_CONFLICT');
-            return { ...current, state: 'confirmed', revision: current.revision + 1, confirmedAt: Date.now() };
+            return { ...current, state: 'confirmed', projectionState:'pending', revision: current.revision + 1, confirmedAt: Date.now() };
           }
           return { ...current, state: 'queued', claimedBy: null, leaseUntil: 0, revision: current.revision + 1 };
         });

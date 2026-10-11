@@ -25,11 +25,15 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
       const input=(id,stock,version)=>({operationId:id,sale:{date:'2026-09-03',cashSessionId:'cash',total:30,items:[{productId:'p',qty:1,price:30}]},
         movement:{date:'2026-09-03',cashSessionId:'cash',amount:30,kind:'ingreso'},productChanges:[{productId:'p',quantity:1,expectedStock:stock,expectedRecordVersion:version}]});
       let journal=await CLICK360_MODULAR_JOURNAL.open(),online=true,active=identity,unavailable=false,lookups=0;
-      const views=new Map(),statuses=[];
+      const views=new Map(),statuses=[];let projectionFailure=false;
       const transport={...repository,lookupOperation:async(...args)=>{lookups++;if(unavailable)throw Error('NETWORK');return repository.lookupOperation(...args);}};
       const create=()=>CLICK360_MODULAR_UI_ADAPTER.create({repository:transport,journal,deviceId:'synthetic-device',resolveIdentity:()=>active,isOnline:()=>online,
         onStatus:detail=>{statuses.push(detail);document.querySelector('#status').textContent=detail.status;},
-        onConfirmed:async receipt=>{views.set(receipt.operationId,receipt);}});
+        onConfirmed:async receipt=>{if(projectionFailure)throw Error('DEVICE_PERSISTENCE_FAILED');views.set(receipt.operationId,receipt);}});
+      let missingProjectionDenied=false;
+      try{CLICK360_MODULAR_UI_ADAPTER.create({repository:transport,journal,deviceId:'synthetic-device',resolveIdentity:()=>active});}
+      catch(error){missingProjectionDenied=error.message==='MODULAR_UI_DURABLE_PROJECTION_REQUIRED';}
+      if(!missingProjectionDenied)throw Error('NO_OP_PROJECTION_MUST_NOT_CONFIRM_UI');
       let adapter=create();
       const clicks=[];document.querySelector('#sale').onclick=()=>clicks.push(adapter.submit('sale',input('sale-ui-1',10,1)));
       document.querySelector('#sale').click();document.querySelector('#sale').click();
@@ -49,6 +53,27 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
       unavailable=false;
       const recovered=await adapter.replay({limit:1});
       const projected=views.size;
+      projectionFailure=true;
+      const localFailure=await adapter.submit('sale',input('sale-ui-4',7,4));
+      const confirmedButUnprojected=await journal.get(identity,'sale-ui-4');
+      const projectionHealth=await adapter.health();
+      const migrationGuard=await CLICK360_SPARK_RECONCILIATION.reconcileJournal({identity,journal,
+        assertSourceStable:async()=>{},lookupOperation:async()=>{throw Error('no commercial pending expected');}});
+      if(migrationGuard.canProceed||migrationGuard.projectionPendingCount!==1||migrationGuard.unknownCount!==0)
+        throw Error('CUTOVER_WITH_MISSING_DURABLE_LOCAL_PROJECTION');
+      const stockAfterCommit=db.store.get(paths.record('products','p')).stock;
+      journal.close();journal=await CLICK360_MODULAR_JOURNAL.open();adapter=create();
+      const projectionSurvived=await journal.countProjectionPending(identity);
+      unavailable=true;const noEvidence=await adapter.replay({limit:1});
+      const retained=await journal.countProjectionPending(identity);
+      unavailable=false;projectionFailure=false;
+      const projectionRecovery=await adapter.replay({limit:1});
+      const projectionCleared=await journal.countProjectionPending(identity);
+      const noSecondStockDelta=db.store.get(paths.record('products','p')).stock===stockAfterCommit;
+      const projectionEvidence={failure:localFailure.status,serverState:confirmedButUnprojected.state,
+        durableState:confirmedButUnprojected.projectionState,health:projectionHealth.projectionPendingCount,
+        survived:projectionSurvived,noEvidence:noEvidence[0].status,retained,recovered:projectionRecovery[0].status,
+        cleared:projectionCleared,noSecondStockDelta};
       active=api.identity('another-owner','alpha');let isolated=false;
       try{await adapter.submit('sale',input('wrong-tenant',7,4));}catch(error){isolated=error.message==='MODULAR_UI_CONTEXT_CHANGED';}
       // A migration guard must not mistake a truncated replay page for an
@@ -88,13 +113,15 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
       journal.close();
       return {double:double.map(value=>value.status),once,rechecked,pending:pending.status,pendingCount:health.pendingCount,
         survived:survived.state,replay:replay[0].status,unknown:unknown.status,uncertain:uncertain.state,recovered:recovered[0].status,
-        finalStock:db.store.get(paths.record('products','p')).stock,projected,isolated,
+        finalStock:db.store.get(paths.record('products','p')).stock,projected,isolated,projectionEvidence,
         falseConfirmation:statuses.some(detail=>detail.status!=='CONFIRMED'&&detail.operationalCloudConfirmed),counts,foreignCounts,largeHealth,enumeration};
     });
     assert.deepEqual(result,{double:['CONFIRMED','CONFIRMED'],once:9,rechecked:true,pending:'PENDING',pendingCount:1,survived:'queued',
-      replay:'CONFIRMED',unknown:'UNKNOWN',uncertain:'unknown',recovered:'CONFIRMED',finalStock:7,projected:3,isolated:true,falseConfirmation:false,
+      replay:'CONFIRMED',unknown:'UNKNOWN',uncertain:'unknown',recovered:'CONFIRMED',finalStock:6,projected:3,isolated:true,falseConfirmation:false,
+      projectionEvidence:{failure:'LOCAL_RECOVERY_PENDING',serverState:'confirmed',durableState:'pending',health:1,
+        survived:1,noEvidence:'UNKNOWN',retained:1,recovered:'CONFIRMED',cleared:0,noSecondStockDelta:true},
       counts:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false},foreignCounts:{pendingCount:0,unknownCount:0,total:0,countIsBounded:false},
-      largeHealth:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false,online:true,activeRequests:0},
+      largeHealth:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false,projectionPendingCount:0,online:true,activeRequests:0},
       enumeration:[99,100,101,250,1000].map(size=>({size,total:size,unknown:1,pages:Math.ceil(size/100)}))});
     console.log(`PASS ${name} DEV UI adapter + real IndexedDB: button double click, durable pending/reopen, fresh server evidence, bounded replay, UNKNOWN preservation, tenant switch denied (synthetic transactional transport)`);
   }finally{await browser.close();}

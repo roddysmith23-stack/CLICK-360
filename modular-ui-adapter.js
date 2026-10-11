@@ -46,9 +46,12 @@
     // The initial movement is the deposit received, never the full sale total.
     return {...command,paymentMethod:input.initialPaymentMethod,layaway};
   }
-  function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed=async()=>{}}){
+  function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed}){
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
+    if(typeof onConfirmed!=='function'||typeof journal?.markProjected!=='function'
+      ||typeof journal.listProjectionPending!=='function'||typeof journal.countProjectionPending!=='function')
+      throw Error('MODULAR_UI_DURABLE_PROJECTION_REQUIRED');
     const coordinator=root.CLICK360_MODULAR_COORDINATOR.create({repository,journal,deviceId});
     const inFlight=new Map();
     const assertContext=()=>{
@@ -67,7 +70,16 @@
       assertContext();
       if(evidence.source!=='server'||!evidence.exists)throw Error('MODULAR_UI_SERVER_CONFIRMATION_REQUIRED');
       // A locally confirmed journal row is not by itself cloud evidence.
-      await onConfirmed({operationId:row.operationId,kind:row.payload.kind,evidence});
+      // Projection must be idempotent by operation ID and resolve only after
+      // local durable persistence. A crash/failure leaves recovery indexed.
+      try{
+        await onConfirmed({operationId:row.operationId,kind:row.payload.kind,evidence});
+        assertContext();
+        await journal.markProjected(identity,row.operationId,row.payloadHash);
+      }catch(error){
+        assertContext();
+        return emit(row.operationId,'LOCAL_RECOVERY_PENDING','confirmed_operation_local_projection_pending');
+      }
       assertContext();return emit(row.operationId,'CONFIRMED');
     }
     async function settle(row){
@@ -104,7 +116,15 @@
     }
     async function replay({limit=25}={}){
       assertContext();
-      const rows=await journal.listPending(identity,limit),results=[];
+      if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
+      const projections=await journal.listProjectionPending(identity,limit),results=[];
+      assertContext();
+      for(const row of projections){
+        const result=await settle(row);results.push(result);
+        if(result.status!=='CONFIRMED')return results;
+      }
+      if(results.length===limit)return results;
+      const rows=await journal.listPending(identity,limit-results.length);
       assertContext();
       for(const row of rows){
         const result=await settle(row);results.push(result);
@@ -115,7 +135,8 @@
     async function health(){
       assertContext();
       if(journal.countPending){const counts=await journal.countPending(identity);assertContext();
-        return {...counts,online:isOnline(),activeRequests:inFlight.size};}
+        const projectionPendingCount=await journal.countProjectionPending(identity);assertContext();
+        return {...counts,projectionPendingCount,online:isOnline(),activeRequests:inFlight.size};}
       const rows=await journal.listPending(identity,100);assertContext();
       return {pendingCount:rows.filter(row=>row.state==='queued').length,
         unknownCount:rows.filter(row=>row.state==='unknown'||row.state==='inflight').length,

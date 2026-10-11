@@ -2,6 +2,16 @@
 
 ## Latest implementation evidence — 2026-10-10 Guayaquil
 
+### Durable UI projection recovery
+
+After an authoritative server ledger confirmation, applying that result to the device view can still fail. Previously that row was already `confirmed`, vanished from replay/health, and could leave a stale local view without a durable recovery signal. The journal now preserves a separate indexed `projectionState: pending` until the idempotent UI callback completes durable local persistence. A failed callback reports `LOCAL_RECOVERY_PENDING`; replay rereads the server ledger and retries **only local projection**, never the commercial mutation. Exact projection counts also stop migration/cutover even when commercial UNKNOWN is zero. A missing projection callback fails closed rather than confirming a no-op.
+
+IndexedDB schema 3 upgrades schema 1/2 without deleting requests; older confirmed rows are conservatively flagged for local projection recovery. Native Chromium/WebKit/Firefox regressions exercise callback storage failure, reopen, unavailable ledger, retained recovery, successful reconciliation and no second stock decrement. The financial transport in these adapter tests remains synthetic; they are not public UI or physical acceptance.
+
+### Fresh protected remote acquisition
+
+Read-only acquisition at `2026-10-11T02:36:18.992Z` (2026-10-10 Guayaquil) preserved native Firestore values in ignored private artifacts. Revision `1791072715866` and native fields SHA-256 `7bec358a040cb421379d118ac9b627bf982f49fd05e2e0be4c43ecb7e78153bf` match the previous backup exactly. Counts remain 463 products, 30 sales, 107 movements, 24 cash sessions and 22 reports; previously confirmed commercial records are unchanged. New backup SHA-256 `f2c22c392501ebb1db805549939810ef638ea4462728012abee0b084249d1d06` was independently checked against its manifest and native fields hash. This does **not** confirm newer device-only operations; never overwrite those from this unchanged remote state. No production write occurred.
+
 The earlier failing-budget notes below are historical, not the current result. Operational candidate Rules SHA-256 `80d30beeb5eafd713e8b5dc9ad822c9c75f4ab4c5dea871f5ad6f21f1e262b0b` passed the expanded real Web SDK client suite with 16 additional QA-only request-dependent predicates, then the exact-source suite and full legacy compatibility suite. No expression/access/internal-evaluator failures occurred. See `CLICK360_SPARK_RULES_COST_AUDIT.md` for the explicit cost worksheet, failed attempts and exact proof hashes.
 
 Owner/worker 12-product/manual sales, worker mixed/reservation/pending carts, exact historical sessions, stock race, missing core writes, malformed financial counters and immutable ledger/identity were tested. Every custom quantity index 0–11 is checked adversarially. Financial records remain in one atomic commit; only reconstructible audit materialization is deferred idempotently. Derived payment markers for unpaid sales are not additional receipts. The new mandatory CI probe uploads sanitized Rules proof only.

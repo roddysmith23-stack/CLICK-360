@@ -10,21 +10,30 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
     await page.route('https://journal.example.test/**', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Synthetic journal only</title>' }));
     await page.goto('https://journal.example.test/');
     await page.addScriptTag({ content: source });
-    const upgrade=await page.evaluate(async()=>{
+    for(const oldVersion of [1,2]){
+    const upgrade=await page.evaluate(async oldVersion=>{
       const oldRow={key:'old-owner:old-business:old-op',ownerUid:'old-owner',businessId:'old-business',operationId:'old-op',state:'unknown',revision:9,payload:{total:30},payloadHash:'preserve-exact-hash',createdAt:1};
       await new Promise((resolve,reject)=>{
-        const request=indexedDB.open('synthetic-v1-upgrade',1);
-        request.onupgradeneeded=()=>request.result.createObjectStore('operations',{keyPath:'key'});
-        request.onsuccess=()=>{const db=request.result;const tx=db.transaction('operations','readwrite');tx.objectStore('operations').put(oldRow);tx.oncomplete=()=>{db.close();resolve()};tx.onabort=()=>reject(tx.error);};
+        const request=indexedDB.open(`synthetic-v${oldVersion}-upgrade`,oldVersion);
+        request.onupgradeneeded=()=>{const store=request.result.createObjectStore('operations',{keyPath:'key'});
+          if(oldVersion===2)store.createIndex('tenantState',['ownerUid','businessId','state']);};
+        request.onsuccess=()=>{const db=request.result;const tx=db.transaction('operations','readwrite');const store=tx.objectStore('operations');store.put(oldRow);
+          store.put({...oldRow,key:'old-owner:old-business:confirmed-op',operationId:'confirmed-op',state:'confirmed'});
+          tx.oncomplete=()=>{db.close();resolve()};tx.onabort=()=>reject(tx.error);};
         request.onerror=()=>reject(request.error);
       });
-      const journal=await CLICK360_MODULAR_JOURNAL.open({databaseName:'synthetic-v1-upgrade'});
+      const journal=await CLICK360_MODULAR_JOURNAL.open({databaseName:`synthetic-v${oldVersion}-upgrade`});
       const identity={ownerUid:'old-owner',businessId:'old-business'};
       const row=await journal.get(identity,'old-op');const pending=await journal.listPending(identity);
-      journal.close();return {row,pending};
-    });
+      const confirmed=await journal.get(identity,'confirmed-op'),projectionCount=await journal.countProjectionPending(identity);
+      journal.close();return {row,pending,confirmed,projectionCount};
+    },oldVersion);
     assert.equal(upgrade.row.payloadHash,'preserve-exact-hash');assert.equal(upgrade.row.revision,9);
     assert.equal(upgrade.row.state,'unknown');assert.equal(upgrade.pending.length,1);
+    assert.equal(upgrade.confirmed.state,'confirmed');assert.equal(upgrade.confirmed.revision,9);
+    assert.equal(upgrade.confirmed.payloadHash,'preserve-exact-hash');
+    assert.equal(upgrade.confirmed.projectionState,'pending');assert.equal(upgrade.projectionCount,1);
+    }
     const first = await page.evaluate(async () => {
       const journal = await CLICK360_MODULAR_JOURNAL.open();
       const a = { ownerUid: 'owner-a', businessId: 'business-a' };
@@ -66,6 +75,16 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
         record: { ...a, operationId: 'op-sale', payloadHash: 'different' } }); } catch { mismatchDenied = true; }
       const confirmed = await journal.reconcile(a, 'op-sale', row.revision, { source: 'server', exists: true,
         record: { ...a, operationId: 'op-sale', payloadHash: row.payloadHash } });
+      const projectionPending=await journal.countProjectionPending(a);
+      let projectionHashDenied=false,projectionScopeDenied=false;
+      try{await journal.markProjected(a,'op-sale','wrong-hash');}catch{projectionHashDenied=true;}
+      try{await journal.markProjected({...a,businessId:'business-b'},'op-sale',row.payloadHash);}catch{projectionScopeDenied=true;}
+      await journal.markProjected(a,'op-sale',row.payloadHash);
+      const projected=await journal.get(a,'op-sale');
+      const duplicateProjection=await journal.markProjected(a,'op-sale',row.payloadHash);
+      if(projectionPending!==1||!projectionHashDenied||!projectionScopeDenied
+        ||projected.projectionState!=='complete'||duplicateProjection.revision!==projected.revision
+        ||await journal.countProjectionPending(a)!==0)throw Error('PROJECTION_RECOVERY_INTEGRITY_FAILED');
       let replayDenied = false;
       try { await journal.claim(a, 'op-sale', 'device-c'); } catch { replayDenied = true; }
       await journal.enqueue(a, 'op-open', { type: 'cash_open' });

@@ -18,11 +18,18 @@ await assert.rejects(()=>api.reconcile({identity,operations:[operation,operation
 const good=await api.reconcile({identity,operations:[operation],lookupOperation:async()=>confirmed});assert.equal(good.canProceed,true);assert.equal(good.confirmedCount,1);
 const pageOptions={identity,lookupOperation:async()=>confirmed,assertSourceStable:async()=>{}};
 const exactCount=async()=>({countIsBounded:false,total:1,pendingCount:0,unknownCount:1});
-await assert.rejects(()=>api.reconcileJournal({...pageOptions,journal:{countPending:exactCount,
+const noProjection=async()=>0;
+await assert.rejects(()=>api.reconcileJournal({...pageOptions,journal:{countProjectionPending:noProjection,countPending:exactCount,
   listPendingPage:async()=>({rows:[],next:{state:'unknown',primaryKey:'same'},complete:false})}}),/CURSOR_NOT_ADVANCING/);
-await assert.rejects(()=>api.reconcileJournal({...pageOptions,pageSize:101,journal:{countPending:exactCount,listPendingPage:async()=>{throw Error('must not read');}}}),/PAGE_SIZE_INVALID/);
-await assert.rejects(()=>api.reconcileJournal({...pageOptions,journal:{countPending:async()=>({...await exactCount(),countIsBounded:true}),
+await assert.rejects(()=>api.reconcileJournal({...pageOptions,pageSize:101,journal:{countProjectionPending:noProjection,countPending:exactCount,listPendingPage:async()=>{throw Error('must not read');}}}),/PAGE_SIZE_INVALID/);
+await assert.rejects(()=>api.reconcileJournal({...pageOptions,journal:{countProjectionPending:noProjection,countPending:async()=>({...await exactCount(),countIsBounded:true}),
   listPendingPage:async()=>{throw Error('must not read');}}}),/FULL_OUTBOX_COUNT_REQUIRED/);
+const projectionBlocked=await api.reconcileJournal({...pageOptions,journal:{
+  countPending:async()=>({countIsBounded:false,total:0,pendingCount:0,unknownCount:0}),
+  countProjectionPending:async()=>1,listPendingPage:async()=>({rows:[],next:null,complete:true})}});
+assert.equal(projectionBlocked.canProceed,false);assert.equal(projectionBlocked.unknownCount,0);
+assert.equal(projectionBlocked.projectionPendingCount,1);
+await assert.rejects(()=>api.reconcileJournal({...pageOptions,journal:{countPending:exactCount,listPendingPage:async()=>({rows:[],next:null,complete:true})}}),/FULL_OUTBOX_GUARD_REQUIRED/);
 const rootIdentity={ownerUid:identity.ownerUid,ownerId:identity.ownerUid,businessId:identity.ownerUid,tenantKey:`owner:${identity.ownerUid}:business:${identity.ownerUid}`,schemaVersion:10};
 const remoteBody={businesses:[{id:identity.businessId}],products:[],sales:[],movements:[]};
 const localBody={...structuredClone(remoteBody),identity:rootIdentity,sales:[{id:'historical-sale',businessId:identity.businessId,total:30}]};
