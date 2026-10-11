@@ -26,6 +26,16 @@ const db={app:{options:{projectId}},doc:path=>({path}),runTransaction:callback=>
 const transport=globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,resolveUser:()=>({uid:ownerUid})});
 const repo=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,transport,serverTimestamp:()=> 'server-timestamp'});
 const get=async(moduleName,id)=>codec.unpack(rows.get(`${base}/${moduleName}/${id}`),{identity,moduleName,recordId:id});
+const customerCreate={operationId:'customer-create',customerId:'synthetic-customer',changes:{name:'Synthetic',phone:'',notes:''}};
+await repo.commitOperation('customer_create',customerCreate);
+assert.equal((await repo.commitOperation('customer_create',customerCreate)).status,'already_committed');
+const customerEdit={operationId:'customer-edit',customerId:customerCreate.customerId,expectedRecordVersion:1,changes:{name:'Synthetic edited',phone:'000',notes:'Synthetic only'}};
+await repo.commitOperation('customer_edit',customerEdit);
+assert.equal((await repo.readOperationProjection('customer-edit','customer_edit',(await repo.prepareOperation('customer_edit',customerEdit)).payloadSha256)).records.customers[0].recordVersion,2);
+await assert.rejects(()=>repo.commitOperation('customer_edit',{...customerEdit,operationId:'stale-customer'}),/REVISION_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('customer_create',{...customerCreate,operationId:'invalid-customer',customerId:'invalid',changes:{...customerCreate.changes,stock:50}}),/FIELDS_INVALID/);
+await assert.rejects(()=>repo.commitOperation('customer_create',{...customerCreate,changes:{...customerCreate.changes,name:'Different'}}),/IDEMPOTENCY_KEY_CONFLICT/);
+assert.equal(rows.has(`${base}/operationLedger/invalid-customer`),false);
 const open={operationId:'open-1',cashSessionId:'session-sep03',date:'2026-09-03',openingAmount:0};
 await repo.commitOperation('cash_open',open);assert.equal((await get('cashSessions',open.cashSessionId)).status,'open');
 await assert.rejects(()=>repo.commitOperation('cash_open',{...open,operationId:'open-second',cashSessionId:'other-session'}),/ALREADY_HAS_OPEN/);

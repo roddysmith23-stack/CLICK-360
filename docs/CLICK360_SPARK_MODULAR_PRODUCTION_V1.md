@@ -1,5 +1,13 @@
 # Spark modular production V1 — active implementation, 2026-10-06
 
+## Operational continuation — 2026-10-11, customer forms and built commerce
+
+At `fa2e6ec`, Spark client safety CI passed two fresh served Chromium/WebKit runs and real client Rules, including the stricter evaluation probe; device-capacity CI also passed. Web Release QA did **not** pass: its commerce harness served repository source while requiring the stamped, controlling Service Worker. Auth had not started (`auth_not_ready`, no transport requests). Core and restaurant commerce now serve `dist`, and their required script builds first. The SW readiness assertion remains mandatory; no timeout, browser or check is waived. New HEAD certification is required.
+
+The existing CRM create/edit forms now use explicit commands, immutable operation IDs, the durable journal, individual customer transactions and fresh server projections into `settings.customers`. Customer edits require the observed record version. Client Rules bind the exact customer to a new immutable ledger, whitelist editable fields, preserve identities and check the existing customer role permissions. Deletion remains fail-closed **before** local mutation until its adapter is certified. Regression additions cover retry, payload collision, stale revision, forged fields, omitted customer writes, restricted/authorized workers and the actual served forms. Pure regressions pass; new client/emulator/browser executions remain required. This is not full operational UI or migration certification.
+
+A fresh authorized read-only acquisition at `2026-10-11T18:08:29.351Z` preserved native Firestore values and verified backup SHA256 `d5a44cdf756f25adad4ca02fc56c7745f0712c81a1631202410d56175780feac`. Legacy revision remains `1791072715866`, native state hash remains `7bec358a040cb421379d118ac9b627bf982f49fd05e2e0be4c43ecb7e78153bf`; counts remain 463 products, 30 sales, 107 movements, 24 sessions and 22 reports. All 402 separate audit documents retain their IDs, material fields and update times; differing acquisition read times explain the audit envelope hash difference. This does **not** certify recent iPhone-only operations. The sanitized remote census has seven sources (5 GREEN, 1 YELLOW, 1 RED); physical pending/UNKNOWN counts remain unavailable. No production write, deploy, merge or cutover occurred. Staging project access is confirmed, but full staging and automatic recovery remain unapproved engineering gates.
+
 ## Existing PWA operational bridge — 2026-10-11
 
 ### Exact cash-close UI and startup failure evidence

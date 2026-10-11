@@ -6,6 +6,10 @@ import {createEmulatorIsolation} from './qa/emulator-network-isolation.mjs';
 import './spark-operational-ui-runtime.js';
 import './modular-ui-adapter.js';
 const runtime=globalThis.CLICK360_SPARK_OPERATIONAL_UI;
+for(const file of ['qa/r38-commerce-core-e2e.mjs','qa/r38-restaurant-authoritative-e2e.mjs']){
+  assert.match(await readFile(file,'utf8'),/http-server\x27\),\x27dist\x27/,'SW-controlled commerce must serve the stamped build, not unbuilt source');
+}
+assert.match(JSON.parse(await readFile('package.json','utf8')).scripts['qa:r38:e2e'],/npm run build:static && node qa\/r38-commerce-core-e2e/);
 await assert.rejects(()=>runtime.create({projectId:'click-360',syntheticCertification:true}),/CERTIFICATION_ONLY/);
 await assert.rejects(()=>runtime.create({projectId:'click360-staging-7620168025'}),/CERTIFICATION_ONLY/);
 await assert.rejects(()=>runtime.create({projectId:'click360-staging-7620168025',syntheticCertification:true}),/MIXED_RELEASE/);
@@ -108,6 +112,10 @@ assert.equal(renders,0,'Projection cannot detach live checkout controls');
 assert.equal(durable.products[0].stock,1);assert.equal(durable.products[1].stock,9);
 sandbox.window.click360DebugCriticalActionGate=()=>({size:0});
 await sandbox.window.click360ProjectSparkOperation(projection);assert.equal(renders,1,'Restart replay refreshes the actual route');
+sandbox.state.settings={customers:[{id:'customer-other',businessId:'second',name:'Other business'}]};
+await sandbox.window.click360ProjectSparkOperation({...projection,records:{customers:[{id:'customer-current',businessId:'b',name:'Synthetic',phone:'',notes:'',recordVersion:1}]}});
+assert.equal(durable.settings.customers.length,2,'Customer projection stays in the existing UI settings location');
+assert.equal(durable.settings.customers[0].name,'Other business','Projection preserves the other business');
 // Exact preflight recovers the immutable pending close, not a replacement
 // command and not an unrelated outbox entry. This also covers a closed local
 // candidate while the server is still open (lost request/response).

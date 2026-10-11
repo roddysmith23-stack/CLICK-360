@@ -4,6 +4,8 @@ Candidate only. Production remains `21409a1d2dc7`. The expanded owner/worker sui
 
 ## Two separate budgets
 
+Customer CREATE/EDIT adds no access calls to sale, inventory or cash proofs. Its own core references one control document, existing account authorization (and worker membership/flag when applicable), the exact ledger before/after and the exact customer after. Fields, identity and record-version increments use resource/request data. Conservative logical distinct-reference bound is `4 + A` (control, ledger before/after, customer after, authorization A); this is not a guaranteed billed/cache count. Owner does not read membership. Positive/negative client tests and the existing budget-log/headroom gates remain required on the new source; no budget certification is inferred from the pure adapter test.
+
 Document access and expression evaluation are different budgets. Reusing a cached document path does not make repeated predicates free. Coverage counts aggregate multiple evaluations/retries/readbacks and are not per-request expression counts. The strict emulator-log gate remains mandatory even if every positive/negative scenario assertion passes.
 
 ## External accesses in the operational core

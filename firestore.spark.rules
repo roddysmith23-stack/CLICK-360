@@ -619,12 +619,12 @@ service cloud.firestore {
     }
 
     function sparkKindPermission(ownerUid, businessId, kind) {
-      return kind in ["sale", "product_create", "product_edit", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement"]
+      return kind in ["sale", "product_create", "product_edit", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit"]
         && sparkPermission(ownerUid, businessId,
-          kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "inventory_adjust"] ? "products" :
-            (kind == "cash_movement" ? "movements" : "cashSessions")),
-          kind in ["sale", "product_create", "cash_open", "cash_movement"] ? "create" :
-            (kind in ["product_edit", "inventory_adjust", "cash_reopen"] ? "update" : "close"));
+          kind in ["customer_create", "customer_edit"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "inventory_adjust"] ? "products" :
+            (kind == "cash_movement" ? "movements" : "cashSessions"))),
+          kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
+            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"));
     }
 
     function sparkBoundOperation(ownerUid, businessId) {
@@ -643,6 +643,8 @@ service cloud.firestore {
         && d.operationId == operationId && d.status == "committed" && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
         && sparkKindPermission(ownerUid, businessId, d.kind)
         && (d.kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
+          : d.kind in ["customer_create", "customer_edit"] ? (r.keys().hasOnly(["customerId"])
+            && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/customers/$(r.customerId)).data.lastOperationId == operationId)
           : d.kind in ["product_create", "product_edit", "inventory_adjust"] ?
             (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.lastOperationId == operationId
               && (d.kind == "product_edit" || (d.kind == "product_create"
@@ -974,10 +976,21 @@ service cloud.firestore {
               && d.openCashSessionId == "" && session.data.status == "closed"));
     }
 
+    function sparkCustomerMutation(ownerUid, businessId, recordId, creating) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
+      return ledger.kind == (creating ? "customer_create" : "customer_edit") && ledger.result.customerId == recordId
+        && d.name is string && d.name.matches(".*[^\\s].*") && d.phone is string && d.notes is string
+        && (creating ? d.keys().hasOnly(["id", "businessId", "name", "phone", "notes"])
+          : d.diff(resource.data.data).affectedKeys().hasOnly(["name", "phone", "notes"]));
+    }
+
     function sparkOperationalMutation(ownerUid, businessId, moduleName, recordId, creating) {
       return (moduleName == "operationLedger" && creating && sparkLedgerProof(ownerUid, businessId, recordId))
         || (moduleName == "products"
           && sparkProductMutation(ownerUid, businessId, recordId, creating))
+        || (moduleName == "customers"
+          && sparkCustomerMutation(ownerUid, businessId, recordId, creating))
         || (moduleName == "sales" && creating
           && sparkSaleMutation(ownerUid, businessId, recordId))
         || (moduleName == "movements" && creating
@@ -2090,6 +2103,19 @@ service cloud.firestore {
       allow create: if request.resource.data.keys().hasAll(["sourceHash", "sourcePath"])
         && sparkShadowModule(moduleName) && sparkShadowOwner(ownerUid, businessId)
         && sparkValidShadow(ownerUid, businessId, moduleName, recordId);
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/customers/{recordId} {
+      allow create: if signedIn()
+        && sparkCustomerMutation(ownerUid, businessId, recordId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "customers", recordId);
+      allow update: if signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkCustomerMutation(ownerUid, businessId, recordId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "customers", recordId);
+      allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/products/{recordId} {

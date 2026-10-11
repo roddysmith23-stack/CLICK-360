@@ -68,6 +68,17 @@ try{
       await page.waitForFunction(()=>window.SPARK_UI_STATUS?.status==='CONFIRMED'||window.SPARK_UI_COMMIT);
       assert(await page.evaluate(()=>window.SPARK_UI_STATUS?.status==='CONFIRMED'),JSON.stringify(await page.evaluate(()=>window.SPARK_UI_COMMIT)));
     };
+    await page.evaluate(()=>{location.hash='#crm';});await page.locator('#newCustomerBtn').click();
+    await page.locator('#customerName').fill('Cliente modular sintético');await page.locator('#customerPhoneCrm').fill('000');
+    await page.locator('#customerNotes').fill('Solo fixture');await resetStatus();await page.locator('#customerForm button[type="submit"]').click();await confirmed();
+    const customer=await page.evaluate(()=>click360GetTenantState().settings.customers.find(c=>c.name==='Cliente modular sintético'));
+    assert((await record('customers',customer.id)).name===customer.name,'Real customer form persists individual record');
+    await page.locator(`[data-customer-edit="${customer.id}"]`).click();await page.locator('#customerNotes').fill('Edición sintética');
+    await resetStatus();await page.locator('#customerForm button[type="submit"]').click();await confirmed();
+    assert((await record('customers',customer.id)).notes==='Edición sintética'&&(await record('customers',customer.id)).recordVersion===2,'Real edit preserves identity and advances revision');
+    await page.locator(`[data-customer-delete="${customer.id}"]`).click();
+    assert(await page.evaluate(id=>click360GetTenantState().settings.customers.some(c=>c.id===id),customer.id),'Unsupported deletion must not mutate local truth');
+    await page.evaluate(()=>{location.hash='#inventory';});await page.locator('#newProduct').waitFor();
     // These are the existing product editor/stock fields, not a demonstration UI.
     await page.locator('#newProduct').click();await page.locator('#pCode').fill('SPARK-NEW');await page.locator('#pName').fill('Nuevo sintético modular');
     await page.locator('#pQty').fill('10');await page.locator('#pCost').fill('2');await page.locator('#pPrice').fill('12');await page.locator('#pCardPrice').fill('12');
@@ -189,7 +200,7 @@ try{
     assert(runtime.sale,'Existing receipt ID preserved');
     results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
-      appFirestoreTransport:'long_polling',
+      appFirestoreTransport:'long_polling',customerCreateAndEdit:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
     await device.context.close();device=null;console.log(`PASS served Spark UI ${label}`);

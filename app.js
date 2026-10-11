@@ -1740,8 +1740,8 @@ function parseMoney(value) {
       ||currentBusiness()?.id!==projection.identity.businessId)throw Error('SPARK_UI_PROJECTION_SCOPE_INVALID');
     const next=cloneState(state),businessId=projection.identity.businessId;
     for(const [moduleName,records]of Object.entries(projection.records)){
-      if(!['products','sales','movements','cashSessions','dailyReports','layaways'].includes(moduleName))throw Error('SPARK_UI_PROJECTION_MODULE_INVALID');
-      next[moduleName]||=[];
+      if(!['products','sales','movements','cashSessions','dailyReports','layaways','customers'].includes(moduleName))throw Error('SPARK_UI_PROJECTION_MODULE_INVALID');
+      const target=moduleName==='customers'?(next.settings.customers||=[]):(next[moduleName]||=[]);
       for(const record of records){
         if(record.businessId!==businessId)throw Error('SPARK_UI_PROJECTION_BUSINESS_INVALID');
         const value=cloneState(moduleName==='dailyReports'&&record.status==='closed'
@@ -1749,11 +1749,11 @@ function parseMoney(value) {
         value.id=id;
         // Preserve receipt/layaway relationships used by the existing UI.
         if(value.saleId){const sale=projection.records.sales?.find(s=>s.id===value.saleId)||next.sales?.find(s=>s.operationId===value.saleId);value.saleId=sale?.legacyId||sale?.id||value.saleId;}
-        const index=next[moduleName].findIndex(item=>item.businessId===businessId&&(item.id===id
+        const index=target.findIndex(item=>item.businessId===businessId&&(item.id===id
           ||(moduleName==='movements'&&item.operationId===value.operationId)));
-        if(index<0)next[moduleName].push(value);else {
-          next[moduleName][index]={...next[moduleName][index],...value};
-          if(moduleName==='dailyReports'&&record.status==='closed')delete next[moduleName][index].html;
+        if(index<0)target.push(value);else {
+          target[index]={...target[index],...value};
+          if(moduleName==='dailyReports'&&record.status==='closed')delete target[index].html;
         }
       }
     }
@@ -4305,15 +4305,26 @@ function parseMoney(value) {
 	  function openCustomerModal(customerId = '') {
 	    const customer = crmCustomers().find((item) => item.id === customerId) || { id: '', name: '', phone: '', notes: '' };
 	    showModal(`<div class="modalHeader"><h2>${customer.id ? 'Editar' : 'Nuevo'} cliente</h2><button class="closeBtn" data-close>×</button></div><form id="customerForm" class="formGrid"><div class="field"><label>Nombre</label><input id="customerName" required value="${escapeHtml(customer.name)}"></div><div class="field"><label>Telefono / WhatsApp</label><input id="customerPhoneCrm" inputmode="tel" value="${escapeHtml(customer.phone)}" placeholder="593999999999"></div><div class="field full"><label>Notas</label><input id="customerNotes" value="${escapeHtml(customer.notes)}"></div><button class="btn primary block" type="submit">Guardar cliente</button></form>`);
-	    $('#customerForm').onsubmit = (event) => {
+	    $('#customerForm').onsubmit = async (event) => {
 	      event.preventDefault();
 	      const name = $('#customerName').value.trim();
 	      if (!name) return toast('Ingresa el nombre del cliente.', 'err');
+	      if (!writeGateStatus().allowed) return toast('No se puede guardar el cliente hasta proteger el estado actual.', 'err');
+	      const previousState = cloneState(state);
 	      state.settings.customers ||= [];
 	      const next = { id: customer.id || uid('customer'), businessId: currentBusiness().id, name, phone: $('#customerPhoneCrm').value.trim(), notes: $('#customerNotes').value.trim(), updatedAt: new Date().toISOString() };
 	      const index = state.settings.customers.findIndex((item) => item.id === next.id);
 	      if (index >= 0) state.settings.customers[index] = next;
 	      else state.settings.customers.push(next);
+	      if (window.click360SparkOperationalSession) {
+	        const committed = await commitCriticalMutation(previousState, 'customer_saved', () => false, {
+	          sparkCommand: () => window.CLICK360_MODULAR_UI_ADAPTER.customerMutationCommand({customer:next,
+	            previous:customer.id ? customer : null,identity:window.click360SparkOperationalSession.identity,operationId:uid('customer-op')})
+	        });
+	        if (!committed.ok) return;
+	        closeModal(); renderApp('crm'); toast(committed.pending ? 'Cliente guardado en este dispositivo; sincronización pendiente.' : 'Cliente guardado');
+	        return;
+	      }
 	      if (!save()) return;
 	      closeModal(); renderApp('crm'); toast('Cliente guardado');
 	    };
@@ -4437,6 +4448,7 @@ function parseMoney(value) {
 	  function bindCrmActions() {
 	    $$('[data-customer-edit]').forEach((button) => button.onclick = () => openCustomerModal(decodeActionId(button.dataset.customerEdit)));
 	    $$('[data-customer-delete]').forEach((button) => button.onclick = () => {
+	      if (window.click360SparkOperationalSession) return toast('La eliminación de clientes aún no está habilitada en este modo. No se cambió ningún dato.', 'err');
 	      const id = decodeActionId(button.dataset.customerDelete);
 	      state.settings.customers = (state.settings.customers || []).filter((customer) => customer.id !== id);
 	      if (!save()) return;

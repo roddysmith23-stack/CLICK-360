@@ -73,6 +73,16 @@
       income:Math.round((report.paymentTotals.cash+report.incomeCash)*100)/100,expenses:report.expenseCash,
       paymentTotals:{...report.paymentTotals,layawayPayments:report.paymentTotals.receivablePayments,receivableIncluded:true}};
   }
+  function customerMutationCommand({customer,previous,identity,operationId}){
+    if(!operationId||!identity?.ownerUid||!customer?.id||customer.businessId!==identity.businessId
+      ||(previous&&(previous.id!==customer.id||previous.businessId!==identity.businessId)))throw Error('MODULAR_CUSTOMER_CONTEXT_INVALID');
+    const changes={name:customer.name,phone:customer.phone,notes:customer.notes};
+    if(typeof changes.name!=='string'||!changes.name.trim()
+      ||typeof changes.phone!=='string'||typeof changes.notes!=='string')throw Error('MODULAR_CUSTOMER_FIELDS_INVALID');
+    if(previous&&(!Number.isSafeInteger(previous.recordVersion)||previous.recordVersion<1))throw Error('MODULAR_CUSTOMER_REVISION_REQUIRED');
+    return {kind:previous?'customer_edit':'customer_create',input:{operationId,customerId:customer.id,changes,
+      ...(previous?{expectedRecordVersion:previous.recordVersion}:{})}};
+  }
   function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed}){
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
@@ -178,5 +188,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,cashReportView});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,customerMutationCommand,cashReportView});
 })(typeof window==='undefined'?globalThis:window);

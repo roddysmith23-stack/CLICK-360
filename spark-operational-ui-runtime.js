@@ -49,10 +49,11 @@
     async function commit({reason,command,candidate}){
       assertActive();
       if(busy)throw Error('SPARK_UI_OPERATION_IN_PROGRESS');
-      if(!command||!['cash_open','cash_close','sale','product_create','product_edit','inventory_adjust','cash_movement'].includes(command.kind)
+      if(!command||!['cash_open','cash_close','sale','product_create','product_edit','inventory_adjust','cash_movement','customer_create','customer_edit'].includes(command.kind)
         ||!((reason==='cash_opened'&&command.kind==='cash_open')||(reason==='sale_created'&&command.kind==='sale')
           ||(reason==='product_saved'&&['product_create','product_edit','inventory_adjust'].includes(command.kind))
-          ||(reason==='cash_movement_created'&&command.kind==='cash_movement')||(reason==='cash_closed'&&command.kind==='cash_close')))
+          ||(reason==='cash_movement_created'&&command.kind==='cash_movement')||(reason==='cash_closed'&&command.kind==='cash_close')
+          ||(reason==='customer_saved'&&['customer_create','customer_edit'].includes(command.kind))))
         return {ok:false,pending:false,reason:'spark_ui_flow_not_certified',notQueued:true};
       const snapshot=structuredClone(candidate),input=structuredClone(command.input);
       busy=true;

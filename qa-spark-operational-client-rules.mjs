@@ -80,6 +80,21 @@ try{
     await setDoc(doc(db,`${base}/metadata/runtime`),await codec.pack({id:'runtime',...identity,module:'metadata',recordVersion:1,summaryVersion:1,openCashSessionId:''},{identity,moduleName:'metadata',recordId:'runtime'}));
   });
   const open={operationId:'open-1',cashSessionId:'session-03',date:'2026-09-03',openingAmount:0};
+  const customerCreate={operationId:'customer-create',customerId:'synthetic-customer',changes:{name:'Synthetic',phone:'',notes:''}};
+  await repo.commitOperation('customer_create',customerCreate);
+  assert.equal((await repo.commitOperation('customer_create',customerCreate)).status,'already_committed');
+  const customerEdit={operationId:'customer-edit',customerId:customerCreate.customerId,expectedRecordVersion:1,changes:{name:'Synthetic edited',phone:'000',notes:'Synthetic only'}};
+  await repo.commitOperation('customer_edit',customerEdit);
+  assert.equal((await get('customers',customerCreate.customerId)).recordVersion,2);
+  const missingCustomer=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/customers/omitted-customer')?null:data),serverTimestamp});
+  await assertFails(missingCustomer.commitOperation('customer_create',{...customerCreate,operationId:'customer-omitted',customerId:'omitted-customer'}));
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/customer-omitted`))).exists(),false);
+  const forgedCustomer=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/customers/forged-customer')?{...data,data:{...data.data,stock:999}}:data),serverTimestamp});
+  await assertFails(forgedCustomer.commitOperation('customer_create',{...customerCreate,operationId:'customer-forged',customerId:'forged-customer'}));
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/customer-forged`))).exists(),false);
+  await budgetObservation('customer_create_edit_and_denials');
   await repo.commitOperation('cash_open',open);
   await budgetObservation('cash_open');
   console.log('PASS operational Rules: cash opening');
@@ -171,6 +186,7 @@ try{
   await assertFails(updateDoc(doc(client,`${base}/operationLedger/sale-1`),{'data.payloadHash':'b'.repeat(64)}));
   await assertFails(getDocFromServer(doc(worker,control)));
   const workerRepo=api.createSparkRepository({ownerUid,businessId,actorUid:workerUid,transport:transportFor(worker,workerUid),serverTimestamp});
+  await assertFails(workerRepo.commitOperation('customer_create',{...customerCreate,operationId:'worker-customer-denied',customerId:'worker-customer-denied'}));
   const workerSale={...sale,operationId:'worker-sale',sale:{...sale.sale,id:'worker-sale'}};
   assert.equal((await workerRepo.commitSale(workerSale)).auditPending,false);
   const workerPrepared=await workerRepo.prepareOperation('sale',workerSale);
@@ -386,7 +402,12 @@ try{
   await assertFails(workerRepo.closeCashSession(workerClose));
   assert.equal((await get('cashSessions','multiline-session')).status,'open');
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),
-    {'permissions.cashSessions':{read:true,create:true,close:true,update:true},'permissions.products':{read:true,create:true,update:true}}));
+    {'permissions.cashSessions':{read:true,create:true,close:true,update:true},'permissions.products':{read:true,create:true,update:true},
+      'permissions.customers':{read:true,create:true,update:true}}));
+  await workerRepo.commitOperation('customer_create',{...customerCreate,operationId:'worker-customer-create',customerId:'worker-customer'});
+  await workerRepo.commitOperation('customer_edit',{...customerEdit,operationId:'worker-customer-edit',customerId:'worker-customer'});
+  assert.equal((await get('customers','worker-customer')).recordVersion,2);
+  await budgetObservation('authorized_worker_customer_create_edit');
   await workerRepo.closeCashSession(workerClose);
   assert.equal((await workerRepo.closeCashSession(workerClose)).status,'already_committed');
   assert.equal((await get('dailyReports','report-multiline-session-1')).saleCount,20);

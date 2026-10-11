@@ -27,3 +27,11 @@ assert.equal(reserved.sale.total,30);assert.equal(reserved.sale.received,5);asse
 assert.throws(()=>api.layawayCommand({...input,sale:layawaySale,layaway:{...layaway,paid:30},initialPaymentMethod:'Efectivo'}),/LAYAWAY_COMMAND_INVALID/);
 assert.throws(()=>api.layawayCommand({...input,sale:layawaySale,layaway,initialPaymentMethod:'Apartado'}),/LAYAWAY_COMMAND_INVALID/);
 console.log('PASS explicit live/manual/layaway/pending command translation: exact historical session/date, live id -> productId, explicit custom provenance, deposit not total, immutable inputs, cross-business rejection. Not public UI activation.');
+const customer={id:'synthetic-customer',businessId:'alpha',name:'Synthetic',phone:'',notes:''};
+const customerInput={customer,identity,operationId:'customer-command'},customerBefore=structuredClone(customerInput);
+assert.equal(api.customerMutationCommand(customerInput).kind,'customer_create');
+assert.deepEqual(customerInput,customerBefore);
+assert.equal(api.customerMutationCommand({...customerInput,previous:{...customer,recordVersion:1}}).input.expectedRecordVersion,1);
+assert.throws(()=>api.customerMutationCommand({...customerInput,identity:{...identity,businessId:'beta'}}),/CONTEXT_INVALID/);
+assert.throws(()=>api.customerMutationCommand({...customerInput,previous:customer}),/REVISION_REQUIRED/);
+assert.throws(()=>api.customerMutationCommand({...customerInput,customer:{...customer,name:'   '}}),/FIELDS_INVALID/);

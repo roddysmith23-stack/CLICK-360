@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','inventory_adjust','cash_movement']);
+    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','inventory_adjust','cash_movement','customer_create','customer_edit']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -515,7 +515,15 @@
         const rows=[],timestamp=options.serverTimestamp();
         const stage=(moduleName,id,before,data)=>rows.push({moduleName,id,before,data});
         let result={};
-        if(kind==='product_create'){
+        if(kind==='customer_create'||kind==='customer_edit'){
+          const id=safeId(p.customerId,'customerId'),old=await tx.get('customers',id),changes=p.changes;
+          if(kind==='customer_create'?!!old:!old)throw Error('CUSTOMER_EXISTENCE_CONFLICT');
+          if(kind==='customer_edit'&&(!Number.isSafeInteger(p.expectedRecordVersion)||p.expectedRecordVersion!==old.recordVersion))throw Error('CUSTOMER_REVISION_CONFLICT');
+          if(!changes||Array.isArray(changes)||Object.keys(changes).length!==3
+            ||Object.keys(changes).some(key=>!['name','phone','notes'].includes(key))
+            ||typeof changes.name!=='string'||!changes.name.trim()||typeof changes.phone!=='string'||typeof changes.notes!=='string')throw Error('CUSTOMER_FIELDS_INVALID');
+          stage('customers',id,old,{...(old||{}),...changes,lastOperationId:op});result={customerId:id};
+        }else if(kind==='product_create'){
           const id=safeId(p.product?.id,'productId'),old=await tx.get('products',id);
           if(old)throw Error('PRODUCT_ALREADY_EXISTS');
           const stock=number(p.product.stock??p.product.qty??0,'STOCK');if(stock<0)throw Error('STOCK_INVALID');
@@ -694,7 +702,7 @@
         if(!record)return {source:'server',exists:false};
         if(record.kind!==kind||record.payloadHash!==payloadHash||record.status!=='committed')throw Error('IDEMPOTENCY_KEY_CONFLICT');
         const r=record.result||{};
-        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways']]){
+        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
           if(!r[key])continue;const linked=await tx.get(moduleName,r[key]);
           if(!linked||(['sales','movements'].includes(moduleName)&&linked.operationId!==operationId)
             ||(moduleName==='dailyReports'&&kind==='cash_close'&&(linked.operationId!==operationId||linked.cashSessionId!==r.cashSessionId)))throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
@@ -708,7 +716,7 @@
         const ledger=await tx.get('operationLedger',safeId(operationId,'operationId'));
         if(!ledger||ledger.status!=='committed'||ledger.kind!==kind||ledger.payloadHash!==payloadHash)throw Error('SPARK_PROJECTION_LEDGER_CONFLICT');
         const records={},r=ledger.result||{};
-        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways']]){
+        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
           if(!r[key])continue;
           const value=await tx.get(moduleName,r[key]);
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');

@@ -18,7 +18,7 @@ const emulatorConfig=writeEmulatorConfig();
 const emulatorLog=createWriteStream(path.join(outputDir,'emulators-'+Date.now()+'.log'),{flags:'wx'});
 const emulators=spawn(path.join(root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',projectId,'--config',emulatorConfig],{cwd:path.dirname(emulatorConfig),detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,PATH:`${javaDirs.join(':')}:${process.env.PATH}`}});
 emulators.stdout.pipe(emulatorLog);emulators.stderr.pipe(emulatorLog);
-const server=spawn(process.execPath,[path.join(root,'node_modules/http-server/bin/http-server'),'.','-p',String(port),'-c-1'],{cwd:root,detached:true,stdio:'ignore'});
+const server=spawn(process.execPath,[path.join(root,'node_modules/http-server/bin/http-server'),'dist','-p',String(port),'-c-1'],{cwd:root,detached:true,stdio:'ignore'});
 let browsers=[];
 try{
   await Promise.race([
