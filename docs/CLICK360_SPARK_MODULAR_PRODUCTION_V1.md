@@ -1,5 +1,17 @@
 # Spark modular production V1 — active implementation, 2026-10-06
 
+## Cash opening WebKit failure — 2026-10-11
+
+HEAD `6a1500195d91112e023c9f768d8587a2fd8a4530` passed Spark client safety and device capacity CI, but its Web Release QA failed in `labels-e2e`, `qa/r38-commerce-flows.mjs`: `Authoritative server condition not reached: cash open`. Inventory conflict E2E passed. This is not an all-green release.
+
+The original WebKit desktop flow passed once locally, so the timeout was not dismissed as flaky. A deterministic background `click360-access-changed` event at physical pointer-up reproduced the exact failure after inventory/offline/reconnect. Evidence: pointer-down/pointer-up occurred, the opening button was replaced (`sameButton: false`), its handler did not run, local cashSessions/openings were empty, and the fresh remote read contained no opening. The critical-action gate was empty and the fixture was below cloud capacity (~502 KB). The operation was never created, not rejected by Firestore or the size guard.
+
+The actual PWA renderer now preserves the same-business opening form/handler during background access refresh. Explicit rendering/navigation, changed business, hydration, opened/closed day, permissions and legal gates still take precedence. Untouched $0 is included (Safari need not focus a button). No arbitrary sleep, synthetic JavaScript button click, timeout increase, skipped engine or false remote acknowledgement was added. The full physical-click regression still requires server confirmation and exactly one handler invocation; supplemental CI repeats WebKit desktop/mobile with $0 and preserves synthetic failure/results artifacts. Pure renderer regressions cover context and permission boundaries. Completion of the new matrix and CI must be recorded separately; this fix does not activate modular UI/cutover or certify staging.
+
+Local full commercial matrix passed Chromium desktop/mobile and WebKit desktop/mobile with opening $50. The first supplemental $0 run passed WebKit desktop but failed mobile later at `one abono` (toast: payment validation rejected); the opening itself had exactly one remote session and movement. This separate failure is NOT labeled flaky or resolved by the cash-form fix. A subsequent mobile $0 run passed all four sales, both payments and cash close; exact payment input tracing now records discrepancies before dispatch. Repeat and new-HEAD CI remain mandatory.
+
+Owner-wide legacy fence audit: `validBoundaryCreate/Update` and the legacy V1 writer already honor the root storage control; no Rules bypass is added. Source selection now stops with `MIGRATION_OWNER_BUSINESS_COVERAGE_STOP` if a durable device snapshot omits any remote business. This prevents a one-business import from fencing an omitted second business. The regression preserves both source objects and verifies that full business coverage does not restore locally deleted products. `qa:spark` passed, including 2000 products / 5000 sales / 5000 movements / 5000 audits across two businesses, exact semantic hashes, 850 KB–7 MiB fixtures and recovery in Chromium/WebKit/Firefox. These are synthetic component tests, not real staging or production cutover.
+
 ## Latest implementation evidence — 2026-10-10 Guayaquil
 
 ### Durable UI projection recovery

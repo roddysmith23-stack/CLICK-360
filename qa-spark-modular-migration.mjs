@@ -42,6 +42,18 @@ await assert.rejects(()=>api.selectSource({ownerUid:owner,remote:{...fresh,sourc
 await assert.rejects(()=>api.selectSource({ownerUid:'other-owner',remote:fresh,local,unknownOperations:0}),/SOURCE_IDENTITY/);
 await assert.rejects(()=>api.selectSource({ownerUid:owner,remote:fresh,local}),/UNKNOWN_OPERATIONS_STOP/);
 await assert.rejects(()=>api.selectSource({ownerUid:owner,remote:fresh,local:{...local,pendingOperations:[{operationId:'unknown-op',state:'unknown'}]},unknownOperations:0}),/UNKNOWN_OPERATIONS_STOP/);
+const multiBusinessRemote=fixture({products:4,history:2,businesses:2});
+const partialDevice=structuredClone(multiBusinessRemote);
+partialDevice.businesses=partialDevice.businesses.slice(0,1);
+const preservedRemote=api.canonicalJson(multiBusinessRemote);
+await assert.rejects(()=>api.selectSource({ownerUid:owner,remote:{...fresh,snapshot:multiBusinessRemote},local:{...local,snapshot:partialDevice},unknownOperations:0}),/OWNER_BUSINESS_COVERAGE_STOP/);
+assert.equal(api.canonicalJson(multiBusinessRemote),preservedRemote);
+const completeDevice=structuredClone(multiBusinessRemote);
+completeDevice.products=completeDevice.products.slice(1);
+const completeSelection=await api.selectSource({ownerUid:owner,remote:{...fresh,snapshot:multiBusinessRemote},local:{...local,snapshot:completeDevice},unknownOperations:0});
+assert.equal(completeSelection.snapshot.products.length,3);
+assert.equal(completeSelection.snapshot.businesses.length,2);
+console.log('PASS owner-wide fence source coverage: omitted business rejected; local product deletion preserved without restore.');
 for(const shape of [{products:500,history:300,businesses:1},{products:2000,history:5000,businesses:2}]){
   const source=fixture(shape);
   const untouched=api.canonicalJson(source);

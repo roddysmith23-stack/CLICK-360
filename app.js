@@ -2823,6 +2823,16 @@ function parseMoney(value) {
       const cashOpening = r === 'cash' && route === 'cash' ? $('#apertureAmountInput') : null;
       const cashOpeningState = cashOpening && cashOpening.dataset.businessId === currentBusiness()?.id
         ? {value:cashOpening.value,focused:document.activeElement === cashOpening} : null;
+      // Background access refresh must not replace the opening button between
+      // pointer-up and click. Retain the actual handler/draft, not just text.
+      // Explicit navigation, changed business/day and permission/legal gates
+      // still render normally; no cloud confirmation is inferred here.
+      const cashStart = cashOpeningState ? $('#startDayBtnCash') : null;
+      if (arguments[1]?.preserveActiveModal === true && cashStart && tenantDataHydrated
+          && !isDayStarted() && !isDayClosed()) {
+        markAppReady('route:cash');
+        return;
+      }
       // Access/snapshot refreshes must not destroy the active checkout closure
       // (cart, tender inputs and the in-flight button lock). Auth/legal gates
       // above still take precedence; a different tenant or closed day renders.

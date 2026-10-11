@@ -20,3 +20,4 @@ for(const route of ['inventory','cash'])for(const sameBusiness of [true,false]){
   assert.equal(focused,sameBusiness);if(sameBusiness&&route==='inventory')assert.deepEqual(selection,[4,8]);
 }
 console.log('PASS actual renderApp: search and cash opening survive same-business refresh and never cross business context');
+require('./qa-r38-cash-opening-refresh.cjs');

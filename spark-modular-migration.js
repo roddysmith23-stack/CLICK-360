@@ -66,6 +66,11 @@
     if(local.durable!==true||typeof local.deviceRevision!=='string'||!local.deviceRevision)throw Error('MIGRATION_DURABLE_DEVICE_REQUIRED');
     if(!Array.isArray(local.pendingOperations)||local.pendingOperations.some(row=>['unknown','inflight'].includes(row?.state)))throw Error('MIGRATION_UNKNOWN_OPERATIONS_STOP');
     const localBusinesses=assertSource(ownerUid,local.snapshot,local.identity);
+    // The legacy writer/fence is owner-wide. A filtered one-business device
+    // snapshot cannot authorize fencing a different business still in remote
+    // legacy. Preserve both sources and stop; never silently drop/restore it.
+    if(remoteBusinesses.some(businessId=>!localBusinesses.includes(businessId)))
+      throw Error('MIGRATION_OWNER_BUSINESS_COVERAGE_STOP');
     const localHash=await hash(local.snapshot);
     // Only the fully validated transport identity may move between envelope and
     // snapshot. Preserve both original snapshots/hashes for recovery and CAS;

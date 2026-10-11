@@ -1,6 +1,7 @@
 // Real UI flows shared by emulator and synthetic authenticated staging.
-export function commerceFlows({cloud,submitProduct,assertProduct,results=[],writePattern}){
+export function commerceFlows({cloud,submitProduct,assertProduct,results=[],writePattern,openingAmount=50}){
 const assert=(condition,message)=>{if(!condition)throw new Error(message);};
+assert(openingAmount===0||openingAmount===50,'Synthetic opening must be 0 or 50');
 async function cloudUntil(predicate,label){
   for(let i=0;i<100;i++){const document=await cloud();if(predicate(document.payload.data))return document;await new Promise(r=>setTimeout(r,300));}
   throw new Error('Authoritative server condition not reached: '+label);
@@ -100,7 +101,14 @@ async function payment(page,saleId,amount,method){
   const previous=(await cloud()).payload.data;
   await page.evaluate(saleId=>{void window.payLayaway(saleId);},saleId);
   await page.locator('#layawayPaymentAmount').fill(String(amount));await page.locator('#layawayPaymentMethod').selectOption(method);
-  await page.evaluate(()=>{const b=document.getElementById('confirmLayawayPayment');for(let i=0;i<5;i++)b.click();});
+  await page.evaluate(expected=>{
+    const amount=document.getElementById('layawayPaymentAmount');
+    const method=document.getElementById('layawayPaymentMethod');
+    window.R38_PAYMENT_TRACE={amount:amount?.value,method:method?.value,expected};
+    if(Number(amount?.value)!==expected.amount||method?.value!==expected.method)
+      throw new Error('Payment input differs before dispatch: '+JSON.stringify(window.R38_PAYMENT_TRACE));
+    const b=document.getElementById('confirmLayawayPayment');for(let i=0;i<5;i++)b.click();
+  },{amount,method});
   const after=(await cloudUntil(data=>data.movements.length===previous.movements.length+1,'one abono')).payload.data;
   await sync(page);
   const sale=after.sales.find(s=>s.id===saleId),before=previous.sales.find(s=>s.id===saleId);
@@ -110,12 +118,42 @@ async function payment(page,saleId,amount,method){
   return sale;
 }
 async function commerce(page,label){
-  await route(page,'cash');await page.locator('#apertureAmountInput').fill('50');
+  await route(page,'cash');await page.locator('#apertureAmountInput').fill(String(openingAmount));
   await page.evaluate(()=>window.dispatchEvent(new CustomEvent('click360-access-changed')));
-  assert(await page.locator('#apertureAmountInput').inputValue()==='50','access refresh preserves typed opening amount');
+  assert(Number(await page.locator('#apertureAmountInput').inputValue())===openingAmount,'access refresh preserves typed opening amount');
+  await page.evaluate(()=>{
+    window.R38_CASH_OPEN_TRACE=[];
+    const button=document.querySelector('#startDayBtnCash');
+    const handler=button.onclick;
+    button.onclick=function(event){window.R38_CASH_OPEN_TRACE.push({phase:'handler',connected:this.isConnected});return handler.call(this,event);};
+    button.addEventListener('pointerdown',()=>window.R38_CASH_OPEN_TRACE.push({phase:'pointerdown'}),{once:true});
+    button.addEventListener('pointerup',()=>{
+      window.R38_CASH_OPEN_TRACE.push({phase:'pointerup'});
+      window.dispatchEvent(new CustomEvent('click360-access-changed'));
+      window.R38_CASH_OPEN_TRACE.push({phase:'access-refresh',sameButton:document.querySelector('#startDayBtnCash')===button});
+    },{once:true});
+  });
   await page.locator('#startDayBtnCash').click();
-  const opened=(await cloudUntil(data=>data.cashSessions.some(s=>s.status==='open'),'cash open')).payload.data;await sync(page);
-  assert(opened.cashSessions.find(s=>s.status==='open').openingAmount===50,'server opening must be 50: '+JSON.stringify({sessions:opened.cashSessions,aperture:opened.movements.filter(m=>m.kind==='apertura')}));
+  let opened;
+  try{opened=(await cloudUntil(data=>data.cashSessions.some(s=>s.status==='open'),'cash open')).payload.data;}
+  catch(error){
+    console.error('Cash opening failure evidence '+JSON.stringify(await page.evaluate(()=>({
+      gesture:window.R38_CASH_OPEN_TRACE,sync:window.click360SyncStatus,
+      gate:window.click360DebugCriticalActionGate?.(),capacity:window.click360GetCapacityStatus?.(),
+      localSessions:window.click360GetTenantState?.()?.cashSessions,
+      localOpenings:window.click360GetTenantState?.()?.movements?.filter(row=>row.kind==='apertura'),
+      failure:window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS,
+      toast:document.querySelector('#toast')?.textContent
+    }))));throw error;
+  }
+  await sync(page);
+  assert(opened.cashSessions.find(s=>s.status==='open').openingAmount===openingAmount,'server opening must match exact input: '+JSON.stringify({sessions:opened.cashSessions,aperture:opened.movements.filter(m=>m.kind==='apertura')}));
+  const sessions=opened.cashSessions.filter(s=>s.status==='open'),openings=opened.movements.filter(m=>m.kind==='apertura');
+  assert(sessions.length===1&&openings.length===1&&openings[0].cashSessionId===sessions[0].id
+    &&openings[0].operationId===sessions[0].operationId,'one opening session and one exact associated movement');
+  const gesture=await page.evaluate(()=>window.R38_CASH_OPEN_TRACE);
+  assert(gesture.filter(row=>row.phase==='handler').length===1,'one physical gesture invokes cash handler exactly once');
+  assert(gesture.find(row=>row.phase==='access-refresh')?.sameButton===true,'access refresh preserves the attached opening button');
   await page.waitForFunction(()=>document.querySelector('#toast')?.textContent==='Jornada iniciada exitosamente');
   const sales=[];
   for(const method of ['Efectivo','Tarjeta','Transferencia','Apartado']){sales.push(await charge(page,method));console.log('PASS '+label+' charge '+method);}
@@ -139,17 +177,18 @@ async function commerce(page,label){
   const physicalIncome=data.movements.filter(m=>m.kind==='ingreso'&&m.paymentMethod==='Efectivo').reduce((s,m)=>s+m.amount,0);
   assert(physicalIncome===12,'transfers never count in physical drawer');
   await page.locator('#closeDayBtn').click();
-  assert(await page.locator('#cajaInicial').inputValue()==='50','closing opening input preserves server aperture');
-  await page.locator('#efectivoFisico').fill('62');await page.locator('#closeDaySubmitBtn').click();
+  assert(Number(await page.locator('#cajaInicial').inputValue())===openingAmount,'closing opening input preserves server aperture');
+  const expectedCash=openingAmount+12;
+  await page.locator('#efectivoFisico').fill(String(expectedCash));await page.locator('#closeDaySubmitBtn').click();
   const closed=(await cloudUntil(data=>data.dailyReports.length===1&&data.cashSessions.some(s=>s.status==='closed'),'cash close')).payload.data;
   const report=closed.dailyReports[0],session=closed.cashSessions.find(s=>s.status==='closed');
-  assert(report.expectedCash===62&&report.countedCash===62&&report.difference===0,'cash reconciliation authoritative: '+JSON.stringify({expected:report.expectedCash,counted:report.countedCash,difference:report.difference,opening:report.openingAmount,movements:closed.movements}));
-  assert(session.expectedCash===62&&session.countedCash===62&&session.difference===0,'cash session matches voucher');
+  assert(report.expectedCash===expectedCash&&report.countedCash===expectedCash&&report.difference===0,'cash reconciliation authoritative: '+JSON.stringify({expected:report.expectedCash,counted:report.countedCash,difference:report.difference,opening:report.openingAmount,movements:closed.movements}));
+  assert(session.expectedCash===expectedCash&&session.countedCash===expectedCash&&session.difference===0,'cash session matches voucher');
   assert(report.paymentTotals.cash===12&&report.paymentTotals.card===12.5&&report.paymentTotals.transfer===12&&report.paymentTotals.layawayPayments===12,'voucher separate tender totals');
   assert(!Object.hasOwn(report,'html')&&report.renderVersion==='cash-close-structured-v1','new cash reports persist structured fields without redundant printable HTML');
   const voucherHtml=await page.locator('#pdfContentPreview').innerHTML();
   for(const [label,amount]of [['Efectivo','12.00'],['Tarjeta','12.50'],['Transferencia','12.00'],['Abonos Apartado','12.00']])assert(voucherHtml.includes(`<span>${label}:</span><span>$${amount}</span>`),'reconstructed voucher '+label);
-  results.push({label,sales:4,newMovements:6,layaway:'picked_up',physicalIncome,expectedCash:62,stock:27});
+  results.push({label,sales:4,newMovements:6,layaway:'picked_up',physicalIncome,expectedCash,stock:27});
 }
 
 return {cloudUntil,sync,route,searchAndEdit,editStock,charge,payment,commerce};
