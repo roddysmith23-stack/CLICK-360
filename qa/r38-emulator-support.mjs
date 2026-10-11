@@ -175,11 +175,18 @@ async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
   const origins=[`http://127.0.0.1:${port}`,`http://127.0.0.1:${firestorePort}`,`http://127.0.0.1:${authPort}`];
   if(hostedUrl)origins.push(new URL(hostedUrl).origin);
   if(emulatorOrigin)origins.push(emulatorOrigin);
-  const isolation=await createEmulatorIsolation(origins);
+  const networkEvents=[];
+  const isolation=await createEmulatorIsolation(origins,{onEvent:event=>{
+    if(event.origin!==`http://127.0.0.1:${firestorePort}`&&event.origin!==`http://127.0.0.1:${authPort}`)return;
+    networkEvents.push(event);if(networkEvents.length>100)networkEvents.shift();
+  }});
   let context;
   try { context = await browser.newContext({ viewport, proxy:{server:isolation.server}, ...(hostedUrl ? {serviceWorkers:'block',ignoreHTTPSErrors:!!emulatorOrigin} : {}) }); }
   catch(error) { await isolation.close(); throw error; }
-  context.once('close',()=>isolation.close());
+  const closeContext=context.close.bind(context);
+  context.close=async options=>{try {await closeContext(options);} finally {await isolation.close();}};
+  context.once('close',()=>{void isolation.close();});
+  context.emulatorNetworkEvents=networkEvents;
   if (emulatorOrigin && context.browser()?.browserType()?.name() === 'chromium') {
     await context.grantPermissions(['local-network-access'], { origin:new URL(hostedUrl).origin });
   }
@@ -227,6 +234,9 @@ async function openSignedIn(browser, viewport) {
         parsed.pathname.includes('batchGet')?'batchGet':parsed.pathname.includes('signIn')?'signIn':'rpc',method:request.method()};
   };
   const trace = entry => {transportTrace.push({at:Date.now(),...entry});if(transportTrace.length>80)transportTrace.shift();};
+  let offlineRequested=false;
+  const setOffline=context.setOffline.bind(context);
+  context.setOffline=async value=>{offlineRequested=value;trace({event:'test-network-mode',offline:value});return setOffline(value);};
   page.on('request', request => {const info=endpoint(request);if(info){pendingRequests.set(request,info);trace({event:'request',...info});}});
   page.on('response', response => {const info=endpoint(response.request());if(info)trace({event:'response',status:response.status(),...info});});
   page.on('requestfinished', request => {const info=pendingRequests.get(request);if(info)trace({event:'finished',...info});pendingRequests.delete(request);});
@@ -239,7 +249,15 @@ async function openSignedIn(browser, viewport) {
       if(window.R38_SYNC_TRACE.length>100)window.R38_SYNC_TRACE.shift();
     });
   });
-  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('pageerror', (error) => {
+    pageErrors.push(error.message);
+    // Diagnostic only: do not waive any error. Remove request query strings
+    // from logs; retain stack/location and the intentional network phase.
+    const sanitize=value=>String(value||'').replace(/\?[^\s"']+/g,'?[redacted]');
+    console.error('R38 synthetic browser exception '+JSON.stringify({name:error.name,message:sanitize(error.message),
+      stack:sanitize(error.stack),offlineRequested,transportTrace:transportTrace.map(entry=>({...entry,...(entry.error?{error:sanitize(entry.error)}:{})})),
+      proxyEvents:context.emulatorNetworkEvents,pendingRequests:[...pendingRequests.values()]}));
+  });
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
   // Isolation is enforced by the exact-origin proxy, not page.route(): even
   // unmatched routes enable browser interception and can stall WebChannel.

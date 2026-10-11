@@ -159,6 +159,14 @@ Read-only planning against that real backup exposed and corrected a synthetic-fi
 
 ## Trust and release limits — not yet production ready
 
+### Emulator transport lifecycle regression (2026-10-11)
+
+HEAD a688897's Spark and device workflows passed; Web Release failed in the real commerce matrix with a WebKit second-device Listen access-control exception. This failure is retained, not dismissed as flaky. The diagnostic repeat also captured a Write GET `ECONNRESET` before response headers after offline/reconnect. The proxy generated a 502 without emulator CORS headers, explaining that particular browser access-control message; it does not establish that every earlier failure had the same cause.
+
+A separate event-driven regression demonstrated that closing the original proxy left an idle upstream socket alive (`PROXY_IDLE_UPSTREAM_NOT_DISPOSED`). The test failed before the change and passed afterward. The synthetic exact-origin proxy now owns non-pooling HTTP/HTTPS agents rather than borrowing Node's global keep-alive pool, does not destroy completed upstream responses, and releases its agents and sockets through an idempotent awaited close. Browser-context teardown waits for that close. Streaming, origin restrictions, all page-error assertions, authentication, Rules and the application are unchanged. No commercial request is retried by the proxy.
+
+Five sequential lifecycle regressions passed. Full four-profile Chromium/WebKit commerce repetitions and the new HEAD's GitHub release workflow remain required; a lifecycle fix alone is not a release, operational-UI, staging or physical recovery certificate.
+
 Firestore Rules authorize identities/phases/transactions; they cannot SHA-256 reconstruct thousands of arbitrary documents. This operational migration uses an authenticated owner's current client to reread and compare its own data. It is **not** an independently server-verified disaster backup, and must not advertise that guarantee. #94 remains the optional future independent verifier.
 
 The imported DEV operational kernel uses flat records; shadow records preserve source under `data`. A common pure record codec now verifies hashes/identity/revisions, preserves imported custom fields/origin, retains native server metadata and maps business config/main correctly. Its unit test passes. Real SDK transaction integration is still required; never activate the existing kernel against nested shadow records unchanged.

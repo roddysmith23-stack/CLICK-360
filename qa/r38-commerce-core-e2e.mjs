@@ -52,6 +52,7 @@ try{
     await cloudUntil(data=>data.products.some(p=>p.id===created.id&&p.stock===31&&p.qty===31),'offline inventory converges online');
     await sync(device.page);
     console.log('PASS '+label+' decrease + offline→online');
+    assert(device.pageErrors.length===0,'Offline/reconnect browser errors '+JSON.stringify(device.pageErrors));
     await device.context.close();device=await openSignedIn(browser,viewport);activeDevice=device;
     await device.page.waitForFunction(id=>window.click360GetTenantState().products.some(p=>p.id===id&&p.stock===31&&p.qty===31),created.id);
     const deviceB=await openSignedIn(browsers[1-browserIndex],viewport);

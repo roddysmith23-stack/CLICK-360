@@ -73,6 +73,25 @@ try {
   }
   assert.equal(hits,1,'Blocked requests never contact upstream');
 } finally {await isolation.close();await new Promise(resolve=>upstream.close(resolve));}
+// Disposing a browser proxy must also dispose its idle upstream connection.
+// An owned lifecycle prevents a prior device from retaining emulator handles.
+{
+  let peerClosed;
+  const closed=new Promise(resolve=>{peerClosed=resolve;});
+  const peer=http.createServer((_request,response)=>response.end('done'));
+  peer.on('connection',socket=>socket.once('close',peerClosed));
+  await new Promise(resolve=>peer.listen(0,'127.0.0.1',resolve));
+  const origin=`http://127.0.0.1:${peer.address().port}`,isolated=await createEmulatorIsolation([origin]),proxy=new URL(isolated.server);
+  let deadline;
+  try{
+    await new Promise((resolve,reject)=>{const request=http.request({hostname:proxy.hostname,port:proxy.port,path:origin+'/idle'},response=>{
+      response.resume();response.on('end',resolve);response.on('error',reject);
+    });request.on('error',reject);request.end();});
+    await isolated.close();
+    await Promise.race([closed,new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Error('PROXY_IDLE_UPSTREAM_NOT_DISPOSED')),2000);})]);
+    await isolated.close(); // Disposal must be idempotent.
+  }finally{clearTimeout(deadline);await isolated.close();await new Promise(resolve=>peer.close(resolve));}
+}
 // Extract the real PWA commit entry point: Spark never falls through to save,
 // legacy sync or legacy refresh, including an unsupported command and failure.
 const source=await readFile('app.js','utf8');
