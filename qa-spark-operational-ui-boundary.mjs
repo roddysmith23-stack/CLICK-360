@@ -22,6 +22,15 @@ assert.equal(reportView.productQuantity,3);assert.equal(reportView.income,5);
 assert.equal(reportView.paymentTotals.transfer,32);assert.equal(reportView.paymentTotals.receivableIncluded,true);
 assert.throws(()=>globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView({...report,totalItems:undefined}),/AUTHORITATIVE_SUMMARY/);
 assert.equal(report.paymentTotals.layawayPayments,undefined,'Derived print view cannot mutate server report');
+const helper=await readFile('qa/r38-emulator-support.mjs','utf8');
+const patternFunction=helper.match(/function externalRequestPattern\(\) \{[\s\S]*?\n\}/)?.[0];assert(patternFunction);
+const network={port:4810,firestorePort:48098,authPort:49108,hostedUrl:'',process:{env:{}}};
+vm.createContext(network);vm.runInContext(`${patternFunction};globalThis.pattern=externalRequestPattern()`,network);
+assert.equal(network.pattern.test('http://127.0.0.1:48098/google.firestore.v1.Firestore/Listen/channel'),false,'WebChannel must not be intercepted');
+assert.equal(network.pattern.test('http://127.0.0.1:49108/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword'),false);
+for(const url of ['https://firestore.googleapis.com/v1/projects/click-360','https://click-360.web.app/',
+  'http://127.0.0.1:480981/','http://127.0.0.1:48098.evil.test/','http://127.0.0.1:48098@evil.test/'])
+  assert.equal(network.pattern.test(url),true,'Production/external network remains intercepted and denied');
 // Extract the real PWA commit entry point: Spark never falls through to save,
 // legacy sync or legacy refresh, including an unsupported command and failure.
 const source=await readFile('app.js','utf8');

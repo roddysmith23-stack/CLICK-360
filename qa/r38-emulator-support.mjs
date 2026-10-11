@@ -233,15 +233,12 @@ async function openSignedIn(browser, viewport) {
   });
   page.on('pageerror', (error) => pageErrors.push(error.message));
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
-  await page.route('**/*', (route) => {
-    const requestUrl = route.request().url();
-    const local = requestUrl.startsWith(`http://127.0.0.1:${port}/`)
-      || (hostedUrl && new URL(requestUrl).origin === new URL(hostedUrl).origin)
-      || (process.env.CLICK360_R38_EMULATOR_ORIGIN && requestUrl.startsWith(process.env.CLICK360_R38_EMULATOR_ORIGIN + '/'))
-      || requestUrl.startsWith(`http://127.0.0.1:${firestorePort}/`)
-      || requestUrl.startsWith(`http://127.0.0.1:${authPort}/`);
-    return local ? route.continue() : route.abort();
-  });
+  // Do not intercept allowed streaming WebChannel responses. In Linux
+  // WebKit the catch-all route/continue path buffers the long-lived GET:
+  // headers arrive (200) but bootstrap receives no document before the
+  // channel is cancelled at 45s. External traffic is still blocked; only
+  // exact synthetic/isolated origins bypass Playwright interception.
+  await page.route(externalRequestPattern(), route=>route.abort());
   const step = async (label, fn) => {
     try { return await fn(); } catch (error) {
       // A new page can fail before the caller assigns activeDevice. Capture
@@ -277,6 +274,14 @@ async function openSignedIn(browser, viewport) {
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };
+}
+
+function externalRequestPattern() {
+  const origins=[`http://127.0.0.1:${port}`,`http://127.0.0.1:${firestorePort}`,`http://127.0.0.1:${authPort}`];
+  if(hostedUrl)origins.push(new URL(hostedUrl).origin);
+  if(process.env.CLICK360_R38_EMULATOR_ORIGIN)origins.push(new URL(process.env.CLICK360_R38_EMULATOR_ORIGIN).origin);
+  const allowed=origins.map(origin=>`${origin.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}/`).join('|');
+  return new RegExp(`^(?!(?:${allowed}))https?://`);
 }
 
 // A same-tenant device left open elsewhere (this harness's own `reopenedA`)
