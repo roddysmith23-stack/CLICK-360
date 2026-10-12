@@ -23,6 +23,7 @@ const files = [
   'modular-operation-coordinator.js',
   'modular-ui-adapter.js',
   'spark-operational-ui-runtime.js',
+  'spark-operational-bootstrap.js',
   'firebase-config.js',
   'p0-tenant-guard.js',
   'worker-data-boundary.js',
@@ -75,7 +76,7 @@ await writeFile(swPath, (await readFile(swPath, 'utf8')).replace('__CLICK360_SW_
 for (const entry of ['app.js', 'firebase-service.js', 'tenant-quota-overrides.js', 'v16-storage.js',
   'spark-modular-migration.js','spark-modular-record-codec.js','spark-modular-transaction-transport.js',
   'modular-operation-journal.js','modular-persistence.js','modular-operation-coordinator.js',
-  'modular-ui-adapter.js','spark-operational-ui-runtime.js']) {
+  'modular-ui-adapter.js','spark-operational-ui-runtime.js','spark-operational-bootstrap.js']) {
   const file = join(output, entry);
   const stamp = `globalThis.CLICK360_RELEASE_ASSETS ||= {}; globalThis.CLICK360_RELEASE_ASSETS[${JSON.stringify(entry)}] = ${JSON.stringify(shortSha)};\n`;
   await writeFile(file, stamp + await readFile(file, 'utf8'));

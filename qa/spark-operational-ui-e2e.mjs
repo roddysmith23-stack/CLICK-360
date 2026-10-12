@@ -36,27 +36,36 @@ try{
     await env.clearFirestore();
     const data=largeTenantData(uid);data.sales=[];data.movements=[];data.cashSessions=[];data.auditLogs=[];
     data.products[0]={...data.products[0],code:'SPARK-LIVE',price:30,cardPrice:30,stock:2,qty:2};
+    const otherBusiness=`second-${uid}`;
+    data.businesses.push({id:otherBusiness,name:'Segundo negocio sintético',status:'activo',type:'ropa',settings:{}});
+    data.products.push({id:'other-product',businessId:otherBusiness,code:'OTHER-BUSINESS',name:'Producto aislado',stock:7,qty:7,price:5,cardPrice:5,cost:1});
     await seed(env,async db=>{await setDoc(doc(db,'accountAccess',uid),accountAccess(uid));await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,1,data));});
+    const manifest=await globalThis.CLICK360_SPARK_MIGRATION.plan({ownerUid:uid,snapshot:data,
+      identity:stateDocument(uid,1,data).payload.identity,remoteRevision:1});
+    await seed(env,async db=>{
+      for(const row of manifest.records)await setDoc(doc(db,row.path),row.content);
+      await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:manifest.sourceHash,reconstructedHash:manifest.sourceHash,businessIds:[uid,otherBusiness]});
+      for(const [moduleName,id,extra]of [['metadata','runtime',{summaryVersion:1,openCashSessionId:''}]]){
+        const flat={...extra,id,ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,storageSchemaVersion:2,module:moduleName,recordVersion:1};
+        await setDoc(doc(db,`${base}/${moduleName}/${id}`),await globalThis.CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity,moduleName,recordId:id}));
+        const otherIdentity={ownerUid:uid,businessId:otherBusiness};
+        await setDoc(doc(db,`businesses/${uid}/businessUnits/${otherBusiness}/storage/v2/${moduleName}/${id}`),
+          await globalThis.CLICK360_SPARK_RECORD_CODEC.pack({...flat,businessId:otherBusiness,tenantKey:`owner:${uid}:business:${otherBusiness}`},
+            {identity:otherIdentity,moduleName,recordId:id}));
+      }
+    });
     device=await openSignedIn(browser,{width:390,height:844});
     const page=device.page;
     const workerProof=await page.evaluate(()=>({controlled:!!navigator.serviceWorker.controller,
       sameRelease:click360ServiceWorkerRelease.buildSha===CLICK360_RELEASE_ASSETS['app.js']}));
     assert(workerProof.controlled&&workerProof.sameRelease,'Actual installed worker must match the served app before signing in');
     assert(await page.evaluate(()=>window.click360FirestoreTransport==='long_polling'),'Use the real app SDK transport, never a harness-only override');
+    assert(await page.evaluate(()=>!!window.click360SparkOperationalSession&&window.click360SparkBootstrapState?.phase==='READY'),'Authentication automatically connects the modular PWA before any commercial action');
+    assert(await page.evaluate(()=>click360GetTenantState().legalAcceptances?.some(a=>a.id==='legal-qa')),
+      'Restore existing consent from its actual configuration source path; do not waive the legal gate');
     const legacyBefore=await readCloud(env,uid);
-    await seed(env,async db=>{
-      await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:'a'.repeat(64),reconstructedHash:'a'.repeat(64),businessIds:[uid]});
-      for(const [moduleName,id,extra]of [['metadata','runtime',{summaryVersion:1,openCashSessionId:''}],['products',data.products[0].id,data.products[0]]]){
-        const flat={...extra,id,ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,storageSchemaVersion:2,module:moduleName,recordVersion:1};
-        await setDoc(doc(db,`${base}/${moduleName}/${id}`),await globalThis.CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity,moduleName,recordId:id}));
-      }
-    });
     await page.evaluate(async({projectId,uid})=>{
-      const identity=CLICK360_MODULAR_PERSISTENCE.identity(uid,uid);
-      window.click360SparkOperationalSession=await CLICK360_SPARK_OPERATIONAL_UI.create({projectId,db:firebase.firestore(),ownerUid:uid,businessId:uid,actorUid:uid,
-        syntheticCertification:true,deviceId:'served-ui-device',resolveUser:()=>firebase.auth().currentUser,resolveIdentity:()=>identity,
-        serverTimestamp:()=>firebase.firestore.FieldValue.serverTimestamp(),persistCandidate:window.click360PersistSparkCandidate,
-        projectConfirmed:window.click360ProjectSparkOperation,onStatus:status=>{window.SPARK_UI_STATUS=status;}});
+      window.addEventListener('click360-spark-operation-status',event=>{window.SPARK_UI_STATUS=event.detail;});
       const session=window.click360SparkOperationalSession;
       window.click360SparkOperationalSession={...session,commit:async request=>{
         try{const result=await session.commit(request);window.SPARK_UI_COMMIT=result;return result;}
@@ -219,9 +228,86 @@ try{
     const health=await page.evaluate(()=>window.click360SparkOperationalSession.health());
     assert(health.pendingCount===0&&health.unknownCount===0&&health.projectionPendingCount===0,'Durable local projection completed');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'No legacy overwrite');
+    await page.evaluate(()=>{location.hash='#cash';});
+    await page.locator('#workingDateInput').fill('2026-09-04');await page.locator('#workingDateInput').dispatchEvent('change');
+    await page.locator('#apertureAmountInput').fill('0');await resetStatus();await page.locator('#startDayBtnCash').click();await confirmed();
+    const activeBeforeRestart=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open').id);
+    // These explicitly empty historical sessions sort before the real active
+    // session. Their matching reports are fixtures, never customer repairs.
+    await seed(env,async db=>{
+      for(let index=0;index<101;index++){
+        const id=`a-history-${String(index).padStart(3,'0')}`,reportId=`report-${id}`;
+        const common={ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,storageSchemaVersion:2,recordVersion:1};
+        const session={...common,id,module:'cashSessions',status:'closed',date:'2026-08-01',reportId,summaryVersion:1,
+          openingAmount:0,cashBalance:0,saleCount:0,salesTotal:0,itemCount:0,taxTotal:0,incomeCash:0,expenseCash:0,
+          paymentTotals:{cash:0,card:0,transfer:0,receivablePayments:0},closeCycle:1};
+        const report={...common,id:reportId,module:'dailyReports',cashSessionId:id,date:session.date,status:'closed',
+          openingAmount:0,declaredCash:0,theoreticalCash:0,difference:0,saleCount:0,total:0,totalItems:0,totalIva:0,
+          incomeCash:0,expenseCash:0,paymentTotals:session.paymentTotals,closeCycle:1};
+        for(const [moduleName,record]of [['cashSessions',session],['dailyReports',report]])
+          await setDoc(doc(db,`${base}/${moduleName}/${record.id}`),
+            await globalThis.CLICK360_SPARK_RECORD_CODEC.pack(record,{identity,moduleName,recordId:record.id}));
+      }
+    });
     const runtime=await page.evaluate(()=>({global:!!CLICK360_SPARK_OPERATIONAL_UI,hash:CLICK360_RELEASE_ASSETS['app.js'],sale:click360GetTenantState().sales.at(-1).id}));
     assert(runtime.sale,'Existing receipt ID preserved');
+    const contender=await device.context.newPage();
+    try{
+      await contender.goto(url,{waitUntil:'domcontentloaded'});
+      await contender.waitForFunction(()=>window.click360SparkBootstrapState?.phase==='BLOCKED');
+      assert(await contender.evaluate(()=>click360SparkBootstrapState.reason==='SPARK_BOOTSTRAP_DEVICE_ALREADY_ACTIVE'),
+        'A second tab cannot start another coordinator for the same device');
+      assert(await page.evaluate(()=>click360SparkAccessGate().allowed===true),'The active tab remains authorized');
+    }finally{await contender.close();}
+    // Destroy the document, not IndexedDB. The next document must rebuild the
+    // same operational UI automatically; no test-created repository/session.
+    const durableBefore=await page.evaluate(async()=>{
+      const state=click360GetTenantState();
+      return {business:state.activeBusinessId,sales:state.sales.map(s=>s.operationId).sort(),
+        stock:state.products.map(p=>[p.id,p.stock]).sort(),deleted:state.deletedProducts.map(p=>p.id).sort()};
+    });
+    await page.close();
+    const restarted=await device.context.newPage();device.page=restarted;
+    await restarted.goto(url,{waitUntil:'domcontentloaded'});
+    await restarted.waitForFunction(()=>{
+      if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason);
+      return window.click360SparkBootstrapState?.phase==='READY'&&!!window.click360SparkOperationalSession;
+    });
+    const durableAfter=await restarted.evaluate(()=>{
+      const state=click360GetTenantState();
+      return {business:state.activeBusinessId,sales:state.sales.map(s=>s.operationId).sort(),
+        stock:state.products.map(p=>[p.id,p.stock]).sort(),deleted:state.deletedProducts.map(p=>p.id).sort()};
+    });
+    assert(JSON.stringify(durableAfter)===JSON.stringify(durableBefore),'Automatic cold document restart preserves sales, stock and tombstones');
+    assert(await restarted.evaluate(()=>click360SparkAccessGate().allowed===true),'Actual authorization remains valid after restart');
+    assert(await restarted.evaluate(id=>click360GetTenantState().cashSessions.some(s=>s.id===id&&s.status==='open'),activeBeforeRestart),
+      'Exact active cash session survives outside the first hundred historical rows');
+    assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Restart cannot write legacy');
+    const secondDevice=await openSignedIn(browser,{width:1280,height:800});
+    try{
+      const observed=await secondDevice.page.evaluate(()=>{
+        const state=click360GetTenantState();
+        return {business:state.activeBusinessId,sales:state.sales.map(s=>s.operationId).sort(),
+          stock:state.products.map(p=>[p.id,p.stock]).sort(),deleted:state.deletedProducts.map(p=>p.id).sort()};
+      });
+      assert(JSON.stringify(observed)===JSON.stringify(durableAfter),'An independent browser storage context sees the same authoritative commerce');
+    }finally{await secondDevice.context.close();}
+    await restarted.locator('#businessPickerTop').click();
+    await restarted.locator(`[data-business-switch="${otherBusiness}"]`).click();
+    await restarted.waitForFunction(id=>click360GetActiveBusinessId()===id
+      &&click360SparkCoordinator.phase()==='READY',otherBusiness);
+    assert(await restarted.evaluate(id=>click360SparkOperationalSession.identity.businessId===id
+      &&click360GetTenantState().products.some(p=>p.id==='other-product'&&p.businessId===id&&p.stock===7),otherBusiness),
+      'Actual business switch installs the right repository without losing the other business');
+    await restarted.locator('#businessPickerTop').click();await restarted.locator(`[data-business-switch="${uid}"]`).click();
+    await restarted.waitForFunction(id=>click360GetActiveBusinessId()===id&&click360SparkCoordinator.phase()==='READY',uid);
+    assert(await restarted.evaluate(id=>click360GetTenantState().sales.filter(s=>s.businessId===id).length===4,uid),
+      'Returning to the original business recovers its four unique financial sales');
+    assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Both business switches leave the shared legacy document intact');
     results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,productDeletePreservesHistory:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
+      automaticAuthBootstrap:true,automaticColdRestart:true,secondDeviceAuthoritativeRead:true,twoBusinessRepositorySwitch:true,
+      duplicateTabCoordinatorDenied:true,
+      exactActiveCashBeyondHistoryPage:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
       appFirestoreTransport:'long_polling',customerCreateAndEdit:true,customerDeletePreservesHistory:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
@@ -235,7 +321,9 @@ try{
   writeFileSync(path.join(output,'results.json'),text);writeFileSync(path.join(output,`results-${Date.now()}.json`),text);console.log(text);
 }catch(error){
   if(device?.page)console.log(JSON.stringify(await device.page.evaluate(()=>({status:window.SPARK_UI_STATUS,toast:document.querySelector('#toast')?.textContent,
-    commit:window.SPARK_UI_COMMIT,lastFailure:window.click360LastSaveFailure,gate:window.click360WriteGate?.(),state:click360GetTenantState()?.cashSessions})).catch(()=>null)));
+    commit:window.SPARK_UI_COMMIT,lastFailure:window.click360LastSaveFailure,gate:window.click360WriteGate?.(),
+    bootstrap:window.click360SparkBootstrapState,accessGate:window.click360SparkAccessGate?.(),
+    gateText:document.querySelector('#click360-auth-gate')?.textContent,state:click360GetTenantState()?.cashSessions})).catch(()=>null)));
   if(device)console.log(JSON.stringify({pageErrors:device.pageErrors}));
   throw error;
 }finally{

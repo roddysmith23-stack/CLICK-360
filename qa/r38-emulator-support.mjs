@@ -276,6 +276,7 @@ async function openSignedIn(browser, viewport) {
         counts: { products: window.click360GetTenantState?.()?.products?.length,
           sales: window.click360GetTenantState?.()?.sales?.length },
         toast: document.querySelector('#toast')?.textContent
+        ,sparkBootstrap:window.click360SparkBootstrapState
       })).catch(() => null);
       console.error('R38 emulator-only new-device failure evidence '+JSON.stringify({ label, viewport, diagnostic, pageErrors,
         transportTrace,pendingRequests:[...pendingRequests.values()] }));
@@ -292,11 +293,15 @@ async function openSignedIn(browser, viewport) {
   if(!hostedUrl)await step('service-worker-controlled',()=>page.waitForFunction(()=>!!navigator.serviceWorker?.controller
     && window.click360ServiceWorkerRelease?.buildSha===window.CLICK360_RELEASE_ASSETS?.['app.js'], null, {timeout:60000}));
   await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
-  await step('hydrated-and-synced', () => page.waitForFunction(hosted => window.click360IsTenantDataHydrated?.() === true
+  await step('hydrated-and-synced', () => page.waitForFunction(hosted => {
+    if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason||'SPARK_BOOTSTRAP_BLOCKED');
+    return window.click360IsTenantDataHydrated?.() === true
     && (window.click360SyncStatus?.status === 'synced'
+      ||(window.click360SyncStatus?.status==='modular_confirmed'&&window.click360SparkBootstrapState?.phase==='READY'
+        &&!!window.click360SparkOperationalSession)
       || (hosted && window.click360GetCapacityStatus?.().cloudCapacityBlocked === true
         && window.click360GetSyncState?.().blocking === false
-        && window.click360GetStorageState?.().indexedDbReady === true)), !!hostedUrl || process.env.CLICK360_R38_ALLOW_CAPACITY_PENDING === '1', { timeout: 60000 }));
+        && window.click360GetStorageState?.().indexedDbReady === true));}, !!hostedUrl || process.env.CLICK360_R38_ALLOW_CAPACITY_PENDING === '1', { timeout: 60000 }));
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };

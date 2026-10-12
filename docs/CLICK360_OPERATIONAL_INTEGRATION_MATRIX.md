@@ -1,17 +1,19 @@
 # Operational integration audit — 2026-10-12
 
-Baseline: PR #96 `5a08b825a96f3840da843a28f8d8fe7a32f756b1`, clean worktree, all required CI checks SUCCESS. Public Hosting manifest freshly read: `21409a1d2dc7`. No production writes, merge, deployment or real migration in this audit. Existing certified fixes are retained.
+Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI checks SUCCESS. Public Hosting manifest freshly read: `21409a1d2dc7`. Subsequent bootstrap work is a local candidate until its own clean HEAD checks pass. No production writes, merge, deployment or real migration. Existing certified fixes are retained.
 
 ## Actual lifecycle, not component availability
 
 1. `firebase-service.js onAuthStateChanged` resolves access and binds the authenticated tenant; duplicate same-user approval events do not tear down an active operation.
-2. `enterApprovedApp` prepares device storage and currently pulls legacy data. Its existing `MODULAR_MODE/MODULAR_GATEWAY` branch is the **older worker-boundary gateway**, not automatic Spark V1 owner bootstrap.
+2. `enterApprovedApp` now checks the actual SDK project and resolves owner storage mode from the authoritative server in the isolated Spark emulator/staging projects. `spark-operational-bootstrap` restores device data and drains the journal before installing bounded server views. Legacy mode retains its existing path. Production and the older worker-boundary gateway remain separate and are not automatically activated by this change.
 3. `app.js` restores validated local/IndexedDB state, renders the existing business interface and executes existing commercial handlers.
-4. A **synthetic certification session explicitly connected by the served test** routes supported `commitCriticalMutation` commands through `spark-operational-ui-runtime`, journal, coordinator, transaction repository and client SDK. Production activation remains rejected.
+4. The served synthetic PWA now connects its Spark session through actual authentication/bootstrap, **not a test-created runtime**. Supported `commitCriticalMutation` commands go through `spark-operational-ui-runtime`, journal, coordinator, transaction repository and client SDK. Production activation remains rejected.
 5. The durable command is pinned before candidate persistence and network traffic. Confirmation requires authoritative ledger lookup and a bounded record projection. Local projection failure stays indexed separately; no sale/stock replay is justified by projection failure.
 6. An unsupported modular command fails closed rather than falling through to legacy. Generic `save`, snapshot application and legacy/V1 pushes also reject an active Spark session. A demonstrated generic-save defect left unsupported edits in memory after rejection; the corrected branch discards only that unpersisted edit by recovering the latest durable **device** candidate (including its pending operations), not an older remote view. The regression executes the actual PWA function and fails before this change.
-7. Pending commercial/projection rows currently block another candidate; complete multi-operation offline overlay is **not** implemented. A demonstrated replay deadlock has been corrected: when commercial rows remain, bounded replay settles them before attempting the indexed projection barrier. Only that specific barrier allows the next queued operation to be considered; UNKNOWN, network, issuer, revision and actual durability failures still stop. Component pagination/count/drain tests do not certify the missing multi-operation UI overlay or automatic bootstrap.
+7. Pending commercial/projection rows currently block another candidate; complete multi-operation offline overlay is **not** implemented. Bounded replay settles financial rows before the indexed projection barrier; UNKNOWN, network, issuer, revision and durability failures stop. Automatic owner bootstrap drains complete journal counts and verifies progress without retry timers. It still does not certify cold offline bootstrap or migration of a capacity-pending legacy source.
 8. Logout or actor/tenant context change must revoke the old writer without deleting snapshots or journal. Durable Spark command hashes now include the original actor; an unconfirmed row from another/missing issuer cannot silently be re-signed under the next worker.
+9. The bootstrap owns a browser Web Lock for its complete lifetime, including commands/replay, and removes lifecycle listeners on closure. A competing tab fails closed. Business changes drain the outgoing journal and durably preserve the verified selection before constructing the new repository; rejected background saves cannot restore the preceding business mid-transition.
+10. Consent/configuration arrays are reconstructed using the next path component to choose array versus object containers. Existing legal consent is restored, not waived. Authorization listens only to the identity's actual approval source; self-service owners are not incorrectly revoked for an absent `approvedUsers` document.
 
 ## Integration matrix
 
@@ -19,12 +21,12 @@ Baseline: PR #96 `5a08b825a96f3840da843a28f8d8fe7a32f756b1`, clean worktree, all
 
 | Flow | Actual file / adapter | Source and effect | Evidence / status |
 |---|---|---|---|
-| Auth, tenant resolution | `firebase-service.js onAuthStateChanged`, access resolver | Auth + server access; binds owner/worker | Existing release QA; Spark automatic mode routing missing |
-| Initial owner load | `enterApprovedApp`, `pullRemoteOnce` | Legacy `state/main` plus protected device cache | Legacy certified; Spark owner bootstrap not connected |
-| Select business | `app.js`, tenant context / runtime identity guard | Must replace writer and recover matching journal | Cross-business guards; full modular business-switch journey missing |
+| Auth, tenant resolution | `firebase-service.js onAuthStateChanged`, access resolver | Auth + authoritative server mode/access | Automatic owner bootstrap served Chromium/WebKit; worker V2 bootstrap remains incomplete |
+| Initial owner load | `enterApprovedApp`, `spark-operational-bootstrap` | Verified modular documents and protected device cache; no legacy pull for modular owner | Served real SDK/Auth/Rules emulators; legacy pending source blocks replacement |
+| Select business | `app.js`, bootstrap / runtime identity guard | Drain old journal, durable selection, replace repository and load selected modules | Actual two-business picker in Chromium/WebKit; shared legacy remains unchanged |
 | Product create | `app.js productForm`, `productMutationCommand` | Product + opening movement + ledger atomically | Served Chromium/WebKit, client Rules |
 | Product edit + stock | Same form / `inventory_adjust` | Product metadata + stock delta + movement + ledger atomically | Served Chromium/WebKit; no split commits |
-| Product logical delete | `deleteProduct`, `productDeleteCommand` | Revision-checked tombstone + ledger; retains stock/history, no financial expense | New candidate regression; awaiting candidate suites |
+| Product logical delete | `deleteProduct`, `productDeleteCommand` | Revision-checked tombstone + ledger; retains stock/history, no financial expense | Baseline CI and served Chromium/WebKit; retained through automatic restart |
 | Bulk product/import inventory | Existing import/editor paths / `save` | Legacy full-state mutation | Blocked; bounded typed import not integrated |
 | Current/manual/historical sale | `bindSell`, explicit live/manual adapters | Exact session + sale + stock + movement + ledger | Served Chromium/WebKit and real-client Rules; bounded 12-line worst case |
 | Initial apartado | Same checkout / `layawayCommand` | Reservation plus actual initial deposit, not full price receipt | Served Chromium/WebKit |
@@ -45,7 +47,7 @@ Baseline: PR #96 `5a08b825a96f3840da843a28f8d8fe7a32f756b1`, clean worktree, all
 | Supplier invoices / finance | Existing guarded handlers | Legacy operational records | Blocked; must not activate a tenant needing unsupported writes |
 | Tables/logistics | Existing flows / older V1 gateway | Not Spark V1 operational repository | Distinct architecture must not be mislabeled Spark-certified |
 | Offline / reconnect | Native journal + coordinator + runtime | UNKNOWN lookup before replay; durable projection recovery | Components/native browsers pass; multi-command UI overlay incomplete |
-| Second device | Bounded transport and ledger | Must bootstrap from modular server, not old legacy snapshot | Component races pass; automatic served cold-device journey incomplete |
+| Second device | Bootstrap, bounded transport and ledger | Independent device reads modular server, not old legacy snapshot | Served Chromium/WebKit independent storage contexts see matching sales, stock and tombstones |
 | Migration | Select source, recovery pin, importer, codec, comparator | Owner-wide newest reconciled source; deterministic shadow then server reread | Synthetic/emulator foundations; production bootstrap/coordinator not connected |
 | Legacy write fence | `firestore.spark.rules`, owner `metadata/storage` | Owner-wide fence because legacy snapshot contains multiple businesses | Client Rules + owner coverage tests; real cutover disabled |
 

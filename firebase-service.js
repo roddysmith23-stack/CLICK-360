@@ -43,6 +43,11 @@
 
   window.click360Auth = auth;
   window.click360Db = db;
+  window.click360SparkAccessGate=()=>{
+    if(!AUTH_APPROVED||!PULL_COMPLETE||!activeIdentityIsValid(auth.currentUser))return {allowed:false,reason:'auth_not_ready'};
+    if(isEffectiveReadOnly())return {allowed:false,reason:'read_only'};
+    return {allowed:true,reason:'modular_access_verified'};
+  };
   let BUSINESS_ID = null;
   let STATE_DOC = null;
   let ACTIVE_CONTEXT = null;
@@ -4074,6 +4079,53 @@
 
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
 		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+        const sparkProjectId=db.app.options.projectId;
+        if(['demo-click360-spark-modular','click360-staging-7620168025'].includes(sparkProjectId)
+          && window.CLICK360_SPARK_BOOTSTRAP && window.click360User?.ownerId===user.uid){
+          let sparkCoordinator=null;
+          try{
+            const context=ACTIVE_CONTEXT;
+            await window.click360PrepareTenantStorage?.(context);
+            const coordinator=window.CLICK360_SPARK_BOOTSTRAP.create({projectId:sparkProjectId,db,ownerUid:user.uid,actorUid:user.uid,
+              deviceId:getDeviceId(),resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+              resolveBusiness:()=>window.click360GetActiveBusinessId?.(),
+              restoreLocal:async()=>{
+                const record=await window.CLICK360_V16_STORAGE.getSnapshot(context);
+                if(record&&!await window.click360LoadIndexedTenantCache(context))throw Error('SPARK_BOOTSTRAP_INVALID_DEVICE_STATE');
+              },readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),
+              installBusiness:window.click360InstallSparkBusiness,installView:window.click360InstallSparkView,
+              onPhase:detail=>{
+                window.click360SparkBootstrapState=detail;
+                if(detail.phase!=='LEGACY')setSyncStatus(detail.phase==='READY'?'modular_confirmed':'modular_pending',detail.phase==='READY'
+                  ?'Guardado y respaldado en nube':'Estamos actualizando CLICK 360 y protegiendo tu información.',detail);
+              }});
+            sparkCoordinator=coordinator;
+            const result=await coordinator.recover();
+            if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context){coordinator.close();return false;}
+            if(result.handled){
+              window.click360SparkCoordinator=coordinator;AUTH_APPROVED=true;PULL_COMPLETE=true;
+              INITIAL_TENANT_SEED_REQUIRED=false;tenantGuard.allow(context);
+              window.click360SetSession?.({username:window.click360User.name||'Usuario',role:window.click360User.role||'owner'});
+              if(!unlockApp())return false;
+              clearPublicAuthIntent();
+              // Observe the authority that actually approved this identity.
+              // Self-service accountAccess owners need not have approvedUsers.
+              if(window.click360User?.access?.source==='accountAccess')listenAccountAccess(user,expectedEpoch);
+              else listenUserApproval(user,expectedEpoch);
+              return true;
+            }
+            coordinator.close();
+          }catch(error){
+            sparkCoordinator?.close();window.click360SparkOperationalSession?.close();window.click360SparkOperationalSession=null;
+            window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
+            window.click360SparkBootstrapState={phase:'BLOCKED',reason:String(error.code||error.message||'spark_bootstrap_failed')};
+            AUTH_APPROVED=false;PULL_COMPLETE=false;tenantGuard.block();
+            setSyncStatus('modular_pending','No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.');
+            showGate('No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.',ACCESS_UI_STATES.RECOVERABLE_ERROR,
+              {reason:String(error.code||error.message||'spark_bootstrap_failed')});
+            return false;
+          }
+        }
 	    if (MODULAR_MODE && MODULAR_GATEWAY) {
 	      await window.click360PrepareTenantStorage?.(ACTIVE_CONTEXT);
 	      if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;

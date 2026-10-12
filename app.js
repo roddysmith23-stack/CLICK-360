@@ -198,6 +198,8 @@
   function writeGateStatus() {
     if (deviceSavePending) return { allowed: false, reason: 'device_save_pending' };
     if (window.click360IsMixedBuild?.()) return { allowed:false, reason:'client_data_protection' };
+    if(window.click360SparkBootstrapState&&!['LEGACY','READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState.phase))
+      return {allowed:false,reason:'client_data_protection'};
     // r37 (legacy consent grace): a legacy owner whose 7-day grace period
     // has expired without accepting the updated Terms/Privacy is blocked
     // from NEW commercial mutations here -- but this must never touch
@@ -212,6 +214,20 @@
     }
     return { allowed: true, reason: 'ok' };
   }
+  window.click360SparkMutationGate=function(command){
+    if(window.click360IsMixedBuild?.()||!tenantDataHydrated||!activeTenantContext
+      ||(window.click360SparkBootstrapState&&!['READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState.phase)))
+      return {allowed:false,reason:'client_data_protection'};
+    if(legalMutationGateActive())return {allowed:false,reason:'legal_acceptance_required'};
+    const access=window.click360SparkAccessGate?.();
+    if(access?.allowed!==true)return access||{allowed:false,reason:'auth_not_ready'};
+    if(authUser().role==='owner')return access;
+    const permission={sale:['sales','create'],product_create:['products','create'],product_edit:['products','update'],inventory_adjust:['products','update'],
+      product_delete:['products','delete'],customer_create:['customers','create'],customer_edit:['customers','update'],customer_delete:['customers','delete'],
+      cash_open:['cashSessions','create'],cash_close:['cashSessions','close'],cash_movement:['movements','create'],receivable_payment:['layaways','payment']}[command?.kind];
+    if(!permission||window.click360User?.permissions?.[permission[0]]?.[permission[1]]!==true)return {allowed:false,reason:'permission_required'};
+    return access;
+  };
   function localOnlyPersistenceMode() {
     try {
       const sync = typeof window.click360GetSyncStatus === 'function'
@@ -275,13 +291,23 @@
    * @param {string} nextId - ID del negocio destino
    * @param {string} currentRoute - ruta activa actual
    */
-  function selectBusinessAtomically(nextId, currentRoute) {
+  async function selectBusinessAtomically(nextId, currentRoute) {
     // Guard: evitar doble-tap o cambio mientras ya se está cambiando
     if (BUSINESS_SWITCH_GUARD) return;
     if (!state.businesses.some((b) => b.id === nextId)) return;
     if (state.activeBusinessId === nextId) { closeModal(); return; }
 
     BUSINESS_SWITCH_GUARD = true;
+    if(window.click360SparkCoordinator){
+      try{
+        if(window.click360SparkCoordinator.isBusy()||window.click360SparkOperationalSession?.isBusy())
+          return toast('Espera a que termine la operación actual.','err');
+        await window.click360SparkCoordinator.recover(nextId);
+        closeModal();renderApp(currentRoute);
+      }catch{toast('No pudimos abrir el otro negocio todavía. Tus datos permanecen protegidos.','err');}
+      finally{BUSINESS_SWITCH_GUARD=false;}
+      return;
+    }
     try {
       // 1. Cambiar ID de negocio activo
       state.activeBusinessId = nextId;
@@ -1110,6 +1136,9 @@ function parseMoney(value) {
         let command;
         try { command=typeof options.sparkCommand==='function'?options.sparkCommand():options.sparkCommand; }
         catch(error) { restoreCriticalSnapshot(previousState);return {ok:false,pending:false,notQueued:true,reason:'spark_ui_command_invalid'}; }
+        const gate=window.click360SparkMutationGate?.(command);
+        if(gate?.allowed!==true){restoreCriticalSnapshot(previousState);toast(writeBlockMessage(gate||{}),'err');
+          return {ok:false,pending:false,notQueued:true,reason:gate?.reason||'client_data_protection'};}
         const committed = await window.click360SparkOperationalSession.commit({
           reason, command, candidate:cloneState(state)
         });
@@ -1518,6 +1547,7 @@ function parseMoney(value) {
     }
     if (activeTenantContext?.tenantKey !== context.tenantKey
       || activeTenantContext?.authUid !== context.authUid) {
+      window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
       window.click360SparkOperationalSession?.close();
       window.click360SparkOperationalSession = null;
     }
@@ -1639,6 +1669,8 @@ function parseMoney(value) {
     };
   };
   window.click360ClearTenantContext = function() {
+    window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
+    window.click360SparkBootstrapState=null;
     // Revoke the old writer before clearing its context or hydrating another
     // account. Closing a connection must never delete its durable journal.
     window.click360SparkOperationalSession?.close();
@@ -1728,6 +1760,74 @@ function parseMoney(value) {
   window.click360GetTenantState = function() {
     if (!activeTenantContext) return null;
     return JSON.parse(JSON.stringify(state));
+  };
+  window.click360GetActiveBusinessId=()=>currentBusiness()?.id||'';
+  window.addEventListener('click360-spark-view-ready',event=>{
+    if(event.detail?.source!=='server'||event.detail.businessId!==currentBusiness()?.id
+      ||BUSINESS_SWITCH_GUARD||window.click360SparkAccessGate?.().allowed!==true)return;
+    // Server refresh may update an idle view, never destroy an active form or
+    // checkout closure. The latest records are already durable in IndexedDB.
+    if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
+    renderApp(route,{preserveActiveModal:true});
+  });
+  window.click360InstallSparkBusiness=async function({businessId,configuration}){
+    if(!activeTenantContext||!configuration.businesses.some(b=>b.id===businessId))throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_INVALID');
+    const next=cloneState(state);next.businesses=cloneState(configuration.businesses);next.activeBusinessId=businessId;
+    next.identity=tenantIdentity();
+    // Restore global configuration leaves only. Record arrays are loaded from
+    // their current modules, never a stale whole legacy snapshot.
+    for(const entry of configuration.entries){
+      const path=entry.sourcePath;
+      if(!['settings','finance','logistics','legalAcceptances'].includes(path[0])||!path.length)continue;
+      let target=next;
+      for(let i=0;i<path.length-1;i++){
+        const key=path[i];
+        target=target[key]||=(typeof path[i+1]==='number'?[]:{});
+      }
+      target[path.at(-1)]=cloneState(entry.data);
+    }
+    const candidate=normalizeState(next);candidate.identity=tenantIdentity();
+    // Persist the verified selection before exposing a new repository. A
+    // background rejected save must not restore the previous business while
+    // server pages for the new business are still being fetched.
+    const saved=await queueIndexedSnapshot(candidate,{
+      source:'spark_operational_candidate',deviceRevision:uid('spark-business'),
+      expectedDeviceRevision:indexedTenantCacheMeta?.deviceRevision||'',
+      pendingRemoteSync:indexedTenantCacheMeta?.pendingRemoteSync===true,cloudCapacityBlocked:false
+    });
+    if(!saved)throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_DURABILITY_FAILED');
+    state=candidate;rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
+    tenantDataHydrated=true;tenantStateDeferred=false;
+  };
+  window.click360InstallSparkView=async function({source,businessId,records,append=false}){
+    if(source!=='server'||!window.click360SparkOperationalSession||currentBusiness()?.id!==businessId)throw Error('SPARK_UI_BOOTSTRAP_VIEW_INVALID');
+    const health=await window.click360SparkOperationalSession.health();
+    if(health.pendingCount||health.unknownCount||health.projectionPendingCount)throw Error('SPARK_UI_BOOTSTRAP_PENDING_VIEW_BLOCKED');
+    const next=cloneState(state);
+    for(const [path,rows]of Object.entries(records)){
+      if(!Object.hasOwn(window.CLICK360_SPARK_MIGRATION.arrays,path))throw Error('SPARK_UI_BOOTSTRAP_MODULE_INVALID');
+      const keys=path.split('.');let target=next;for(const key of keys.slice(0,-1))target=target[key]||={};
+      const key=keys.at(-1),old=target[key]||[];
+      const incoming=rows.map(row=>{
+        if(row.businessId!==businessId)throw Error('SPARK_UI_BOOTSTRAP_RECORD_SCOPE_INVALID');
+        const value=cloneState(row);
+        if(path==='sales'){value.storageRecordId=row.id;value.id=row.legacyId||row.id;}
+        return value;
+      });
+      target[key]=append?old.filter(r=>!incoming.some(n=>n.id===r.id&&n.businessId===r.businessId)).concat(incoming)
+        :old.filter(r=>r.businessId!==businessId).concat(incoming);
+    }
+    for(const p of next.products.filter(p=>p.businessId===businessId&&p.deleted===true)){
+      next.deletedProducts||=[];
+      if(!next.deletedProducts.some(d=>d.id===p.id&&d.businessId===businessId))next.deletedProducts.push(p);
+    }
+    next.products=next.products.filter(p=>p.deleted!==true);
+    // UI aliases must not change canonical server relations or operation IDs.
+    for(const path of ['movements','layaways'])for(const row of next[path]||[]){
+      const sale=next.sales?.find(s=>s.businessId===row.businessId&&s.storageRecordId===row.saleId);
+      if(sale)row.saleId=sale.id;
+    }
+    await window.click360PersistSparkCandidate(next,{operationId:uid('spark-view'),pendingRemoteSync:false});
   };
   window.click360PersistSparkCandidate = async function(candidate, metadata) {
     const context=activeTenantContext;

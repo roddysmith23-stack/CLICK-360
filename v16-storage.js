@@ -86,8 +86,11 @@
         const request = store.get(id);
         request.onsuccess = () => {
           const current = request.result;
-          if (current?.cloudCapacityBlocked && (!record.cloudCapacityBlocked
-            || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || ''))) {
+          const protectedModular=current?.source==='spark_operational_candidate';
+          if ((current?.cloudCapacityBlocked && (!record.cloudCapacityBlocked
+            || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || '')))
+            || (protectedModular && (record.source!=='spark_operational_candidate'
+              || String(current.deviceRevision || '')!==String(metadata.expectedDeviceRevision||'')))) {
             failure = Object.assign(new Error('La copia local cambió en otra pestaña. Ningún dato pendiente fue reemplazado.'), { code:'indexeddb-revision-conflict' });
             transaction.abort();
             return;

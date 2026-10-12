@@ -11,7 +11,7 @@
     const assets=root.CLICK360_RELEASE_ASSETS,build=assets?.['app.js'];
     if(!build||['firebase-service.js','v16-storage.js','spark-modular-migration.js','spark-modular-record-codec.js',
       'spark-modular-transaction-transport.js','modular-operation-journal.js','modular-persistence.js',
-      'modular-operation-coordinator.js','modular-ui-adapter.js','spark-operational-ui-runtime.js'].some(file=>assets[file]!==build))
+      'modular-operation-coordinator.js','modular-ui-adapter.js','spark-operational-ui-runtime.js','spark-operational-bootstrap.js'].some(file=>assets[file]!==build))
       throw Error('SPARK_UI_MIXED_RELEASE_BLOCKED');
     if(typeof persistCandidate!=='function'||typeof projectConfirmed!=='function')throw Error('SPARK_UI_DURABILITY_REQUIRED');
     const transport=root.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,actorUid,resolveUser});
@@ -84,7 +84,7 @@
         // Never leak an old CONFIRMED status into a new uncertain operation.
         try{assertActive();publish({operationId:input.operationId,status:'UNKNOWN',reason,operationalCloudConfirmed:false});}catch{}
         return {ok:false,pending:true,reason};
-      }finally{busy=false;}
+      }finally{busy=false;root.dispatchEvent?.(new CustomEvent('click360-spark-idle'));}
     }
     async function verifyCashClose(target){
       assertActive();
@@ -134,7 +134,8 @@
       }
       return result;
     }
-    return Object.freeze({identity,commit,verifyCashClose,replay:async()=>{assertActive();return adapter.replay();},
+    return Object.freeze({identity,commit,verifyCashClose,currentCash:async()=>{assertActive();const value=await repository.readCurrentCashSession();assertActive();return value;},
+      replay:async()=>{assertActive();return adapter.replay();},
       isBusy:()=>busy,
       health:async()=>{assertActive();return adapter.health();},
       close:()=>{closed=true;journal.close();},certificationOnly:true});

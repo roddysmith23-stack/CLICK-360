@@ -26,6 +26,11 @@ const db={app:{options:{projectId}},doc:path=>({path}),runTransaction:callback=>
 }};
 const transport=globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,resolveUser:()=>({uid:ownerUid})});
 const repo=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,transport,serverTimestamp:()=> 'server-timestamp'});
+const runtimeFixture=rows.get(`${base}/metadata/runtime`);
+assert.equal((await repo.readCurrentCashSession()).session,null,'Verified empty runtime is not an invented historical session');
+rows.delete(`${base}/metadata/runtime`);
+await assert.rejects(()=>repo.readCurrentCashSession(),/CASH_RUNTIME_NOT_VERIFIED/);
+rows.set(`${base}/metadata/runtime`,runtimeFixture);
 // A restart on a shared terminal must not adopt another issuer's pending
 // request, including pre-issuer DEV rows. Same business is not same actor.
 const replayInput={operationId:'issuer-bound-command',customerId:'issuer-customer',changes:{name:'Synthetic',phone:'',notes:''}};

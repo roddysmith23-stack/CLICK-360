@@ -786,7 +786,18 @@
         return {source:'server',operationId,identity:{...expected},records};
       });
     }
-    return Object.freeze({identity:expected,actorUid,supportedKinds:kinds,prepareOperation,commitOperation,lookupOperation,ensureDerivedAudit,readOperationProjection,
+    async function readCurrentCashSession(){
+      return transport.run(async tx=>{
+        const runtime=await tx.get('metadata','runtime');
+        if(!runtime||runtime.summaryVersion!==1||typeof runtime.openCashSessionId!=='string')throw Error('CASH_RUNTIME_NOT_VERIFIED');
+        if(!runtime.openCashSessionId)return {source:'server',identity:{...expected},session:null};
+        const id=safeId(runtime.openCashSessionId,'cashSessionId'),session=await tx.get('cashSessions',id);
+        if(!session||session.status!=='open'||session.id!==id)throw Error('CASH_RUNTIME_SESSION_CONFLICT');
+        date(session.date);summary(session);
+        return {source:'server',identity:{...expected},session};
+      });
+    }
+    return Object.freeze({identity:expected,actorUid,supportedKinds:kinds,prepareOperation,commitOperation,lookupOperation,ensureDerivedAudit,readOperationProjection,readCurrentCashSession,
       readPage:(moduleName,options)=>transport.readPage(moduleName,options),
       commitSale:input=>commitOperation('sale',input),closeCashSession:input=>commitOperation('cash_close',input)});
   }

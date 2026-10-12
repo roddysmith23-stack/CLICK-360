@@ -26,6 +26,7 @@ const ASSETS = [
   './modular-operation-coordinator.js',
   './modular-ui-adapter.js',
   './spark-operational-ui-runtime.js',
+  './spark-operational-bootstrap.js',
   './firebase-config.js',
   './p0-tenant-guard.js',
   './worker-data-boundary.js',

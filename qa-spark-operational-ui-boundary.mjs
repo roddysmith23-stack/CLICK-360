@@ -145,10 +145,18 @@ const sandbox={window:{click360SparkOperationalSession:{identity:{ownerUid:'a',b
   state,activeTenantContext:context,uid:()=> 'device-persist-id',cloneState:structuredClone,
   acquireCriticalAction:()=>({acquired:true,release:()=>{released++;}}),
   restoreCriticalSnapshot:()=>{restored++;},toast:()=>{},save:()=>{saved++;return true;},navigator:{onLine:true}};
+sandbox.window.click360SparkMutationGate=()=>({allowed:true});sandbox.writeBlockMessage=()=> 'Protected';
 vm.createContext(sandbox);vm.runInContext(`${source.slice(start,end)};globalThis.commit=commitCriticalMutation`,sandbox);
 const command={kind:'cash_open',input:{operationId:'stable-open',cashSessionId:'exact',date:'2026-09-03',openingAmount:0}};
 assert.equal((await sandbox.commit(state,'cash_opened',()=>false,{sparkCommand:()=>command})).pending,true);
 assert.equal(request.command,command);assert.equal(saved,0);assert.equal(synced,0);assert.equal(released,1);
+for(const reason of ['read_only','legal_acceptance_required','client_data_protection','permission_required']){
+  const before=request;
+  sandbox.window.click360SparkMutationGate=()=>({allowed:false,reason});
+  assert.equal((await sandbox.commit(state,'cash_opened',()=>false,{sparkCommand:command})).reason,reason);
+  assert.equal(request,before,'Denied access must not pin or send a commercial command');
+}
+sandbox.window.click360SparkMutationGate=()=>({allowed:true});restored=0;released=1;
 sandbox.window.click360SparkOperationalSession.commit=async()=>({ok:false,pending:false,notQueued:true,reason:'spark_ui_flow_not_certified'});
 await sandbox.commit(state,'customer_created',()=>false,{});
 assert.equal(restored,1);assert.equal(saved,0);assert.equal(synced,0);
