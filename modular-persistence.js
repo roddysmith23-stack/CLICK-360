@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','inventory_adjust','cash_movement','customer_create','customer_edit']);
+    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','inventory_adjust','cash_movement','customer_create','customer_edit','receivable_payment']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -613,6 +613,40 @@
             paymentMethod:paymentMethod||'Pendiente',paymentType:sale.method==='Apartado'?'receivable_payment':'sale',lastOperationId:op});
           for(const [index,row]of stockRows.entries())stage('products',row.id,row.product,{...row.product,stock:row.stock,qty:row.stock,lastOperationId:op,saleStockIndex:index});
           result={saleId:op,movementId:op,cashSessionId:sessionId,...(layawayId?{layawayId}:{})};
+        }else if(kind==='receivable_payment'){
+          const saleId=safeId(p.saleId,'saleId'),sale=await tx.get('sales',saleId);
+          if(!sale||!['layaway','pending_payment'].includes(sale.status))throw Error('PAYMENT_SALE_NOT_PENDING');
+          if(!Number.isSafeInteger(p.expectedRecordVersion)||p.expectedRecordVersion!==sale.recordVersion)throw Error('PAYMENT_SALE_REVISION_CONFLICT');
+          const amount=money(p.amount,'PAYMENT_AMOUNT'),received=money(sale.received,'SALE_RECEIVED'),balance=money(sale.balance,'SALE_BALANCE');
+          if(!amount||amount>balance||Math.round((received+balance)*100)!==Math.round(money(sale.total,'SALE_TOTAL')*100)
+            ||!methods.has(p.method))throw Error('PAYMENT_AMOUNT_CONFLICT');
+          const sessionId=safeId(p.cashSessionId,'cashSessionId'),session=await tx.get('cashSessions',sessionId);
+          if(!session||session.status!=='open'||session.date!==date(p.date))throw Error('PAYMENT_SESSION_NOT_OPEN');
+          const totals=summary(session),runtime=await tx.get('metadata','runtime');
+          if(runtime?.summaryVersion!==1||runtime.openCashSessionId!==sessionId)throw Error('CASH_RUNTIME_SESSION_CONFLICT');
+          if(await tx.get('movements',op))throw Error('PAYMENT_RECORD_WITHOUT_LEDGER_CONFLICT');
+          const payments=structuredClone(sale.payments||[]);
+          if(!Array.isArray(payments)||payments.some(payment=>payment.id===op||payment.operationId===op))throw Error('PAYMENT_HISTORY_CONFLICT');
+          const payment={id:op,operationId:op,date:p.date,amount,method:p.method,createdBy:actorUid};payments.push(payment);
+          const nextReceived=Math.round((received+amount)*100)/100,nextBalance=Math.round((balance-amount)*100)/100;
+          let layawayId;
+          if(sale.method==='Apartado'){
+            layawayId=safeId(p.layawayId,'layawayId');
+            const linked=await tx.get('layaways',layawayId);
+            if(sale.layawayId!==layawayId||!linked||linked.saleId!==saleId||linked.paid!==received||linked.balance!==balance)
+              throw Error('PAYMENT_LAYAWAY_CONFLICT');
+            stage('layaways',layawayId,linked,{...linked,paid:nextReceived,balance:nextBalance,payments,
+              status:nextBalance===0?'paid':'partially_paid',lastOperationId:op});
+          }else if(p.layawayId)throw Error('PAYMENT_LAYAWAY_CONFLICT');
+          const key={Efectivo:'cash',Tarjeta:'card',Transferencia:'transfer'}[p.method];
+          totals[key]=Math.round((totals[key]+amount)*100)/100;totals.receivablePayments=Math.round((totals.receivablePayments+amount)*100)/100;
+          stage('sales',saleId,sale,{...sale,received:nextReceived,balance:nextBalance,payments,
+            status:nextBalance===0?'paid':sale.status,lastOperationId:op});
+          stage('cashSessions',sessionId,session,{...session,paymentTotals:totals,
+            cashBalance:Math.round((session.cashBalance+(p.method==='Efectivo'?amount:0))*100)/100,lastOperationId:op});
+          stage('movements',op,null,{operationId:op,saleId,cashSessionId:sessionId,date:p.date,kind:'ingreso',amount,
+            paymentMethod:p.method,paymentType:'receivable_payment',payment,lastOperationId:op});
+          result={saleId,movementId:op,cashSessionId:sessionId,...(layawayId?{layawayId}:{})};
         }else if(kind==='cash_close'){
           const id=safeId(p.cashSessionId,'cashSessionId'),session=await tx.get('cashSessions',id);
           if(!session||session.date!==date(p.date))throw Error('CASH_CLOSE_SESSION_CONFLICT');
@@ -704,7 +738,8 @@
         const r=record.result||{};
         for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
           if(!r[key])continue;const linked=await tx.get(moduleName,r[key]);
-          if(!linked||(['sales','movements'].includes(moduleName)&&linked.operationId!==operationId)
+          if(!linked||((moduleName==='movements'||(moduleName==='sales'&&kind==='sale'))&&linked.operationId!==operationId)
+            ||(kind==='receivable_payment'&&['sales','layaways'].includes(moduleName)&&!linked.payments?.some(payment=>payment.operationId===operationId))
             ||(moduleName==='dailyReports'&&kind==='cash_close'&&(linked.operationId!==operationId||linked.cashSessionId!==r.cashSessionId)))throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
         }
         return {source:'server',exists:true,record:{ownerUid:expected.ownerUid,businessId:expected.businessId,operationId,payloadHash,status:'committed'},result:record.result};});
@@ -722,7 +757,7 @@
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
           (records[moduleName]??=[]).push(value);
         }
-        for(const productId of records.sales?.[0]?.stockOrder||[]){
+        for(const productId of (kind==='sale'?records.sales?.[0]?.stockOrder:[])||[]){
           const value=await tx.get('products',productId);
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
           (records.products??=[]).push(value);

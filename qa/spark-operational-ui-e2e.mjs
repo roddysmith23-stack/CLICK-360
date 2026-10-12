@@ -132,6 +132,20 @@ try{
     }
     assert((await record('products',created.id)).stock===9,'Reservation and pending sale each decrement exactly once');
     assert((await record('cashSessions',session.id)).paymentTotals.transfer===32,'Only actual receipts counted in session');
+    await page.evaluate(()=>{location.hash='#debtors';});
+    for(const [method,amount]of [['Apartado',3],['Pendiente',4]]){
+      const receivable=await page.evaluate(method=>click360GetTenantState().sales.find(s=>s.method===method),method);
+      await page.locator(`button[onclick*="payLayaway('${receivable.id}')"]`).click();
+      await page.locator('#layawayPaymentAmount').fill(String(amount));await page.locator('#layawayPaymentMethod').selectOption('Transferencia');
+      await resetStatus();await page.locator('#confirmLayawayPayment').click();await confirmed();
+      const remote=await record('sales',receivable.storageRecordId),local=await page.evaluate(id=>click360GetTenantState().sales.find(s=>s.id===id),receivable.id);
+      assert(remote.balance===receivable.balance-amount&&local.balance===remote.balance,'Actual payment modal commits the exact outstanding balance');
+      const operation=local.payments.at(-1).operationId,receipt=await record('movements',operation);
+      assert(receipt.amount===amount&&receipt.cashSessionId===session.id&&receipt.saleId===receivable.storageRecordId,'Receipt belongs to exact payment session, not original sale replay');
+      if(method==='Apartado')assert((await record('layaways',receivable.layawayId)).balance===remote.balance,'Reservation and sale balances atomic');
+    }
+    assert((await record('products',created.id)).stock===9,'Subsequent payments must never discount stock');
+    assert((await record('cashSessions',session.id)).saleCount===3,'Subsequent payments must never recount sales');
     await page.evaluate(()=>{location.hash='#cash';});await page.locator('#newMove').click();
     await page.locator('#mKind').selectOption('ingreso');await page.locator('#mAmount').fill('5');await page.locator('#mNote').fill('Ingreso sintético Spark');
     await resetStatus();await page.locator('#moveForm button[type="submit"]').click();await confirmed();
@@ -163,10 +177,10 @@ try{
     await page.evaluate(target=>click360SparkOperationalSession.verifyCashClose(target),{businessId:uid,cashSessionId:session.id,date:session.date});
     await confirmed();
     assert(closeReport.saleCount===3&&closeReport.total===54&&closeReport.totalItems===3
-      &&closeReport.paymentTotals.transfer===32&&closeReport.theoreticalCash===5&&closeReport.declaredCash===5,'Authoritative close counters');
+      &&closeReport.paymentTotals.transfer===39&&closeReport.paymentTotals.receivablePayments===9&&closeReport.theoreticalCash===5&&closeReport.declaredCash===5,'Authoritative close counters');
     assert((await record('products',created.id)).stock===9&&(await record('products',data.products[0].id)).stock===1,'Cash close cannot decrement stock again');
     const localReport=await page.evaluate(id=>click360GetTenantState().dailyReports.find(r=>r.id===id),closed.reportId);
-    assert(localReport.productQuantity===3&&localReport.paymentTotals.transfer===32&&!localReport.html,'Derived report uses authoritative compact data');
+    assert(localReport.productQuantity===3&&localReport.paymentTotals.transfer===39&&localReport.paymentTotals.receivablePayments===9&&!localReport.html,'Derived report uses authoritative compact data');
     const existingClose=await page.evaluate(target=>window.click360SparkOperationalSession.verifyCashClose(target),
       {businessId:uid,cashSessionId:session.id,date:session.date});
     assert(existingClose.closed&&existingClose.source==='server'&&existingClose.reportId===closed.reportId,'Retry preflight recognizes and durably projects existing close');
@@ -198,7 +212,7 @@ try{
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'No legacy overwrite');
     const runtime=await page.evaluate(()=>({global:!!CLICK360_SPARK_OPERATIONAL_UI,hash:CLICK360_RELEASE_ASSETS['app.js'],sale:click360GetTenantState().sales.at(-1).id}));
     assert(runtime.sale,'Existing receipt ID preserved');
-    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
+    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
       appFirestoreTransport:'long_polling',customerCreateAndEdit:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});

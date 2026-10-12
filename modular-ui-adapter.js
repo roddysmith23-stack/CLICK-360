@@ -8,6 +8,9 @@
       ||sale.date!==workingDate||!/^\d{4}-\d{2}-\d{2}$/.test(workingDate||''))throw Error('MODULAR_COMMAND_CONTEXT_INVALID');
     if(!Array.isArray(sale.items)||!sale.items.length||!Array.isArray(cartLines)
       ||cartLines.length!==sale.items.length)throw Error('MODULAR_COMMAND_CART_REQUIRED');
+    // Reject the certified transaction envelope limit before the PWA pins
+    // a local stock delta/journal row. The kernel and Rules remain strict.
+    if(sale.items.length>12)throw Error('MODULAR_COMMAND_LINE_BUDGET_EXCEEDED');
     const translated=structuredClone(sale);
     translated.items=sale.items.map((line,index)=>{
       const cart=cartLines[index],id=cart?.productId||cart?.id,lineId=line.productId||line.id;
@@ -82,6 +85,20 @@
     if(previous&&(!Number.isSafeInteger(previous.recordVersion)||previous.recordVersion<1))throw Error('MODULAR_CUSTOMER_REVISION_REQUIRED');
     return {kind:previous?'customer_edit':'customer_create',input:{operationId,customerId:customer.id,changes,
       ...(previous?{expectedRecordVersion:previous.recordVersion}:{})}};
+  }
+  function receivablePaymentCommand({sale,layaway,identity,operationId,cashSessionId,workingDate,amount,method}){
+    if(!identity?.ownerUid||sale?.businessId!==identity.businessId||!sale.storageRecordId
+      ||!operationId||!cashSessionId||!/^\d{4}-\d{2}-\d{2}$/.test(workingDate||'')
+      ||!['layaway','pending_payment'].includes(sale.status))throw Error('MODULAR_PAYMENT_CONTEXT_INVALID');
+    if(!Number.isSafeInteger(sale.recordVersion)||sale.recordVersion<1)throw Error('MODULAR_PAYMENT_REVISION_REQUIRED');
+    if(typeof amount!=='number'||!Number.isFinite(amount)||amount<=0||amount>sale.balance
+      ||Math.abs(amount*100-Math.round(amount*100))>0.000001||!paidMethods.has(method))throw Error('MODULAR_PAYMENT_AMOUNT_INVALID');
+    if(sale.method==='Apartado'&&(!layaway?.id||layaway.businessId!==identity.businessId||layaway.saleId!==sale.id
+      ||sale.layawayId!==layaway.id))throw Error('MODULAR_PAYMENT_LAYAWAY_CONFLICT');
+    if(sale.method!=='Apartado'&&layaway)throw Error('MODULAR_PAYMENT_LAYAWAY_CONFLICT');
+    return {kind:'receivable_payment',input:{operationId,saleId:sale.storageRecordId,
+      expectedRecordVersion:sale.recordVersion,cashSessionId,date:workingDate,amount,method,
+      ...(layaway?{layawayId:layaway.id}:{})}};
   }
   function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed}){
     const identity=repository?.identity;
@@ -188,5 +205,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,customerMutationCommand,cashReportView});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,customerMutationCommand,receivablePaymentCommand,cashReportView});
 })(typeof window==='undefined'?globalThis:window);

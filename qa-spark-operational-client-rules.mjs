@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile,mkdir,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import {initializeTestEnvironment,assertFails} from '@firebase/rules-unit-testing';
 import {doc,setDoc,updateDoc,getDocFromServer,runTransaction,serverTimestamp,collection,query,orderBy,documentId,limit,startAfter,getDocsFromServer} from 'firebase/firestore';
 import './spark-modular-migration.js';
@@ -12,6 +13,13 @@ if(process.env.FIRESTORE_EMULATOR_HOST!=='127.0.0.1:48944')throw Error('EXACT_SP
 const projectId='demo-click360-spark-modular',ownerUid='operational-rules-owner',businessId='operational-business';
 const secondBusinessId='operational-second-business';
 let candidateRules=await readFile('firestore.spark.rules','utf8');
+if(process.env.SPARK_RULES_DIAGNOSTIC_REF){
+  const ref=process.env.SPARK_RULES_DIAGNOSTIC_REF;
+  if(process.env.CI==='true'||process.env.SPARK_RULES_DIAGNOSTIC_ONLY!=='true'
+    ||ref!=='3a29a585914280dae1df285c5cdbc2cab32a7b87')throw Error('SPARK_DIAGNOSTIC_REF_FORBIDDEN');
+  candidateRules=execFileSync('git',['show',`${ref}:firestore.spark.rules`],{encoding:'utf8'});
+  console.log(JSON.stringify({diagnosticOnly:true,baselineRulesRef:ref}));
+}
 const sourceRulesSha256=createHash('sha256').update(candidateRules).digest('hex');
 const headroomProbe=process.env.SPARK_RULES_HEADROOM_PROBE==='true';
 if(headroomProbe){
@@ -61,7 +69,13 @@ async function budgetObservation(stage){
       for(const child of node.children||[])visit(child);
     };
     for(const node of coverage.report)visit(node);
-    if(stage==='omitted_p2')console.log(JSON.stringify({ruleCostDelta:[...counts.entries()].map(([key,row])=>({...row,count:row.count-(priorCoverage.get(key)?.count||0)})).sort((a,b)=>b.count-a.count).slice(0,25)}));
+    if(stage==='omitted_p2'){
+      const delta=[...counts.entries()].map(([key,row])=>({...row,count:row.count-(priorCoverage.get(key)?.count||0)})).sort((a,b)=>b.count-a.count);
+      console.log(JSON.stringify({ruleCostDelta:delta.slice(0,25)}));
+      await mkdir('output',{recursive:true});
+      await writeFile(`output/spark-rules-cost-${sourceRulesSha256}.json`,JSON.stringify({diagnosticOnly:true,sourceRulesSha256,
+        aggregateEvaluationsNotPerRequest:true,delta},null,2)+'\n');
+    }
     priorCoverage=counts;
   }
 }
@@ -94,6 +108,15 @@ try{
     transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/customers/forged-customer')?{...data,data:{...data.data,stock:999}}:data),serverTimestamp});
   await assertFails(forgedCustomer.commitOperation('customer_create',{...customerCreate,operationId:'customer-forged',customerId:'forged-customer'}));
   assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/customer-forged`))).exists(),false);
+  for(const malformed of ['hash_type','data_type']){
+    const operationId=`customer-${malformed}`,customerId=`malformed-${malformed}`;
+    const badType=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+      transport:transportFor(client,ownerUid,'',(ref,raw)=>ref.path.endsWith(`/customers/${customerId}`)
+        ? {...raw,[malformed==='hash_type'?'dataHash':'data']:123}:raw),serverTimestamp});
+    await assertFails(badType.commitOperation('customer_create',{...customerCreate,operationId,customerId}));
+    assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/${operationId}`))).exists(),false);
+    assert.equal((await getDocFromServer(doc(client,`${base}/customers/${customerId}`))).exists(),false);
+  }
   await budgetObservation('customer_create_edit_and_denials');
   await repo.commitOperation('cash_open',open);
   await budgetObservation('cash_open');
@@ -421,6 +444,50 @@ try{
   assert.equal((await get('products','compound-product')).stock,4);
   assert.equal((await get('products','compound-product')).name,'Worker edit');
   assert.equal((await get('products','worker-product')).stock,3);
+  const ownerReceipt={operationId:'owner-receipt',saleId:'pending-payment-real-sdk',expectedRecordVersion:1,
+    cashSessionId:workerOpen.cashSessionId,date:workerOpen.date,amount:5,method:'Transferencia'};
+  const receiptStockBefore=(await get('products','p1')).stock;
+  await repo.commitOperation('receivable_payment',ownerReceipt);
+  assert.equal((await repo.commitOperation('receivable_payment',ownerReceipt)).status,'already_committed');
+  const workerReceipt={...ownerReceipt,operationId:'worker-receipt',expectedRecordVersion:2,amount:3};
+  await assertFails(workerRepo.commitOperation('receivable_payment',workerReceipt));
+  assert.equal((await get('sales',ownerReceipt.saleId)).received,5,'Denied worker cannot collect a payment');
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),
+    {'permissions.sales.update':false,'permissions.layaways.payment':true}));
+  await workerRepo.commitOperation('receivable_payment',workerReceipt);
+  assert.equal((await workerRepo.commitOperation('receivable_payment',workerReceipt)).status,'already_committed');
+  for(const mutation of ['omit_movement','omit_session','omit_sale','original_items','original_payment','inflated_balance','inflated_counter']){
+    const op=`invalid-receipt-${mutation}`;
+    const attacker=api.createSparkRepository({ownerUid,businessId,actorUid:workerUid,
+      transport:transportFor(worker,workerUid,'',(ref,record)=>{
+        if(mutation==='omit_movement'&&ref.path===`${base}/movements/${op}`)return null;
+        if(mutation==='omit_session'&&ref.path===`${base}/cashSessions/${workerOpen.cashSessionId}`)return null;
+        if(ref.path===`${base}/sales/${ownerReceipt.saleId}`){
+          if(mutation==='omit_sale')return null;
+          if(mutation==='original_items')return {...record,data:{...record.data,items:[]}};
+          if(mutation==='original_payment')return {...record,data:{...record.data,payments:record.data.payments.map((p,i)=>i===0?{...p,amount:p.amount+1}:p)}};
+          if(mutation==='inflated_balance')return {...record,data:{...record.data,balance:99}};
+        }
+        if(mutation==='inflated_counter'&&ref.path===`${base}/cashSessions/${workerOpen.cashSessionId}`)return {...record,operational:{...record.operational,salesTotal:999}};
+        return record;
+      }),serverTimestamp});
+    await assertFails(attacker.commitOperation('receivable_payment',{...workerReceipt,operationId:op,expectedRecordVersion:3,amount:1}));
+    assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/${op}`))).exists(),false);
+    assert.equal((await getDocFromServer(doc(client,`${base}/movements/${op}`))).exists(),false);
+    assert.equal((await get('sales',ownerReceipt.saleId)).received,8,'Whole invalid financial commit is denied');
+  }
+  const reservationReceipt={...ownerReceipt,operationId:'reservation-receipt',saleId:'layaway-real-sdk',layawayId:'reservation-real-sdk',amount:7};
+  await workerRepo.commitOperation('receivable_payment',reservationReceipt);
+  assert.equal((await get('layaways',reservationReceipt.layawayId)).paid,12);
+  assert.equal((await get('layaways',reservationReceipt.layawayId)).balance,18);
+  const receiptRace=await Promise.allSettled(['a','b'].map(suffix=>repo.commitOperation('receivable_payment',{
+    ...workerReceipt,operationId:`receipt-race-${suffix}`,expectedRecordVersion:3,amount:15})));
+  assert.equal(receiptRace.filter(result=>result.status==='fulfilled').length,1);
+  assert.equal((await get('sales',ownerReceipt.saleId)).received,23);
+  assert.equal((await get('cashSessions',workerOpen.cashSessionId)).saleCount,0,'Receipts do not count historical sales again');
+  assert.equal((await get('cashSessions',workerOpen.cashSessionId)).paymentTotals.transfer,30);
+  assert.equal((await get('products','p1')).stock,receiptStockBefore,'Receipts never decrement stock again');
+  await budgetObservation('subsequent_receipts');
   await workerRepo.closeCashSession({operationId:'worker-close-historical',cashSessionId:workerOpen.cashSessionId,date:workerOpen.date,declaredCash:0});
   assert.equal((await get('cashSessions',workerOpen.cashSessionId)).status,'closed');
   await budgetObservation('worker_cash_inventory');
@@ -441,10 +508,11 @@ try{
   await assertFails(repo.commitOperation('product_edit',{operationId:'expired-owner-edit',productId:'p1',changes:{name:'Must not persist'}}));
   assert.equal((await get('products','p1')).name,'Edited');
   await budgetObservation('final');
-  const proof={status:'PASS',clientRules:true,historicalSale:true,idempotency:true,stockRace:true,exactSession:true,reopen:true,
+  const diagnosticOnly=process.env.SPARK_RULES_DIAGNOSTIC_ONLY==='true';
+  const proof={status:diagnosticOnly?'DIAGNOSTIC_ONLY':'PASS',clientRules:true,historicalSale:true,idempotency:true,stockRace:true,exactSession:true,reopen:true,
     workerSale:true,workerProductDenied:true,ownReceiptOnly:true,ownerMetadataPrivate:true,twoBusinessIsolation:true,
     membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,immutableLedger:true,
-    pendingPayment:true,layawayDeposit:true,serverPagination:true,secondDevice:true,
+    pendingPayment:true,layawayDeposit:true,subsequentReceipts:true,receiptStockUnchanged:true,receiptRace:true,serverPagination:true,secondDevice:true,
     workerTwelveLineMixed:true,workerTwelveLineReservations:true,workerTwelveLinePending:true,
     workerCashOpenClose:true,workerProductCreateEditAdjust:true,compoundProductAndStock:true,
     compoundMovementRequired:true,compoundFieldsEnforced:true,compoundWorkerPermissionEnforced:true,allManualQuantityIndices:12,
@@ -454,7 +522,7 @@ try{
     sourceCommitSha:process.env.CLICK360_QA_SOURCE_SHA||null,
     physicalDeviceAcceptance:false,publicOperationalUI:false,checkedAt:new Date().toISOString()};
   await mkdir('artifacts/spark-rules-proof',{recursive:true});
-  await writeFile(`artifacts/spark-rules-proof/${headroomProbe?'headroom':'exact-source'}.json`,JSON.stringify(proof,null,2)+'\n');
+  await writeFile(`artifacts/spark-rules-proof/${diagnosticOnly?'diagnostic-only':headroomProbe?'headroom':'exact-source'}.json`,JSON.stringify(proof,null,2)+'\n');
   console.log(JSON.stringify(proof));
   if(process.env.SPARK_RULES_COVERAGE==='true'){
     const response=await fetch(`http://127.0.0.1:48944/emulator/v1/projects/${projectId}:ruleCoverage`);

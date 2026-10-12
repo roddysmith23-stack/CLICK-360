@@ -1747,6 +1747,7 @@ function parseMoney(value) {
         const value=cloneState(moduleName==='dailyReports'&&record.status==='closed'
           ?window.CLICK360_MODULAR_UI_ADAPTER.cashReportView(record):record),id=moduleName==='sales'?(record.legacyId||record.id):record.id;
         value.id=id;
+        if(moduleName==='sales')value.storageRecordId=record.id;
         // Preserve receipt/layaway relationships used by the existing UI.
         if(value.saleId){const sale=projection.records.sales?.find(s=>s.id===value.saleId)||next.sales?.find(s=>s.operationId===value.saleId);value.saleId=sale?.legacyId||sale?.id||value.saleId;}
         const index=target.findIndex(item=>item.businessId===businessId&&(item.id===id
@@ -13171,6 +13172,13 @@ function parseMoney(value) {
 	  const { amount, method } = decision;
 	  const paymentId = request.operationId;
 	  if (window.CLICK360_V16_DOMAIN?.operationAlreadyApplied(state, paymentId)) return toast('Este abono ya fue registrado.');
+	  let sparkPaymentCommand;
+	  if(window.click360SparkOperationalSession){
+	    try {sparkPaymentCommand=window.CLICK360_MODULAR_UI_ADAPTER.receivablePaymentCommand({sale,layaway:linkedLayaway,
+	      identity:window.click360SparkOperationalSession.identity,operationId:paymentId,cashSessionId:paymentSessionId,
+	      workingDate:paymentDate,amount,method});}
+	    catch {return toast('No pudimos validar el abono. Tu venta y el inventario permanecen intactos.', 'err');}
+	  }
 		    const previousState = cloneState(state);
 
 	    sale.received = (sale.received || 0) + amount;
@@ -13218,7 +13226,7 @@ function parseMoney(value) {
 	    addAudit('layaway_payment_added', { saleId: sale.id, layawayId:linkedLayaway?.id || '', amount, method, balance: sale.balance, operationId:paymentId, entityType:'layaway', entityId:linkedLayaway?.id || sale.id });
     const committed = await commitCriticalMutation(previousState, 'sale_payment_received', (next) =>
       next.sales.some((item) => item.id === sale.id && item.businessId === businessId
-        && item.payments?.some((payment) => payment.id === paymentId)));
+        && item.payments?.some((payment) => payment.id === paymentId)),{sparkCommand:sparkPaymentCommand});
     renderApp(route);
     if (committed.ok) {
       const remoteSale = salesForBiz(businessId).find((item) => item.id === sale.id);

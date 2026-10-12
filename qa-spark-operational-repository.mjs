@@ -146,6 +146,28 @@ assert.equal((await repo.ensureDerivedAudit('audit-recovery','product_create',au
 assert.equal((await repo.ensureDerivedAudit('audit-recovery','product_create',auditPrepared.payloadSha256)).status,'already_materialized');
 assert.equal((await get('products','audit-product')).stock,0);
 await assert.rejects(()=>repo.ensureDerivedAudit('audit-recovery','product_create','b'.repeat(64)),/CONFIRMED_LEDGER_REQUIRED/);
-console.log(JSON.stringify({status:'PASS',transport:'synthetic_atomic',historicalDate:true,manualSale:true,partialPayment:true,zeroPayment:true,
+const paymentSale={operationId:'receivable-sale',sale:{...manual.sale,date:'2026-10-06',cashSessionId:'current-session',total:10,received:0,method:'Pendiente'}};
+await repo.commitSale(paymentSale);
+const stockBeforePayment=(await get('products','p1')).stock,summaryBeforePayment=await get('cashSessions','current-session');
+const paymentOne={operationId:'receipt-one',saleId:'receivable-sale',expectedRecordVersion:1,cashSessionId:'current-session',date:'2026-10-06',amount:2,method:'Transferencia'};
+await repo.commitOperation('receivable_payment',paymentOne);
+assert(!transactionMetrics.findLast(metric=>metric.core).modules.includes('products'),'Receipt never writes stock');
+assert.equal((await repo.commitOperation('receivable_payment',paymentOne)).status,'already_committed');
+assert.equal((await get('sales','receivable-sale')).balance,8);
+await assert.rejects(()=>repo.commitOperation('receivable_payment',{...paymentOne,amount:1}),/IDEMPOTENCY_KEY_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('receivable_payment',{...paymentOne,operationId:'stale-receipt'}),/REVISION_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('receivable_payment',{...paymentOne,operationId:'overpayment',expectedRecordVersion:2,amount:9}),/AMOUNT_CONFLICT/);
+writeFaults=[{afterCommit:true}];
+const paymentTwo={...paymentOne,operationId:'receipt-two',expectedRecordVersion:2,amount:8,method:'Efectivo'};
+assert.equal((await repo.commitOperation('receivable_payment',paymentTwo)).status,'already_committed');
+const paidSale=await get('sales','receivable-sale'),paidSession=await get('cashSessions','current-session');
+assert.equal(paidSale.status,'paid');assert.equal(paidSale.payments.length,2);assert.equal(paidSale.received,10);
+assert.equal(paidSession.saleCount,summaryBeforePayment.saleCount);assert.equal(paidSession.salesTotal,summaryBeforePayment.salesTotal);
+assert.equal(paidSession.cashBalance,summaryBeforePayment.cashBalance+8);assert.equal((await get('products','p1')).stock,stockBeforePayment);
+const preparedReceipt=await repo.prepareOperation('receivable_payment',paymentOne);
+assert.equal((await repo.lookupOperation('receipt-one','receivable_payment',preparedReceipt.payloadSha256)).exists,true,'Earlier confirmed receipt remains confirmable after a later payment');
+const receiptView=await repo.readOperationProjection('receipt-two','receivable_payment',(await repo.prepareOperation('receivable_payment',paymentTwo)).payloadSha256);
+assert(!receiptView.records.products,'Receipt projection does not scan original sale stock');
+console.log(JSON.stringify({status:'PASS',transport:'synthetic_atomic',historicalDate:true,manualSale:true,partialPayment:true,zeroPayment:true,subsequentReceipts:true,
   idempotent:true,sameProductRace:true,exactCashSession:true,reopenSeparateReport:true,historyIndependentCoreReads:saleReads,
   derivedAuditRecoverable:true,auditFailureDoesNotRepeatCore:true,productionWrites:0}));

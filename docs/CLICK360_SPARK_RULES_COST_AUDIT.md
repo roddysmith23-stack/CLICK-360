@@ -4,6 +4,12 @@ Candidate only. Production remains `21409a1d2dc7`. The expanded owner/worker sui
 
 ## Two separate budgets
 
+### Subsequent receipt extension — 2026-10-12
+
+Receipt core adds no product/history reads: existing sale before/after, unique movement before/after, exact session before/after, new ledger before/after, control and authorization. Linked layaways add their own before/after versions. The conservative distinct-path/version worksheet is `9 + A` for a pending receipt, `11 + A` for a linked layaway receipt; this is not a measured cache/billing count. Stock, sale totals/counts, historical date/session and item lines are immutable in this operation. Worker authorization uses the existing `layaways.payment` permission; `sales.update` can remain false.
+
+The expanded overlapping movement OR proofs regressed the malformed missing-stock case into expression-budget exhaustion. A ledger-kind conditional dispatch preserves each original financial proof while avoiding unrelated receipt proof traversal in that case. The exact same negative scenario and positive worst-case worker carts now pass the stricter 16-predicate probe, with zero expression/access-limit errors. Additional exact-source/repeated browser gates remain required; do not infer charged reads or a percentage margin from aggregate coverage. The strict log watcher and final budget check remain enabled. Source Rules SHA256 for the first passing extension: `19546af2f3fa92ace6be134b77ee055bfcfd65d81f778a2c74993f80bf8a471b`.
+
 Customer CREATE/EDIT adds no access calls to sale, inventory or cash proofs. Its own core references one control document, existing account authorization (and worker membership/flag when applicable), the exact ledger before/after and the exact customer after. Fields, identity and record-version increments use resource/request data. Conservative logical distinct-reference bound is `4 + A` (control, ledger before/after, customer after, authorization A); this is not a guaranteed billed/cache count. Owner does not read membership. Positive/negative client tests and the existing budget-log/headroom gates remain required on the new source; no budget certification is inferred from the pure adapter test.
 
 Document access and expression evaluation are different budgets. Reusing a cached document path does not make repeated predicates free. Coverage counts aggregate multiple evaluations/retries/readbacks and are not per-request expression counts. The strict emulator-log gate remains mandatory even if every positive/negative scenario assertion passes.
