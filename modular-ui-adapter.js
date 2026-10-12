@@ -74,7 +74,7 @@
   }
   function cashReportView(report){
     const fields=['openingAmount','declaredCash','theoreticalCash','difference','saleCount','total','totalItems','totalIva','incomeCash','expenseCash'];
-    if(!report?.cashSessionId||report.status!=='closed'||!report.paymentTotals
+    if(!report?.cashSessionId||!['closed','reopened'].includes(report.status)||!report.paymentTotals
       ||fields.some(key=>typeof report[key]!=='number'||!Number.isFinite(report[key]))
       ||['cash','card','transfer','receivablePayments'].some(key=>typeof report.paymentTotals[key]!=='number'||!Number.isFinite(report.paymentTotals[key])))
       throw Error('MODULAR_REPORT_AUTHORITATIVE_SUMMARY_REQUIRED');
@@ -82,6 +82,16 @@
       expectedCash:report.theoreticalCash,countedCash:report.declaredCash,
       income:Math.round((report.paymentTotals.cash+report.incomeCash)*100)/100,expenses:report.expenseCash,
       paymentTotals:{...report.paymentTotals,layawayPayments:report.paymentTotals.receivablePayments,receivableIncluded:true}};
+  }
+  function cashSuccessorCommand({report,identity,operationId,cashSessionId,date,reason}){
+    if(!identity?.ownerUid||report?.businessId!==identity.businessId||!operationId||!cashSessionId
+      ||report.status!=='closed'||!report.id||!report.cashSessionId||report.cashSessionId===cashSessionId
+      ||report.date!==date||!Number.isSafeInteger(report.recordVersion)||report.recordVersion<1
+      ||typeof reason!=='string'||reason.trim().length<4)throw Error('MODULAR_CASH_SUCCESSOR_CONTEXT_INVALID');
+    cashReportView(report);
+    if(report.declaredCash<0||report.closeCash!==report.declaredCash)throw Error('MODULAR_CASH_SUCCESSOR_OPENING_INVALID');
+    return {kind:'cash_open',input:{operationId,cashSessionId,date,openingAmount:report.declaredCash,
+      previousReportId:report.id,expectedReportVersion:report.recordVersion,reason:reason.trim()}};
   }
   function customerMutationCommand({customer,previous,identity,operationId,deleting=false}){
     if(!operationId||!identity?.ownerUid||!customer?.id||customer.businessId!==identity.businessId
@@ -227,5 +237,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,cashReportView});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,cashReportView,cashSuccessorCommand});
 })(typeof window==='undefined'?globalThis:window);

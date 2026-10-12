@@ -50,7 +50,7 @@
       assertActive();
       if(busy)throw Error('SPARK_UI_OPERATION_IN_PROGRESS');
       if(!command||!['cash_open','cash_close','sale','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment'].includes(command.kind)
-        ||!((reason==='cash_opened'&&command.kind==='cash_open')||(reason==='sale_created'&&command.kind==='sale')
+        ||!((['cash_opened','cash_reopened'].includes(reason)&&command.kind==='cash_open')||(reason==='sale_created'&&command.kind==='sale')
           ||(reason==='product_saved'&&['product_create','product_edit','inventory_adjust'].includes(command.kind))
           ||(reason==='product_deleted'&&command.kind==='product_delete')
           ||(reason==='cash_movement_created'&&command.kind==='cash_movement')||(reason==='cash_closed'&&command.kind==='cash_close')
@@ -96,7 +96,7 @@
         if(!reportId)throw Error('SPARK_UI_CASH_REPORT_ID_REQUIRED');
         const report=await tx.get('dailyReports',reportId);
         if(session.status==='closed'){
-          if(report?.cashSessionId!==session.id||report.status!=='closed')throw Error('SPARK_UI_CASH_CLOSE_INCONSISTENT');
+          if(report?.cashSessionId!==session.id||!['closed','reopened'].includes(report.status))throw Error('SPARK_UI_CASH_CLOSE_INCONSISTENT');
           const ledger=await tx.get('operationLedger',report.operationId);
           if(ledger?.kind!=='cash_close'||ledger.status!=='committed'||ledger.result?.cashSessionId!==session.id
             ||ledger.result?.reportId!==reportId)throw Error('SPARK_UI_CASH_CLOSE_LEDGER_REQUIRED');

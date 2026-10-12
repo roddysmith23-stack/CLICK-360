@@ -200,6 +200,30 @@ try{
     const closeAudit=await record('auditEvents',`audit-${existingClose.operationId}`);
     assert(closeAudit.action==='cash_close'&&closeAudit.operationId===existingClose.operationId,'Lost-response recovery reconstructs audit from ledger');
     await page.locator('#modalRoot [data-close]').first().click();
+    await page.evaluate(()=>{location.hash='#cash';});
+    await page.locator('#reopenCashBtn').waitFor({state:'visible'});
+    page.removeAllListeners('dialog');
+    page.on('dialog',dialog=>dialog.accept(dialog.type()==='prompt'?'Continuar jornada sintética':undefined).catch(()=>{}));
+    await resetStatus();await page.locator('#reopenCashBtn').click();await confirmed();
+    const successor=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
+    assert(successor.id!==session.id&&successor.date===session.date&&successor.openingAmount===5
+      &&successor.saleCount===0&&successor.salesTotal===0,'Actual reopen creates a separate session from the exact declared closing cash');
+    assert(JSON.stringify(await record('cashSessions',session.id))===JSON.stringify(closed),'New session cannot alter the preceding closed session');
+    assert((await record('dailyReports',closed.reportId)).status==='reopened'
+      &&(await record('dailyReports',closed.reportId)).total===54,'Previous report retains its financial totals');
+    const previousCloseAgain=await page.evaluate(target=>click360SparkOperationalSession.verifyCashClose(target),
+      {businessId:uid,cashSessionId:session.id,date:session.date});
+    assert(previousCloseAgain.closed&&previousCloseAgain.operationId===existingClose.operationId,
+      'A reopened historical report cannot cause a confirmed preceding close to be repeated');
+    assert((await record('movements',successor.operationId||successor.lastOperationId)).amount===5,'Exactly one new opening movement');
+    await page.locator('#closeDayBtn').click();await page.locator('#efectivoFisico').fill('5');await resetStatus();
+    await page.locator('#closeDaySubmitBtn').click();await confirmed();
+    const successorClosed=await record('cashSessions',successor.id),successorReport=await record('dailyReports',successorClosed.reportId);
+    assert(successorReport.saleCount===0&&successorReport.total===0&&successorReport.declaredCash===5,
+      'Closing a successor does not recount preceding sales');
+    assert((await record('products',created.id)).stock===9&&(await record('products',data.products[0].id)).stock===1,
+      'Reopening and closing never repeat inventory deductions');
+    await page.locator('#modalRoot [data-close]').first().click();
     // The existing working-date control, not a DEV-only domain command.
     await page.locator('#workingDateInput').fill('2026-09-03');
     await page.locator('#workingDateInput').dispatchEvent('change');
@@ -247,6 +271,13 @@ try{
         for(const [moduleName,record]of [['cashSessions',session],['dailyReports',report]])
           await setDoc(doc(db,`${base}/${moduleName}/${record.id}`),
             await globalThis.CLICK360_SPARK_RECORD_CODEC.pack(record,{identity,moduleName,recordId:record.id}));
+        for(const [moduleName,fields]of [['customers',{name:`Cliente sintético ${index}`,phone:'',notes:''}],
+          ['auditEvents',{action:'synthetic_history',createdBy:uid,when:'2026-08-01'}]]){
+          const recordId=`a-${moduleName}-${String(index).padStart(3,'0')}`;
+          await setDoc(doc(db,`${base}/${moduleName}/${recordId}`),
+            await globalThis.CLICK360_SPARK_RECORD_CODEC.pack({...common,...fields,id:recordId,module:moduleName},
+              {identity,moduleName,recordId}));
+        }
       }
     });
     const runtime=await page.evaluate(()=>({global:!!CLICK360_SPARK_OPERATIONAL_UI,hash:CLICK360_RELEASE_ASSETS['app.js'],sale:click360GetTenantState().sales.at(-1).id}));
@@ -290,8 +321,8 @@ try{
     await reportPage.click();
     await restarted.waitForFunction(()=>click360SparkCoordinator.phase()==='READY'
       &&!click360SparkCoordinator.hasMore('dailyReports'));
-    assert(await restarted.evaluate(id=>click360GetTenantState().dailyReports.filter(r=>r.businessId===id).length===103,uid),
-      'Next server page includes all 101 synthetic historical reports and both operational closes');
+    assert(await restarted.evaluate(id=>click360GetTenantState().dailyReports.filter(r=>r.businessId===id).length===104,uid),
+      'Next server page includes all 101 synthetic historical reports and three operational closes');
     assert(await restarted.locator('[data-spark-history="dailyReports"]').count()===0,'Exhausted history cannot issue repeated page reads');
     const afterHistory=await restarted.evaluate(()=>{
       const state=click360GetTenantState();
@@ -299,6 +330,19 @@ try{
         stock:state.products.map(p=>[p.id,p.stock]).sort(),deleted:state.deletedProducts.map(p=>p.id).sort()};
     });
     assert(JSON.stringify(afterHistory)===JSON.stringify(durableAfter),'Reading history cannot change sales or stock');
+    for(const [route,source,recordId]of [['crm','settings.customers','a-customers-100'],['activity','auditLogs','a-auditEvents-100']]){
+      await restarted.evaluate(route=>{location.hash=`#${route}`;},route);
+      const nextPage=restarted.locator(`[data-spark-history="${source}"]`);await nextPage.waitFor({state:'visible'});
+      await nextPage.click();
+      await restarted.waitForFunction(source=>click360SparkCoordinator.phase()==='READY'
+        &&!click360SparkCoordinator.hasMore(source),source);
+      assert(await restarted.evaluate(({source,recordId})=>{
+        const state=click360GetTenantState(),rows=source==='auditLogs'?state.auditLogs:state.settings.customers;
+        return rows.some(row=>row.id===recordId);
+      },{source,recordId}),`Actual ${route} UI loads beyond row 100 without a legacy reader`);
+    }
+    await restarted.evaluate(()=>{location.hash='#cash';});
+    await restarted.locator('#closeDayBtn').waitFor({state:'visible'});
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Restart cannot write legacy');
     const secondDevice=await openSignedIn(browser,{width:1280,height:800});
     try{
@@ -330,6 +374,8 @@ try{
       exactActiveCashBeyondHistoryPage:true,
       durableWorkingDatePerBusiness:true,
       cashHistoryServerPagination:true,
+      customerAndActivityServerPagination:true,
+      reopenCreatesExactNewSession:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
       appFirestoreTransport:'long_polling',customerCreateAndEdit:true,customerDeletePreservesHistory:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});

@@ -573,10 +573,28 @@
           const runtime=await tx.get('metadata','runtime');if(!runtime||runtime.summaryVersion!==1)throw Error('CASH_RUNTIME_NOT_VERIFIED');
           if(runtime.openCashSessionId)throw Error('BUSINESS_ALREADY_HAS_OPEN_CASH_SESSION');
           const opening=money(p.openingAmount,'OPENING_AMOUNT');
-          stage('cashSessions',id,null,{status:'open',date:date(p.date),openingAmount:opening,cashBalance:opening,
+          let predecessor=null,origin={};
+          if(p.previousReportId!==undefined){
+            if(actorUid!==expected.ownerUid)throw Error('CASH_SUCCESSOR_OWNER_REQUIRED');
+            const previousReportId=safeId(p.previousReportId,'previousReportId'),report=await tx.get('dailyReports',previousReportId);
+            if(!report||report.status!=='closed'||report.date!==date(p.date)||report.recordVersion!==p.expectedReportVersion
+              ||typeof p.reason!=='string'||p.reason.trim().length<4
+              ||report.declaredCash!==opening||report.closeCash!==opening)throw Error('CASH_SUCCESSOR_REPORT_CONFLICT');
+            const previous=await tx.get('cashSessions',safeId(report.cashSessionId,'cashSessionId'));
+            if(!previous||previous.id===id||previous.status!=='closed'||previous.reportId!==previousReportId
+              ||previous.date!==p.date)throw Error('CASH_SUCCESSOR_SESSION_CONFLICT');
+            summary(previous);
+            predecessor={previousReportId,report};
+            origin={reopened:true,previousCashSessionId:previous.id,reopenReason:p.reason.trim()};
+          }
+          stage('cashSessions',id,null,{...origin,status:'open',date:date(p.date),openingAmount:opening,cashBalance:opening,
             summaryVersion:1,saleCount:0,salesTotal:0,itemCount:0,taxTotal:0,incomeCash:0,expenseCash:0,
             paymentTotals:{cash:0,card:0,transfer:0,receivablePayments:0},closeCycle:1,lastOperationId:op});
           stage('movements',op,null,{operationId:op,kind:'apertura',amount:opening,date:p.date,cashSessionId:id,lastOperationId:op});result={cashSessionId:id};
+          if(predecessor){
+            stage('dailyReports',predecessor.previousReportId,predecessor.report,{...predecessor.report,status:'reopened',reopenReason:p.reason.trim(),lastOperationId:op});
+            result={...result,previousReportId:predecessor.previousReportId,movementId:op};
+          }
           stage('metadata','runtime',runtime,{...runtime,openCashSessionId:id,lastOperationId:op});
         }else if(kind==='sale'){
           const sale=scoped(p.sale||{}),sessionId=safeId(sale.cashSessionId,'cashSessionId');date(sale.date);
@@ -757,7 +775,7 @@
         if(!record)return {source:'server',exists:false};
         if(record.kind!==kind||record.payloadHash!==payloadHash||record.status!=='committed')throw Error('IDEMPOTENCY_KEY_CONFLICT');
         const r=record.result||{};
-        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
+        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
           if(!r[key])continue;const linked=await tx.get(moduleName,r[key]);
           if(!linked||((moduleName==='movements'||(moduleName==='sales'&&kind==='sale'))&&linked.operationId!==operationId)
             ||(kind==='receivable_payment'&&['sales','layaways'].includes(moduleName)&&!linked.payments?.some(payment=>payment.operationId===operationId))
@@ -772,7 +790,7 @@
         const ledger=await tx.get('operationLedger',safeId(operationId,'operationId'));
         if(!ledger||ledger.status!=='committed'||ledger.kind!==kind||ledger.payloadHash!==payloadHash)throw Error('SPARK_PROJECTION_LEDGER_CONFLICT');
         const records={},r=ledger.result||{};
-        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
+        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
           if(!r[key])continue;
           const value=await tx.get(moduleName,r[key]);
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');

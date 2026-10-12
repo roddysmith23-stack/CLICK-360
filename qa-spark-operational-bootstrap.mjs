@@ -2,6 +2,22 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta.url),'utf8');
+// A closed day is deliberately "not started" in the domain. The actual cash
+// renderer must check the closed state before offering a new initial opening.
+{
+  const app=readFileSync(new URL('./app.js',import.meta.url),'utf8');
+  const start=app.indexOf('function cashView()'),end=app.indexOf('function labelKind(',start);
+  for(const modular of [false,true])for(const closed of [false,true]){
+    const scope=vm.createContext({window:{click360SparkOperationalSession:modular?{}:null},tenantDataHydrated:true,
+      state:{dailyReports:[]},currentBusiness:()=>({id:'business'}),currentOpenCashSession:()=>null,
+      latestCashSession:()=>closed?{id:'exact-closed-session',status:'closed'}:null,
+      movementsForBiz:()=>[],today:()=> '2026-09-03',isCashIncomeMovement:()=>false,staleOpenCashSession:()=>null,
+      isDayStarted:()=>false,isDayClosed:()=>closed,escapeHtml:String,icon:()=>'',fmt:String,sparkHistoryPageControl:()=>''});
+    vm.runInContext(app.slice(start,end),scope);const html=scope.cashView();
+    assert.equal(html.includes('id="reopenCashBtn"'),closed,'Confirmed closed state must expose the existing successor action');
+    assert.equal(html.includes('id="startDayBtnCash"'),!closed,'A closed day cannot be mislabeled as never opened');
+  }
+}
 // Run the actual PWA configuration installer. Numeric paths describe array
 // indexes; the container type is determined by the NEXT path component.
 {

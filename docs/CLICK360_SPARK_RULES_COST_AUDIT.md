@@ -82,3 +82,17 @@ Reference: [Firebase atomic-operation access limits and caching](https://firebas
 | PRODUCT_DELETE | Auth/path plus existing writable/storage control | Existing scoped membership and explicit delete grant | Product ↔ new ledger | 0 |
 
 The unchanged existing SALE/INVENTORY/CASH budgets still require re-execution on this candidate: extra local predicates are not automatically free evaluation work. Exact Rules and stricter `+16` tests, with logs checked for expression/access-budget and internal evaluator errors, remain mandatory. A distinct-reference worksheet is not a measured Firestore bill or percentage headroom.
+
+## Exact successor opening — 2026-10-12
+
+The existing PWA reopening action creates a **new** session, not the DEV same-session `cash_reopen`. Its typed command uses `cash_open` with an exact previous report and expected revision. Core writes remain atomic: new session, opening movement, runtime, ledger and prior report's nonfinancial reopening marker. No preceding session, sale, product stock or financial report total is changed.
+
+| Operation | Before / after external proof |
+|---|---|
+| SALE / INVENTORY_ADJUSTMENT / CASH_CLOSE / PRODUCT_CREATE / PRODUCT_EDIT | Existing references unchanged; full owner/worker regression and +16-predicate probe rerun |
+| Ordinary CASH_OPEN | Same exact new-session reference reused by the origin predicate; no membership read for owner |
+| Successor CASH_OPEN | Adds exact preceding report-after and preceding closed-session-after; verifies report identity/date/status/declared opening and the new session's parent/reason; owner-only |
+
+The successor has a conservative logical bound of `8 + A`: control, ledger before/after, new session after, opening movement after, runtime after, previous report after and previous closed session after, plus existing account authorization `A`. The prior report's immutable financial diff uses `resource/request.resource`, not another read. Same-path references can be cached; this worksheet is not a billed/access-call count. Worker successor forgery is denied; ordinary authorized worker opening remains supported.
+
+Exact source SHA256 `25c0b6b044281d8c6428d56d7b9e9f972620ef3bc9d85bdd5934c88feb2a8eb8` passed the real client SDK matrix and the RAM-only +16-predicate headroom probe, with zero expression/access-budget errors. Evidence: `output/spark-successor-final-rules-20261012.log`. This certifies these synthetic client operations, not production deployment, physical iPhone recovery or full staging.

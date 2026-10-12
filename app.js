@@ -3240,7 +3240,7 @@ function parseMoney(value) {
     if (!tenantDataHydrated) {
       return `<div class="pageHead"><div><h1>Vender</h1></div></div>${dataNotReadyCardHtml('Cargando el estado de tu jornada y tu inventario...')}`;
     }
-    if (!isDayStarted()) {
+    if (!isDayStarted() && !isDayClosed()) {
       return `<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 20px; text-align:center; min-height:50vh;">
         <div style="font-size:48px; margin-bottom:16px;">🔑</div>
         <h2>Jornada no Iniciada</h2>
@@ -3360,7 +3360,7 @@ function parseMoney(value) {
          <button class="btn primary" id="closeStaleCashBtn" type="button">Cerrar caja del ${escapeHtml(staleSession.date)}</button>
        </div>
       `;
-    } else if (!isDayStarted()) {
+    } else if (!isDayStarted() && !isDayClosed()) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px dashed var(--gold);">
          <h3 style="margin-bottom:8px;">🔑 Iniciar Jornada de Hoy</h3>
@@ -3565,13 +3565,14 @@ function parseMoney(value) {
 	    const pendingTotal=validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
 	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-    return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
+    return `<div class="pageHead"><div><h1>Reportes</h1><p>${window.click360SparkCoordinator?.hasMore('sales')?'Resumen de los registros cargados; el historial tiene más ventas en la nube.':'Resumen general de tu negocio.'}</p></div>
         <div class="toolbar" style="gap:8px;">
 	          <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
 	          <button class="btn silver" onclick="window.printReports('pdf')">Guardar PDF</button>
 	          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
         </div>
       </div>
+      ${sparkHistoryPageControl('sales')}
       <div class="card sectionCard reportRangeCard">
         <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${safeDateInputValue(state.reportsFrom)}"></div>
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
@@ -3722,13 +3723,13 @@ function parseMoney(value) {
         <div class="field"><label>Módulo</label><select id="activityModule"><option value="">Todos</option>${modules.map((module) => `<option value="${escapeHtml(module)}">${escapeHtml(module)}</option>`).join('')}</select></div>
         <div class="field"><label>Acción</label><select id="activityAction"><option value="">Todas</option>${actions.map((action) => `<option value="${escapeHtml(action)}">${escapeHtml(String(action).replaceAll('_', ' '))}</option>`).join('')}</select></div>
       </div></section>
-      <section class="card sectionCard" style="margin-top:14px"><div id="activityList" data-page-size="50">${activityRowsHtml(events)}</div></section>`;
+      <section class="card sectionCard" style="margin-top:14px"><div id="activityList" data-page-size="50">${activityRowsHtml(events)}</div>${sparkHistoryPageControl('auditLogs')}</section>`;
   }
   function activityRowsHtml(events = []) {
-    return events.slice(0, 100).map((event) => `<article class="activityRow" data-activity-date="${escapeHtml(String(event.createdAt || '').slice(0, 10))}" data-activity-actor="${escapeHtml(event.createdBy || '')}" data-activity-module="${escapeHtml(auditModule(event.action))}" data-activity-action="${escapeHtml(event.action || '')}"><span class="activityIcon">${icon(auditModule(event.action) === 'Caja' ? 'wallet-cards' : auditModule(event.action) === 'Inventario' ? 'package' : auditModule(event.action) === 'Trabajadores' ? 'users-round' : 'history')}</span><span><b>${escapeHtml(auditHumanText(event))}</b><small>${escapeHtml(event.when || event.createdAt || '')} · ${escapeHtml(auditModule(event.action))}</small></span></article>`).join('') || '<p class="empty">Aún no hay actividad registrada para este negocio.</p>';
+    return events.slice(0, window.click360SparkOperationalSession?undefined:100).map((event) => `<article class="activityRow" data-activity-date="${escapeHtml(String(event.createdAt || '').slice(0, 10))}" data-activity-actor="${escapeHtml(event.createdBy || '')}" data-activity-module="${escapeHtml(auditModule(event.action))}" data-activity-action="${escapeHtml(event.action || '')}"><span class="activityIcon">${icon(auditModule(event.action) === 'Caja' ? 'wallet-cards' : auditModule(event.action) === 'Inventario' ? 'package' : auditModule(event.action) === 'Trabajadores' ? 'users-round' : 'history')}</span><span><b>${escapeHtml(auditHumanText(event))}</b><small>${escapeHtml(event.when || event.createdAt || '')} · ${escapeHtml(auditModule(event.action))}</small></span></article>`).join('') || '<p class="empty">Aún no hay actividad registrada para este negocio.</p>';
   }
   async function bindActivity() {
-	  if (isOwnerUser() && typeof window.click360ListBusinessUnitAuditEvents === 'function') {
+	  if (!window.click360SparkOperationalSession && isOwnerUser() && typeof window.click360ListBusinessUnitAuditEvents === 'function') {
 	    try {
 	      const remoteEvents = await window.click360ListBusinessUnitAuditEvents(currentBusiness()?.id || '');
 	      const known = new Set((state.auditLogs || []).map((event) => event.id || event.eventId));
@@ -4455,7 +4456,7 @@ function parseMoney(value) {
 	    }
 	    const customers = crmCustomers();
 	    return `<div class="pageHead"><div><h1>Clientes</h1><p>Seguimiento de clientes y contacto por WhatsApp.</p></div><div class="toolbar"><button class="btn primary" id="newCustomerBtn">Nuevo cliente</button></div></div>
-	      <section class="card sectionCard"><div class="field"><label>Buscar</label><input id="customerSearch" placeholder="Nombre o telefono"></div><div id="customerList">${customerCards(customers)}</div></section>`;
+	      <section class="card sectionCard"><div class="field"><label>Buscar</label><input id="customerSearch" placeholder="Nombre o telefono"></div><div id="customerList">${customerCards(customers)}</div>${sparkHistoryPageControl('settings.customers')}</section>`;
 	  }
 	  function customerCards(customers) {
 	    if (!customers.length) return '<p class="empty">Todavia no hay clientes registrados.</p>';
@@ -8898,25 +8899,33 @@ function parseMoney(value) {
 	      toast('No se encontró un cierre vigente para reabrir.', 'err');
 	      return false;
 	    }
+        let sparkCommand,openingAmount=currentBusiness().lastCashBalance||0;
+        if(window.click360SparkOperationalSession){
+          try{
+            sparkCommand=window.CLICK360_MODULAR_UI_ADAPTER.cashSuccessorCommand({report:closedReport,
+              identity:window.click360SparkOperationalSession.identity,operationId,cashSessionId:operationId,date:today(),reason});
+            openingAmount=sparkCommand.input.openingAmount;
+          }catch{return toast('No pudimos verificar el cierre anterior. Tus datos permanecen protegidos.','err');}
+        }
 	    closedReport.status = 'reopened';
 	    closedReport.reopenedAt = new Date().toISOString();
 	    closedReport.reopenedBy = authUser().name;
 	    closedReport.reopenReason = reason;
 	    state.movements.push({
 	      id: uid('mov'), operationId, businessId: bid, date: today(), when: nowLabel(), kind: 'apertura',
-	      amount: currentBusiness().lastCashBalance || 0, note: `Reapertura de caja: ${reason}`,
+	      amount: openingAmount, note: `Reapertura de caja: ${reason}`,
 	      createdBy: authUser().name, reopened: true, cashSessionId: operationId, createdAtMs: Date.now()
 	    });
 	    state.cashSessions ||= [];
 	    state.cashSessions.push({
 	      id: operationId, operationId, businessId: bid, registerName: 'Caja principal', date: today(), status: 'open',
 	      openedByUid: window.click360User?.uid || '', openedBy: authUser().name, openedByRole: authUser().role || 'owner',
-	      openedAt: new Date().toISOString(), openingAmount: currentBusiness().lastCashBalance || 0,
+	      openedAt: new Date().toISOString(), openingAmount,
 	      reopened: true, reopenReason: reason, notes: ''
 	    });
 	    addAudit('cash_reopened', { businessId: bid, date: today(), reason, reports: [closedReport.id] });
 	    const committed = await commitCriticalMutation(previousState, 'cash_reopened', (next) =>
-	      next.movements.some((movement) => movement.operationId === operationId && movement.businessId === bid));
+	      next.movements.some((movement) => movement.operationId === operationId && movement.businessId === bid),{sparkCommand});
 	    renderApp('cash');
 	    if (committed.ok) toast(committed.pending ? 'Reapertura guardada; sincronización pendiente.' : 'Caja reabierta con auditoría');
 	    return committed.ok;

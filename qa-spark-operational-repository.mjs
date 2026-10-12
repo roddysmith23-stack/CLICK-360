@@ -151,6 +151,23 @@ await assert.rejects(()=>repo.commitSale({...manual,operationId:'closed-sale'}),
 await repo.commitOperation('cash_reopen',{operationId:'reopen-1',cashSessionId:open.cashSessionId,date:open.date,reason:'Authorized correction'});
 await repo.closeCashSession({...close,operationId:'close-2'});assert.equal((await get('dailyReports',`report-${open.cashSessionId}-1`)).status,'reopened');
 assert.equal((await get('dailyReports',`report-${open.cashSessionId}-2`)).saleCount,5);assert.equal((await get('products','p1')).stock,0);
+const oldSession=await get('cashSessions',open.cashSessionId),predecessor=await get('dailyReports',oldSession.reportId);
+const successor={operationId:'successor-open',cashSessionId:'successor-session',date:open.date,openingAmount:5,
+  previousReportId:predecessor.id,expectedReportVersion:predecessor.recordVersion,reason:'Continue exact day'};
+await assert.rejects(()=>repo.commitOperation('cash_open',{...successor,openingAmount:6}),/SUCCESSOR_REPORT_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('cash_open',{...successor,expectedReportVersion:99}),/SUCCESSOR_REPORT_CONFLICT/);
+await repo.commitOperation('cash_open',successor);assert.equal((await repo.commitOperation('cash_open',successor)).status,'already_committed');
+assert.deepEqual(await get('cashSessions',open.cashSessionId),oldSession,'Preceding closed session is immutable');
+assert.equal((await get('dailyReports',predecessor.id)).status,'reopened');
+assert.equal((await get('dailyReports',predecessor.id)).total,predecessor.total);
+assert.equal((await get('cashSessions',successor.cashSessionId)).saleCount,0);
+assert.equal((await get('movements',successor.operationId)).amount,5);
+const successorPrepared=await repo.prepareOperation('cash_open',successor);
+const successorProjection=await repo.readOperationProjection(successor.operationId,'cash_open',successorPrepared.payloadSha256);
+assert.equal(successorProjection.records.dailyReports[0].id,predecessor.id);
+await repo.closeCashSession({operationId:'successor-close',cashSessionId:successor.cashSessionId,date:open.date,declaredCash:5});
+assert.equal((await get('dailyReports','report-successor-session-1')).saleCount,0);
+assert.equal((await get('products','p1')).stock,0);
 await repo.commitOperation('inventory_adjust',{operationId:'adjust-1',productId:'p1',quantityDelta:1,date:open.date,reason:'Opening stock correction'});
 assert.equal((await get('products','p1')).stock,1);
 for(let i=0;i<15000;i++)rows.set(`${base}/sales/history-${i}`,{unused:true});

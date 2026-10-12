@@ -334,6 +334,24 @@ try{
   await repo.closeCashSession({operationId:'close-2',cashSessionId:open.cashSessionId,date:open.date,declaredCash:0});
   assert.equal((await get('dailyReports','report-session-03-1')).status,'reopened');
   assert.equal((await get('dailyReports','report-session-03-2')).saleCount,4);
+  const previousSession=await get('cashSessions',open.cashSessionId),previousReport=await get('dailyReports',previousSession.reportId);
+  const successor={operationId:'successor-open',cashSessionId:'successor-session',date:open.date,openingAmount:0,
+    previousReportId:previousReport.id,expectedReportVersion:previousReport.recordVersion,reason:'Exact new session'};
+  const forgedSuccessor=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith(`/dailyReports/${previousReport.id}`)
+      ?{...data,data:{...data.data,total:999}}:data),serverTimestamp});
+  await assertFails(forgedSuccessor.commitOperation('cash_open',{...successor,operationId:'forged-successor'}));
+  assert.equal((await getDocFromServer(doc(client,`${base}/cashSessions/${successor.cashSessionId}`))).exists(),false);
+  await budgetObservation('forged_successor_financial_report_denied');
+  await repo.commitOperation('cash_open',successor);
+  assert.equal((await repo.commitOperation('cash_open',successor)).status,'already_committed');
+  assert.deepEqual(await get('cashSessions',open.cashSessionId),previousSession);
+  assert.equal((await get('dailyReports',previousReport.id)).total,previousReport.total);
+  assert.equal((await get('dailyReports',previousReport.id)).status,'reopened');
+  assert.equal((await get('cashSessions',successor.cashSessionId)).saleCount,0);
+  await budgetObservation('cash_successor_exact_new_session');
+  await repo.closeCashSession({operationId:'successor-close',cashSessionId:successor.cashSessionId,date:open.date,declaredCash:0});
+  assert.equal((await get('dailyReports','report-successor-session-1')).saleCount,0);
   await repo.commitOperation('inventory_adjust',{operationId:'adjust-1',productId:'p1',quantityDelta:1,date:open.date});
   await repo.commitOperation('product_edit',{operationId:'edit-1',productId:'p1',changes:{name:'Edited'}});
   assert.equal((await get('products','p1')).name,'Edited');
@@ -530,6 +548,18 @@ try{
   await workerRepo.closeCashSession(workerClose);
   assert.equal((await workerRepo.closeCashSession(workerClose)).status,'already_committed');
   assert.equal((await get('dailyReports','report-multiline-session-1')).saleCount,20);
+  const workerPredecessor=await get('dailyReports','report-multiline-session-1');
+  await assert.rejects(()=>workerRepo.commitOperation('cash_open',{operationId:'worker-successor',cashSessionId:'worker-successor-session',
+    date:workerClose.date,openingAmount:0,previousReportId:workerPredecessor.id,expectedReportVersion:workerPredecessor.recordVersion,
+    reason:'Forbidden successor'}),/CASH_SUCCESSOR_OWNER_REQUIRED/);
+  const forgedWorkerOrigin=api.createSparkRepository({ownerUid,businessId,actorUid:workerUid,
+    transport:transportFor(worker,workerUid,'',(ref,data)=>ref.path.includes('/cashSessions/')
+      ?{...data,data:{...data.data,reopened:true,previousCashSessionId:'multiline-session',reopenReason:'Forbidden origin'}}
+      :ref.path.includes('/operationLedger/')?{...data,data:{...data.data,result:{...data.data.result,previousReportId:workerPredecessor.id}}}:data),serverTimestamp});
+  await assertFails(forgedWorkerOrigin.commitOperation('cash_open',{operationId:'worker-forged-origin',cashSessionId:'worker-forged-origin-session',
+    date:workerClose.date,openingAmount:0}));
+  assert.equal((await getDocFromServer(doc(client,`${base}/cashSessions/worker-forged-origin-session`))).exists(),false);
+  await budgetObservation('worker_successor_owner_fence');
   const workerOpen={operationId:'worker-open-historical',cashSessionId:'worker-exact-session',date:'2026-09-04',openingAmount:0};
   await workerRepo.commitOperation('cash_open',workerOpen);
   await workerRepo.commitOperation('product_create',{operationId:'worker-create',date:workerOpen.date,
@@ -612,6 +642,7 @@ try{
   await budgetObservation('final');
   const diagnosticOnly=process.env.SPARK_RULES_DIAGNOSTIC_ONLY==='true';
   const proof={status:diagnosticOnly?'DIAGNOSTIC_ONLY':'PASS',clientRules:true,historicalSale:true,idempotency:true,stockRace:true,exactSession:true,reopen:true,
+    successorNewSession:true,successorPrecedingSessionUnchanged:true,successorOldFinancialTotalsImmutable:true,workerSuccessorDenied:true,
     workerSale:true,workerProductDenied:true,ownReceiptOnly:true,ownerMetadataPrivate:true,twoBusinessIsolation:true,
     membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,immutableLedger:true,
     pendingPayment:true,layawayDeposit:true,subsequentReceipts:true,receiptStockUnchanged:true,receiptRace:true,serverPagination:true,secondDevice:true,

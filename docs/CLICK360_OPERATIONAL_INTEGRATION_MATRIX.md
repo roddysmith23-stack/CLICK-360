@@ -37,11 +37,12 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 | Customer create/edit/delete | Existing CRM / `customerMutationCommand` | Individual revision-checked customer; logical delete retains history | Served Chromium/WebKit + import-identity/worker Rules |
 | Cash open | Existing $0 opening handler / `cash_open` | Exact session + opening + runtime + ledger | Served Chromium/WebKit; historical date tested |
 | Cash close | `submitCashClose`, exact preflight / `cash_close` | Exact session + unique compact report + ledger; no stock/sale changes | Served lost-response recovery + readback |
-| Cash reopen | `reopenCashDay` | Actual UI opens a **new session**; DEV command reopens old session | Blocked; do not map incompatible semantics |
+| Cash reopen | `reopenCashDay`, `cashSuccessorCommand`, exact predecessor `cash_open` | New session + opening + runtime + ledger + prior-report status atomically; prior closed session/financial totals unchanged | Served Chromium/WebKit + owner/worker-denial client Rules; does not use incompatible DEV same-session reopen |
 | Income/expense create | Existing cash movement form / `cash_movement` | Actual movement + exact session counters + ledger | Served Chromium/WebKit |
 | Movement edit/cancel | `cash_movement_updated/cancelled` | Legacy financial mutation | Blocked; compensating adapters missing |
 | Cash history | `cashView`, bootstrap `loadMore` | Authoritative server pages; durable append under coordinator flight | Actual 103-report history in served Chromium/WebKit; no sale/stock changes |
-| Other histories and audit | Current array views; repository bounded queries | Local projection is not server-paginated full history | Other real UI pagination integrations remain missing |
+| Customers / activity | Existing CRM and Activity + bootstrap `loadMore` | Server pages beyond row 100; Spark activity never calls the V1 reader | Served Chromium/WebKit; no financial writes during pagination |
+| Other histories / aggregates | Current array views; repository bounded queries | Local projection is not server-paginated full history | Sales/report paging control connected; partial summaries labeled, complete aggregate/date integration remains missing |
 | Historical working date | `setWorkingDate`, native `putWorkingDate` | Device-only per-business preference; does not change financial revision/snapshot | Native four profiles plus served Chromium/WebKit restart and two-business isolation |
 | Cash report/receipt | Existing modal / `cashReportView` | Derived view of server-confirmed compact report | Served exact reports; no duplicated sale totals |
 | Labels/printing | Existing print engine + product view | Read-only printing; saved profiles/templates use `save` | Existing release print QA; modular full print/config journey missing |

@@ -10,6 +10,18 @@ assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingP
 assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,businessId:'foreign'}}),/CONTEXT_INVALID/);
 assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,deleted:true}}),/CONTEXT_INVALID/);
 const identity={ownerUid:'synthetic-owner',businessId:'alpha'};
+const previousClose={id:'previous-report',cashSessionId:'previous-session',businessId:'alpha',date:'2026-09-03',status:'closed',recordVersion:2,
+  openingAmount:0,declaredCash:5,closeCash:5,theoreticalCash:5,difference:0,saleCount:1,total:30,totalItems:1,totalIva:0,incomeCash:0,expenseCash:0,
+  paymentTotals:{cash:5,card:0,transfer:25,receivablePayments:0}};
+const successorInput={report:previousClose,identity,operationId:'reopen-operation',cashSessionId:'new-session',date:previousClose.date,reason:'Continuar jornada'};
+const successorBefore=structuredClone(successorInput),successor=api.cashSuccessorCommand(successorInput);
+assert.equal(successor.kind,'cash_open');assert.equal(successor.input.openingAmount,5);
+assert.equal(successor.input.previousReportId,previousClose.id);assert.deepEqual(successorInput,successorBefore);
+assert.equal(api.cashReportView({...previousClose,status:'reopened'}).total,30);
+for(const delta of [{cashSessionId:previousClose.cashSessionId},{date:'2026-09-04'},{reason:'x'},
+  {report:{...previousClose,status:'reopened'}},{report:{...previousClose,recordVersion:undefined}},
+  {report:{...previousClose,closeCash:6}},{identity:{...identity,businessId:'foreign'}}])
+  assert.throws(()=>api.cashSuccessorCommand({...successorInput,...delta}),/MODULAR_CASH_SUCCESSOR_/);
 const sale={id:'live-id',operationId:'stable-operation',businessId:'alpha',cashSessionId:'exact-session',date:'2026-09-03',
   total:30,received:30,balance:0,method:'Transferencia',status:'paid',items:[{id:'p1',qty:1,name:'Synthetic',price:30}]};
 const input={sale,identity,cashSessionId:'exact-session',workingDate:'2026-09-03',cartLines:[{id:'p1',qty:1}]};

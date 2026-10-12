@@ -655,8 +655,20 @@ service cloud.firestore {
             (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(r.cashSessionId)).data.lastOperationId == operationId
               && (kind != "cash_close" || (!exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId))
                 && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.data.operationId == operationId))
-              && (kind != "cash_reopen" || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.lastOperationId == operationId))
+              && (kind != "cash_reopen" || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.lastOperationId == operationId)
+              && (kind != "cash_open" || sparkCashOpeningOrigin(ownerUid, businessId, operationId, r)))
           : kind == "receivable_payment" ? sparkPaymentLedgerProof(ownerUid, businessId, operationId, r) : false);
+    }
+
+    function sparkCashOpeningOrigin(ownerUid, businessId, op, result) {
+      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(result.cashSessionId)).data;
+      return result.get("previousReportId", "") == ""
+        ? (session.data.get("reopened", false) == false
+            && !session.data.keys().hasAny(["previousCashSessionId", "reopenReason"]))
+        : (request.auth.uid == ownerUid
+            && session.data.reopened == true && session.data.reopenReason is string
+            && session.data.reopenReason.size() >= 4
+            && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(result.previousReportId)).data.lastOperationId == op);
     }
 
     function sparkReceivableLedgerProof(ownerUid, businessId, operationId) {
@@ -1078,7 +1090,14 @@ service cloud.firestore {
       let op = request.resource.data.lastOperationId;
       let ledger = sparkLedger(ownerUid, businessId, op);
       let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data;
-      return d.id == recordId && d.businessId == businessId && ledger.result.reportId == recordId
+      return ledger.kind == "cash_open"
+        ? (!creating && request.auth.uid == ownerUid && resource.data.data.status == "closed"
+            && d.id == recordId && d.businessId == businessId && d.status == "reopened"
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])
+            && ledger.result.previousReportId == recordId && ledger.result.cashSessionId != d.cashSessionId
+            && session.data.status == "closed" && session.data.reportId == recordId && session.data.date == d.date
+            && sparkSuccessorSession(ownerUid, businessId, op, ledger.result.cashSessionId, d))
+        : d.id == recordId && d.businessId == businessId && ledger.result.reportId == recordId
         && ledger.result.cashSessionId == d.cashSessionId && session.lastOperationId == op
         && ((creating && ledger.kind == "cash_close" && session.data.status == "closed"
               && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "status", "renderVersion", "openingAmount", "closeCash", "declaredCash", "theoreticalCash", "difference", "saleCount", "total", "totalItems", "totalIva", "incomeCash", "expenseCash", "paymentTotals", "observations", "closeCycle", "lastOperationId"])
@@ -1091,6 +1110,15 @@ service cloud.firestore {
               && sparkMoneyEqual(d.difference, d.declaredCash - d.theoreticalCash))
           || (!creating && ledger.kind == "cash_reopen" && session.data.status == "open"
               && d.status == "reopened" && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])));
+    }
+
+    function sparkSuccessorSession(ownerUid, businessId, op, sessionId, report) {
+      let next = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(sessionId)).data;
+      return next.lastOperationId == op && next.data.status == "open" && next.data.date == report.date
+        && next.data.reopened == true && next.data.previousCashSessionId == report.cashSessionId
+        && next.data.reopenReason == report.reopenReason && report.reopenReason is string && report.reopenReason.size() >= 4
+        && report.declaredCash >= 0 && report.closeCash == report.declaredCash
+        && next.operational.openingAmount == report.declaredCash;
     }
 
     function sparkRuntimeMutation(ownerUid, businessId, recordId) {
