@@ -117,7 +117,62 @@ try{
     assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/${operationId}`))).exists(),false);
     assert.equal((await getDocFromServer(doc(client,`${base}/customers/${customerId}`))).exists(),false);
   }
-  await budgetObservation('customer_create_edit_and_denials');
+  const customerDelete={operationId:'customer-delete',customerId:customerCreate.customerId,expectedRecordVersion:2};
+  const omittedCustomerDelete=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith(`/customers/${customerCreate.customerId}`)?null:data),serverTimestamp});
+  await assertFails(omittedCustomerDelete.commitOperation('customer_delete',{...customerDelete,operationId:'customer-delete-omitted'}));
+  for(const field of ['name','deleted','id','businessId']){
+    const operationId=`customer-delete-forged-${field}`;
+    const forgedDelete=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+      transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith(`/customers/${customerCreate.customerId}`)
+        ? {...data,data:{...data.data,[field]:field==='deleted'?false:'Replaced'}}:data),serverTimestamp});
+    await assertFails(forgedDelete.commitOperation('customer_delete',{...customerDelete,operationId}));
+    assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/${operationId}`))).exists(),false);
+  }
+  await repo.commitOperation('customer_delete',customerDelete);
+  assert.equal((await repo.commitOperation('customer_delete',customerDelete)).status,'already_committed');
+  assert.equal((await get('customers',customerCreate.customerId)).deleted,true);
+  assert.equal((await get('customers',customerCreate.customerId)).name,customerEdit.changes.name);
+  // Bypass the rejecting domain adapter deliberately: the server Rules must
+  // also prohibit a caller from resurrecting a deleted historical record.
+  await assertFails(runTransaction(client,async tx=>{
+    const ref=doc(client,`${base}/customers/${customerCreate.customerId}`);
+    const old=(await tx.get(ref)).data(),oldLedger=(await tx.get(doc(client,`${base}/operationLedger/customer-delete`))).data();
+    const operationId='customer-forged-resurrection';
+    tx.set(ref,{...old,recordVersion:old.recordVersion+1,lastOperationId:operationId,updatedBy:ownerUid,updatedAt:serverTimestamp(),
+      data:{...old.data,deleted:false},dataHash:'e'.repeat(64)});
+    tx.set(doc(client,`${base}/operationLedger/${operationId}`),{...oldLedger,id:operationId,lastOperationId:operationId,
+      createdAt:serverTimestamp(),updatedAt:serverTimestamp(),dataHash:'e'.repeat(64),
+      data:{...oldLedger.data,id:operationId,operationId,kind:'customer_edit',payloadHash:'e'.repeat(64)}});
+  }));
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/customer-forged-resurrection`))).exists(),false);
+  assert.equal((await get('customers',customerCreate.customerId)).recordVersion,3);
+  const importedCustomer={name:'Imported historical',phone:'000',notes:'Keep original history'};
+  await env.withSecurityRulesDisabled(async c=>setDoc(doc(c.firestore(),`${base}/customers/imported-customer`),{
+    id:'imported-customer',ownerUid,businessId,schemaVersion:2,module:'customers',data:importedCustomer,
+    dataHash:await globalThis.CLICK360_SPARK_MIGRATION.hash(importedCustomer),sourceHash:'a'.repeat(64),sourcePath:['settings','customers',7]}));
+  await repo.commitOperation('customer_delete',{operationId:'delete-imported-customer',customerId:'imported-customer',expectedRecordVersion:1});
+  assert.equal((await get('customers','imported-customer')).deleted,true);
+  assert.equal((await get('customers','imported-customer')).notes,importedCustomer.notes);
+  for(const mismatch of ['id','businessId']){
+    const customerId=`foreign-customer-${mismatch}`,operationId=`forged-customer-scope-${mismatch}`;
+    const foreign={...importedCustomer,id:customerId,businessId,[mismatch]:'foreign-value'};
+    await env.withSecurityRulesDisabled(async c=>setDoc(doc(c.firestore(),`${base}/customers/${customerId}`),{
+      id:customerId,ownerUid,businessId,schemaVersion:2,module:'customers',data:foreign,
+      dataHash:await globalThis.CLICK360_SPARK_MIGRATION.hash(foreign),sourceHash:'a'.repeat(64),sourcePath:['settings','customers',8]}));
+    await assertFails(runTransaction(client,async tx=>{
+      const ref=doc(client,`${base}/customers/${customerId}`),old=(await tx.get(ref)).data();
+      const ledger=(await tx.get(doc(client,`${base}/operationLedger/customer-delete`))).data();
+      tx.set(ref,{...old,recordVersion:2,lastOperationId:operationId,createdBy:ownerUid,updatedBy:ownerUid,
+        createdAt:serverTimestamp(),updatedAt:serverTimestamp(),dataHash:'e'.repeat(64),data:{...old.data,id:customerId,businessId,deleted:true}});
+      tx.set(doc(client,`${base}/operationLedger/${operationId}`),{...ledger,id:operationId,lastOperationId:operationId,
+        createdAt:serverTimestamp(),updatedAt:serverTimestamp(),dataHash:'e'.repeat(64),
+        data:{...ledger.data,id:operationId,operationId,payloadHash:'e'.repeat(64),result:{customerId}}});
+    }));
+    assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/${operationId}`))).exists(),false);
+    assert.deepEqual((await getDocFromServer(doc(client,`${base}/customers/${customerId}`))).data().data,foreign);
+  }
+  await budgetObservation('customer_create_edit_delete_and_denials');
   await repo.commitOperation('cash_open',open);
   await budgetObservation('cash_open');
   console.log('PASS operational Rules: cash opening');
@@ -430,6 +485,15 @@ try{
   await workerRepo.commitOperation('customer_create',{...customerCreate,operationId:'worker-customer-create',customerId:'worker-customer'});
   await workerRepo.commitOperation('customer_edit',{...customerEdit,operationId:'worker-customer-edit',customerId:'worker-customer'});
   assert.equal((await get('customers','worker-customer')).recordVersion,2);
+  const workerCustomerDelete={operationId:'worker-customer-delete',customerId:'worker-customer',expectedRecordVersion:2};
+  await assertFails(workerRepo.commitOperation('customer_delete',workerCustomerDelete));
+  assert.equal((await get('customers','worker-customer')).deleted,undefined);
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),
+    {'permissions.customers.delete':true}));
+  await workerRepo.commitOperation('customer_delete',workerCustomerDelete);
+  assert.equal((await workerRepo.commitOperation('customer_delete',workerCustomerDelete)).status,'already_committed');
+  assert.equal((await get('customers','worker-customer')).deleted,true);
+  assert.equal((await get('customers','worker-customer')).notes,customerEdit.changes.notes);
   await budgetObservation('authorized_worker_customer_create_edit');
   await workerRepo.closeCashSession(workerClose);
   assert.equal((await workerRepo.closeCashSession(workerClose)).status,'already_committed');
@@ -513,6 +577,7 @@ try{
     workerSale:true,workerProductDenied:true,ownReceiptOnly:true,ownerMetadataPrivate:true,twoBusinessIsolation:true,
     membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,immutableLedger:true,
     pendingPayment:true,layawayDeposit:true,subsequentReceipts:true,receiptStockUnchanged:true,receiptRace:true,serverPagination:true,secondDevice:true,
+    customerDeletePreservesHistory:true,customerResurrectionDenied:true,customerDeletePermissionScoped:true,importedCustomerDelete:true,
     workerTwelveLineMixed:true,workerTwelveLineReservations:true,workerTwelveLinePending:true,
     workerCashOpenClose:true,workerProductCreateEditAdjust:true,compoundProductAndStock:true,
     compoundMovementRequired:true,compoundFieldsEnforced:true,compoundWorkerPermissionEnforced:true,allManualQuantityIndices:12,

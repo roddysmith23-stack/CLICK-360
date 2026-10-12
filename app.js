@@ -4281,8 +4281,8 @@ function parseMoney(value) {
 	  function crmCustomers() {
 	    const businessId = currentBusiness()?.id;
       const legacyBusinessId = state.settings?.legacyDataBusinessId;
-	    return (state.settings?.customers || []).filter((customer) => customer.businessId === businessId
-        || (!customer.businessId && legacyBusinessId === businessId));
+	    return (state.settings?.customers || []).filter((customer) => customer.deleted !== true
+        && (customer.businessId === businessId || (!customer.businessId && legacyBusinessId === businessId)));
 	  }
 	  function crmView() {
 	    // r37-2 (NO FALSE STATES): crmCustomers() reads state.settings.customers,
@@ -4448,9 +4448,23 @@ function parseMoney(value) {
 	  }
 	  function bindCrmActions() {
 	    $$('[data-customer-edit]').forEach((button) => button.onclick = () => openCustomerModal(decodeActionId(button.dataset.customerEdit)));
-	    $$('[data-customer-delete]').forEach((button) => button.onclick = () => {
-	      if (window.click360SparkOperationalSession) return toast('La eliminación de clientes aún no está habilitada en este modo. No se cambió ningún dato.', 'err');
+	    $$('[data-customer-delete]').forEach((button) => button.onclick = async () => {
 	      const id = decodeActionId(button.dataset.customerDelete);
+          const session=window.click360SparkOperationalSession;
+          if(session){
+            const customer=crmCustomers().find(item=>item.id===id);
+            let command;
+            try{command=window.CLICK360_MODULAR_UI_ADAPTER.customerMutationCommand({customer,previous:customer,
+              identity:session.identity,operationId:uid('customer-delete'),deleting:true});}
+            catch{return toast('No pudimos validar el cliente. Su información permanece intacta.', 'err');}
+            const previousState=cloneState(state);
+            customer.deleted=true;
+            const committed=await commitCriticalMutation(previousState,'customer_deleted',next=>
+              next.settings.customers?.some(item=>item.id===id&&item.businessId===session.identity.businessId&&item.deleted===true),{sparkCommand:command});
+            renderApp('crm');
+            if(committed.ok)toast(committed.pending?'Cambio guardado; sincronización pendiente.':'Cliente eliminado del listado; historial conservado.');
+            return;
+          }
 	      state.settings.customers = (state.settings.customers || []).filter((customer) => customer.id !== id);
 	      if (!save()) return;
 	      renderApp('crm'); toast('Cliente eliminado');

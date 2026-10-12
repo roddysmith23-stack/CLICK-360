@@ -76,9 +76,14 @@
       income:Math.round((report.paymentTotals.cash+report.incomeCash)*100)/100,expenses:report.expenseCash,
       paymentTotals:{...report.paymentTotals,layawayPayments:report.paymentTotals.receivablePayments,receivableIncluded:true}};
   }
-  function customerMutationCommand({customer,previous,identity,operationId}){
+  function customerMutationCommand({customer,previous,identity,operationId,deleting=false}){
     if(!operationId||!identity?.ownerUid||!customer?.id||customer.businessId!==identity.businessId
       ||(previous&&(previous.id!==customer.id||previous.businessId!==identity.businessId)))throw Error('MODULAR_CUSTOMER_CONTEXT_INVALID');
+    if(deleting){
+      if(!previous||previous.deleted===true||!Number.isSafeInteger(previous.recordVersion)||previous.recordVersion<1)
+        throw Error('MODULAR_CUSTOMER_DELETE_REVISION_REQUIRED');
+      return {kind:'customer_delete',input:{operationId,customerId:customer.id,expectedRecordVersion:previous.recordVersion}};
+    }
     const changes={name:customer.name,phone:customer.phone,notes:customer.notes};
     if(typeof changes.name!=='string'||!changes.name.trim()
       ||typeof changes.phone!=='string'||typeof changes.notes!=='string')throw Error('MODULAR_CUSTOMER_FIELDS_INVALID');

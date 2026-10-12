@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','inventory_adjust','cash_movement','customer_create','customer_edit','receivable_payment']);
+    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -515,9 +515,18 @@
         const rows=[],timestamp=options.serverTimestamp();
         const stage=(moduleName,id,before,data)=>rows.push({moduleName,id,before,data});
         let result={};
-        if(kind==='customer_create'||kind==='customer_edit'){
+        if(kind==='customer_delete'){
+          if(Object.keys(p).some(key=>!['operationId','customerId','expectedRecordVersion'].includes(key)))throw Error('CUSTOMER_DELETE_FIELDS_INVALID');
+          const id=safeId(p.customerId,'customerId'),old=await tx.get('customers',id);
+          if(!old||old.deleted===true)throw Error('CUSTOMER_EXISTENCE_CONFLICT');
+          if(!Number.isSafeInteger(p.expectedRecordVersion)||p.expectedRecordVersion!==old.recordVersion)throw Error('CUSTOMER_REVISION_CONFLICT');
+          // Tombstone only. Existing names, contacts and historical references
+          // remain recoverable; deletion never touches sales, stock or cash.
+          stage('customers',id,old,{...old,deleted:true,lastOperationId:op});result={customerId:id};
+        }else if(kind==='customer_create'||kind==='customer_edit'){
           const id=safeId(p.customerId,'customerId'),old=await tx.get('customers',id),changes=p.changes;
           if(kind==='customer_create'?!!old:!old)throw Error('CUSTOMER_EXISTENCE_CONFLICT');
+          if(old?.deleted===true)throw Error('CUSTOMER_DELETED');
           if(kind==='customer_edit'&&(!Number.isSafeInteger(p.expectedRecordVersion)||p.expectedRecordVersion!==old.recordVersion))throw Error('CUSTOMER_REVISION_CONFLICT');
           if(!changes||Array.isArray(changes)||Object.keys(changes).length!==3
             ||Object.keys(changes).some(key=>!['name','phone','notes'].includes(key))

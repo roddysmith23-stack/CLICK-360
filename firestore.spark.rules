@@ -619,12 +619,12 @@ service cloud.firestore {
     }
 
     function sparkKindPermission(ownerUid, businessId, kind) {
-      return kind in ["sale", "product_create", "product_edit", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "receivable_payment"]
+      return kind in ["sale", "product_create", "product_edit", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment"]
         && sparkPermission(ownerUid, businessId,
-          kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "inventory_adjust"] ? "products" :
+          kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "inventory_adjust"] ? "products" :
             (kind == "cash_movement" ? "movements" : "cashSessions")))),
-          kind == "receivable_payment" ? "payment" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
-            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close")));
+          kind == "receivable_payment" ? "payment" : (kind == "customer_delete" ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
+            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"))));
     }
 
     function sparkBoundOperation(ownerUid, businessId) {
@@ -644,7 +644,7 @@ service cloud.firestore {
         && d.operationId == operationId && d.status == "committed" && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
         && sparkKindPermission(ownerUid, businessId, kind)
         && (kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
-          : kind in ["customer_create", "customer_edit"] ? (r.keys().hasOnly(["customerId"])
+          : kind in ["customer_create", "customer_edit", "customer_delete"] ? (r.keys().hasOnly(["customerId"])
             && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/customers/$(r.customerId)).data.lastOperationId == operationId)
           : kind in ["product_create", "product_edit", "inventory_adjust"] ?
             (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.lastOperationId == operationId
@@ -1098,10 +1098,23 @@ service cloud.firestore {
     function sparkCustomerMutation(ownerUid, businessId, recordId, creating) {
       let d = request.resource.data.data;
       let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
-      return ledger.kind == (creating ? "customer_create" : "customer_edit") && ledger.result.customerId == recordId
-        && d.name is string && d.name.matches(".*[^\\s].*") && d.phone is string && d.notes is string
-        && (creating ? d.keys().hasOnly(["id", "businessId", "name", "phone", "notes"])
-          : d.diff(resource.data.data).affectedKeys().hasOnly(["name", "phone", "notes"]));
+      return ledger.result.customerId == recordId
+        // Imported rows can lack embedded IDs. Normalize only an absent ID;
+        // an existing foreign ID/scope cannot be rewritten through CRUD.
+        && (creating || sparkCustomerStoredIdentity(businessId, recordId))
+        && (ledger.kind == "customer_delete" ? (!creating && d.deleted == true
+            && resource.data.data.get("deleted", false) == false
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"]))
+          : (ledger.kind == (creating ? "customer_create" : "customer_edit")
+            && d.name is string && d.name.matches(".*[^\\s].*") && d.phone is string && d.notes is string
+            && (creating ? d.keys().hasOnly(["id", "businessId", "name", "phone", "notes"])
+              : resource.data.data.get("deleted", false) == false
+                && d.diff(resource.data.data).affectedKeys().hasOnly(["name", "phone", "notes", "id", "businessId"]))));
+    }
+
+    function sparkCustomerStoredIdentity(businessId, recordId) {
+      return resource != null && resource.data is map
+        && [resource.data.data.get("id", recordId), resource.data.data.get("businessId", businessId)] == [recordId, businessId];
     }
 
     function sparkOperationalMutation(ownerUid, businessId, moduleName, recordId, creating) {

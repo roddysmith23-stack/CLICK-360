@@ -49,3 +49,8 @@ assert.equal(api.customerMutationCommand({...customerInput,previous:{...customer
 assert.throws(()=>api.customerMutationCommand({...customerInput,identity:{...identity,businessId:'beta'}}),/CONTEXT_INVALID/);
 assert.throws(()=>api.customerMutationCommand({...customerInput,previous:customer}),/REVISION_REQUIRED/);
 assert.throws(()=>api.customerMutationCommand({...customerInput,customer:{...customer,name:'   '}}),/FIELDS_INVALID/);
+const deleting={...customerInput,previous:{...customer,recordVersion:2},deleting:true};
+assert.deepEqual(api.customerMutationCommand(deleting),{kind:'customer_delete',input:{operationId:'customer-command',customerId:customer.id,expectedRecordVersion:2}});
+assert.equal(deleting.previous.deleted,undefined);
+assert.throws(()=>api.customerMutationCommand({...deleting,previous:{...deleting.previous,deleted:true}}),/DELETE_REVISION_REQUIRED/);
+assert.throws(()=>api.customerMutationCommand({...deleting,previous:undefined}),/DELETE_REVISION_REQUIRED/);

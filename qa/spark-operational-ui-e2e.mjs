@@ -76,8 +76,11 @@ try{
     await page.locator(`[data-customer-edit="${customer.id}"]`).click();await page.locator('#customerNotes').fill('Edición sintética');
     await resetStatus();await page.locator('#customerForm button[type="submit"]').click();await confirmed();
     assert((await record('customers',customer.id)).notes==='Edición sintética'&&(await record('customers',customer.id)).recordVersion===2,'Real edit preserves identity and advances revision');
-    await page.locator(`[data-customer-delete="${customer.id}"]`).click();
-    assert(await page.evaluate(id=>click360GetTenantState().settings.customers.some(c=>c.id===id),customer.id),'Unsupported deletion must not mutate local truth');
+    await resetStatus();await page.locator(`[data-customer-delete="${customer.id}"]`).click();await confirmed();
+    const deletedCustomer=await record('customers',customer.id);
+    assert(deletedCustomer.deleted===true&&deletedCustomer.recordVersion===3&&deletedCustomer.notes==='Edición sintética','Real delete preserves historical fields in an individual tombstone');
+    assert(await page.evaluate(id=>click360GetTenantState().settings.customers.some(c=>c.id===id&&c.deleted===true),customer.id),'Tombstone remains durable locally');
+    assert(await page.locator(`[data-customer-delete="${customer.id}"]`).count()===0,'Deleted customer disappears from actual list, not historical storage');
     await page.evaluate(()=>{location.hash='#inventory';});await page.locator('#newProduct').waitFor();
     // These are the existing product editor/stock fields, not a demonstration UI.
     await page.locator('#newProduct').click();await page.locator('#pCode').fill('SPARK-NEW');await page.locator('#pName').fill('Nuevo sintético modular');
@@ -214,7 +217,7 @@ try{
     assert(runtime.sale,'Existing receipt ID preserved');
     results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
-      appFirestoreTransport:'long_polling',customerCreateAndEdit:true,
+      appFirestoreTransport:'long_polling',customerCreateAndEdit:true,customerDeletePreservesHistory:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
     await device.context.close();device=null;console.log(`PASS served Spark UI ${label}`);

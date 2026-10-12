@@ -4,6 +4,8 @@ Candidate only. Production remains `21409a1d2dc7`. The expanded owner/worker sui
 
 ## Two separate budgets
 
+Customer DELETE uses the same bounded customer/ledger/control/authorization sources as CREATE/EDIT; no financial or history reads are added. Deletion is a tombstone-only field delta, with ordinary version/actor/path checks and explicit `customers.delete` permission at ledger creation. Existing embedded ID/business values cannot change; an absent legacy value may be supplied only as the exact immutable path identity. Those checks use `resource/request.resource`, not external reads. Direct SDK attacks verify both halves of the identity guard. Exact and stricter 16-predicate suites pass with zero evaluator/access-limit errors; candidate Rules SHA256 `ca52a5ca67cb4ef053952d57fdd84f30b0401ad8ec3d77c5938a3adb042d5f15`. These are local working-source tests, not new-HEAD CI or production certification.
+
 ### Subsequent receipt extension — 2026-10-12
 
 Receipt core adds no product/history reads: existing sale before/after, unique movement before/after, exact session before/after, new ledger before/after, control and authorization. Linked layaways add their own before/after versions. The conservative distinct-path/version worksheet is `9 + A` for a pending receipt, `11 + A` for a linked layaway receipt; this is not a measured cache/billing count. Stock, sale totals/counts, historical date/session and item lines are immutable in this operation. Worker authorization uses the existing `layaways.payment` permission; `sales.update` can remain false.

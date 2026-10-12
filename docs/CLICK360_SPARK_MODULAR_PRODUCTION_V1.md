@@ -1,5 +1,15 @@
 # Spark modular production V1 — active implementation, 2026-10-06
 
+## Operational continuation — customer deletion, 2026-10-12
+
+At published `6ddcdf213b460b9bcbffdadc0161a869fca93f1f`, all required workflows SUCCESS: Web Release `38202952848`, Spark `38202952885`, device `38202952849`. Its clean served PWA and full `qa:integration` also passed locally, including four-profile authoritative commerce, printing, boot recovery, safe updates and built-artifact smoke. This does not certify complete modular bootstrap, real staging or physical recovery.
+
+The existing Eliminar cliente button now uses a version-checked, stable customer-delete command through the same journal/repository. Only an individual tombstone, immutable ledger and reconstructible audit are written; contact fields, historical relationships, sales, stock and cash are preserved. The actual list hides the tombstone but IndexedDB and Firestore retain it. Worker deletion needs explicit `customers.delete`, separate from create/update. Retrying the same operation after a lost response confirms the prior result, not another deletion. Editing a deleted record cannot silently resurrect it.
+
+Client Rules regressions cover omitted customer updates, changed contact fields, forged deletion flags, identity/scope changes, a direct Web SDK resurrection attempt, worker denial/grant and legacy imported customers without embedded IDs. Only absent embedded IDs may be normalized to the immutable path identity; a nonmatching existing identity/scope fails closed. Exact source, stricter 16-predicate probe, legacy compatibility, domain/journal suites, `qa` and runtime audit passed locally. Candidate Rules SHA256: `ca52a5ca67cb4ef053952d57fdd84f30b0401ad8ec3d77c5938a3adb042d5f15`. Built Chromium/WebKit forms also passed with `sourceDirty:true`; the new clean HEAD requires its own CI and served repetition.
+
+Production remains `21409a1d2dc710315ab8c3c27e5da566f004cc8e`, no commercial write/merge/deploy/cutover. Activation remains synthetic-only. Remaining full-release gates include automatic authoritative bootstrap, complete durable replay/pending overlay, the actual UI's new-session reopening (not the DEV same-session kernel), imports/configuration/history integration and full staging. Real recent iPhone source/outbox remains unobserved; no customer operation or diagnostic was requested.
+
 ## Operational continuation — 2026-10-12, subsequent receipts
 
 Published HEAD `3a29a585914280dae1df285c5cdbc2cab32a7b87` has all three required workflows SUCCESS: Web Release `38165829289`, Spark `38165829286`, device capacity `38165829284`. Two fresh complete local legacy-commerce browser matrices also passed after the isolated proxy disposed its own non-keepalive upstream agents. This is not staging, automatic migration or physical iPhone certification.
