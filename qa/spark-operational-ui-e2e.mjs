@@ -282,6 +282,23 @@ try{
     assert(await restarted.evaluate(()=>click360SparkAccessGate().allowed===true),'Actual authorization remains valid after restart');
     assert(await restarted.evaluate(id=>click360GetTenantState().cashSessions.some(s=>s.id===id&&s.status==='open'),activeBeforeRestart),
       'Exact active cash session survives outside the first hundred historical rows');
+    await restarted.evaluate(()=>{location.hash='#cash';});
+    assert(await restarted.locator('#workingDateInput').inputValue()==='2026-09-04','Historical working date survives document restart');
+    const reportPage=restarted.locator('[data-spark-history="dailyReports"]');
+    await reportPage.waitFor({state:'visible'});
+    assert(await reportPage.count()===1,'Actual cash history exposes bounded server pagination');
+    await reportPage.click();
+    await restarted.waitForFunction(()=>click360SparkCoordinator.phase()==='READY'
+      &&!click360SparkCoordinator.hasMore('dailyReports'));
+    assert(await restarted.evaluate(id=>click360GetTenantState().dailyReports.filter(r=>r.businessId===id).length===103,uid),
+      'Next server page includes all 101 synthetic historical reports and both operational closes');
+    assert(await restarted.locator('[data-spark-history="dailyReports"]').count()===0,'Exhausted history cannot issue repeated page reads');
+    const afterHistory=await restarted.evaluate(()=>{
+      const state=click360GetTenantState();
+      return {business:state.activeBusinessId,sales:state.sales.map(s=>s.operationId).sort(),
+        stock:state.products.map(p=>[p.id,p.stock]).sort(),deleted:state.deletedProducts.map(p=>p.id).sort()};
+    });
+    assert(JSON.stringify(afterHistory)===JSON.stringify(durableAfter),'Reading history cannot change sales or stock');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Restart cannot write legacy');
     const secondDevice=await openSignedIn(browser,{width:1280,height:800});
     try{
@@ -299,15 +316,20 @@ try{
     assert(await restarted.evaluate(id=>click360SparkOperationalSession.identity.businessId===id
       &&click360GetTenantState().products.some(p=>p.id==='other-product'&&p.businessId===id&&p.stock===7),otherBusiness),
       'Actual business switch installs the right repository without losing the other business');
+    await restarted.evaluate(()=>{location.hash='#cash';});
+    assert(await restarted.locator('#workingDateInput').inputValue()!=='2026-09-04','Working date cannot leak from the other business');
     await restarted.locator('#businessPickerTop').click();await restarted.locator(`[data-business-switch="${uid}"]`).click();
     await restarted.waitForFunction(id=>click360GetActiveBusinessId()===id&&click360SparkCoordinator.phase()==='READY',uid);
     assert(await restarted.evaluate(id=>click360GetTenantState().sales.filter(s=>s.businessId===id).length===4,uid),
       'Returning to the original business recovers its four unique financial sales');
+    assert(await restarted.locator('#workingDateInput').inputValue()==='2026-09-04','Returning restores this business own historical date');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Both business switches leave the shared legacy document intact');
     results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,productDeletePreservesHistory:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       automaticAuthBootstrap:true,automaticColdRestart:true,secondDeviceAuthoritativeRead:true,twoBusinessRepositorySwitch:true,
       duplicateTabCoordinatorDenied:true,
       exactActiveCashBeyondHistoryPage:true,
+      durableWorkingDatePerBusiness:true,
+      cashHistoryServerPagination:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
       appFirestoreTransport:'long_polling',customerCreateAndEdit:true,customerDeletePreservesHistory:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});

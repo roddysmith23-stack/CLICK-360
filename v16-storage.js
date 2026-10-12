@@ -86,6 +86,7 @@
         const request = store.get(id);
         request.onsuccess = () => {
           const current = request.result;
+          record.uiWorkingDates = current?.uiWorkingDates || {};
           const protectedModular=current?.source==='spark_operational_candidate';
           if ((current?.cloudCapacityBlocked && (!record.cloudCapacityBlocked
             || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || '')))
@@ -102,7 +103,32 @@
         transaction.onerror = () => reject(transaction.error || new Error('Fallo de IndexedDB.'));
       });
     } finally { db.close(); }
-    return { id, savedAtMs: record.savedAtMs };
+    return { id, savedAtMs: record.savedAtMs, uiWorkingDates:record.uiWorkingDates };
+  }
+
+  async function putWorkingDate(context,businessId,date){
+    if(typeof businessId!=='string'||!businessId||businessId.includes('/')
+      ||(date!==null&&(typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date)
+        ||new Date(`${date}T00:00:00Z`).toISOString().slice(0,10)!==date)))
+      throw Error('Fecha de trabajo inválida.');
+    const id=contextId(context),db=await openDatabase();
+    try{
+      return await new Promise((resolve,reject)=>{
+        const tx=db.transaction(SNAPSHOT_STORE,'readwrite'),store=tx.objectStore(SNAPSHOT_STORE);let failure,dates;
+        store.get(id).onsuccess=e=>{
+          const record=e.target.result;
+          if(!record||record.schemaVersion!==10||record.authUid!==context.authUid||record.ownerId!==context.ownerId
+            ||record.businessId!==context.businessId||record.tenantKey!==context.tenantKey
+            ||!record.snapshot?.businesses?.some(b=>b.id===businessId)){
+            failure=Error('No se pudo verificar el negocio para conservar la fecha.');tx.abort();return;
+          }
+          dates={...(record.uiWorkingDates||{})};
+          Object.defineProperty(dates,businessId,{value:date,enumerable:true,writable:true,configurable:true});
+          store.put({...record,uiWorkingDates:dates});
+        };
+        tx.oncomplete=()=>resolve(dates);tx.onabort=()=>reject(failure||tx.error||Error('No se pudo conservar la fecha.'));
+      });
+    }finally{db.close();}
   }
 
   async function getSnapshot(context) {
@@ -125,5 +151,5 @@
     return { usage: Number(value.usage || 0), quota: Number(value.quota || 0) };
   }
 
-  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, getSnapshot, deleteSnapshot, estimate, contextId });
+  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, putWorkingDate, getSnapshot, deleteSnapshot, estimate, contextId });
 })(typeof window !== 'undefined' ? window : globalThis);

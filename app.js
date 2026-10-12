@@ -196,6 +196,7 @@
     return lastSaveFailure;
   }
   function writeGateStatus() {
+    if(uiPreferencePending)return {allowed:false,reason:'device_save_pending'};
     if (deviceSavePending) return { allowed: false, reason: 'device_save_pending' };
     if (window.click360IsMixedBuild?.()) return { allowed:false, reason:'client_data_protection' };
     if(window.click360SparkBootstrapState&&!['LEGACY','READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState.phase))
@@ -215,6 +216,7 @@
     return { allowed: true, reason: 'ok' };
   }
   window.click360SparkMutationGate=function(command){
+    if(uiPreferencePending)return {allowed:false,reason:'device_save_pending'};
     if(window.click360IsMixedBuild?.()||!tenantDataHydrated||!activeTenantContext
       ||(window.click360SparkBootstrapState&&!['READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState.phase)))
       return {allowed:false,reason:'client_data_protection'};
@@ -292,6 +294,7 @@
    * @param {string} currentRoute - ruta activa actual
    */
   async function selectBusinessAtomically(nextId, currentRoute) {
+    if(uiPreferencePending)return toast('Espera a que termine de guardarse la fecha de trabajo.','err');
     // Guard: evitar doble-tap o cambio mientras ya se está cambiando
     if (BUSINESS_SWITCH_GUARD) return;
     if (!state.businesses.some((b) => b.id === nextId)) return;
@@ -420,6 +423,7 @@
   }
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
   let workingDate = null;
+  let uiPreferencePending=false;
   // P0-2 (SHARY): this used to read date.getFullYear()/getMonth()/getDate(),
   // which resolve in whatever timezone the DEVICE's OS clock is configured
   // to -- not necessarily the business's real timezone. A device with a
@@ -473,9 +477,29 @@
     const number = Number(value);
     return Number.isFinite(number) ? String(number) : String(fallback);
   }
-  function setWorkingDate(d) {
-    workingDate = d || null;
-    renderApp(route);
+  async function setWorkingDate(d) {
+    if(uiPreferencePending||window.click360SparkCoordinator?.isBusy()||window.click360SparkOperationalSession?.isBusy()){
+      if($('#workingDateInput'))$('#workingDateInput').value=today();
+      return toast('Espera a que termine la operación actual.','err');
+    }
+    const context=activeTenantContext,businessId=currentBusiness()?.id,date=d||null;
+    const controls=['workingDateInput','startDayBtnCash','chargeBtn','closeDayBtn'].map(id=>$('#'+id)).filter(Boolean)
+      .map(element=>({element,disabled:element.disabled}));
+    controls.forEach(({element})=>element.disabled=true);
+    uiPreferencePending=true;
+    try{
+      if(context&&tenantDataHydrated&&storageState?.indexedDbReady===true){
+        const dates=await window.CLICK360_V16_STORAGE.putWorkingDate(context,businessId,date);
+        if(context!==activeTenantContext||businessId!==currentBusiness()?.id)return;
+        if(indexedTenantCacheMeta)indexedTenantCacheMeta.uiWorkingDates=dates;
+      }else if(window.click360SparkOperationalSession)throw Error('La fecha requiere almacenamiento durable.');
+      workingDate=date;uiPreferencePending=false;renderApp(route);
+    }catch{toast('No pudimos conservar la nueva fecha. Tu información permanece protegida.','err');}
+    finally{
+      uiPreferencePending=false;
+      if(context===activeTenantContext&&businessId===currentBusiness()?.id)
+        controls.forEach(({element,disabled})=>{if(element.isConnected)element.disabled=disabled;});
+    }
   }
   function nowLabel() { return new Date().toLocaleString('es-EC', { dateStyle:'short', timeStyle:'medium' }); }
   function formattedTodaySpanish() {
@@ -857,9 +881,10 @@ function parseMoney(value) {
   function queueIndexedSnapshot(snapshot, metadata = {}) {
     if (!activeTenantContext || !window.CLICK360_V16_STORAGE) return Promise.resolve(false);
     const context = activeTenantContext;
-    return window.CLICK360_V16_STORAGE.putSnapshot(context, cloneState(snapshot), metadata).then(() => {
+    return window.CLICK360_V16_STORAGE.putSnapshot(context, cloneState(snapshot), metadata).then((saved) => {
       if (activeTenantContext !== context) return false;
       indexedTenantCacheMeta = {
+        uiWorkingDates:saved?.uiWorkingDates||{},
         cloudCapacityBlocked: metadata.cloudCapacityBlocked === true,
         pendingOperations: metadata.pendingOperations || [],
         payloadBytes: stateSizeBytes(snapshot),
@@ -1723,6 +1748,7 @@ function parseMoney(value) {
       state = normalizeState(candidate);
       state.identity = tenantIdentity();
       indexedTenantCacheMeta = {
+        uiWorkingDates:record.uiWorkingDates||{},
         cloudCapacityBlocked: record.cloudCapacityBlocked === true,
         pendingOperations: record.pendingOperations || [],
         payloadBytes: stateSizeBytes(candidate),
@@ -1738,6 +1764,7 @@ function parseMoney(value) {
         source: String(record.source || 'indexeddb_cache')
       };
       tenantStateDeferred = false;
+      workingDate=record.uiWorkingDates?.[state.activeBusinessId]||null;
       tenantDataHydrated = true;
       tenantStateProvenance = 'verified_cache';
       rememberPersistedState();
@@ -1796,7 +1823,8 @@ function parseMoney(value) {
       pendingRemoteSync:indexedTenantCacheMeta?.pendingRemoteSync===true,cloudCapacityBlocked:false
     });
     if(!saved)throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_DURABILITY_FAILED');
-    state=candidate;rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
+    state=candidate;workingDate=indexedTenantCacheMeta?.uiWorkingDates?.[businessId]||null;
+    rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
     tenantDataHydrated=true;tenantStateDeferred=false;
   };
   window.click360InstallSparkView=async function({source,businessId,records,append=false}){
@@ -2973,6 +3001,16 @@ function parseMoney(value) {
 	    updateClock();
 	    clockTimer = setInterval(updateClock, 60000);
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
+    $$('[data-spark-history]').forEach(button=>button.onclick=async()=>{
+      const coordinator=window.click360SparkCoordinator,context=activeTenantContext,businessId=currentBusiness()?.id;
+      if(button.disabled||uiPreferencePending||!coordinator||coordinator.isBusy()||window.click360SparkOperationalSession?.isBusy())return;
+      button.disabled=true;
+      try{
+        await coordinator.loadMore(button.dataset.sparkHistory);
+        if(context===activeTenantContext&&businessId===currentBusiness()?.id&&coordinator===window.click360SparkCoordinator)renderApp(route);
+      }catch{toast('No pudimos cargar más registros todavía. Tus datos permanecen protegidos.','err');}
+      finally{if(button.isConnected)button.disabled=false;}
+    });
     requestAnimationFrame(() => { document.querySelector('.bottomNav .navBtn.active')?.scrollIntoView({block:'nearest',inline:'center',behavior:'instant'}); });
 	    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onclick=openBusinessSwitcher; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
@@ -3399,10 +3437,15 @@ function parseMoney(value) {
       </section>
       ` : ''}
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial de Cierres</h3><div class="movementList">
-	         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)} ${r.status === 'reopened' ? '<span class="badge gold">Reabierto</span>' : ''}<br><small>Caja F.: ${fmt(r.closeCash)}${r.reopenReason ? ' · Motivo: ' + escapeHtml(r.reopenReason) : ''}</small></span><button class="btn silver" onclick="window.viewDailyReport('${actionId(r.id)}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
-      </div></section>`;
+	         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,window.click360SparkOperationalSession?undefined:5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)} ${r.status === 'reopened' ? '<span class="badge gold">Reabierto</span>' : ''}<br><small>Caja F.: ${fmt(r.closeCash)}${r.reopenReason ? ' · Motivo: ' + escapeHtml(r.reopenReason) : ''}</small></span><button class="btn silver" onclick="window.viewDailyReport('${actionId(r.id)}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
+      </div>${sparkHistoryPageControl('dailyReports')}</section>`;
   }
   function labelKind(k){ return ({apertura:'Apertura',ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
+
+  function sparkHistoryPageControl(source){
+    if(!window.click360SparkOperationalSession||!window.click360SparkCoordinator?.hasMore(source))return '';
+    return `<p class="fieldHint">Este historial tiene más registros en la nube.</p><button type="button" class="btn silver" data-spark-history="${escapeHtml(source)}">Cargar más registros</button>`;
+  }
 
   function salePayments(sale = {}) {
     if (Array.isArray(sale.payments) && sale.payments.length) return sale.payments;

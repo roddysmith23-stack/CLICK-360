@@ -11,7 +11,7 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
   assert(start>0&&end>start);
   const scope=vm.createContext({window:{},state:{legalAcceptances:[],settings:{}},activeTenantContext:{authUid:'owner'},
     cloneState:structuredClone,normalizeState:x=>x,tenantIdentity:()=>({ownerUid:'owner'}),tenantDataHydrated:false,tenantStateDeferred:true,
-    queueIndexedSnapshot:async()=>true,indexedTenantCacheMeta:null,uid:()=> 'selection',rememberPersistedState(){},lastAutoSaveHash:''});
+    queueIndexedSnapshot:async()=>true,indexedTenantCacheMeta:null,uid:()=> 'selection',rememberPersistedState(){},lastAutoSaveHash:'',workingDate:null});
   vm.runInContext(app.slice(start,end),scope);
   await scope.window.click360InstallSparkBusiness({businessId:'business',configuration:{businesses:[{id:'business'}],entries:[
     {sourcePath:['legalAcceptances',0,'id'],data:'legal-qa'},
@@ -21,9 +21,9 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
   assert.equal(JSON.parse(JSON.stringify(scope.state)).legalAcceptances[0].id,'legal-qa');
   assert.equal(JSON.parse(JSON.stringify(scope.state)).settings.workers[0].name,'Trabajador');
 }
-function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false}={}){
+function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false}={}){
   const events=new Map(),phases=[],writes=[],observed={restored:0,installed:0,created:0,replayed:0,closed:0};
-  let actor='owner',business='business',projections=0,releaseRead=null;
+  let actor='owner',business='business',projections=0,releaseRead=null,queryBarrier=null,busy=false;
   const root={navigator:{onLine:true,locks:{request:async(_name,_options,callback)=>callback({name:'fixture-lock'})}},document:{visibilityState:'visible',addEventListener(){},removeEventListener(){}},
     addEventListener:(name,fn)=>events.set(name,fn),removeEventListener:name=>events.delete(name),
     CLICK360_SPARK_MIGRATION:{arrays:{products:'products',sales:'sales'},hash:async()=>''},
@@ -37,15 +37,20 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
     doc:path=>({get:async options=>{
       assert.equal(options.source,'server');if(releaseRead)await releaseRead;
       return snap(path.endsWith('/metadata/storage')?control:{id:'business'});
-    }}),collection:()=>{
-      const q={orderBy:()=>q,limit:()=>q,startAfter:()=>q,where:()=>q,
-        get:async options=>{assert.equal(options.source,'server');return {docs:[],size:0,metadata:{fromCache:cache,hasPendingWrites:false}};}};
+    }}),collection:path=>{
+      let after=null;
+      const q={orderBy:()=>q,limit:()=>q,startAfter:value=>{after=value;return q;},where:()=>q,
+        get:async options=>{
+          assert.equal(options.source,'server');if(queryBarrier)await queryBarrier;
+          const docs=paging&&path.endsWith('/sales')?Array.from({length:after?2:100},(_,i)=>({id:`sale-${after?100+i:i}`,data:()=>({id:`sale-${after?100+i:i}`})})):[];
+          return {docs,size:docs.length,metadata:{fromCache:cache,hasPendingWrites:false}};
+        }};
       return q;
     }};
   root.CLICK360_SPARK_OPERATIONAL_UI={create:async()=>{
     observed.created++;
     return {identity:{businessId:business},currentCash:async()=>({source:'server',identity:{ownerUid:'owner',businessId:business},session:null}),
-      close:()=>observed.closed++,isBusy:()=>false,
+      close:()=>observed.closed++,isBusy:()=>busy,
       health:async()=>({pendingCount:pending,unknownCount:unknown,projectionPendingCount:projections}),
       replay:async()=>{
         observed.replayed++;
@@ -62,7 +67,16 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
     onPhase:detail=>phases.push(detail)});
   root.click360SparkCoordinator=coordinator;
   return {coordinator,observed,phases,writes,events,changeActor:value=>actor=value,
-    blockReads:promise=>releaseRead=promise};
+    blockReads:promise=>releaseRead=promise,blockQueries:promise=>queryBarrier=promise,setBusy:value=>busy=value};
+}
+{
+  const f=fixture({paging:true});await f.coordinator.recover();assert.equal(f.coordinator.hasMore('sales'),true);
+  f.setBusy(true);await assert.rejects(f.coordinator.loadMore('sales'),/RECOVERY_BUSY/);f.setBusy(false);
+  let release;f.blockQueries(new Promise(resolve=>release=resolve));
+  const page=f.coordinator.loadMore('sales');assert.equal(f.coordinator.isBusy(),true);
+  await assert.rejects(f.coordinator.loadMore('sales'),/RECOVERY_BUSY/);
+  assert.equal(f.phases.at(-1).phase,'LOADING_HISTORY');release();await page;
+  assert.equal(f.coordinator.hasMore('sales'),false);assert.equal(f.coordinator.phase(),'READY');f.coordinator.close();
 }
 {
   const f=fixture();assert.equal((await f.coordinator.recover()).handled,true);

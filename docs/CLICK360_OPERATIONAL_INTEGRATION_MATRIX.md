@@ -1,6 +1,6 @@
 # Operational integration audit — 2026-10-12
 
-Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI checks SUCCESS. Public Hosting manifest freshly read: `21409a1d2dc7`. Subsequent bootstrap work is a local candidate until its own clean HEAD checks pass. No production writes, merge, deployment or real migration. Existing certified fixes are retained.
+Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI checks SUCCESS. Connected bootstrap commit `a6df35f27688e0f2822d8ad782de4b2f18821bf2` also has all three required workflows SUCCESS. Public Hosting manifest freshly read: `21409a1d2dc7`. Subsequent work needs its own clean HEAD checks. No production writes, merge, deployment or real migration. Existing certified fixes are retained.
 
 ## Actual lifecycle, not component availability
 
@@ -40,7 +40,9 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 | Cash reopen | `reopenCashDay` | Actual UI opens a **new session**; DEV command reopens old session | Blocked; do not map incompatible semantics |
 | Income/expense create | Existing cash movement form / `cash_movement` | Actual movement + exact session counters + ledger | Served Chromium/WebKit |
 | Movement edit/cancel | `cash_movement_updated/cancelled` | Legacy financial mutation | Blocked; compensating adapters missing |
-| Histories and audit | Current array views; repository bounded queries | Local projection is not server-paginated full history | Component pagination only; real UI integration missing |
+| Cash history | `cashView`, bootstrap `loadMore` | Authoritative server pages; durable append under coordinator flight | Actual 103-report history in served Chromium/WebKit; no sale/stock changes |
+| Other histories and audit | Current array views; repository bounded queries | Local projection is not server-paginated full history | Other real UI pagination integrations remain missing |
+| Historical working date | `setWorkingDate`, native `putWorkingDate` | Device-only per-business preference; does not change financial revision/snapshot | Native four profiles plus served Chromium/WebKit restart and two-business isolation |
 | Cash report/receipt | Existing modal / `cashReportView` | Derived view of server-confirmed compact report | Served exact reports; no duplicated sale totals |
 | Labels/printing | Existing print engine + product view | Read-only printing; saved profiles/templates use `save` | Existing release print QA; modular full print/config journey missing |
 | Business/profile/config | Existing `profile_updated`, `business_profile_updated`, `save` | Legacy settings | Blocked; scoped configuration adapters missing |

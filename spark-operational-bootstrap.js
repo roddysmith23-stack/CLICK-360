@@ -191,11 +191,18 @@
       close:()=>{closed=true;epoch++;session?.close();session=null;releaseLease?.();releaseLease=null;
         root.removeEventListener('online',resume);root.removeEventListener('click360-spark-idle',idle);root.document.removeEventListener('visibilitychange',visible);},
       async loadMore(source){
-        context();if(flight||phase!=='READY')throw Error('SPARK_BOOTSTRAP_RECOVERY_BUSY');
+        context();if(flight||phase!=='READY'||session?.isBusy())throw Error('SPARK_BOOTSTRAP_RECOVERY_BUSY');
         const cursor=cursors.get(source);if(!cursor?.next)return false;
-        const result=await page(cursor.businessId,cursor.module,{after:cursor.next});context();
-        await installView({source:'server',businessId:cursor.businessId,records:{[source]:result.records},append:true});
-        context();cursor.next=result.next;return !!cursor.next;
+        // Share the same lifecycle flight with recovery. A page cannot replace
+        // a candidate while a financial commit or business switch is active.
+        const token=++epoch;publish('LOADING_HISTORY');
+        flight=(async()=>{
+          const result=await page(cursor.businessId,cursor.module,{after:cursor.next});context();
+          await installView({source:'server',businessId:cursor.businessId,records:{[source]:result.records},append:true});
+          context();cursor.next=result.next;publish('READY');return !!cursor.next;
+        })().catch(error=>{if(!closed&&token===epoch)publish('BLOCKED',String(error.code||error.message));throw error;})
+          .finally(()=>{if(token===epoch)flight=null;});
+        return flight;
       },hasMore:source=>!!cursors.get(source)?.next});
     return controller;
   }

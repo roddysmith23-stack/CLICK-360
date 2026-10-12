@@ -11,6 +11,8 @@ Continuation of PR #96 from `9bb3112954c7a9fc365e425d8e385e64b6713dee`. Same bra
 - Exact current cash pointer/session are read together through the existing transaction transport, independent of the first hundred history rows. Missing or unknown summaries are rejected, never replaced with zero.
 - Consent/configuration arrays are reconstructed correctly; only consumed configuration roots are queried, not unrelated notification/history leaves.
 - IndexedDB rejects a legacy replacement or stale modular revision atomically. No store/cache/outbox is deleted.
+- Historical working dates are durable per business in IndexedDB metadata, without changing the commercial snapshot, stock, sales or financial revision. A subsequent snapshot preserves these preferences; another user/business cannot adopt them.
+- Cash history now loads subsequent server pages through the actual PWA. Paging shares the coordinator flight and cannot race a financial command, another page or business selection. It does not create any commercial operation.
 
 ## Demonstrated causes corrected
 
@@ -27,6 +29,8 @@ Continuation of PR #96 from `9bb3112954c7a9fc365e425d8e385e64b6713dee`. Same bra
 
 The subsequent exact-cash/bounded-config candidate passed two served Chromium/WebKit repetitions plus Spark/client Rules/capacity suites: `output/spark-bootstrap-cash-pointer-final-20261012.log`. Complete journal counts 99/100/101/250/1000, legacy-clean contradiction, cache rejection and context isolation are permanent bootstrap regressions. Clean published-HEAD CI must be checked separately; dirty local evidence is explicitly tagged as such.
 
-These results are **not** full operational/staging/migration certification. Automatic worker V2 bootstrap, cold offline startup/multiple pending UI operations, durable working-date preferences, all remaining typed adapters, history/report pagination and the automatic owner-wide reconciled importer/cutover handoff are still incomplete. The operational integration matrix lists unsupported paths; they cannot fall through to monolithic writes after activation.
+Published bootstrap commit `a6df35f27688e0f2822d8ad782de4b2f18821bf2` has all three required GitHub workflows SUCCESS. The subsequent date/history candidate passed the served Chromium/WebKit journey in `output/spark-history-ui-repeat-20261012.log`; native preference isolation passed four browser profiles in `output/spark-working-date-native-20261012.log`. An initial new assertion raced hash-route rendering; the test now waits for the actual history control to be visible, without sleeps, skipped checks or increased timeouts.
+
+These results are **not** full operational/staging/migration certification. Automatic worker V2 bootstrap, cold offline startup/multiple pending UI operations, remaining typed adapters, other history/report integrations and the automatic owner-wide reconciled importer/cutover handoff are still incomplete. The operational integration matrix lists unsupported paths; they cannot fall through to monolithic writes after activation.
 
 The real iPhone snapshot/outbox is unobserved. No physical acceptance, Shary cloud confirmation, real shadow equality or safe real cutover is claimed. Production activation remains rejected. Next: complete these connected operational paths on this same branch, rerun the affected complete journeys, then certify real Spark staging before requesting owner production/cutover authorization.
