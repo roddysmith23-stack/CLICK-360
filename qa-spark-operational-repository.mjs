@@ -4,6 +4,7 @@ import './spark-modular-record-codec.js';
 import './spark-modular-transaction-transport.js';
 import './modular-operation-journal.js';
 import './modular-persistence.js';
+import './modular-operation-coordinator.js';
 const api=globalThis.CLICK360_MODULAR_PERSISTENCE,codec=globalThis.CLICK360_SPARK_RECORD_CODEC;
 const ownerUid='operation-owner',businessId='business-alpha',projectId='demo-click360-spark-modular',identity=api.identity(ownerUid,businessId);
 const base=`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2`,rows=new Map();let reads=0,lastReads=0,queue=Promise.resolve();
@@ -25,7 +26,41 @@ const db={app:{options:{projectId}},doc:path=>({path}),runTransaction:callback=>
 }};
 const transport=globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,resolveUser:()=>({uid:ownerUid})});
 const repo=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,transport,serverTimestamp:()=> 'server-timestamp'});
+// A restart on a shared terminal must not adopt another issuer's pending
+// request, including pre-issuer DEV rows. Same business is not same actor.
+const replayInput={operationId:'issuer-bound-command',customerId:'issuer-customer',changes:{name:'Synthetic',phone:'',notes:''}};
+const ownerRequest=await repo.prepareOperation('customer_create',replayInput);
+const nextActorRepo=api.createSparkRepository({ownerUid,businessId,actorUid:'next-worker',transport,serverTimestamp:()=> 'server-timestamp'});
+const nextRequest=await nextActorRepo.prepareOperation('customer_create',replayInput);
+assert.equal(ownerRequest.envelope.actorUid,ownerUid);
+assert.notEqual(ownerRequest.payloadSha256,nextRequest.payloadSha256,'Issuer is part of the immutable hash');
+for(const state of ['queued','inflight','unknown']){
+  for(const actor of [ownerUid,undefined]){
+    const payload=structuredClone(ownerRequest.envelope);
+    if(actor===undefined)delete payload.actorUid;
+    const row={state,operationId:replayInput.operationId,payload,payloadHash:ownerRequest.payloadSha256};
+    let touched=0;
+    const journal={get:async()=>structuredClone(row),claim:async()=>{touched++;throw Error('WRONG_ACTOR_CLAIM');}};
+    const guardedRepo={...nextActorRepo,lookupOperation:async()=>{touched++;throw Error('WRONG_ACTOR_LOOKUP');},commitOperation:async()=>{touched++;throw Error('WRONG_ACTOR_SEND');}};
+    const coordinator=globalThis.CLICK360_MODULAR_COORDINATOR.create({journal,repository:guardedRepo,deviceId:'shared-device'});
+    await assert.rejects(()=>coordinator.process(row.operationId),/OUTBOX_ACTOR_RECONCILIATION_REQUIRED/);
+    assert.equal(touched,0,'Actor change cannot claim, resend or alter the original command');
+    assert.equal(row.state,state,'Recovery retains the original state for authoritative reconciliation');
+  }
+}
 const get=async(moduleName,id)=>codec.unpack(rows.get(`${base}/${moduleName}/${id}`),{identity,moduleName,recordId:id});
+await repo.commitOperation('product_create',{operationId:'catalog-create',date:'2026-09-03',product:{id:'catalog-product',businessId,name:'Retained history',stock:8}});
+const deleteProduct={operationId:'catalog-delete',productId:'catalog-product',expectedRecordVersion:1};
+await assert.rejects(()=>repo.commitOperation('product_delete',{...deleteProduct,expectedRecordVersion:2}),/REVISION_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('product_delete',{...deleteProduct,stock:0}),/FIELDS_INVALID/);
+await repo.commitOperation('product_delete',deleteProduct);
+assert.equal((await repo.commitOperation('product_delete',deleteProduct)).status,'already_committed');
+assert.equal((await get('products','catalog-product')).deleted,true);
+assert.equal((await get('products','catalog-product')).stock,8);
+assert.equal((await get('products','catalog-product')).name,'Retained history');
+assert(!rows.has(`${base}/movements/catalog-delete`),'Logical deletion is not a financial or stock movement');
+await assert.rejects(()=>repo.commitOperation('product_edit',{operationId:'catalog-resurrect',productId:'catalog-product',changes:{name:'Forbidden'}}),/PRODUCT_DELETED/);
+await assert.rejects(()=>repo.commitOperation('inventory_adjust',{operationId:'catalog-adjust',productId:'catalog-product',date:'2026-09-03',quantityDelta:-1}),/PRODUCT_DELETED/);
 const customerCreate={operationId:'customer-create',customerId:'synthetic-customer',changes:{name:'Synthetic',phone:'',notes:''}};
 await repo.commitOperation('customer_create',customerCreate);
 assert.equal((await repo.commitOperation('customer_create',customerCreate)).status,'already_committed');
@@ -183,5 +218,6 @@ assert.equal((await repo.lookupOperation('receipt-one','receivable_payment',prep
 const receiptView=await repo.readOperationProjection('receipt-two','receivable_payment',(await repo.prepareOperation('receivable_payment',paymentTwo)).payloadSha256);
 assert(!receiptView.records.products,'Receipt projection does not scan original sale stock');
 console.log(JSON.stringify({status:'PASS',transport:'synthetic_atomic',historicalDate:true,manualSale:true,partialPayment:true,zeroPayment:true,subsequentReceipts:true,
+  actorBoundReplay:true,productLogicalDelete:true,productDeleteStockPreserved:true,
   idempotent:true,sameProductRace:true,exactCashSession:true,reopenSeparateReport:true,historyIndependentCoreReads:saleReads,
   derivedAuditRecoverable:true,auditFailureDoesNotRepeatCore:true,productionWrites:0}));

@@ -250,6 +250,38 @@ try{
   const prepared=await repo.prepareOperation('sale',sale);
   assert.equal((await repo.lookupOperation(sale.operationId,'sale',prepared.payloadSha256)).record.status,'committed');
   assert.equal((await get('products','p1')).stock,1);
+  await repo.commitOperation('product_create',{operationId:'catalog-create',date:open.date,product:{id:'catalog-product',businessId,name:'Retained history',stock:8}});
+  const catalogDelete={operationId:'catalog-delete',productId:'catalog-product',expectedRecordVersion:1};
+  const omittedProductDelete=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/products/catalog-product')?null:data),serverTimestamp});
+  await assertFails(omittedProductDelete.commitOperation('product_delete',{...catalogDelete,operationId:'catalog-delete-omitted'}));
+  for(const change of [{stock:0,qty:0},{name:'Forged replacement'},{id:'foreign'},{businessId:secondBusinessId}]){
+    const forged=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+      transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/products/catalog-product')?{...data,data:{...data.data,...change}}:data),serverTimestamp});
+    await assertFails(forged.commitOperation('product_delete',{...catalogDelete,operationId:`catalog-forged-${Object.keys(change)[0]}`}));
+  }
+  await repo.commitOperation('product_delete',catalogDelete);
+  assert.equal((await repo.commitOperation('product_delete',catalogDelete)).status,'already_committed');
+  assert.equal((await get('products','catalog-product')).stock,8);
+  assert.equal((await get('products','catalog-product')).deleted,true);
+  assert.equal((await getDocFromServer(doc(client,`${base}/movements/catalog-delete`))).exists(),false);
+  await assertFails(runTransaction(client,async tx=>{
+    const ref=doc(client,`${base}/products/catalog-product`),old=(await tx.get(ref)).data();
+    const oldLedger=(await tx.get(doc(client,`${base}/operationLedger/catalog-delete`))).data(),operationId='catalog-forged-resurrection';
+    tx.set(ref,{...old,recordVersion:old.recordVersion+1,lastOperationId:operationId,updatedBy:ownerUid,updatedAt:serverTimestamp(),
+      data:{...old.data,deleted:false},dataHash:'e'.repeat(64)});
+    tx.set(doc(client,`${base}/operationLedger/${operationId}`),{...oldLedger,id:operationId,lastOperationId:operationId,
+      createdAt:serverTimestamp(),updatedAt:serverTimestamp(),dataHash:'e'.repeat(64),
+      data:{...oldLedger.data,id:operationId,operationId,kind:'product_edit',payloadHash:'e'.repeat(64)}});
+  }));
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/catalog-forged-resurrection`))).exists(),false);
+  const importedProduct={name:'Imported catalog history',stock:5,qty:5};
+  await env.withSecurityRulesDisabled(async c=>setDoc(doc(c.firestore(),`${base}/products/imported-catalog`),{
+    id:'imported-catalog',ownerUid,businessId,schemaVersion:2,module:'products',data:importedProduct,
+    dataHash:await globalThis.CLICK360_SPARK_MIGRATION.hash(importedProduct),sourceHash:'a'.repeat(64),sourcePath:['products',12]}));
+  await repo.commitOperation('product_delete',{operationId:'delete-imported-catalog',productId:'imported-catalog',expectedRecordVersion:1});
+  assert.equal((await get('products','imported-catalog')).deleted,true);
+  assert.equal((await get('products','imported-catalog')).stock,5);
   await assertFails(transportFor(client).run(async tx=>{
     const p=await tx.get('products','p1');
     tx.update('products','p1',{...p,recordVersion:p.recordVersion+1,stock:9,qty:9,
@@ -508,6 +540,12 @@ try{
   assert.equal((await get('products','compound-product')).stock,4);
   assert.equal((await get('products','compound-product')).name,'Worker edit');
   assert.equal((await get('products','worker-product')).stock,3);
+  const workerCatalogDelete={operationId:'worker-catalog-delete',productId:'worker-product',expectedRecordVersion:(await get('products','worker-product')).recordVersion};
+  await assertFails(workerRepo.commitOperation('product_delete',workerCatalogDelete));
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),{'permissions.products.delete':true}));
+  await workerRepo.commitOperation('product_delete',workerCatalogDelete);
+  assert.equal((await get('products','worker-product')).stock,3);
+  assert.equal((await get('products','worker-product')).deleted,true);
   const ownerReceipt={operationId:'owner-receipt',saleId:'pending-payment-real-sdk',expectedRecordVersion:1,
     cashSessionId:workerOpen.cashSessionId,date:workerOpen.date,amount:5,method:'Transferencia'};
   const receiptStockBefore=(await get('products','p1')).stock;
@@ -578,6 +616,7 @@ try{
     membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,immutableLedger:true,
     pendingPayment:true,layawayDeposit:true,subsequentReceipts:true,receiptStockUnchanged:true,receiptRace:true,serverPagination:true,secondDevice:true,
     customerDeletePreservesHistory:true,customerResurrectionDenied:true,customerDeletePermissionScoped:true,importedCustomerDelete:true,
+    productDeletePreservesHistory:true,productDeleteStockUnchanged:true,productDeletePermissionScoped:true,productResurrectionDenied:true,importedProductDelete:true,
     workerTwelveLineMixed:true,workerTwelveLineReservations:true,workerTwelveLinePending:true,
     workerCashOpenClose:true,workerProductCreateEditAdjust:true,compoundProductAndStock:true,
     compoundMovementRequired:true,compoundFieldsEnforced:true,compoundWorkerPermissionEnforced:true,allManualQuantityIndices:12,

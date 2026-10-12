@@ -73,3 +73,12 @@ The same Spark transaction transport now exposes server-only `readPage`: fixed s
 
 Reference: [Firebase atomic-operation access limits and caching](https://firebase.google.com/docs/firestore/security/rules-conditions#access_call_limits). The documented 20-per-atomic-operation and 10-per-single-operation limits are separate from the 1000-expression guard; cached access is not a guarantee of expression headroom.
 - No multi-line supported maximum or safety margin is declared until owner AND worker worst-case tests, including rejected payloads, pass the strict gate repeatedly. Do not activate these candidate Rules or public modular writers before that evidence exists.
+# Catalog tombstone integration — 2026-10-12
+
+`product_delete` uses the existing product/ledger reciprocal atomic proofs. It adds **no new external reference**: product identity, retained stock/qty, old deleted state and the restricted `deleted/id/businessId` diff are checked from `resource` and `request.resource`. The ledger requires that exact product's `lastOperationId`; the product requires a new permitted ledger. Worker authorization is `products.delete`, not `products.update`. Historical imported rows may normalize absent embedded identity, never foreign identity. Physical deletion remains denied; new edits/stock consumption of a tombstone are denied.
+
+| Operation | Owner authorization | Worker authorization | Atomic cross-record proof | New external refs |
+|---|---|---|---|---|
+| PRODUCT_DELETE | Auth/path plus existing writable/storage control | Existing scoped membership and explicit delete grant | Product ↔ new ledger | 0 |
+
+The unchanged existing SALE/INVENTORY/CASH budgets still require re-execution on this candidate: extra local predicates are not automatically free evaluation work. Exact Rules and stricter `+16` tests, with logs checked for expression/access-budget and internal evaluator errors, remain mandatory. A distinct-reference worksheet is not a measured Firestore bill or percentage headroom.

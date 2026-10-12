@@ -619,11 +619,11 @@ service cloud.firestore {
     }
 
     function sparkKindPermission(ownerUid, businessId, kind) {
-      return kind in ["sale", "product_create", "product_edit", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment"]
+      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment"]
         && sparkPermission(ownerUid, businessId,
-          kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "inventory_adjust"] ? "products" :
+          kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
             (kind == "cash_movement" ? "movements" : "cashSessions")))),
-          kind == "receivable_payment" ? "payment" : (kind == "customer_delete" ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
+          kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
             (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"))));
     }
 
@@ -646,9 +646,9 @@ service cloud.firestore {
         && (kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
           : kind in ["customer_create", "customer_edit", "customer_delete"] ? (r.keys().hasOnly(["customerId"])
             && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/customers/$(r.customerId)).data.lastOperationId == operationId)
-          : kind in ["product_create", "product_edit", "inventory_adjust"] ?
+          : kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ?
             (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.lastOperationId == operationId
-              && (kind == "product_edit" || (kind == "product_create"
+              && (kind in ["product_edit", "product_delete"] || (kind == "product_create"
                 && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.data.stock == 0)
                 || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId)).data.lastOperationId == operationId))
           : kind in ["cash_open", "cash_close", "cash_reopen", "cash_movement"] ?
@@ -857,13 +857,24 @@ service cloud.firestore {
         && sale.stockDeltas[recordId] > 0 && d.stock == resource.data.data.stock - sale.stockDeltas[recordId];
     }
 
+    function sparkProductStoredIdentity(businessId, recordId) {
+      let old = resource == null ? null : resource.data.data;
+      return old is map && old.get("id", recordId) == recordId
+        && old.get("businessId", businessId) == businessId && old.get("deleted", false) == false;
+    }
+
     function sparkProductMutation(ownerUid, businessId, recordId, creating) {
       let d = request.resource.data.data;
       let op = request.resource.data.lastOperationId;
       let ledger = sparkLedger(ownerUid, businessId, op);
       let kind = ledger.kind;
       return d.id == recordId && d.businessId == businessId && d.stock is number && d.stock >= 0 && d.qty == d.stock
+        && (creating || sparkProductStoredIdentity(businessId, recordId))
+        && (kind == "product_delete" || d.get("deleted", false) == false)
         && (kind == "product_create" ? (creating && ledger.result.productId == recordId)
+          : kind == "product_delete" ? (!creating && ledger.result.productId == recordId && d.deleted == true
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"])
+              && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
           : kind == "product_edit" ? (!creating && ledger.result.productId == recordId
               && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData"])
               && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)

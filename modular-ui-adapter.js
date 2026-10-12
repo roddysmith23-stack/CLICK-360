@@ -65,6 +65,13 @@
     return delta?{kind:'inventory_adjust',input:{operationId,productId:product.id,quantityDelta:delta,changes,date,reason:'Ajuste de inventario',...revision}}
       :{kind:'product_edit',input:{operationId,productId:product.id,changes,...revision}};
   }
+  function productDeleteCommand({product,identity,operationId}){
+    if(!operationId||!product?.id||product.businessId!==identity?.businessId||product.deleted===true)
+      throw Error('MODULAR_PRODUCT_DELETE_CONTEXT_INVALID');
+    if(!Number.isSafeInteger(product.recordVersion)||product.recordVersion<1)
+      throw Error('MODULAR_PRODUCT_DELETE_REVISION_REQUIRED');
+    return {kind:'product_delete',input:{operationId,productId:product.id,expectedRecordVersion:product.recordVersion}};
+  }
   function cashReportView(report){
     const fields=['openingAmount','declaredCash','theoreticalCash','difference','saleCount','total','totalItems','totalIva','incomeCash','expenseCash'];
     if(!report?.cashSessionId||report.status!=='closed'||!report.paymentTotals
@@ -109,7 +116,8 @@
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
     if(typeof onConfirmed!=='function'||typeof journal?.markProjected!=='function'
-      ||typeof journal.listProjectionPending!=='function'||typeof journal.countProjectionPending!=='function')
+      ||typeof journal.listProjectionPending!=='function'||typeof journal.countProjectionPending!=='function'
+      ||typeof journal.countPending!=='function')
       throw Error('MODULAR_UI_DURABLE_PROJECTION_REQUIRED');
     const coordinator=root.CLICK360_MODULAR_COORDINATOR.create({repository,journal,deviceId});
     const inFlight=new Map();
@@ -137,7 +145,8 @@
         await journal.markProjected(identity,row.operationId,row.payloadHash);
       }catch(error){
         assertContext();
-        return emit(row.operationId,'LOCAL_RECOVERY_PENDING','confirmed_operation_local_projection_pending');
+        return emit(row.operationId,'LOCAL_RECOVERY_PENDING',error.message==='SPARK_UI_PENDING_OVERLAY_REQUIRED'
+          ?'confirmed_waiting_for_pending_operations':'confirmed_operation_local_projection_pending');
       }
       assertContext();return emit(row.operationId,'CONFIRMED');
     }
@@ -176,7 +185,12 @@
     async function replay({limit=25}={}){
       assertContext();
       if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
-      const projections=await journal.listProjectionPending(identity,limit),results=[];
+      // A projection cannot replace a newer pending device candidate. Starting
+      // every replay with that projection deadlocks recovery forever. Settle
+      // the bounded financial queue first; indexed projections remain durable.
+      const counts=await journal.countPending(identity);
+      assertContext();
+      const projections=counts.total===0?await journal.listProjectionPending(identity,limit):[],results=[];
       assertContext();
       for(const row of projections){
         const result=await settle(row);results.push(result);
@@ -187,7 +201,10 @@
       assertContext();
       for(const row of rows){
         const result=await settle(row);results.push(result);
-        if(result.status!=='CONFIRMED')break;
+        // Continue only for the explicit local-overlay barrier. Network,
+        // issuer, revision, durability and UNKNOWN failures still stop replay.
+        if(result.status!=='CONFIRMED'&&!(result.status==='LOCAL_RECOVERY_PENDING'
+          &&result.reason==='confirmed_waiting_for_pending_operations'))break;
       }
       return results;
     }
@@ -210,5 +227,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,customerMutationCommand,receivablePaymentCommand,cashReportView});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,cashReportView});
 })(typeof window==='undefined'?globalThis:window);

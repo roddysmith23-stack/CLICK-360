@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment']);
+    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -491,7 +491,9 @@
       if(!kinds.includes(kind))throw Error('MODULAR_OPERATION_KIND_UNSUPPORTED');
       const payload=root.CLICK360_MODULAR_JOURNAL.validatePayload(structuredClone(input));
       const operationId=safeId(payload.operationId,'operationId');scoped(payload);scoped(payload.sale);scoped(payload.product);
-      const envelope={kind,schemaVersion:2,tenantKey:expected.tenantKey,payload};
+      // A durable command belongs to its original authenticated issuer. A
+      // shared device must not re-sign an old worker's request as its next user.
+      const envelope={kind,schemaVersion:2,tenantKey:expected.tenantKey,actorUid,payload};
       return {operationId,envelope,payloadSha256:await sha256(envelope)};
     }
     function base(moduleName,id,timestamp,data={}){
@@ -539,9 +541,18 @@
           if(stock>0){if(await tx.get('movements',op))throw Error('MOVEMENT_ALREADY_EXISTS');
             stage('movements',op,null,{operationId:op,kind:'inventory_opening',productId:id,quantityDelta:stock,amount:0,date:date(p.date),lastOperationId:op});}
           stage('products',id,null,{...p.product,stock,qty:stock,lastOperationId:op});result={productId:id};
+        }else if(kind==='product_delete'){
+          if(Object.keys(p).some(key=>!['operationId','productId','expectedRecordVersion'].includes(key)))throw Error('PRODUCT_DELETE_FIELDS_INVALID');
+          const id=safeId(p.productId,'productId'),old=await tx.get('products',id);
+          if(!old||old.deleted===true)throw Error('PRODUCT_EXISTENCE_CONFLICT');
+          if(!Number.isSafeInteger(p.expectedRecordVersion)||p.expectedRecordVersion!==old.recordVersion)throw Error('PRODUCT_REVISION_CONFLICT');
+          // A catalog tombstone is not a stock adjustment or a cash expense.
+          // Retain the original quantities and every historical relationship.
+          stage('products',id,old,{...old,deleted:true,lastOperationId:op});result={productId:id};
         }else if(kind==='product_edit'||kind==='inventory_adjust'){
           const id=safeId(p.productId,'productId'),old=await tx.get('products',id);
           if(!old)throw Error('PRODUCT_NOT_FOUND');
+          if(old.deleted===true)throw Error('PRODUCT_DELETED');
           if(p.expectedRecordVersion!==undefined&&p.expectedRecordVersion!==old.recordVersion)throw Error('PRODUCT_REVISION_CONFLICT');
           const changes=p.changes??(kind==='inventory_adjust'?{}:null);
           if(!changes||Array.isArray(changes)||typeof changes!=='object'
@@ -603,6 +614,7 @@
           }
           const stockRows=[];
           for(const [id,qty]of products){const product=await tx.get('products',id);if(!product)throw Error('PRODUCT_NOT_FOUND');
+            if(product.deleted===true)throw Error('PRODUCT_DELETED');
             const stock=number(Number(product.stock??product.qty),'STOCK');if(stock<qty)throw Error('INSUFFICIENT_STOCK');stockRows.push({id,product,stock:stock-qty});}
           const methodKey={Efectivo:'cash',Tarjeta:'card',Transferencia:'transfer'}[paymentMethod];
           if(methodKey)paymentTotals[methodKey]=Math.round((paymentTotals[methodKey]+received)*100)/100;
@@ -774,7 +786,7 @@
         return {source:'server',operationId,identity:{...expected},records};
       });
     }
-    return Object.freeze({identity:expected,supportedKinds:kinds,prepareOperation,commitOperation,lookupOperation,ensureDerivedAudit,readOperationProjection,
+    return Object.freeze({identity:expected,actorUid,supportedKinds:kinds,prepareOperation,commitOperation,lookupOperation,ensureDerivedAudit,readOperationProjection,
       readPage:(moduleName,options)=>transport.readPage(moduleName,options),
       commitSale:input=>commitOperation('sale',input),closeCashSession:input=>commitOperation('cash_close',input)});
   }

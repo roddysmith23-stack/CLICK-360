@@ -210,12 +210,18 @@ try{
     assert(historicalReport.saleCount===1&&historicalReport.total===30&&historicalReport.cashSessionId===historical.id
       &&historicalReport.date==='2026-09-03','Historical close excludes sales from the other session');
     assert((await record('products',data.products[0].id)).stock===0&&(await record('dailyReports',closed.reportId)).total===54,'Historical operation changes stock once and preserves earlier report');
+    await page.evaluate(()=>{location.hash='#inventory';});await page.locator('#productSearch').fill('SPARK-NEW');
+    await resetStatus();await page.locator(`[data-del="${created.id}"]`).click();await confirmed();
+    const deletedProduct=await record('products',created.id);
+    assert(deletedProduct.deleted===true&&deletedProduct.stock===9,'Actual delete preserves stock after the two previously confirmed sales');
+    assert(await page.evaluate(id=>!click360GetTenantState().products.some(p=>p.id===id)
+      &&click360GetTenantState().deletedProducts.some(p=>p.id===id&&p.deleted===true),created.id),'Existing catalog hides the deleted record and durably retains its tombstone');
     const health=await page.evaluate(()=>window.click360SparkOperationalSession.health());
     assert(health.pendingCount===0&&health.unknownCount===0&&health.projectionPendingCount===0,'Durable local projection completed');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'No legacy overwrite');
     const runtime=await page.evaluate(()=>({global:!!CLICK360_SPARK_OPERATIONAL_UI,hash:CLICK360_RELEASE_ASSETS['app.js'],sale:click360GetTenantState().sales.at(-1).id}));
     assert(runtime.sale,'Existing receipt ID preserved');
-    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
+    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,productDeletePreservesHistory:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
       appFirestoreTransport:'long_polling',customerCreateAndEdit:true,customerDeletePreservesHistory:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});

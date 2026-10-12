@@ -74,6 +74,30 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
         durableState:confirmedButUnprojected.projectionState,health:projectionHealth.projectionPendingCount,
         survived:projectionSurvived,noEvidence:noEvidence[0].status,retained,recovered:projectionRecovery[0].status,
         cleared:projectionCleared,noSecondStockDelta};
+      // The real runtime refuses a server projection while another candidate
+      // is pending: applying it would overwrite a newer local stock delta.
+      // Replay must settle the financial outbox before returning to projection.
+      online=false;
+      const guarded=CLICK360_MODULAR_UI_ADAPTER.create({repository:transport,journal,deviceId:'synthetic-device',resolveIdentity:()=>active,isOnline:()=>online,
+        onStatus:detail=>statuses.push(detail),onConfirmed:async receipt=>{
+          const counts=await journal.countPending(identity);
+          if(counts.total>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
+          views.set(receipt.operationId,receipt);
+        }});
+      await guarded.submit('sale',input('sale-recovery-5',6,5));
+      await guarded.submit('sale',input('sale-recovery-6',5,6));
+      journal.close();journal=await CLICK360_MODULAR_JOURNAL.open();online=true;
+      const recovery=CLICK360_MODULAR_UI_ADAPTER.create({repository:transport,journal,deviceId:'restarted-device',resolveIdentity:()=>active,isOnline:()=>online,
+        onStatus:detail=>statuses.push(detail),onConfirmed:async receipt=>{
+          const counts=await journal.countPending(identity);
+          if(counts.total>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
+          views.set(receipt.operationId,receipt);
+        }});
+      for(let pass=0;pass<3;pass++)await recovery.replay({limit:1});
+      const drained=await recovery.health();
+      if(drained.pendingCount||drained.unknownCount||drained.projectionPendingCount)throw Error('PENDING_PROJECTION_REPLAY_DEADLOCK');
+      if(db.store.get(paths.record('products','p')).stock!==4)throw Error('RECOVERY_STOCK_DELTA_NOT_EXACT');
+      adapter=create();
       active=api.identity('another-owner','alpha');let isolated=false;
       try{await adapter.submit('sale',input('wrong-tenant',7,4));}catch(error){isolated=error.message==='MODULAR_UI_CONTEXT_CHANGED';}
       // A migration guard must not mistake a truncated replay page for an
@@ -117,12 +141,12 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
         falseConfirmation:statuses.some(detail=>detail.status!=='CONFIRMED'&&detail.operationalCloudConfirmed),counts,foreignCounts,largeHealth,enumeration};
     });
     assert.deepEqual(result,{double:['CONFIRMED','CONFIRMED'],once:9,rechecked:true,pending:'PENDING',pendingCount:1,survived:'queued',
-      replay:'CONFIRMED',unknown:'UNKNOWN',uncertain:'unknown',recovered:'CONFIRMED',finalStock:6,projected:3,isolated:true,falseConfirmation:false,
+      replay:'CONFIRMED',unknown:'UNKNOWN',uncertain:'unknown',recovered:'CONFIRMED',finalStock:4,projected:3,isolated:true,falseConfirmation:false,
       projectionEvidence:{failure:'LOCAL_RECOVERY_PENDING',serverState:'confirmed',durableState:'pending',health:1,
         survived:1,noEvidence:'UNKNOWN',retained:1,recovered:'CONFIRMED',cleared:0,noSecondStockDelta:true},
       counts:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false},foreignCounts:{pendingCount:0,unknownCount:0,total:0,countIsBounded:false},
       largeHealth:{pendingCount:100,unknownCount:1,total:101,countIsBounded:false,projectionPendingCount:0,online:true,activeRequests:0},
       enumeration:[99,100,101,250,1000].map(size=>({size,total:size,unknown:1,pages:Math.ceil(size/100)}))});
-    console.log(`PASS ${name} DEV UI adapter + real IndexedDB: button double click, durable pending/reopen, fresh server evidence, bounded replay, UNKNOWN preservation, tenant switch denied (synthetic transactional transport)`);
+    console.log(`PASS ${name} DEV UI adapter + real IndexedDB: button double click, durable pending/reopen, two-pending replay drain without overwriting local deltas, fresh server evidence, bounded replay, UNKNOWN preservation, tenant switch denied (synthetic transactional transport)`);
   }finally{await browser.close();}
 }

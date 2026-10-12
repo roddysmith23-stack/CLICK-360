@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import './qa-spark-imported-cash-summaries.mjs';
 import './modular-ui-adapter.js';
 const api=globalThis.CLICK360_MODULAR_UI_ADAPTER;
+const deletingProduct={id:'catalog-product',businessId:'alpha',recordVersion:3,stock:8,qty:8,name:'Historical product'};
+const deleteInput={product:deletingProduct,identity:{ownerUid:'synthetic-owner',businessId:'alpha'},operationId:'catalog-delete'};
+assert.deepEqual(api.productDeleteCommand(deleteInput),{kind:'product_delete',input:{operationId:'catalog-delete',productId:'catalog-product',expectedRecordVersion:3}});
+assert.equal(deletingProduct.stock,8,'Deletion command never zeroes stock');
+assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,recordVersion:undefined}}),/REVISION_REQUIRED/);
+assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,businessId:'foreign'}}),/CONTEXT_INVALID/);
+assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,deleted:true}}),/CONTEXT_INVALID/);
 const identity={ownerUid:'synthetic-owner',businessId:'alpha'};
 const sale={id:'live-id',operationId:'stable-operation',businessId:'alpha',cashSessionId:'exact-session',date:'2026-09-03',
   total:30,received:30,balance:0,method:'Transferencia',status:'paid',items:[{id:'p1',qty:1,name:'Synthetic',price:30}]};

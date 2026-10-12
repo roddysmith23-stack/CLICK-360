@@ -878,6 +878,7 @@ function parseMoney(value) {
     // monolithic auto-save writer. Unsupported UI flows stay fail-closed.
     if (window.click360SparkOperationalSession) {
       publishSaveFailure('spark_ui_explicit_command_required', 'save_spark_command');
+      restoreLastPersistedState();
       return false;
     }
     if (!activeTenantContext || !stateStorageKey()) {
@@ -1515,6 +1516,11 @@ function parseMoney(value) {
     if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
       throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
     }
+    if (activeTenantContext?.tenantKey !== context.tenantKey
+      || activeTenantContext?.authUid !== context.authUid) {
+      window.click360SparkOperationalSession?.close();
+      window.click360SparkOperationalSession = null;
+    }
     if (activeTenantContext?.tenantKey !== context.tenantKey) activeSellDraft = { key:'', cart:[] };
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
     indexedTenantCacheMeta = null;
@@ -1633,6 +1639,10 @@ function parseMoney(value) {
     };
   };
   window.click360ClearTenantContext = function() {
+    // Revoke the old writer before clearing its context or hydrating another
+    // account. Closing a connection must never delete its durable journal.
+    window.click360SparkOperationalSession?.close();
+    window.click360SparkOperationalSession = null;
     stopScanner();
     activeTenantContext = null;
     activeSellDraft = { key:'', cart:[] };
@@ -1744,6 +1754,14 @@ function parseMoney(value) {
       const target=moduleName==='customers'?(next.settings.customers||=[]):(next[moduleName]||=[]);
       for(const record of records){
         if(record.businessId!==businessId)throw Error('SPARK_UI_PROJECTION_BUSINESS_INVALID');
+        if(moduleName==='products'&&record.deleted===true){
+          next.deletedProducts ||= [];
+          const tombstoneIndex=next.deletedProducts.findIndex(p=>p.id===record.id&&p.businessId===businessId);
+          const tombstone={...record,reason:'manual_delete'};
+          if(tombstoneIndex<0)next.deletedProducts.push(tombstone);else next.deletedProducts[tombstoneIndex]=tombstone;
+          next.products=next.products.filter(p=>p.id!==record.id||p.businessId!==businessId);
+          continue;
+        }
         const value=cloneState(moduleName==='dailyReports'&&record.status==='closed'
           ?window.CLICK360_MODULAR_UI_ADAPTER.cashReportView(record):record),id=moduleName==='sales'?(record.legacyId||record.id):record.id;
         value.id=id;
@@ -7353,16 +7371,23 @@ function parseMoney(value) {
 	      const businessId = currentBusiness()?.id;
 	      const p=state.products.find(x=>x.id===id && x.businessId===businessId);
 	      if (!p) return toast('Producto no encontrado en este negocio.', 'err');
+          let sparkCommand;
+          if(window.click360SparkOperationalSession){
+            try{sparkCommand=window.CLICK360_MODULAR_UI_ADAPTER.productDeleteCommand({product:p,
+              identity:window.click360SparkOperationalSession.identity,operationId:uid('product-delete')});}
+            catch{return toast('No pudimos verificar este producto. Tu inventario permanece intacto.','err');}
+          }
 	      const previousState = cloneState(state);
 	      if(p) {
 	        tombstoneProduct(p, 'manual_delete');
-	        state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
+	        if(!sparkCommand)state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
 	      }
 	      state.products=state.products.filter(x=>x.id!==id || x.businessId!==businessId);
-	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.stock ?? p.qty ?? 0) }, after:{ stock:0 } });
+	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.stock ?? p.qty ?? 0) },
+            after:sparkCommand?{stock:Number(p.stock ?? p.qty ?? 0),deleted:true}:{stock:0} });
 	      const committed = await commitCriticalMutation(previousState, 'product_deleted', (next) =>
 	        !next.products.some((item) => item.id === id && item.businessId === businessId)
-	        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId));
+        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId), {sparkCommand});
 	      renderApp('inventory');
 	      if (committed.ok) toast(committed.pending ? 'Producto eliminado; sincronización pendiente.' : 'Producto eliminado');
 	    }

@@ -95,6 +95,47 @@ try {
 // Extract the real PWA commit entry point: Spark never falls through to save,
 // legacy sync or legacy refresh, including an unsupported command and failure.
 const source=await readFile('app.js','utf8');
+// An unsupported generic save must not contaminate the next typed candidate.
+// Restore only the latest DEVICE-durable state, including its pending delta;
+// never the older remote stock. This executes the actual save branch.
+const saveStart=source.indexOf('  function save(options = {})'),saveEnd=source.indexOf('    if (!activeTenantContext || !stateStorageKey())',saveStart);
+const restoreStart=source.indexOf('  function cloneState(value)'),restoreEnd=source.indexOf('  function cacheMetaKey',restoreStart);
+assert(saveStart>0&&saveEnd>saveStart&&restoreStart>0&&restoreEnd>restoreStart);
+const pendingDevice={products:[{id:'pending-stock',stock:5}],pendingOperationIds:['protected-offline-sale'],settings:{name:'Durable'}};
+const genericSave={window:{click360SparkOperationalSession:{}},lastPersistedState:structuredClone(pendingDevice),
+  state:{products:[{id:'pending-stock',stock:0}],settings:{name:'Unsupported unsaved change'}},publishSaveFailure:()=>{}};
+vm.createContext(genericSave);
+vm.runInContext(`${source.slice(restoreStart,restoreEnd)}${source.slice(saveStart,saveEnd)}throw Error('LEGACY_SAVE_FALLTHROUGH');}
+  globalThis.save=save;`,genericSave);
+assert.equal(genericSave.save(),false);
+assert.equal(JSON.stringify(genericSave.state),JSON.stringify(pendingDevice),'Rejected save preserves the latest pending durable device state');
+// Execute the actual PWA's session-revocation paths, not a stand-alone helper.
+// Logout/actor changes close the old connection without deleting device data.
+const clearStart=source.indexOf('  window.click360ClearTenantContext = function()'),clearEnd=source.indexOf('  window.click360IsTenantStateDeferred',clearStart);
+assert(clearStart>0&&clearEnd>clearStart);
+const lifecycle={window:{click360SparkOperationalSession:{close:()=>{lifecycle.closed++;}},CLICK360_RUNTIME_GUARD:{clearContext:()=>{}}},closed:0,
+  stopScanner:()=>{},seed:()=>({}),publishStorageState:()=>{},resolveCriticalActionGate:()=>({clear:()=>{}}),app:null,
+  onlineOnlyCommitCheckpoints:new Map(),activeTenantContext:{tenantKey:'owner:alpha',authUid:'worker-a'}};
+vm.createContext(lifecycle);
+vm.runInContext(`let activeSellDraft,onboardingPrompted,state,tenantDataHydrated,tenantStateProvenance,lastPersistedState,
+  indexedTenantCacheMeta,lastSavePersistence,lastAutoSaveHash,session,route,workingDate,tenantStateDeferred;
+  ${source.slice(clearStart,clearEnd)}`,lifecycle);
+lifecycle.window.click360ClearTenantContext();
+assert.equal(lifecycle.closed,1);
+assert.equal(lifecycle.window.click360SparkOperationalSession,null,'Logout revokes the old modular writer');
+assert.equal(lifecycle.activeTenantContext,null);
+assert(!source.slice(clearStart,clearEnd).includes('deleteDatabase'),'Session revocation preserves IndexedDB and journal');
+const setStart=source.indexOf('  window.click360SetTenantContext = function('),setCut=source.indexOf('    if (activeTenantContext?.tenantKey !== context.tenantKey) activeSellDraft',setStart);
+assert(setStart>0&&setCut>setStart);
+vm.runInContext(`${source.slice(setStart,setCut)}return true;};`,lifecycle);
+const contextA={authUid:'worker-a',ownerId:'owner',businessId:'alpha',tenantKey:'owner:alpha'};
+for(const context of [contextA,{...contextA,authUid:'worker-b'},{...contextA,tenantKey:'owner:beta',businessId:'beta'}]){
+  lifecycle.activeTenantContext=contextA;
+  lifecycle.window.click360SparkOperationalSession={close:()=>{lifecycle.closed++;}};
+  const before=lifecycle.closed;
+  lifecycle.window.click360SetTenantContext(context);
+  assert.equal(lifecycle.closed-before,context===contextA?0:1,'Revoke only a changed actor/tenant context');
+}
 const start=source.indexOf('  async function commitCriticalMutation('),end=source.indexOf('  // Action Guardian:',start);
 assert(start>0&&end>start);
 let saved=0,synced=0,restored=0,released=0,request;
@@ -170,4 +211,5 @@ assert.equal(closedProjection,1,'Server read cannot overwrite a different pendin
 const unknownDialog=source.slice(source.indexOf('  function showCashCloseUnknown('),source.indexOf('  let cashCloseSessionOverride'));
 assert(unknownDialog.includes('click360SparkOperationalSession?.verifyCashClose'),'Unknown modal must not fall back to legacy cloud for a modular session');
 console.log(JSON.stringify({status:'PASS',actualPWACommit:true,noLegacyFallback:true,invalidCommandPreservesPrevious:true,
+  writerRevokedOnActorOrTenantChange:true,logoutPreservesJournal:true,
   productionActivationDenied:true,mixedBuildDenied:true,productionWrites:0}));

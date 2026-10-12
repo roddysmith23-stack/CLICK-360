@@ -17,6 +17,10 @@
       if (!row) throw Error('OPERATION_NOT_FOUND');
       if (row.state === 'confirmed') return { status:'confirmed', operationId };
       if (row.payload.tenantKey !== identity.tenantKey || row.payload.schemaVersion !== 2) throw Error('OUTBOX_TENANT_SCHEMA_CONFLICT');
+      // Missing issuer in an older DEV command is not proof of authorization.
+      // Preserve it for reconciliation; never silently adopt or rehash it.
+      if (repository.actorUid && row.payload.actorUid !== repository.actorUid)
+        throw Error('OUTBOX_ACTOR_RECONCILIATION_REQUIRED');
       const kind = row.payload.kind;
       if (!(repository.supportedKinds||['sale', 'cash_close']).includes(kind)) throw Error('MODULAR_OPERATION_KIND_UNSUPPORTED');
       // Prepare again on restart to independently verify the stored request hash.
