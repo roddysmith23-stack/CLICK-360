@@ -12,7 +12,7 @@ if(process.env.FIRESTORE_EMULATOR_HOST!=='127.0.0.1:48944')throw Error('EXACT_SP
 const projectId='demo-click360-spark-modular',ownerUid='spark-import-owner',businessId='import-business';
 const env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:48944,rules:await readFile('firestore.spark.rules','utf8')}});
 const client=env.authenticatedContext(ownerUid).firestore();
-let beforePageRead=null;
+let beforePageRead=null,activePageReads=0,maxActivePageReads=0;
 const wrap=snap=>({exists:snap.exists(),data:()=>snap.data()});
 // SDK-shape compatibility only: all reads, transactions and Rules are executed
 // by the real authenticated Web client, never an Admin transport.
@@ -24,7 +24,11 @@ const db={app:{options:{projectId}},doc:path=>{
   collection:path=>({orderBy:field=>{
     const constraints=[orderBy(field)];
     const page={limit:n=>{constraints.push(limit(n));return page;},startAfter:id=>{constraints.push(startAfter(id));return page;},
-      get:async options=>{assert.equal(options.source,'server');if(beforePageRead)await beforePageRead();return getDocsFromServer(query(collection(client,path),...constraints));}};
+      get:async options=>{
+        assert.equal(options.source,'server');activePageReads++;maxActivePageReads=Math.max(maxActivePageReads,activePageReads);
+        try{if(beforePageRead)await beforePageRead();return await getDocsFromServer(query(collection(client,path),...constraints));}
+        finally{activePageReads--;}
+      }};
     return page;}}),
   runTransaction:callback=>runTransaction(client,tx=>callback({get:async ref=>wrap(await tx.get(ref)),set:(ref,data)=>tx.set(ref,data),update:(ref,data)=>tx.update(ref,data)}))};
 const firebase={firestore:{FieldValue:{serverTimestamp},FieldPath:{documentId}}};
@@ -54,6 +58,8 @@ try{
   const importer=globalThis.CLICK360_SPARK_IMPORTER.create(input);
   await assert.rejects(importer.prepareShadow(),/SIMULATED_INTERRUPTED_UPLOAD/);
   const result=await importer.prepareShadow();
+  assert.equal(maxActivePageReads,3,'Independent shadow rereads must use bounded concurrency, not serialized round trips');
+  assert.equal(activePageReads,0,'All rereads finish before semantic comparison');
   assert.equal(result.cutoverPerformed,false);assert.equal(result.equality.status,'SEMANTIC_EQUALITY_PASS');
   assert.equal(result.equality.sourceHash,await api.hash(local));
   // The real authenticated SDK must not bypass the pending operational Rules
@@ -77,7 +83,7 @@ try{
   globalThis.CLICK360_MODULAR_JOURNAL={open:async()=>({
     countPending:async()=>({countIsBounded:false,total:0,pendingCount:0,unknownCount:0}),
     countProjectionPending:async()=>0,listPendingPage:async()=>({rows:[],next:null,complete:true}),close(){}})};
-  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({...input.recovery,close(){}})};
+  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({...input.recovery,deviceIdentity:async()=>({ownerUid,deviceId:input.deviceId,durable:true}),close(){}})};
   const connected=await CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({...input,actorUid:ownerUid,
     resolveContext:()=>({authUid:ownerUid,ownerUid}),leaseHeld:()=>true,
     readLocal:async()=>({snapshot:local,identity,deviceRevision:'device-43',baseRevision:42,

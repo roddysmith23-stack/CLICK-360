@@ -27,7 +27,7 @@ function fixture({enabled=true,automaticShadow=true,rows=[],cache=false}={}){
         return {rows:scoped.slice(offset,end),next:end<scoped.length?{offset:end}:null,complete:end>=scoped.length};
       },close:()=>closed++};
   }};
-  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true})})};
+  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>({ownerUid,deviceId:'durable-device',durable:true}),close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true})})};
   globalThis.CLICK360_SPARK_IMPORTER={create:options=>({prepareShadow:async()=>{
     imports++;const source=await options.readSource(),selected=await api.selectSource({ownerUid,...source});
     const guard=await options.readGuard();assert.equal(guard.mutationLockHeld,true);
@@ -50,6 +50,7 @@ function fixture({enabled=true,automaticShadow=true,rows=[],cache=false}={}){
   const pin=[...f.pins.values()][0];
   assert.equal(pin.remoteSourceHash,await api.hash(remote));assert.equal(pin.deviceRecordMetadata.deviceRevision,'device-2');
   assert.deepEqual(pin.deviceRecordMetadata.pendingOperations,['snapshot-save-id']);assert.equal(pin.reconciliations.length,2);
+  assert.equal(pin.sourceDeviceId,'durable-device');
 }
 for(const config of [{enabled:false},{automaticShadow:false}]){
   const f=fixture(config);assert.deepEqual(await f.run(),{prepared:false});assert.deepEqual(f.counts(),{closed:0,imports:0});

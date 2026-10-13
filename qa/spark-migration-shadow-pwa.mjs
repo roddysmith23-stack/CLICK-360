@@ -25,6 +25,13 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
     await setDoc(doc(db,'storageRollout/sparkV1'),{enabled:true,automaticShadow:true,pilotOwnerUids:[uid]});
   });
   const context=await newAppContext(browser,{width:390,height:844});
+  await context.addInitScript(()=>{
+    const original=Storage.prototype.setItem;
+    Storage.prototype.setItem=function(key,value){
+      if(String(key).startsWith('CLICK360:V16:DEVICE:'))throw new DOMException('Synthetic device-id quota failure','QuotaExceededError');
+      return original.call(this,key,value);
+    };
+  });
   try{
     let page=await context.newPage();await page.goto(url,{waitUntil:'domcontentloaded'});
     await page.waitForFunction(()=>!!window.click360Auth?.signInWithEmailAndPassword&&!!window.CLICK360_V16_STORAGE);
@@ -37,8 +44,11 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
     await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email:emulatorOwnerEmail,password:emulatorPassword});
     // UID belongs to the default emulator owner created by the parent suite.
     try{
-      await page.waitForFunction(()=>window.click360SparkBootstrapState?.phase==='BLOCKED'
-        &&window.click360SparkBootstrapState.reason==='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED',null,{timeout:60000});
+      await page.waitForFunction(()=>{
+        const c=window.click360SparkBootstrapState;
+        if(c?.phase==='BLOCKED'&&c.reason!=='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED')throw Error(c.reason);
+        return c?.reason==='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED';
+      },null,{timeout:60000});
     }catch(error){
       console.log(JSON.stringify({stage:'SHADOW_PREPARATION_DIAGNOSTIC',browser:label,
         state:await page.evaluate(()=>({bootstrap:window.click360SparkBootstrapState,progress:window.click360SparkMigrationState,
@@ -59,7 +69,11 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
       });
     };
     await verify();await page.close();page=await context.newPage();await page.goto(url,{waitUntil:'domcontentloaded'});
-    await page.waitForFunction(()=>window.click360SparkBootstrapState?.reason==='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED',null,{timeout:60000});
+    await page.waitForFunction(()=>{
+      const c=window.click360SparkBootstrapState;
+      if(c?.phase==='BLOCKED'&&c.reason!=='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED')throw Error(c.reason);
+      return c?.reason==='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED';
+    },null,{timeout:60000});
     await verify();
     console.log(JSON.stringify({stage:'CONNECTED_SHADOW_PREPARATION_PASS',browser:label,sourceHash,reconstructedHash:sourceHash,
       localBytes:CLICK360_SPARK_MIGRATION.byteLength(local),businesses:2,localHistoricalSalePreserved:true,

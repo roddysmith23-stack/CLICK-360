@@ -53,6 +53,29 @@ acknowledge journal operations, delete legacy, or display operational cloud conf
   certified away. Phase diagnostics were added; repeated complete UI runs remain
   required before this head can receive any broad release certificate.
 
+## Follow-up causes and corrections
+
+The instrumented quota scenario reached `SHADOW_VERIFYING` before the 60-second
+assertion expired (`output/spark-shadow-device-id-quota-before-20261013.log`).
+The importer reread every independent collection serially. The follow-up keeps
+all scopes (including source-empty modules), server-only reads and 100-row pages,
+but allows at most three independent queries concurrently. The authenticated
+client importer regression measures the concurrency and requires every read to
+finish before comparison. No timeout, commercial retry or validation is removed.
+
+`getDeviceId()` generated a new value when the localStorage device key could not
+be written. Importer resume strictly checks `sourceDeviceId`, so a new value can
+reject an otherwise intact source. Recovery now retains a separate owner-scoped
+device identity in its existing IndexedDB database and rereads it after commit.
+Schema v2 preserves the v1 immutable pins; it does not upgrade or clear the
+commercial snapshot/journal databases. Chromium, WebKit and Firefox verify v1
+pin preservation and stable device identity across document restart.
+
+The connected served-PWA regression now rejects writes to the localStorage
+device key deliberately and requires successful cold shadow resume. The real
+staging shadow harness uses a small representative synthetic dataset and the
+same failure, without weakening deployed Rules or using Admin for migration.
+
 Logs: `output/spark-migration-bootstrap-client-rules-20261013.log`,
 `output/spark-migration-bootstrap-qa-20261013.log`,
 `output/spark-migration-bootstrap-spark-20261013.log`.

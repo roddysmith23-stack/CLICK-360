@@ -93,18 +93,26 @@
         }
       }
       scopes.add(`businesses/${ownerUid}/legacyConfig`);
-      const rows=[];
-      for(const scope of scopes){
-        let cursor=null;
-        do{
-          context();let q=db.collection(scope).orderBy(firebase.firestore.FieldPath.documentId()).limit(100);
-          if(cursor)q=q.startAfter(cursor);
-          const page=await q.get({source:'server'});context();
-          if(page.metadata.fromCache)throw Error('SPARK_SERVER_READ_REQUIRED');
-          for(const doc of page.docs)rows.push({path:doc.ref.path,content:doc.data()});
-          cursor=page.size===100?page.docs.at(-1).id:null;
-        }while(cursor);
-      }
+      const rows=[],collections=[...scopes];let next=0,completedScopes=0,failed=false;
+      // Independent collection reads need not serialize all network round
+      // trips. Keep the exact same scopes and 100-row pages, cap concurrency
+      // at three, and compare only after ALL workers finish successfully.
+      await Promise.all(Array.from({length:Math.min(3,collections.length)},async()=>{
+        try{
+          while(!failed&&next<collections.length){
+            const scope=collections[next++];let cursor=null;
+            do{
+              context();let q=db.collection(scope).orderBy(firebase.firestore.FieldPath.documentId()).limit(100);
+              if(cursor)q=q.startAfter(cursor);
+              const page=await q.get({source:'server'});context();
+              if(page.metadata.fromCache||page.metadata.hasPendingWrites)throw Error('SPARK_SERVER_READ_REQUIRED');
+              for(const doc of page.docs)rows.push({path:doc.ref.path,content:doc.data()});
+              cursor=page.size===100?page.docs.at(-1).id:null;
+            }while(cursor&&!failed);
+            onProgress({phase:'SHADOW_VERIFYING',stage:'server_read',completedScopes:++completedScopes,totalScopes:collections.length,recordsRead:rows.length});
+          }
+        }catch(error){failed=true;throw error;}
+      }));
       return rows;
     }
     async function prepareShadow(){
@@ -120,7 +128,9 @@
       if(phase==='SHADOW_WRITING'){await writeShadow(manifest);await transition('SHADOW_VERIFYING',manifest);phase='SHADOW_VERIFYING';}
       if(!['SHADOW_VERIFYING','READY_TO_CUTOVER'].includes(phase))throw Error('SPARK_IMPORT_PHASE_UNSUPPORTED');
       const remoteRecords=await readShadow(manifest);
+      onProgress({phase:'SHADOW_VERIFYING',stage:'semantic_compare',recordCount:remoteRecords.length});
       const equality=await api.compare({manifest,remoteRecords,source:selected.snapshot});
+      onProgress({phase:'SHADOW_VERIFYING',stage:'semantic_verified',recordCount:remoteRecords.length});
       await assertPinned(manifest);
       if(phase==='SHADOW_VERIFYING')await transition('READY_TO_CUTOVER',manifest,equality);
       // No implicit cutover: operational adapters, role Rules and real PWA

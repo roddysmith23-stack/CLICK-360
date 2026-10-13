@@ -74,11 +74,13 @@
           if(reconciliation.results.length)throw Error('SPARK_MIGRATION_COMMAND_HANDOFF_REQUIRED');
         }
         recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});
+        const device=await recovery.deviceIdentity(deviceId);context();
+        if(device?.durable!==true||device.ownerUid!==ownerUid||!device.deviceId)throw Error('SPARK_MIGRATION_DURABLE_DEVICE_ID_REQUIRED');
         const {snapshot:preservedSnapshot,...deviceRecordMetadata}=local;
         const preservedRecovery={read:hash=>recovery.read(hash),pin:input=>recovery.pin({...input,
-          remoteSourceHash:selected.remoteHash,businessIds:selected.businessIds,
+          remoteSourceHash:selected.remoteHash,businessIds:selected.businessIds,sourceDeviceId:device.deviceId,
           deviceRecordMetadata,reconciliations})};
-        const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,deviceId,buildSha,resolveUser,
+        const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,deviceId:device.deviceId,buildSha,resolveUser,
           readSource,recovery:preservedRecovery,onProgress,readGuard:async()=>{
             context();const current=await readLocal();context();
             if(current?.deviceRevision!==deviceRevision)throw Error('SPARK_MIGRATION_DEVICE_DRIFT_STOP');
