@@ -48,6 +48,12 @@
     if(isEffectiveReadOnly())return {allowed:false,reason:'read_only'};
     return {allowed:true,reason:'modular_access_verified'};
   };
+  // Read-only identity proof for the UI; write permissions remain checked by
+  // the scoped member, command gate and server Rules. Never adopt V1 access
+  // requests as a second approval source for an already verified native user.
+  window.click360SparkWorkerIdentityVerified=()=>AUTH_APPROVED&&PULL_COMPLETE
+    &&SPARK_WORKER_CONTEXT!==null&&SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT
+    &&activeIdentityIsValid(auth.currentUser);
   let BUSINESS_ID = null;
   let STATE_DOC = null;
   let ACTIVE_CONTEXT = null;

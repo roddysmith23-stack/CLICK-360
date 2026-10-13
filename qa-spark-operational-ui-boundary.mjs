@@ -113,6 +113,26 @@ try {
 // Extract the real PWA commit entry point: Spark never falls through to save,
 // legacy sync or legacy refresh, including an unsupported command and failure.
 const source=await readFile('app.js','utf8');
+{
+  const start=source.indexOf('  function requiresWorkerAccessGate()'),end=source.indexOf('  function workerAccessGateView()',start);
+  assert(start>0&&end>start);
+  let redundantReads=0,verified=true;
+  const scoped={window:{click360SparkOperationalSession:{identity:{ownerUid:'owner',businessId:'business'}},
+    click360SparkWorkerIdentityVerified:()=>verified,click360SparkBootstrapState:{phase:'READY'}},
+    activeTenantContext:{ownerId:'owner',authUid:'worker'},currentBusiness:()=>({id:'business'}),
+    isOwnerUser:()=>false,tenantDataHydrated:true,workerAccessGateChecked:false,workerAccessGateStatus:null,
+    ensureWorkerAccessGateChecked:()=>{redundantReads++;}};
+  vm.createContext(scoped);vm.runInContext(`${source.slice(start,end)}globalThis.requiresGate=requiresWorkerAccessGate;`,scoped);
+  assert.equal(scoped.requiresGate(),false,'Already server-verified native worker must not restart the legacy approval gate offline');
+  assert.equal(redundantReads,0);
+  scoped.window.click360SparkBootstrapState.phase='INSTALLING_UI';
+  assert.equal(scoped.requiresGate(),false,'Installing a verified native UI cannot start a late legacy approval callback');
+  assert.equal(redundantReads,0);
+  scoped.window.click360SparkBootstrapState.phase='READY';
+  verified=false;assert.equal(scoped.requiresGate(),true);assert.equal(redundantReads,1);
+  verified=true;scoped.window.click360SparkOperationalSession.identity.businessId='foreign';
+  assert.equal(scoped.requiresGate(),true,'A native proof for another business cannot approve this UI');
+}
 // An unsupported generic save must not contaminate the next typed candidate.
 // Restore only the latest DEVICE-durable state, including its pending delta;
 // never the older remote stock. This executes the actual save branch.

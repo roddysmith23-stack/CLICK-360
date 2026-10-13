@@ -4140,10 +4140,15 @@ function parseMoney(value) {
 	      renderApp(workerAccessGateStatus==='approved'?workerAccessRequestedRoute:route);
 	    }
 	  }
-	  function requiresWorkerAccessGate() {
-	    if (isOwnerUser() || window.click360IsPlatformAdmin?.()) return false;
-	    if (!tenantDataHydrated) return false;
-	    if (!workerAccessGateChecked) { ensureWorkerAccessGateChecked(); return true; }
+  function requiresWorkerAccessGate() {
+    if (isOwnerUser() || window.click360IsPlatformAdmin?.()) return false;
+    if (!tenantDataHydrated) return false;
+    const native=window.click360SparkOperationalSession;
+    if(native&&window.click360SparkWorkerIdentityVerified?.()===true
+      &&native.identity.ownerUid===activeTenantContext?.ownerId
+      &&native.identity.businessId===currentBusiness()?.id
+      &&['INSTALLING_UI','READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState?.phase))return false;
+    if (!workerAccessGateChecked) { ensureWorkerAccessGateChecked(); return true; }
 	    return workerAccessGateStatus !== 'approved';
 	  }
 	  function workerAccessGateView() {
