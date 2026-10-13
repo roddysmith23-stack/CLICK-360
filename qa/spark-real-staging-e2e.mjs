@@ -67,10 +67,19 @@ try{
     const open=async(existingContext=null,login={email,password})=>{
       const context=existingContext||await browser.newContext({viewport:{width:390,height:844}}),page=await context.newPage();
       const trace=[];
+      page.on('requestfailed',request=>{
+        if(request.url().includes('firestore.googleapis.com'))trace.push(JSON.stringify({firestore:'request_failed',error:request.failure()?.errorText}));
+      });
       page.on('console',message=>{if(message.type()==='error'||/label flow failed/.test(message.text()))trace.push(message.text().replace(/\?[^\s"']+/g,'?[redacted]'));});
       page.on('dialog',d=>d.accept());await page.goto(URL,{waitUntil:'domcontentloaded'});
       await page.waitForFunction(()=>typeof click360Auth?.signInWithEmailAndPassword==='function');
       assert.equal(await page.evaluate(()=>CLICK360_FIREBASE_CONFIG.projectId),PROJECT);
+      // A document restart retains IndexedDB, not window event listeners.
+      // Install the probe in EVERY new document, including the recovered one.
+      await page.evaluate(()=>{
+        window.QA_SPARK_STATUS=null;
+        window.addEventListener('click360-spark-operation-status',e=>{window.QA_SPARK_STATUS=e.detail;});
+      });
       if(!existingContext)await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),login);
       try{await page.waitForFunction(()=>{
         if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(click360SparkBootstrapState.reason);
@@ -92,7 +101,7 @@ try{
       return {context,page};
     };
     let {context,page}=await open();
-    await page.evaluate(()=>{window.addEventListener('click360-spark-operation-status',e=>window.QA_SPARK_STATUS=e.detail);location.hash='#cash';});
+    await page.evaluate(()=>{location.hash='#cash';});
     await page.locator('#apertureAmountInput').fill('0');await page.locator('#startDayBtnCash').click();
     await page.waitForFunction(()=>window.QA_SPARK_STATUS?.status==='CONFIRMED');
     const cash=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
@@ -165,11 +174,15 @@ try{
     await batch.commit();
     const worker=await open(null,{email:workerEmail,password:workerPassword});
     assert(await worker.page.evaluate(()=>CLICK360_TENANT_QUOTA.planEntitlements(CLICK360_V16_DOMAIN,click360User.access.plan,click360User.manualLimitOverrides).limits.productsActive===2000));
+    // Keep these denials inside the authenticated worker's REAL PWA session.
+    // Read-only transactions use authoritative RPC reads, not temporary Watch
+    // targets, and cannot grant access or mutate the tested documents. The
+    // separate watch diagnostic retains the failing forbidden-target sequence.
     assert(await worker.page.evaluate(async owner=>{
-      try{await click360Db.doc(`businesses/${owner}/metadata/storage`).get({source:'server'});return false;}catch(e){return e.code==='permission-denied';}
+      try{await click360Db.runTransaction(tx=>tx.get(click360Db.doc(`businesses/${owner}/metadata/storage`)));return false;}catch(e){return e.code==='permission-denied';}
     },uid),'Worker must not read owner-wide authority');
     assert(await worker.page.evaluate(async({owner,other})=>{
-      try{await click360Db.doc(`businesses/${owner}/businessUnits/${other}/storage/v2/products/isolated-product`).get({source:'server'});return false;}
+      try{await click360Db.runTransaction(tx=>tx.get(click360Db.doc(`businesses/${owner}/businessUnits/${other}/storage/v2/products/isolated-product`)));return false;}
       catch(e){return e.code==='permission-denied';}
     },{owner:uid,other:otherBusiness}),'Worker must not read an unassigned business');
     await worker.page.evaluate(()=>{window.addEventListener('click360-spark-operation-status',e=>window.QA_WORKER_STATUS=e.detail);location.hash='#sell';});
@@ -181,12 +194,22 @@ try{
     const workerContext=await worker.page.evaluate(()=>click360TenantContext);
     const workerSnapshot=await worker.page.evaluate(ctx=>CLICK360_V16_STORAGE.getSnapshot(ctx),workerContext);
     assert(workerSnapshot?.snapshot?.sales.some(s=>s.operationId===workerSale.operationId));
+    const watchRequests=[];
+    worker.page.on('requestfinished',request=>{
+      if(request.url().includes('Firestore/Listen/'))watchRequests.push({event:'finished',timing:request.timing().responseEnd});
+    });
+    worker.page.on('requestfailed',request=>{
+      if(request.url().includes('Firestore/Listen/'))watchRequests.push({event:'failed',error:request.failure()?.errorText});
+    });
     await worker.page.evaluate(({owner,actor})=>{
       window.QA_MEMBER_EVENTS=[];
       window.QA_MEMBER_STOP=click360Db.doc(`businesses/${owner}/businessUnits/${owner}/members/${actor}`)
         .onSnapshot({includeMetadataChanges:true},snap=>QA_MEMBER_EVENTS.push({status:snap.data()?.status,cache:snap.metadata.fromCache}),
           error=>QA_MEMBER_EVENTS.push({error:error.code}));
     },{owner:uid,actor:workerUid});
+    // The observer must be subscribed to a server-confirmed active record
+    // before the fixture changes it. Registration alone is not a watch barrier.
+    await worker.page.waitForFunction(()=>window.QA_MEMBER_EVENTS?.some(e=>e.status==='active'&&e.cache===false));
     await admin.doc(`businesses/${uid}/businessUnits/${uid}/members/${workerUid}`).update({status:'revoked'});
     try{await worker.page.waitForFunction(()=>!window.click360User&&!window.click360SparkOperationalSession);}
     catch(error){
@@ -195,7 +218,7 @@ try{
         contextPresent:!!window.click360TenantContext,access:window.click360SparkAccessGate?.(),
         phase:window.click360SparkBootstrapState?.phase,memberEvents:window.QA_MEMBER_EVENTS
       }));
-      console.error(JSON.stringify({stage:'REVOCATION_FAILED',engine:name,diagnostic}));
+      console.error(JSON.stringify({stage:'REVOCATION_FAILED',engine:name,diagnostic,watchRequests}));
       await writeFile(`${directory}/${name}-revocation-failure.json`,JSON.stringify(diagnostic,null,2),{flag:'wx',mode:0o600});throw error;
     }
     assert.deepEqual(await worker.page.evaluate(ctx=>CLICK360_V16_STORAGE.getSnapshot(ctx),workerContext),workerSnapshot,'Revocation must preserve the durable worker snapshot');
@@ -209,16 +232,130 @@ try{
     await page.waitForFunction(id=>click360GetActiveBusinessId()===id&&click360SparkBootstrapState?.phase==='READY',uid);
     assert.equal(await page.evaluate(id=>click360GetTenantState().sales.filter(s=>s.businessId===id).length,uid),4);
     assert.equal(await page.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id).stock,data.products[0].id),4);
+    const resetStatus=async()=>{
+      await page.waitForFunction(()=>!click360SparkOperationalSession.isBusy()&&!click360SparkCoordinator.isBusy());
+      await page.evaluate(()=>{window.QA_SPARK_STATUS=null;});
+    };
+    const confirmed=async()=>{
+      try{await page.waitForFunction(()=>window.QA_SPARK_STATUS?.status==='CONFIRMED');}
+      catch(error){
+        const diagnostic=await page.evaluate(async()=>({status:window.QA_SPARK_STATUS,
+          phase:window.click360SparkBootstrapState?.phase,health:await click360SparkOperationalSession?.health(),
+          toasts:document.querySelector('#toast')?.textContent}));
+        console.error(JSON.stringify({stage:'COMMERCIAL_CONFIRMATION_FAILED',engine:name,diagnostic}));
+        await writeFile(`${directory}/${name}-commercial-failure.json`,JSON.stringify(diagnostic,null,2),{flag:'wx',mode:0o600});throw error;
+      }
+    };
+    const closeSession=async()=>{
+      await page.evaluate(()=>{location.hash='#cash';});
+      const session=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
+      await page.locator('#closeDayBtn').click();await page.locator('#efectivoFisico').fill('0');
+      await resetStatus();await page.locator('#closeDaySubmitBtn').click();await confirmed();
+      const closed=await record('cashSessions',session.id),report=await record('dailyReports',closed.reportId);
+      assert.equal(closed.status,'closed');assert.equal(report.cashSessionId,session.id);
+      await page.locator('#modalRoot [data-close]').first().click();return {closed,report};
+    };
+    const originalClose=await closeSession();
+    assert.equal(originalClose.report.total,120);assert.equal(originalClose.report.saleCount,4);
+    page.removeAllListeners('dialog');
+    page.on('dialog',d=>d.accept(d.type()==='prompt'?'Continuar jornada sintética':undefined));
+    await resetStatus();await page.locator('#reopenCashBtn').click();await confirmed();
+    const successor=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
+    assert.notEqual(successor.id,cash.id);assert.equal(successor.date,cash.date);
+    assert.deepEqual(await record('cashSessions',cash.id),originalClose.closed);
+    const successorClose=await closeSession();
+    assert.equal(successorClose.report.total,0);assert.equal(successorClose.report.saleCount,0);
+    assert.equal((await record('products',data.products[0].id)).stock,4,'Close/reopen cannot repeat stock deductions');
+    await page.locator('#workingDateInput').fill('2026-09-03');await page.locator('#workingDateInput').dispatchEvent('change');
+    await page.locator('#apertureAmountInput').fill('0');await resetStatus();await page.locator('#startDayBtnCash').click();await confirmed();
+    const historical=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
+    assert.equal(historical.date,'2026-09-03');assert.notEqual(historical.id,cash.id);
+    await page.evaluate(()=>{location.hash='#sell';});
+    for(const method of ['Transferencia','Apartado','Pendiente']){
+      await page.locator('#manualCode').fill('STAGE-SPARK');await page.locator('#addCode').click();await page.locator('#payMethod').selectOption(method);
+      if(method!=='Transferencia'){
+        await page.locator('#customer').fill('Cliente sintético');await page.locator('#customerPhone').fill('0000000000');
+        await page.locator('#customerCedula').fill('SYNTHETIC-ONLY');
+      }
+      if(method==='Apartado'){
+        await page.locator('#layawayDueDate').fill('2026-12-31');await page.locator('#layawayTermsAccepted').check();
+        await page.locator('#layawayInitialMethod').selectOption('Transferencia');await page.locator('#cashReceived').fill('2');
+      }
+      await resetStatus();await page.locator('#chargeBtn').click();await confirmed();
+      const sale=await page.evaluate(()=>click360GetTenantState().sales.at(-1));
+      const remote=await record('sales',sale.operationId),receipt=await record('movements',sale.operationId);
+      assert.equal(remote.date,'2026-09-03');assert.equal(remote.cashSessionId,historical.id);
+      assert.equal(receipt.cashSessionId,historical.id);assert.equal(remote.total,30);
+      assert.equal(receipt.amount,method==='Transferencia'?30:method==='Apartado'?2:0);
+      await page.locator('#doneSaleBtn').click();
+    }
+    assert.equal((await record('products',data.products[0].id)).stock,1);
+    await page.evaluate(()=>{location.hash='#debtors';});
+    for(const [method,amount]of [['Apartado',3],['Pendiente',4]]){
+      const receivable=await page.evaluate(method=>click360GetTenantState().sales.find(s=>s.method===method),method);
+      await page.locator(`button[onclick*="payLayaway('${receivable.id}')"]`).click();
+      await page.locator('#layawayPaymentAmount').fill(String(amount));await page.locator('#layawayPaymentMethod').selectOption('Transferencia');
+      await resetStatus();await page.locator('#confirmLayawayPayment').click();await confirmed();
+      const remote=await record('sales',receivable.storageRecordId);
+      assert.equal(remote.balance,receivable.balance-amount);
+      const local=await page.evaluate(id=>click360GetTenantState().sales.find(s=>s.id===id),receivable.id);
+      const receipt=await record('movements',local.payments.at(-1).operationId);
+      assert.equal(receipt.amount,amount);assert.equal(receipt.cashSessionId,historical.id);
+      if(method==='Apartado')assert.equal((await record('layaways',receivable.layawayId)).balance,remote.balance);
+    }
+    assert.equal((await record('products',data.products[0].id)).stock,1,'Payments must not consume stock again');
+    assert.equal((await record('cashSessions',historical.id)).saleCount,3,'Payments must not recount sales');
+    const historicalClose=await closeSession();assert.equal(historicalClose.report.total,90);assert.equal(historicalClose.report.saleCount,3);
+    assert.equal((await record('dailyReports',originalClose.closed.reportId)).total,120);
+    await page.evaluate(()=>{location.hash='#crm';});await page.locator('#newCustomerBtn').click();
+    await page.locator('#customerName').fill('Cliente staging integral');await page.locator('#customerPhoneCrm').fill('000');
+    await resetStatus();await page.locator('#customerForm button[type="submit"]').click();await confirmed();
+    const customer=await page.evaluate(()=>click360GetTenantState().settings.customers.find(c=>c.name==='Cliente staging integral'));
+    await page.locator(`[data-customer-edit="${customer.id}"]`).click();await page.locator('#customerNotes').fill('Edición sintética');
+    await resetStatus();await page.locator('#customerForm button[type="submit"]').click();await confirmed();
+    assert.equal((await record('customers',customer.id)).notes,'Edición sintética');
+    await page.evaluate(()=>{location.hash='#inventory';});await page.locator('#newProduct').click();
+    await page.locator('#pCode').fill('STAGE-NEW');await page.locator('#pName').fill('Nuevo sintético');
+    await page.locator('#pQty').fill('10');await page.locator('#pCost').fill('2');await page.locator('#pPrice').fill('12');await page.locator('#pCardPrice').fill('12');
+    await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
+    const created=await page.evaluate(()=>click360GetTenantState().products.find(p=>p.code==='STAGE-NEW'));
+    assert.equal((await record('products',created.id)).stock,10);
+    await page.locator('#productSearch').fill('STAGE-NEW');await page.locator(`[data-edit="${created.id}"]`).click();
+    await page.locator('#pName').fill('Edición y stock atómicos');await page.locator('#pQty').fill('11');
+    await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
+    const edited=await record('products',created.id);assert.equal(edited.stock,11);assert.equal(edited.name,'Edición y stock atómicos');
+    assert.equal((await record('movements',edited.lastOperationId)).quantityDelta,1);
+    const finalHealth=await page.evaluate(()=>click360SparkOperationalSession.health());
+    assert.equal(finalHealth.pendingCount+finalHealth.unknownCount+finalHealth.projectionPendingCount,0);
+    await page.close();({page}=await open(context));
+    for(const current of [page,(await open()).page]){
+      const observed=await current.evaluate(({productId,createdId,customerId,businessId})=>{
+        const s=click360GetTenantState();return {
+          stock:s.products.find(p=>p.id===productId)?.stock,createdStock:s.products.find(p=>p.id===createdId)?.stock,
+          notes:s.settings.customers.find(c=>c.id===customerId)?.notes,
+          sales:s.sales.filter(s=>s.businessId===businessId).length,
+          saleIds:new Set(s.sales.filter(s=>s.businessId===businessId).map(s=>s.operationId)).size,
+          reports:s.dailyReports.filter(r=>r.businessId===businessId).length
+        };
+      },{productId:data.products[0].id,createdId:created.id,customerId:customer.id,businessId:uid});
+      assert.deepEqual(observed,{stock:1,createdStock:11,notes:'Edición sintética',sales:7,saleIds:7,reports:3});
+      if(current!==page)await current.context().close();
+    }
+    await page.evaluate(()=>{location.hash='#cash';});
+    assert.equal(await page.locator('#workingDateInput').inputValue(),'2026-09-03');
     assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),legacyBefore,'LEGACY_STATE_MUST_REMAIN_UNCHANGED');
-    results.push({engine:name,bootstrap:true,opening:true,sale:true,stock:4,ledgerOnce:true,coldRestart:true,indexedDBPreserved:true,
+    results.push({engine:name,bootstrap:true,opening:true,sale:true,stock:1,ledgerOnce:true,coldRestart:true,indexedDBPreserved:true,
       twoOfflineSalesRecovered:true,pendingCount:0,unknownCount:0,printQuantityOne:true,secondDevice:true,legacyUnchanged:true,
       workerBootstrap:true,workerSale:true,workerFounderFloor:true,workerOwnerProofDenied:true,workerRevocationPreservesIndexedDB:true,
       twoBusinessSwitch:true,workerForeignBusinessDenied:true,otherBusinessStockUnchanged:true,
+      exactCashClose:true,successorSession:true,historicalSales:true,layawayDeposit:true,receivablePayments:true,
+      paymentsDoNotRepeatStockOrSales:true,customerCreateEdit:true,productCreateCompoundInventoryEdit:true,
+      fullJourneyRestart:true,finalSecondDevice:true,historicalWorkingDatePreserved:true,
       seededSourceHash:plan.sourceHash,fixtureWrites:seedRows.length,migrationCertified:false});
-    console.log(JSON.stringify({stage:'OPERATIONAL_SMOKE_PASS',engine:name}));
+    console.log(JSON.stringify({stage:'RETAIL_JOURNEY_PASS',engine:name}));
     await context.close();await browser.close();browser=null;
   }
-  const evidence={status:'PASS',scope:'REAL_STAGING_OPERATIONAL_SMOKE_ONLY',buildSha:manifest.buildSha,projectId:PROJECT,url:URL,rulesSha256:digest(deployed.content),assets,results,productionWrites:0,commercialCutover:false};
+  const evidence={status:'PASS',scope:'REAL_STAGING_RETAIL_JOURNEY_ONLY',buildSha:manifest.buildSha,projectId:PROJECT,url:URL,rulesSha256:digest(deployed.content),assets,results,productionWrites:0,commercialCutover:false};
   await writeFile(`${directory}/results.json`,JSON.stringify(evidence,null,2),{flag:'wx',mode:0o600});
   console.log(JSON.stringify(evidence));
 }finally{await browser?.close();await admin.terminate();}
