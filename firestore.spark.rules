@@ -992,7 +992,13 @@ service cloud.firestore {
         || (signedIn() && request.auth.uid == uid && (activeBusinessUnitMember(ownerUid, businessId)
           || (get(sparkControlPath(ownerUid)).data.storageMode == "modular"
             && businessId in get(sparkControlPath(ownerUid)).data.businessIds
-            && sparkActiveMember(ownerUid, businessId))));
+            && (sparkActiveMember(ownerUid, businessId)
+              // A former worker may GET only their own scoped revocation.
+              // Otherwise a document listener loses access to its very
+              // revocation update. No business data/write permission follows.
+              || (request.method == "get" && resource.data.uid == uid
+                && validBusinessUnitIdentity(resource.data, ownerUid, businessId)
+                && resource.data.status == "revoked")))));
       // Seat gate: activation (create, or reactivation via update) must
       // consume exactly one seat in the same write via seatConsumedForSelf,
       // which independently re-checks capacity from the entitlement doc.

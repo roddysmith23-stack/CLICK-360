@@ -45,14 +45,22 @@ try{
     Object.assign(template.universalDocument.objects.find(o=>o.type==='name'),{xMm:2,yMm:25});
     template.universalDocument.objects.find(o=>o.type==='price').xMm=2;
     Object.assign(data.products[0],{code:'STAGE-SPARK',price:30,cardPrice:30,stock:8,qty:8});
+    const otherBusiness='other-'+uid;
+    data.businesses.push({id:otherBusiness,name:'Second synthetic business',status:'activo',type:'ropa',settings:{}});
+    data.products.push({id:'isolated-product',businessId:otherBusiness,code:'ISOLATED',name:'Isolated inventory',stock:7,qty:7,price:5,cardPrice:5,cost:1});
     const identity={ownerUid:uid,businessId:uid},envelope=stateDocument(uid,1,data);
     const plan=await CLICK360_SPARK_MIGRATION.plan({ownerUid:uid,snapshot:data,identity:envelope.payload.identity,remoteRevision:1});
     // Fixture initialization only. All business operations below use the PWA
     // client SDK and deployed Rules, never this administrative connection.
     const seedRows=[{path:`accountAccess/${uid}`,content:{...accountAccess(uid),source:'qa_spark_staging',manualLimitOverrides:{businesses:1,workers:1,productsActive:600}}},
       {path:`businesses/${uid}/state/main`,content:envelope},...plan.records,
-      {path:`businesses/${uid}/metadata/storage`,content:{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:plan.sourceHash,reconstructedHash:plan.sourceHash,businessIds:[uid]}},
+      {path:`businesses/${uid}/metadata/storage`,content:{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:plan.sourceHash,reconstructedHash:plan.sourceHash,businessIds:[uid,otherBusiness]}},
       {path:`businesses/${uid}/businessUnits/${uid}/storage/v2/metadata/runtime`,content:await CLICK360_SPARK_RECORD_CODEC.pack({id:'runtime',ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,storageSchemaVersion:2,module:'metadata',recordVersion:1,summaryVersion:1,openCashSessionId:''},{identity,moduleName:'metadata',recordId:'runtime'})}];
+    const otherIdentity={ownerUid:uid,businessId:otherBusiness};
+    seedRows.push({path:`businesses/${uid}/businessUnits/${otherBusiness}/storage/v2/metadata/runtime`,
+      content:await CLICK360_SPARK_RECORD_CODEC.pack({id:'runtime',...otherIdentity,tenantKey:`owner:${uid}:business:${otherBusiness}`,
+        storageSchemaVersion:2,module:'metadata',recordVersion:1,summaryVersion:1,openCashSessionId:''},
+        {identity:otherIdentity,moduleName:'metadata',recordId:'runtime'})});
     for(let offset=0;offset<seedRows.length;offset+=25){const batch=admin.batch();for(const row of seedRows.slice(offset,offset+25))batch.create(admin.doc(row.path),row.content);await batch.commit();}
     const legacyBefore=(await admin.doc(`businesses/${uid}/state/main`).get()).data();
     browser=await engine.launch();
@@ -160,6 +168,10 @@ try{
     assert(await worker.page.evaluate(async owner=>{
       try{await click360Db.doc(`businesses/${owner}/metadata/storage`).get({source:'server'});return false;}catch(e){return e.code==='permission-denied';}
     },uid),'Worker must not read owner-wide authority');
+    assert(await worker.page.evaluate(async({owner,other})=>{
+      try{await click360Db.doc(`businesses/${owner}/businessUnits/${other}/storage/v2/products/isolated-product`).get({source:'server'});return false;}
+      catch(e){return e.code==='permission-denied';}
+    },{owner:uid,other:otherBusiness}),'Worker must not read an unassigned business');
     await worker.page.evaluate(()=>{window.addEventListener('click360-spark-operation-status',e=>window.QA_WORKER_STATUS=e.detail);location.hash='#sell';});
     await worker.page.locator('#manualCode').fill('STAGE-SPARK');await worker.page.locator('#addCode').click();await worker.page.locator('#payMethod').selectOption('Transferencia');
     await worker.page.locator('#chargeBtn').click();await worker.page.waitForFunction(()=>window.QA_WORKER_STATUS?.status==='CONFIRMED');
@@ -169,14 +181,39 @@ try{
     const workerContext=await worker.page.evaluate(()=>click360TenantContext);
     const workerSnapshot=await worker.page.evaluate(ctx=>CLICK360_V16_STORAGE.getSnapshot(ctx),workerContext);
     assert(workerSnapshot?.snapshot?.sales.some(s=>s.operationId===workerSale.operationId));
+    await worker.page.evaluate(({owner,actor})=>{
+      window.QA_MEMBER_EVENTS=[];
+      window.QA_MEMBER_STOP=click360Db.doc(`businesses/${owner}/businessUnits/${owner}/members/${actor}`)
+        .onSnapshot({includeMetadataChanges:true},snap=>QA_MEMBER_EVENTS.push({status:snap.data()?.status,cache:snap.metadata.fromCache}),
+          error=>QA_MEMBER_EVENTS.push({error:error.code}));
+    },{owner:uid,actor:workerUid});
     await admin.doc(`businesses/${uid}/businessUnits/${uid}/members/${workerUid}`).update({status:'revoked'});
-    await worker.page.waitForFunction(()=>!window.click360User&&!window.click360SparkOperationalSession);
+    try{await worker.page.waitForFunction(()=>!window.click360User&&!window.click360SparkOperationalSession);}
+    catch(error){
+      const diagnostic=await worker.page.evaluate(()=>({
+        userPresent:!!window.click360User,sessionPresent:!!window.click360SparkOperationalSession,
+        contextPresent:!!window.click360TenantContext,access:window.click360SparkAccessGate?.(),
+        phase:window.click360SparkBootstrapState?.phase,memberEvents:window.QA_MEMBER_EVENTS
+      }));
+      console.error(JSON.stringify({stage:'REVOCATION_FAILED',engine:name,diagnostic}));
+      await writeFile(`${directory}/${name}-revocation-failure.json`,JSON.stringify(diagnostic,null,2),{flag:'wx',mode:0o600});throw error;
+    }
     assert.deepEqual(await worker.page.evaluate(ctx=>CLICK360_V16_STORAGE.getSnapshot(ctx),workerContext),workerSnapshot,'Revocation must preserve the durable worker snapshot');
     await worker.context.close();
+    await page.locator('#businessPickerTop').click();await page.locator(`[data-business-switch="${otherBusiness}"]`).click();
+    await page.waitForFunction(id=>click360GetActiveBusinessId()===id&&click360SparkBootstrapState?.phase==='READY',otherBusiness);
+    assert(await page.evaluate(id=>click360SparkOperationalSession.identity.businessId===id
+      &&click360GetTenantState().products.some(p=>p.id==='isolated-product'&&p.businessId===id&&p.stock===7)
+      &&!click360GetTenantState().sales.some(s=>s.businessId===id),otherBusiness));
+    await page.locator('#businessPickerTop').click();await page.locator(`[data-business-switch="${uid}"]`).click();
+    await page.waitForFunction(id=>click360GetActiveBusinessId()===id&&click360SparkBootstrapState?.phase==='READY',uid);
+    assert.equal(await page.evaluate(id=>click360GetTenantState().sales.filter(s=>s.businessId===id).length,uid),4);
+    assert.equal(await page.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id).stock,data.products[0].id),4);
     assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),legacyBefore,'LEGACY_STATE_MUST_REMAIN_UNCHANGED');
     results.push({engine:name,bootstrap:true,opening:true,sale:true,stock:4,ledgerOnce:true,coldRestart:true,indexedDBPreserved:true,
       twoOfflineSalesRecovered:true,pendingCount:0,unknownCount:0,printQuantityOne:true,secondDevice:true,legacyUnchanged:true,
       workerBootstrap:true,workerSale:true,workerFounderFloor:true,workerOwnerProofDenied:true,workerRevocationPreservesIndexedDB:true,
+      twoBusinessSwitch:true,workerForeignBusinessDenied:true,otherBusinessStockUnchanged:true,
       seededSourceHash:plan.sourceHash,fixtureWrites:seedRows.length,migrationCertified:false});
     console.log(JSON.stringify({stage:'OPERATIONAL_SMOKE_PASS',engine:name}));
     await context.close();await browser.close();browser=null;

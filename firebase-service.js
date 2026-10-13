@@ -4158,7 +4158,7 @@
               if (SPARK_WORKER_CONTEXT===context) {
                 if (SPARK_MEMBER_UNSUBSCRIBE) SPARK_MEMBER_UNSUBSCRIBE();
                 SPARK_MEMBER_UNSUBSCRIBE=db.doc(`businesses/${context.ownerUid}/businessUnits/${context.businessId}/members/${user.uid}`)
-                  .onSnapshot(snapshot=>{
+                  .onSnapshot({includeMetadataChanges:true},snapshot=>{
                     if (!isCurrentAuthEpoch(user,expectedEpoch) || ACTIVE_CONTEXT!==context || snapshot.metadata.fromCache) return;
                     const member=snapshot.data();
                     if (!snapshot.exists || member.uid!==user.uid || member.ownerUid!==context.ownerUid

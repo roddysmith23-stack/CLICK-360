@@ -649,6 +649,12 @@ try{
   assert.equal((await getDocFromServer(doc(client,`${base}/auditEvents/audit-uncommitted`))).exists(),false);
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),{status:'inactive'}));
   await assertFails(workerRepo.lookupOperation('worker-sale','sale',workerPrepared.payloadSha256));
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),{status:'revoked'}));
+  assert.equal((await getDocFromServer(doc(worker,`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`))).data().status,'revoked',
+    'A worker must be able to receive the authoritative revocation of their own scoped membership');
+  await assertFails(getDocFromServer(doc(worker,`${base}/products/p1`)));
+  await assertFails(workerRepo.lookupOperation('worker-sale','sale',workerPrepared.payloadSha256));
+  await assertFails(getDocFromServer(doc(worker,`businesses/${ownerUid}/businessUnits/${businessId}/members/not-this-worker`)));
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),{status:'active'}));
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/featureFlags/workers`),{enabled:false}));
   await assertFails(workerRepo.lookupOperation('worker-sale','sale',workerPrepared.payloadSha256));

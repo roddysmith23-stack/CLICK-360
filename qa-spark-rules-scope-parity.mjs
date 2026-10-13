@@ -45,5 +45,6 @@ if(process.argv[1]?.endsWith('qa-spark-rules-scope-parity.mjs')){
   const parent=source.indexOf('match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2 {');
   assert(parent>0&&source.indexOf('function sparkLedgerProof(')>parent,'Operational helpers must stay localized');
   assert(source.indexOf('function sparkActiveMember(')<parent,'Membership path must retain its shared validator');
-  console.log(JSON.stringify({status:'PASS',scopeOnly:true,baseline:expected.baseline,...actual}));
+  console.log(JSON.stringify({status:'PASS',scopeOnly:!expected.authorizationChange,
+    authorizationChange:expected.authorizationChange||null,baseline:expected.baseline,...actual}));
 }

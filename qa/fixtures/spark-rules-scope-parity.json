@@ -1,8 +1,10 @@
 {
   "baseline": "5ac546a9c4a85c4fe7e0ef2faec338ea19e38fff",
+  "authorizationChange": "GET own scoped revoked membership only; business reads and all writes remain denied",
+  "originalPermissionsHash": "347596035d8c026af71db1cdcc4a0ab19038bf49832208244dadfff1f0b68fb5",
   "fingerprints": {
     "functionsHash": "911bc932dbae7f6fe625fa7524072a499008b9cb44476995f354080463b3316a",
-    "permissionsHash": "347596035d8c026af71db1cdcc4a0ab19038bf49832208244dadfff1f0b68fb5",
+    "permissionsHash": "79645714a818330d9e35b7129fb146d980d47623f6df4eb8d429c7fc747b8d18",
     "functions": 132,
     "permissions": 172
   }
