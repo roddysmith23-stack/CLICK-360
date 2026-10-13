@@ -10,6 +10,7 @@ if(process.env.FIRESTORE_EMULATOR_HOST!=='127.0.0.1:48944')throw Error('EXACT_SP
 const projectId='demo-click360-spark-modular',ownerUid='spark-import-owner',businessId='import-business';
 const env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:48944,rules:await readFile('firestore.spark.rules','utf8')}});
 const client=env.authenticatedContext(ownerUid).firestore();
+let beforePageRead=null;
 const wrap=snap=>({exists:snap.exists(),data:()=>snap.data()});
 // SDK-shape compatibility only: all reads, transactions and Rules are executed
 // by the real authenticated Web client, never an Admin transport.
@@ -17,7 +18,7 @@ const db={app:{options:{projectId}},doc:path=>doc(client,path),
   collection:path=>({orderBy:field=>{
     const constraints=[orderBy(field)];
     const page={limit:n=>{constraints.push(limit(n));return page;},startAfter:id=>{constraints.push(startAfter(id));return page;},
-      get:async options=>{assert.equal(options.source,'server');return getDocsFromServer(query(collection(client,path),...constraints));}};
+      get:async options=>{assert.equal(options.source,'server');if(beforePageRead)await beforePageRead();return getDocsFromServer(query(collection(client,path),...constraints));}};
     return page;}}),
   runTransaction:callback=>runTransaction(client,tx=>callback({get:async ref=>wrap(await tx.get(ref)),set:(ref,data)=>tx.set(ref,data),update:(ref,data)=>tx.update(ref,data)}))};
 const firebase={firestore:{FieldValue:{serverTimestamp},FieldPath:{documentId}}};
@@ -62,6 +63,13 @@ try{
   assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/products/p-0`))).data().data.stock,1);
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),savedControl));
   const retry=await importer.prepareShadow();assert.deepEqual(retry.equality,result.equality);
+  // A revision alone is not a hash precondition. Simulate authorized external
+  // maintenance during the server reread, after the initial revision CAS.
+  const drift=structuredClone(rootState);drift.payload.data.products[1].stock=3;drift.payload.data.products[1].qty=3;
+  beforePageRead=async()=>{beforePageRead=null;
+    await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),`businesses/${ownerUid}/state/main`),drift));};
+  try{await assert.rejects(importer.prepareShadow(),/SOURCE_CHANGED_STOP/);}
+  finally{beforePageRead=null;await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),`businesses/${ownerUid}/state/main`),rootState));}
   await assert.rejects(globalThis.CLICK360_SPARK_IMPORTER.create({...input,deviceId:'different-device'}).prepareShadow(),/ALREADY_CLAIMED/);
   await assert.rejects(globalThis.CLICK360_SPARK_IMPORTER.create({...input,readGuard:async()=>({ownerUid,deviceRevision:'device-43',unknownOperations:0,mutationLockHeld:false})}).prepareShadow(),/DEVICE_GUARD_CHANGED_STOP/);
   // An extra record in a source-empty module must not escape verification.
@@ -78,5 +86,5 @@ try{
   local.products[0].stock=originalStock;local.products[0].qty=originalStock;
   assert.throws(()=>globalThis.CLICK360_SPARK_IMPORTER.create({...input,projectId:'click-360'}),/NONPRODUCTION_ONLY/);
   console.log(JSON.stringify({status:'PASS',clientRules:true,sourceHash:result.equality.sourceHash,reconstructedHash:result.equality.reconstructedHash,
-    records:result.manifest.recordCount,interruptedResume:true,idempotent:true,pendingLocalSalePreserved:true,legacyUnchanged:true,cutover:false,productionWrites:0}));
+    records:result.manifest.recordCount,interruptedResume:true,idempotent:true,pendingLocalSalePreserved:true,sameRevisionRemoteDriftStops:true,legacyUnchanged:true,cutover:false,productionWrites:0}));
 }finally{await env.cleanup();}

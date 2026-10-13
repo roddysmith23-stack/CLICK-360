@@ -23,6 +23,7 @@
         ||await api.hash(pinned.snapshot)!==manifest.sourceHash)throw Error('SPARK_RECOVERY_PIN_NOT_VERIFIED');
       const current=await source();
       if(current.sourceHash!==manifest.sourceHash||current.remoteRevision!==manifest.remoteRevision
+        ||current.remoteHash!==manifest.remoteHash
         ||(current.deviceRevision||'')!==manifest.deviceRevision)throw Error('SPARK_IMPORT_SOURCE_CHANGED_STOP');
     }
     async function assertGuard(manifest){
@@ -36,7 +37,7 @@
       await assertPinned(manifest);
       await db.runTransaction(async tx=>{
         context();const snap=await tx.get(controlRef);const c=snap.data();
-        if(!snap.exists||c.sourceHash!==manifest.sourceHash||c.deviceRevision!==manifest.deviceRevision
+        if(!snap.exists||c.sourceHash!==manifest.sourceHash||c.remoteHash!==manifest.remoteHash||c.deviceRevision!==manifest.deviceRevision
           ||c.remoteRevision!==manifest.remoteRevision||c.buildSha!==buildSha||c.sourceDeviceId!==deviceId)throw Error('SPARK_IMPORT_CONTROL_CONFLICT');
         if(c.phase===phase)return;
         tx.update(controlRef,{phase,recordVersion:c.recordVersion+1,updatedAt:stamp(),
@@ -108,7 +109,8 @@
     }
     async function prepareShadow(){
       const selected=await source();
-      const manifest=await api.plan({ownerUid,snapshot:selected.snapshot,identity:selected.identity,remoteRevision:selected.remoteRevision,deviceRevision:selected.deviceRevision||''});
+      const manifest={...await api.plan({ownerUid,snapshot:selected.snapshot,identity:selected.identity,remoteRevision:selected.remoteRevision,deviceRevision:selected.deviceRevision||''}),
+        remoteHash:selected.remoteHash};
       await assertGuard(manifest);
       await recovery.pin({sourceHash:manifest.sourceHash,snapshot:selected.snapshot,identity:selected.identity,deviceRevision:manifest.deviceRevision,
         remoteRevision:selected.remoteRevision,pendingOperations:selected.pendingOperations,buildSha});

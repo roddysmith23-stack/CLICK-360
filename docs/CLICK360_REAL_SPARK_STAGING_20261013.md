@@ -30,6 +30,28 @@ Staging configuration: `firebase.spark-staging.json`, pinned to staging Hosting 
 Pre-change Hosting is cloned to `pre-spark-20261013`:
 https://click360-staging-7620168025--pre-spark-20261013-3wv8ures.web.app/
 
-Prior staging Rules release: `projects/click360-staging-7620168025/rulesets/f93ec879-f6e8-4a79-8186-e0ded9b387a1`, SHA256 `38b504d5d0806071c6d29b1787d8261aa2dc8026ecdba891352158b8147a448b`. Its source and metadata are retained privately under `output/private/spark-staging-before-20261013/`. Rollback Hosting command is `firebase hosting:clone click360-staging-7620168025:pre-spark-20261013 click360-staging-7620168025:live --project click360-staging-7620168025 --config firebase.spark-staging.json`; Rules rollback must restore that exact saved ruleset, not alter commercial documents. No rollback to older commercial snapshots is permitted.
+Prior staging Rules release: `projects/click360-staging-7620168025/rulesets/f93ec879-f6e8-4a79-8186-e0ded9b387a1`, SHA256 `38b504d5d0806071c6d29b1787d8261aa2dc8026ecdba891352158b8147a448b`. Its source and metadata are retained privately under `output/private/spark-staging-before-20261013/`. The pre-cutover Hosting recovery command is `firebase hosting:clone click360-staging-7620168025:pre-spark-20261013 click360-staging-7620168025:live --project click360-staging-7620168025 --config firebase.spark-staging.json`. Do NOT execute that old release/Rules pair while modular writers or modular commercial operations exist: restoring old Rules could remove the fence. After modular activation, retain certified fence enforcement, freeze writers, export modules/journal and reconcile operation IDs before a compatible forward recovery. The preserved original Rules are evidence, not an unconditional post-cutover rollback. Never restore older commercial snapshots.
+
+## Expanded real staging result
+
+Served candidate `b7eb3a0a00056cb2bc38282a7c266bf9e0c14ae9` passed both Chromium and WebKit with the deployed Rules hash above. The unchanged 30-second bootstrap assertion now passes after two actual offline sales and closure of the document. The original browser storage partition is reused: no IndexedDB deletion, fresh empty context substitute, retries or re-created sales.
+
+Verified per engine:
+
+- Owner automatic Auth/bootstrap, $0 opening and transfer sale.
+- Exactly one printed label for quantity one, although stock is seven.
+- Two distinct durable offline commands; server stock remains seven while offline.
+- Document close/reopen, full replay, fresh ledger/movement readback, stock five, cash saleCount three, pending/UNKNOWN/projection counts all zero.
+- Independent device reads stock five from Firestore.
+- Scoped proof published by the owner's Web SDK under real Rules, not Admin.
+- Worker authenticates, inherits Founder product floor 2000 despite override 600, cannot read the private owner-wide proof, commits one sale with original actor, stock four and cash saleCount four.
+- Server membership revocation removes the worker writer without changing its durable IndexedDB snapshot.
+- Legacy state/main is byte-semantically unchanged throughout.
+
+Sanitized test log: `output/spark-real-staging-b7eb3a0-20261013.log`; private fixture credentials/results are under `output/private/spark-real-staging-*/`. Each engine initializes 53 fixture documents plus bounded scoped authorization records. Large scale remains emulator-only. This certificate covers **operational smoke + physical-browser-storage recovery**, not physical iPhone acceptance, complete automatic legacy migration, all business adapters or production readiness.
 
 Automatic owner-wide migration/cutover and remaining matrix adapters are still prerequisites. Physical iPhone local source/outbox is unobserved. No SHARY cloud recovery or production-ready status is inferred from synthetic staging results.
+
+## Strict remote source precondition
+
+A separate regression changes the synthetic legacy server's stock during shadow re-reading without changing its revision. The old importer incorrectly accepted this when the durable local snapshot was pending, because only the selected local source hash, revision and device revision were rechecked. The test fails before the fix (`Missing expected rejection`). The manifest now pins the independent remote SHA256 too, and both source revalidation and control transitions compare it strictly. The same test passes afterward with `SOURCE_CHANGED_STOP`; the preserved local source/pin is untouched. Authenticated Web SDK emulation, resumed import, idempotency and semantic equality remain PASS, with source/reconstructed SHA256 `32daa2f1cd7fa6dc7eb75612344b53b5acc129bee8611d9b6f4d4d21818eea9d` for that synthetic fixture. No production write or real cutover occurs.
