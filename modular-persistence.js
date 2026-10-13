@@ -808,7 +808,7 @@
         return {source:'server',operationId,identity:{...expected},records};
       });
     }
-    async function readCurrentCashSession(){
+    async function readCurrentCashSession({onProgress=()=>{}}={}){
       return transport.run(async tx=>{
         const runtime=await tx.get('metadata','runtime');
         if(!runtime||runtime.summaryVersion!==1||typeof runtime.openCashSessionId!=='string')throw Error('CASH_RUNTIME_NOT_VERIFIED');
@@ -817,7 +817,7 @@
         if(!session||session.status!=='open'||session.id!==id)throw Error('CASH_RUNTIME_SESSION_CONFLICT');
         date(session.date);summary(session);
         return {source:'server',identity:{...expected},session};
-      });
+      },{onProgress});
     }
     return Object.freeze({identity:expected,actorUid,supportedKinds:kinds,prepareOperation,commitOperation,lookupOperation,ensureDerivedAudit,readOperationProjection,readCurrentCashSession,
       readPage:(moduleName,options)=>transport.readPage(moduleName,options),

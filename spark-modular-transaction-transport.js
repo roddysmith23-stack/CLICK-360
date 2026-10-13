@@ -22,15 +22,19 @@
       if(!modules.has(moduleName)||typeof recordId!=='string'||!recordId||recordId.includes('/')||['.','..'].includes(recordId))throw Error('SPARK_TRANSACTION_RECORD_SCOPE_INVALID');
       return {identity,moduleName,recordId};
     }
-    async function run(callback){
+    async function run(callback,{onProgress=()=>{}}={}){
       context();if(typeof callback!=='function')throw Error('SPARK_TRANSACTION_CALLBACK_REQUIRED');
-      return db.runTransaction(async tx=>{
+      const progress=detail=>{context();onProgress(detail);};
+      progress({stage:'TRANSACTION_STARTED'});
+      const outcome=await db.runTransaction(async tx=>{
         context();
         if(actorUid===ownerUid){
+          progress({stage:'READING_CONTROL'});
           const snapshot=await tx.get(control);context();const c=snapshot.exists?snapshot.data():null;
           if(c?.ownerUid!==ownerUid||c.schemaVersion!==2||c.storageMode!=='modular'||c.phase!=='MODULAR'
             ||c.semanticEquality!=='PASS'||c.reconstructedHash!==c.sourceHash||!Array.isArray(c.businessIds)
             ||!c.businessIds.includes(businessId))throw Error('SPARK_TRANSACTION_CUTOVER_NOT_VERIFIED');
+          progress({stage:'CONTROL_VERIFIED'});
         }
         // Staff cannot read owner-wide migration metadata for other units.
         // Their scoped reads and immutable-ledger CREATE are authorized by
@@ -42,10 +46,13 @@
           const s=scope(moduleName,recordId),key=`${moduleName}/${recordId}`;
           if(!reads.has(key)){
             if(reads.size>=maxRecords)throw Error('SPARK_TRANSACTION_RECORD_BUDGET');
+            progress({stage:'READING_RECORD',moduleName});
             const ref=db.doc(`${unit}/${key}`),snap=await tx.get(ref);live();
             const raw=snap.exists?snap.data():null;
+            progress({stage:'VERIFYING_RECORD',moduleName});
             const value=raw?await codec.unpack(raw,s):null;live();
             reads.set(key,{ref,raw,value,scope:s});
+            progress({stage:'RECORD_VERIFIED',moduleName});
           }
           return reads.get(key).value?copyProjection(reads.get(key).value):null;
         }
@@ -65,9 +72,11 @@
           const packed=[];
           for(const w of writes.values()){packed.push({ref:w.ref,data:await codec.pack(w.value,{...w.scope,previous:w.raw})});live();}
           for(const w of packed)tx.set(w.ref,w.data);
+          progress({stage:'AWAITING_SERVER_COMMIT',readCount:reads.size,writeCount:packed.length});
           return result;
         }finally{active=false;}
       });
+      progress({stage:'SERVER_TRANSACTION_CONFIRMED'});return outcome;
     }
     async function readPage(moduleName,{limit=50,afterId=null}={}){
       context();

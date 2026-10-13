@@ -164,6 +164,7 @@
       await installBusiness({businessId,configuration});context();
       if(session){session.close();session=null;root.click360SparkOperationalSession=null;}
       session=await root.CLICK360_SPARK_OPERATIONAL_UI.create({projectId,db,ownerUid,businessId,actorUid,deviceId,
+        onReadProgress:detail=>{context();onProgress({phase:'VERIFYING_CURRENT_CASH',transaction:detail});},
         syntheticCertification:true,resolveUser,resolveIdentity:()=>root.CLICK360_MODULAR_PERSISTENCE.identity(ownerUid,resolveBusiness()),
         isOnline:()=>root.navigator.onLine,serverTimestamp:()=>root.firebase.firestore.FieldValue.serverTimestamp(),
         persistCandidate:root.click360PersistSparkCandidate,projectConfirmed:root.click360ProjectSparkOperation});

@@ -149,7 +149,7 @@
       }
       return result;
     }
-    return Object.freeze({identity,commit,verifyCashClose,currentCash:async()=>{assertActive();const value=await repository.readCurrentCashSession();assertActive();return value;},
+    return Object.freeze({identity,commit,verifyCashClose,currentCash:async()=>{assertActive();const value=await repository.readCurrentCashSession({onProgress:options.onReadProgress});assertActive();return value;},
       replay:async()=>{assertActive();return adapter.replay();},
       isBusy:()=>busy,
       health:async()=>{assertActive();return adapter.health();},
