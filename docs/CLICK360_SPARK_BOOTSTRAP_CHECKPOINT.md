@@ -39,3 +39,22 @@ Published date/history commit `b2e533846933cfcf9cf9842a02a8b024bed660da` also ha
 These results are **not** full operational/staging/migration certification. Automatic worker V2 bootstrap, cold offline startup/multiple pending UI operations, remaining typed adapters, other history/report integrations and the automatic owner-wide reconciled importer/cutover handoff are still incomplete. The operational integration matrix lists unsupported paths; they cannot fall through to monolithic writes after activation.
 
 The real iPhone snapshot/outbox is unobserved. No physical acceptance, Shary cloud confirmation, real shadow equality or safe real cutover is claimed. Production activation remains rejected. Next: complete these connected operational paths on this same branch, rerun the affected complete journeys, then certify real Spark staging before requesting owner production/cutover authorization.
+# Worker and causal replay continuation — 2026-10-12
+
+Continues the same PR #96, baseline `316ebe9ada28390841ba34ca44a7cd5795baa9ad`. Production remains `21409a1d2dc710315ab8c3c27e5da566f004cc8e`; zero production deployments, commercial writes or real cutovers.
+
+Implemented:
+
+- Native actual-PWA worker Auth/bootstrap, scoped codec-verified mode proof, authoritative membership, permission routing, server revocation and Founder owner-contract inheritance. Worker does not pull V1 snapshots or read private owner-wide metadata.
+- Actor-scoped journal indices; unscoped complete recovery census retained. Unknown/malformed issuer fails closed. v1–v4 native upgrade preserves immutable payloads, hashes, revisions and state.
+- Journal v5 monotonic transactional enqueue clock and chronological replay indices. Reverse IDs, equal timestamps, clock rollback, restart and bounded first-page ordering pass all three browser engines.
+- Multiple known queued offline candidates; no server projection until financial drain; uncertain rows and dependent revision-bearing edits remain gated. A failed device-candidate persist blocks further candidates.
+- Actual two-offline-sale worker PWA → document close → online restart → complete authoritative replay. Each sale/movement occurs once; stock and exact cash-session counters match server.
+- Rules retain worker writable owner-contract enforcement. Twelve custom line proofs partitioned among mandatory ledger/sale/movement/session/runtime records in the same atomic transaction. Exact and +16 client SDK suites pass; missing runtime and tampering at all twelve manual indices reject without budget exhaustion.
+- Same-business actor change now clears only the in-memory unsubmitted checkout draft and scopes the draft key by auth UID. Native snapshots/journal are preserved. Actual-handler regression fails before the fix and passes after it.
+
+Evidence: `output/spark-worker-ui-20261012.log` (full owner+worker served Chromium/WebKit), `output/spark-worker-offline-focused-20261012.log` (focused diagnostic, NOT full certification), `output/spark-actor-journal-20261012.log`, `output/spark-multi-replay-20261012.log`, `output/spark-worker-rules-20261012.log`, `output/spark-worker-rules-headroom-20261012.log`. Rules SHA256 `95007fec1ba1b002ce9935c1b195c6c2b7e09202714ee58117342d5e80008ef8`. The final draft-isolation change additionally passed actual-handler checkout/refresh and UI boundary regressions. Final clean-HEAD CI is still a separate gate.
+
+Remaining release gates are engineering work, not billing: connect automatic owner-wide migration/source reconciliation and runtime handoff; complete required blocked operational matrix adapters or fail eligibility closed; certify cold offline bootstrap, old-build upgrade, real Spark staging journey and recovery. Do not enable production or assert SHARY cutover readiness based on these component/served-emulator results. The current physical iPhone source is not yet observed or cloud-confirmed.
+
+Next: continue automatic migration integration from the preserved local source, full unscoped owner recovery census and exact remote revision/hash; never infer completeness from the remote historical monolith or first journal page. Production activation remains OFF and requires final owner authorization.

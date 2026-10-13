@@ -10,13 +10,14 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
     await page.route('https://journal.example.test/**', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Synthetic journal only</title>' }));
     await page.goto('https://journal.example.test/');
     await page.addScriptTag({ content: source });
-    for(const oldVersion of [1,2]){
+    for(const oldVersion of [1,2,3,4]){
     const upgrade=await page.evaluate(async oldVersion=>{
       const oldRow={key:'old-owner:old-business:old-op',ownerUid:'old-owner',businessId:'old-business',operationId:'old-op',state:'unknown',revision:9,payload:{total:30},payloadHash:'preserve-exact-hash',createdAt:1};
       await new Promise((resolve,reject)=>{
         const request=indexedDB.open(`synthetic-v${oldVersion}-upgrade`,oldVersion);
         request.onupgradeneeded=()=>{const store=request.result.createObjectStore('operations',{keyPath:'key'});
-          if(oldVersion===2)store.createIndex('tenantState',['ownerUid','businessId','state']);};
+          if(oldVersion>=2)store.createIndex('tenantState',['ownerUid','businessId','state']);
+          if(oldVersion>=3)store.createIndex('tenantProjection',['ownerUid','businessId','projectionState']);};
         request.onsuccess=()=>{const db=request.result;const tx=db.transaction('operations','readwrite');const store=tx.objectStore('operations');store.put(oldRow);
           store.put({...oldRow,key:'old-owner:old-business:confirmed-op',operationId:'confirmed-op',state:'confirmed'});
           tx.oncomplete=()=>{db.close();resolve()};tx.onabort=()=>reject(tx.error);};
@@ -34,6 +35,47 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
     assert.equal(upgrade.confirmed.payloadHash,'preserve-exact-hash');
     assert.equal(upgrade.confirmed.projectionState,'pending');assert.equal(upgrade.projectionCount,1);
     }
+    const actors=await page.evaluate(async()=>{
+      const identity={ownerUid:'shared-owner',businessId:'shared-business'},databaseName='synthetic-actor-isolation';
+      const all=await CLICK360_MODULAR_JOURNAL.open({databaseName});
+      await all.enqueue(identity,'owner-pending',{actorUid:'shared-owner',total:30});
+      await all.enqueue(identity,'worker-pending',{actorUid:'worker-a',total:10});
+      await all.enqueue(identity,'second-worker-pending',{actorUid:'worker-b',total:20});
+      all.close();
+      const worker=await CLICK360_MODULAR_JOURNAL.open({databaseName,actorUid:'worker-a'});
+      const count=await worker.countPending(identity),page=await worker.listPendingPage(identity);
+      let foreignRead=false,foreignClaim=false,forgedIssuer=false;
+      try{await worker.get(identity,'owner-pending');}catch(e){foreignRead=e.message==='OUTBOX_ACTOR_RECONCILIATION_REQUIRED';}
+      try{await worker.claim(identity,'second-worker-pending','device');}catch(e){foreignClaim=e.message==='OUTBOX_ACTOR_RECONCILIATION_REQUIRED';}
+      try{await worker.enqueue(identity,'forged',{actorUid:'worker-b',total:1});}catch(e){forgedIssuer=e.message==='OUTBOX_ACTOR_RECONCILIATION_REQUIRED';}
+      worker.close();
+      const census=await CLICK360_MODULAR_JOURNAL.open({databaseName});
+      const preserved=await census.countPending(identity);
+      await census.enqueue(identity,'issuer-unknown',{actorUid:42,total:99});census.close();
+      const reopened=await CLICK360_MODULAR_JOURNAL.open({databaseName,actorUid:'worker-a'});
+      let unknownStops=false;try{await reopened.countPending(identity);}catch(e){unknownStops=e.message==='OUTBOX_UNATTRIBUTED_RECONCILIATION_REQUIRED';}
+      reopened.close();
+      return {count:count.total,ids:page.rows.map(r=>r.operationId),complete:page.complete,
+        foreignRead,foreignClaim,forgedIssuer,preserved:preserved.total,unknownStops};
+    });
+    assert.deepEqual(actors,{count:1,ids:['worker-pending'],complete:true,foreignRead:true,foreignClaim:true,
+      forgedIssuer:true,preserved:3,unknownStops:true});
+    const causalOrder=await page.evaluate(async()=>{
+      const databaseName='synthetic-causal-order',identity={ownerUid:'fifo-owner',businessId:'fifo-business'};
+      let journal=await CLICK360_MODULAR_JOURNAL.open({databaseName});
+      const realNow=Date.now,expected=[];
+      try{
+        Date.now=()=>100;
+        for(let i=120;i>=0;i--){const id=`op-${String(i).padStart(3,'0')}`;expected.push(id);await journal.enqueue(identity,id,{index:i});}
+        journal.close();journal=await CLICK360_MODULAR_JOURNAL.open({databaseName});
+        Date.now=()=>1;expected.push('clock-rollback');await journal.enqueue(identity,'clock-rollback',{index:-1});
+        const rows=await journal.listPending(identity,100);
+        return {actual:rows.map(r=>r.operationId),expected:expected.slice(0,100),
+          strictlyOrdered:rows.every((r,i)=>i===0||r.createdAt>rows[i-1].createdAt),total:(await journal.countPending(identity)).total};
+      }finally{Date.now=realNow;journal.close();}
+    });
+    assert.deepEqual(causalOrder.actual,causalOrder.expected,'Bounded replay uses enqueue chronology, not lexical operation IDs');
+    assert.equal(causalOrder.strictlyOrdered,true);assert.equal(causalOrder.total,122);
     const first = await page.evaluate(async () => {
       const journal = await CLICK360_MODULAR_JOURNAL.open();
       const a = { ownerUid: 'owner-a', businessId: 'business-a' };

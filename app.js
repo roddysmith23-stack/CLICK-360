@@ -1567,16 +1567,17 @@ function parseMoney(value) {
     else renderLogin('', { ready:true });
   };
   window.click360SetTenantContext = function(context, options = {}) {
+    resetWorkerAccessGate();
     if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
       throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
     }
     if (activeTenantContext?.tenantKey !== context.tenantKey
       || activeTenantContext?.authUid !== context.authUid) {
+      activeSellDraft = { key:'', cart:[] };
       window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
       window.click360SparkOperationalSession?.close();
       window.click360SparkOperationalSession = null;
     }
-    if (activeTenantContext?.tenantKey !== context.tenantKey) activeSellDraft = { key:'', cart:[] };
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
@@ -1694,6 +1695,7 @@ function parseMoney(value) {
     };
   };
   window.click360ClearTenantContext = function() {
+    resetWorkerAccessGate();
     window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
     window.click360SparkBootstrapState=null;
     // Revoke the old writer before clearing its context or hydrating another
@@ -2742,7 +2744,7 @@ function parseMoney(value) {
       return Object.keys(logisticsPermissions).some((key) => logisticsPermissions[key] === true);
     }
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers', debtors: 'layaways' }[section];
-	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:'settings', reminders:'settings', workers:'members', printing:'settings', debtors:'layaways' }[section];
+	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:window.click360SparkOperationalSession?'customers':'settings', reminders:'settings', workers:'members', printing:'settings', debtors:'layaways' }[section];
 	    if (routeModule && Object.keys(permissions).length) {
 	      return permissions[routeModule]?.view === true || permissions[boundaryModule]?.read === true;
 	    }
@@ -3039,7 +3041,10 @@ function parseMoney(value) {
           if(!checkAuth('business')) return;
           if(!can(r)) r='home';
           if (r !== 'legal' && requiresLegalHardGate()) r = 'legalGate';
-          else if (r !== 'legal' && requiresWorkerAccessGate()) r = 'workerAccessGate';
+          else if (r !== 'legal' && requiresWorkerAccessGate()) {
+            if(r!=='workerAccessGate')workerAccessRequestedRoute=r;
+            r = 'workerAccessGate';
+          }
       const activeModal = arguments[1]?.preserveActiveModal === true && r === route
         ? $('#modalRoot .modalOverlay.show') : null;
       if (activeModal && activeModal.dataset.businessId === currentBusiness()?.id
@@ -4112,17 +4117,27 @@ function parseMoney(value) {
 	  let workerAccessGateChecking = false;
 	  let workerAccessGateStatus = null; // 'needs_profile' | 'pending' | 'approved'
 	  let workerAccessGateData = null;
+      let workerAccessGateEpoch = 0;
+      let workerAccessRequestedRoute = 'home';
+      function resetWorkerAccessGate(){
+        workerAccessGateEpoch++;
+        workerAccessGateChecked=false;workerAccessGateChecking=false;
+        workerAccessGateStatus=null;workerAccessGateData=null;workerAccessRequestedRoute='home';
+      }
 	  async function ensureWorkerAccessGateChecked() {
 	    if (workerAccessGateChecked || workerAccessGateChecking) return;
+        const context=activeTenantContext,epoch=workerAccessGateEpoch;
 	    workerAccessGateChecking = true;
 	    try {
 	      const request = await window.click360GetWorkerAccessRequestStatus?.().catch(() => null);
+          if(context!==activeTenantContext||epoch!==workerAccessGateEpoch)return;
 	      workerAccessGateData = request;
 	      workerAccessGateStatus = !request ? 'needs_profile' : (request.status === 'approved' ? 'approved' : 'pending');
 	    } finally {
+          if(context!==activeTenantContext||epoch!==workerAccessGateEpoch)return;
 	      workerAccessGateChecked = true;
 	      workerAccessGateChecking = false;
-	      renderApp(route);
+	      renderApp(workerAccessGateStatus==='approved'?workerAccessRequestedRoute:route);
 	    }
 	  }
 	  function requiresWorkerAccessGate() {
@@ -7540,7 +7555,7 @@ function parseMoney(value) {
 	  function bindSell(){
 	    if(!$('#payMethod')) return;
       $('#payMethod').dataset.businessId = currentBusiness()?.id || '';
-	    const sellDraftKey = `${activeTenantContext?.tenantKey || ''}:${currentBusiness()?.id || ''}`;
+    const sellDraftKey = `${activeTenantContext?.authUid || ''}:${activeTenantContext?.tenantKey || ''}:${currentBusiness()?.id || ''}`;
       if (activeSellDraft.key !== sellDraftKey) activeSellDraft = { key:sellDraftKey, cart:[] };
 	    let cart=activeSellDraft.cart;
 	    const replaceCart = (next) => { cart = next; activeSellDraft = { key:sellDraftKey, cart }; };

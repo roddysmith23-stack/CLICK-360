@@ -114,6 +114,7 @@ assert.equal(JSON.stringify(genericSave.state),JSON.stringify(pendingDevice),'Re
 const clearStart=source.indexOf('  window.click360ClearTenantContext = function()'),clearEnd=source.indexOf('  window.click360IsTenantStateDeferred',clearStart);
 assert(clearStart>0&&clearEnd>clearStart);
 const lifecycle={window:{click360SparkOperationalSession:{close:()=>{lifecycle.closed++;}},CLICK360_RUNTIME_GUARD:{clearContext:()=>{}}},closed:0,
+  workerGateResets:0,resetWorkerAccessGate:()=>{lifecycle.workerGateResets++;},
   stopScanner:()=>{},seed:()=>({}),publishStorageState:()=>{},resolveCriticalActionGate:()=>({clear:()=>{}}),app:null,
   onlineOnlyCommitCheckpoints:new Map(),activeTenantContext:{tenantKey:'owner:alpha',authUid:'worker-a'}};
 vm.createContext(lifecycle);
@@ -122,19 +123,23 @@ vm.runInContext(`let activeSellDraft,onboardingPrompted,state,tenantDataHydrated
   ${source.slice(clearStart,clearEnd)}`,lifecycle);
 lifecycle.window.click360ClearTenantContext();
 assert.equal(lifecycle.closed,1);
+assert.equal(lifecycle.workerGateResets,1,'Logout clears the old actor approval gate');
 assert.equal(lifecycle.window.click360SparkOperationalSession,null,'Logout revokes the old modular writer');
 assert.equal(lifecycle.activeTenantContext,null);
 assert(!source.slice(clearStart,clearEnd).includes('deleteDatabase'),'Session revocation preserves IndexedDB and journal');
-const setStart=source.indexOf('  window.click360SetTenantContext = function('),setCut=source.indexOf('    if (activeTenantContext?.tenantKey !== context.tenantKey) activeSellDraft',setStart);
+const setStart=source.indexOf('  window.click360SetTenantContext = function('),setCut=source.indexOf('    activeTenantContext = Object.freeze',setStart);
 assert(setStart>0&&setCut>setStart);
 vm.runInContext(`${source.slice(setStart,setCut)}return true;};`,lifecycle);
+vm.runInContext('globalThis.getDraft=()=>activeSellDraft;',lifecycle);
 const contextA={authUid:'worker-a',ownerId:'owner',businessId:'alpha',tenantKey:'owner:alpha'};
 for(const context of [contextA,{...contextA,authUid:'worker-b'},{...contextA,tenantKey:'owner:beta',businessId:'beta'}]){
   lifecycle.activeTenantContext=contextA;
   lifecycle.window.click360SparkOperationalSession={close:()=>{lifecycle.closed++;}};
+  vm.runInContext("activeSellDraft={key:'previous-actor',cart:[{id:'draft-from-worker-a'}]};",lifecycle);
   const before=lifecycle.closed;
   lifecycle.window.click360SetTenantContext(context);
   assert.equal(lifecycle.closed-before,context===contextA?0:1,'Revoke only a changed actor/tenant context');
+  assert.equal(lifecycle.getDraft().cart.length,context===contextA?1:0,'A different actor cannot acquire the previous user checkout draft');
 }
 const start=source.indexOf('  async function commitCriticalMutation('),end=source.indexOf('  // Action Guardian:',start);
 assert(start>0&&end>start);
@@ -188,6 +193,27 @@ assert.equal(durable.settings.customers[0].name,'Other business','Projection pre
 // command and not an unrelated outbox entry. This also covers a closed local
 // candidate while the server is still open (lost request/response).
 const runtimeSource=await readFile('spark-operational-ui-runtime.js','utf8');
+// Exercise the actual runtime admission/durability branch. Queued known
+// offline sales may accumulate; uncertainty, stale revisions or a failed
+// device projection must not become permission to append more commands.
+{
+  const commitStart=runtimeSource.indexOf('    async function commit('),commitEnd=runtimeSource.indexOf('    async function verifyCashClose',commitStart);
+  let counts={pendingCount:2,unknownCount:0},projectionCount=0,persistFails=false,enqueues=0;
+  const gate={assertActive:()=>{},structuredClone,identity:{},options:{isOnline:()=>false},
+    journal:{countPending:async()=>counts,countProjectionPending:async()=>projectionCount,enqueue:async()=>{enqueues++;}},
+    repository:{prepareOperation:async(kind,input)=>({operationId:input.operationId,envelope:{kind}})},
+    persistCandidate:async()=>{if(persistFails)throw Error('SPARK_UI_DEVICE_COMMIT_FAILED');},publish:()=>{},
+    adapter:{submit:async()=>({status:'PENDING'})},root:{dispatchEvent:()=>{}},CustomEvent:class{}};
+  vm.createContext(gate);vm.runInContext(`let busy=false,durabilityBlocked=false;${runtimeSource.slice(commitStart,commitEnd)}globalThis.commit=commit;`,gate);
+  const request={reason:'sale_created',command:{kind:'sale',input:{operationId:'offline-third'}},candidate:{stock:1}};
+  assert.equal((await gate.commit(request)).pending,true);assert.equal(enqueues,1);
+  counts={pendingCount:2,unknownCount:1};assert.equal((await gate.commit(request)).notQueued,true);assert.equal(enqueues,1);
+  counts={pendingCount:2,unknownCount:0};
+  assert.equal((await gate.commit({...request,reason:'product_saved',command:{kind:'inventory_adjust',input:{operationId:'stale-adjust'}}})).notQueued,true);
+  assert.equal(enqueues,1);
+  persistFails=true;assert.equal((await gate.commit(request)).reason,'SPARK_UI_DEVICE_COMMIT_FAILED');assert.equal(enqueues,2);
+  persistFails=false;assert.equal((await gate.commit(request)).reason,'spark_ui_device_recovery_required');assert.equal(enqueues,2);
+}
 const verifyStart=runtimeSource.indexOf('    async function verifyCashClose(target)'),verifyEnd=runtimeSource.indexOf('    return Object.freeze',verifyStart);
 assert(verifyStart>0&&verifyEnd>verifyStart);
 const exactSession={id:'session-exact',date:'2026-09-03',summaryVersion:1,closeCycle:1,status:'open'};

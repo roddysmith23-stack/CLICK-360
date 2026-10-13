@@ -145,10 +145,10 @@ function accountAccess(uid) {
   };
 }
 
-async function createEmulatorUser() {
+async function createEmulatorUser(testEmail = email) {
   const response = await fetch(
     `http://127.0.0.1:${authPort}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, returnSecureToken: true }) }
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email:testEmail, password, returnSecureToken: true }) }
   );
   const body = await response.json();
   if (!response.ok || !body.localId) throw new Error(`Auth emulator sign-up failed: ${JSON.stringify(body)}`);
@@ -213,7 +213,7 @@ async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
   return context;
 }
 
-async function openSignedIn(browser, viewport) {
+async function openSignedIn(browser, viewport, testEmail = email) {
   const context = await newAppContext(browser, viewport);
   const page = await context.newPage();
   // Belt-and-suspenders on top of each call's own explicit timeout: this
@@ -292,7 +292,7 @@ async function openSignedIn(browser, viewport) {
   // before clients.claim(). Hosted emulator QA explicitly blocks SW separately.
   if(!hostedUrl)await step('service-worker-controlled',()=>page.waitForFunction(()=>!!navigator.serviceWorker?.controller
     && window.click360ServiceWorkerRelease?.buildSha===window.CLICK360_RELEASE_ASSETS?.['app.js'], null, {timeout:60000}));
-  await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
+  await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail, testPassword: password }));
   await step('hydrated-and-synced', () => page.waitForFunction(hosted => {
     if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason||'SPARK_BOOTSTRAP_BLOCKED');
     return window.click360IsTenantDataHydrated?.() === true

@@ -93,6 +93,15 @@ try{
         {identity:{ownerUid,businessId:secondBusinessId},moduleName:'products',recordId:'isolated'}));
     await setDoc(doc(db,`${base}/metadata/runtime`),await codec.pack({id:'runtime',...identity,module:'metadata',recordVersion:1,summaryVersion:1,openCashSessionId:''},{identity,moduleName:'metadata',recordId:'runtime'}));
   });
+  const scopedControl=await codec.pack({id:'storage',...identity,module:'metadata',recordVersion:1,
+    storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:'a'.repeat(64),reconstructedHash:'a'.repeat(64),
+    accountPlan:'founder_legacy',manualLimitOverrides:{}},{identity,moduleName:'metadata',recordId:'storage'});
+  await setDoc(doc(client,`${base}/metadata/storage`),scopedControl);
+  assert.equal((await getDocFromServer(doc(worker,`${base}/metadata/storage`))).data().data.accountPlan,'founder_legacy');
+  await assertFails(getDocFromServer(doc(worker,control)));
+  await assertFails(setDoc(doc(worker,`${base}/metadata/storage`),scopedControl));
+  const forgedContract={...scopedControl,data:{...scopedControl.data,accountPlan:'enterprise'}};
+  await assertFails(setDoc(doc(client,`${base}/metadata/storage`),forgedContract));
   const open={operationId:'open-1',cashSessionId:'session-03',date:'2026-09-03',openingAmount:0};
   const customerCreate={operationId:'customer-create',customerId:'synthetic-customer',changes:{name:'Synthetic',phone:'',notes:''}};
   await repo.commitOperation('customer_create',customerCreate);
@@ -406,6 +415,13 @@ try{
   }
   assert.equal((await get('cashSessions','multiline-session')).saleCount,14);
   assert.equal((await get('cashSessions','multiline-session')).salesTotal,98);
+  const omittedRuntimeSale={businessId,cashSessionId:'multiline-session',date:'2026-10-06',total:1,received:1,
+    method:'Transferencia',items:[{id:'runtime-required-manual',qty:1,isCustom:true,price:1}]};
+  const noRuntime=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,raw)=>ref.path===`${base}/metadata/runtime`?null:raw),serverTimestamp});
+  await assertFails(noRuntime.commitSale({operationId:'sale-runtime-omitted',sale:omittedRuntimeSale}));
+  for(const moduleName of ['sales','movements','operationLedger'])assert.equal(
+    (await getDocFromServer(doc(client,`${base}/${moduleName}/sale-runtime-omitted`))).exists(),false);
   // Exercise every boundary of the distributed manual-line proof. Keep the
   // aggregate quantity consistent so rejection proves the line invariant,
   // rather than accidentally relying on a mismatching session counter.
@@ -638,13 +654,17 @@ try{
   await assertFails(workerRepo.lookupOperation('worker-sale','sale',workerPrepared.payloadSha256));
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),`accountAccess/${ownerUid}`),{uid:ownerUid,businessId:ownerUid,status:'expired',plan:'pro'}));
   await assertFails(repo.commitOperation('product_edit',{operationId:'expired-owner-edit',productId:'p1',changes:{name:'Must not persist'}}));
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/featureFlags/workers`),{enabled:true}));
+  await assertFails(workerRepo.commitOperation('product_edit',{operationId:'expired-owner-worker-edit',productId:'p1',changes:{name:'Must not persist'}}));
+  assert.equal((await getDocFromServer(doc(worker,`${base}/operationLedger/expired-owner-worker-edit`))).exists(),false,
+    'Active staff cannot bypass the expired business contract; no ledger or stock mutation survives');
   assert.equal((await get('products','p1')).name,'Edited');
   await budgetObservation('final');
   const diagnosticOnly=process.env.SPARK_RULES_DIAGNOSTIC_ONLY==='true';
   const proof={status:diagnosticOnly?'DIAGNOSTIC_ONLY':'PASS',clientRules:true,historicalSale:true,idempotency:true,stockRace:true,exactSession:true,reopen:true,
     successorNewSession:true,successorPrecedingSessionUnchanged:true,successorOldFinancialTotalsImmutable:true,workerSuccessorDenied:true,
     workerSale:true,workerProductDenied:true,ownReceiptOnly:true,ownerMetadataPrivate:true,twoBusinessIsolation:true,
-    membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,immutableLedger:true,
+    membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,expiredOwnerWorkerDenied:true,immutableLedger:true,
     pendingPayment:true,layawayDeposit:true,subsequentReceipts:true,receiptStockUnchanged:true,receiptRace:true,serverPagination:true,secondDevice:true,
     customerDeletePreservesHistory:true,customerResurrectionDenied:true,customerDeletePermissionScoped:true,importedCustomerDelete:true,
     productDeletePreservesHistory:true,productDeleteStockUnchanged:true,productDeletePermissionScoped:true,productResurrectionDenied:true,importedProductDelete:true,

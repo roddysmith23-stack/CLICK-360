@@ -525,9 +525,10 @@ service cloud.firestore {
     }
 
     function sparkWorkerRecordRead(ownerUid, businessId, moduleName, recordId) {
-      return (moduleName in ["products", "sales", "layaways", "cashSessions", "dailyReports", "movements", "metadata", "customers", "config"]
+      return (moduleName in ["products", "sales", "layaways", "cashSessions", "dailyReports", "movements", "metadata", "customers", "config", "labelTemplates", "labelProfiles", "reminders"]
+          && !(moduleName == "metadata" && recordId == "storage")
           && sparkPermission(ownerUid, businessId,
-            moduleName in ["cashSessions", "dailyReports", "metadata"] ? "cashSessions" : (moduleName == "config" ? "settings" : moduleName), "read"))
+            moduleName in ["cashSessions", "dailyReports", "metadata"] ? "cashSessions" : (moduleName in ["config", "labelTemplates", "labelProfiles", "reminders"] ? "settings" : moduleName), "read"))
         || (moduleName in ["operationLedger", "auditEvents"] && sparkActiveMember(ownerUid, businessId)
           && ((request.method == "get" && !exists(request.path)) || resource.data.createdBy == request.auth.uid))
         // A sale-authorized actor must be able to confirm their own atomic
@@ -548,6 +549,19 @@ service cloud.firestore {
         && supportedMemberRole(member.role) && member.permissions is map;
     }
 
+    function sparkScopedEntitlements(ownerUid, data) {
+      // Publish only the owner's existing commercial contract, not private
+      // account fields. Lower Founder overrides still use the shared floor.
+      let account = exists(/databases/$(database)/documents/accountAccess/$(ownerUid))
+        ? get(/databases/$(database)/documents/accountAccess/$(ownerUid)).data
+        : get(/databases/$(database)/documents/approvedUsers/$(ownerUid)).data;
+      let overrides = account.get("manualLimitOverrides", {});
+      return data.accountPlan == account.get("plan", "founder_legacy")
+        && data.accountPlan in ["base", "pro", "business", "enterprise", "founder", "founder_legacy"]
+        && data.manualLimitOverrides is map
+        && data.manualLimitOverrides == (overrides is map ? overrides : {});
+    }
+
     function sparkWorkerPermission(ownerUid, businessId, moduleName, action) {
       let member = businessUnitMemberData(ownerUid, businessId);
       return signedIn() && request.auth.uid != ownerUid && workersFeatureFlagEnabled(ownerUid)
@@ -555,7 +569,11 @@ service cloud.firestore {
         && validBusinessUnitIdentity(member, ownerUid, businessId)
         && member.uid == request.auth.uid && member.status == "active"
         && supportedMemberRole(member.role) && member.permissions is map
-        && member.permissions.get(moduleName, {}).get(action, false) == true;
+        && member.permissions.get(moduleName, {}).get(action, false) == true
+        // Owner authorization already checks the account. Keep its fast path
+        // unchanged; staff writes must inherit the same writable contract.
+        && (action == "read" || (exists(/databases/$(database)/documents/accountAccess/$(ownerUid))
+          ? sparkAccountWritable(ownerUid) : sparkApprovedOwnerReadable(ownerUid)));
     }
 
     function sparkPermission(ownerUid, businessId, moduleName, action) {
@@ -791,7 +809,8 @@ service cloud.firestore {
         && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(operationId))
         && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId))
         && [sale.operationId, movement.operationId] == [operationId, operationId]
-        && sparkCustomSalePart(sale, 0);
+        && (sale.customOrder.size() == 0 ? true : (sparkSaleLine(sale, 0)
+          && (sale.customOrder.size() == 1 ? true : sparkSaleLine(sale, 1))));
     }
 
     function sparkMoneyEqual(actual, expected) {
@@ -912,22 +931,30 @@ service cloud.firestore {
     }
 
     function sparkSaleLines(d) {
-      return d.items.size() <= 12 && d.itemOrder is list && d.itemOrder.size() == d.items.size()
-        && d.itemOrder.toSet().size() == d.items.size()
-        && d.customOrder is list && d.customOrder.toSet().size() == d.customOrder.size()
+      // Bind each pure set once. These are identical identity/uniqueness
+      // proofs, not weaker predicates or an additional database read.
+      let n = d.items.size();
+      let order = d.itemOrder.toSet();
+      let custom = d.customOrder.toSet();
+      let stockIndices = d.stockItemIndices.keys().toSet();
+      let customIndices = d.customItemIndices.keys().toSet();
+      return n <= 12 && d.itemOrder is list && d.itemOrder.size() == n
+        && order.size() == n
+        && d.customOrder is list && custom.size() == d.customOrder.size()
         && d.stockItemIndices is map && d.customItemIndices is map
-        && d.stockItemIndices.keys().toSet() == d.stockDeltas.keys().toSet()
-        && d.customItemIndices.keys().toSet() == d.customOrder.toSet()
-        && !d.stockItemIndices.keys().toSet().hasAny(d.customOrder)
-        && d.itemOrder.toSet() == d.stockItemIndices.keys().toSet().union(d.customItemIndices.keys().toSet())
-        && d.items.size() == d.stockItemIndices.size() + d.customItemIndices.size();
+        && stockIndices == d.stockDeltas.keys().toSet()
+        && customIndices == custom
+        && !stockIndices.hasAny(d.customOrder)
+        && order == stockIndices.union(customIndices)
+        && n == d.stockItemIndices.size() + d.customItemIndices.size();
     }
 
     function sparkCustomSalePart(d, start) {
       let n = d.customOrder.size();
       // Mandatory core records share these proofs in the SAME new-ledger
       // atomic commit. Balance by validator work, not just number of rows:
-      // 0..2 ledger; 3..5 sale; 6..9 movement; 10..11 exact session update.
+      // 0..1 ledger; 2..4 sale; 5..8 movement; 9..10 session; 11 runtime.
+      // Leave ledger headroom for the worker's authoritative account check.
       return n <= start ? true : sparkSaleLine(d, start)
         && (n <= start + 1 ? true : sparkSaleLine(d, start + 1)
           && (n <= start + 2 ? true : sparkSaleLine(d, start + 2)));
@@ -955,8 +982,9 @@ service cloud.firestore {
         && counters.itemCount == previous.itemCount + sale.itemCount
         && sparkMoneyEqual(counters.taxTotal, previous.taxTotal + sale.iva)
         && sparkMoneyEqual(counters.salesTotal, previous.salesTotal + sale.total)
-        && (sale.customOrder.size() <= 10 ? true : (sparkSaleLine(sale, 10)
-          && (sale.customOrder.size() <= 11 ? true : sparkSaleLine(sale, 11))));
+        && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.lastOperationId == op
+        && (sale.customOrder.size() <= 9 ? true : (sparkSaleLine(sale, 9)
+          && (sale.customOrder.size() <= 10 ? true : sparkSaleLine(sale, 10))));
     }
 
     function sparkSaleMutation(ownerUid, businessId, recordId) {
@@ -973,7 +1001,7 @@ service cloud.firestore {
         && (d.method == "Apartado" ? sparkSaleLayaway(ownerUid, businessId, recordId, d)
           : !d.keys().hasAny(["layawayId"]))
         && d.items is list && d.items.size() > 0 && d.stockDeltas is map
-        && sparkSaleLines(d) && sparkCustomSalePart(d, 3)
+        && sparkSaleLines(d) && sparkCustomSalePart(d, 2)
         && d.itemCount is int && d.iva is number && d.iva >= 0
         && d.stockOrder is list && d.stockOrder.toSet() == d.stockDeltas.keys().toSet()
         && d.stockOrder.size() == d.stockDeltas.size()
@@ -1082,7 +1110,7 @@ service cloud.firestore {
         && (sale.received == 0 ? movement.paymentMethod == "Pendiente"
           : (sale.method == "Apartado" ? movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"] : movement.paymentMethod == sale.method))
         && sale.itemCount == sparkSaleQuantity(sale)
-        && sparkCustomSalePart4(sale, 6);
+        && sparkCustomSalePart4(sale, 5);
     }
 
     function sparkReportMutation(ownerUid, businessId, recordId, creating) {
@@ -1131,7 +1159,15 @@ service cloud.firestore {
         && ((ledger.kind in ["cash_open", "cash_reopen"] && resource.data.data.openCashSessionId == ""
               && d.openCashSessionId == ledger.result.cashSessionId && session.data.status == "open")
           || (ledger.kind == "cash_close" && resource.data.data.openCashSessionId == ledger.result.cashSessionId
-              && d.openCashSessionId == "" && session.data.status == "closed"));
+              && d.openCashSessionId == "" && session.data.status == "closed")
+          || (ledger.kind == "sale" && d == resource.data.data && session.data.status == "open"
+              && d.openCashSessionId == ledger.result.cashSessionId
+              && sparkSaleRuntimeLine(ownerUid, businessId, request.resource.data.lastOperationId)));
+    }
+
+    function sparkSaleRuntimeLine(ownerUid, businessId, op) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
+      return sale.customOrder.size() <= 11 ? true : sparkSaleLine(sale, 11);
     }
 
     function sparkCustomerMutation(ownerUid, businessId, recordId, creating) {
@@ -1648,7 +1684,10 @@ service cloud.firestore {
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/members/{uid} {
       allow read: if businessUnitOwner(ownerUid, businessId)
-        || (request.auth.uid == uid && activeBusinessUnitMember(ownerUid, businessId));
+        || (signedIn() && request.auth.uid == uid && (activeBusinessUnitMember(ownerUid, businessId)
+          || (get(sparkControlPath(ownerUid)).data.storageMode == "modular"
+            && businessId in get(sparkControlPath(ownerUid)).data.businessIds
+            && sparkActiveMember(ownerUid, businessId))));
       // Seat gate: activation (create, or reactivation via update) must
       // consume exactly one seat in the same write via seatConsumedForSelf,
       // which independently re-checks capacity from the entitlement doc.
@@ -2366,6 +2405,31 @@ service cloud.firestore {
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/metadata/{recordId} {
+      // A worker sees only the assigned business's cutover proof, not the
+      // owner's global business list. The proof is linked to root authority.
+      allow read: if recordId == "storage" && signedIn()
+        && (businessUnitOwner(ownerUid, businessId) || activeBusinessUnitMember(ownerUid, businessId)
+          || (sparkActiveMember(ownerUid, businessId)
+            && get(sparkControlPath(ownerUid)).data.storageMode == "modular"
+            && businessId in get(sparkControlPath(ownerUid)).data.businessIds
+            && sparkScopedEntitlements(ownerUid, resource.data.data)));
+      allow create, update: if recordId == "storage" && sparkOwner(ownerUid)
+        && request.resource.data.ownerUid == ownerUid && request.resource.data.businessId == businessId
+        && request.resource.data.schemaVersion == 2 && request.resource.data.module == "metadata"
+        && request.resource.data.id == "storage"
+        && request.resource.data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "data", "dataHash", "recordVersion"])
+        && request.resource.data.recordVersion == 1
+        && request.resource.data.data.keys().hasOnly(["id", "businessId", "storageMode", "phase", "semanticEquality", "sourceHash", "reconstructedHash", "accountPlan", "manualLimitOverrides"])
+        && sparkScopedEntitlements(ownerUid, request.resource.data.data)
+        && request.resource.data.data.id == "storage" && request.resource.data.data.businessId == businessId
+        && request.resource.data.data.storageMode == "modular" && request.resource.data.data.phase == "MODULAR"
+        && request.resource.data.data.semanticEquality == "PASS"
+        && get(sparkControlPath(ownerUid)).data.storageMode == "modular"
+        && get(sparkControlPath(ownerUid)).data.phase == "MODULAR"
+        && businessId in get(sparkControlPath(ownerUid)).data.businessIds
+        && request.resource.data.data.sourceHash == get(sparkControlPath(ownerUid)).data.sourceHash
+        && request.resource.data.data.reconstructedHash == get(sparkControlPath(ownerUid)).data.reconstructedHash
+        && request.resource.data.data.sourceHash == request.resource.data.data.reconstructedHash;
       allow update: if request.resource.data.get("module", "") == "metadata" && signedIn()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
         && sparkBoundOperation(ownerUid, businessId)

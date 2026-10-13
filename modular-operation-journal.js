@@ -26,21 +26,40 @@
   }
   async function open(options = {}) {
     if (!root.indexedDB) throw Error('DURABLE_JOURNAL_UNAVAILABLE');
+    const actorUid=options.actorUid??null;
+    if(actorUid!==null&&(typeof actorUid!=='string'||!actorUid||actorUid.length>128))throw Error('INVALID_JOURNAL_ACTOR');
+    const actorCheck=row=>{if(actorUid&&row&&row.payload?.actorUid!==actorUid)throw Error('OUTBOX_ACTOR_RECONCILIATION_REQUIRED');};
+    const indexName=type=>actorUid?`tenantActor${type}`:`tenant${type}`;
+    const range=(identity,state)=>root.IDBKeyRange.only(actorUid
+      ?[identity.ownerUid,identity.businessId,actorUid,state]:[identity.ownerUid,identity.businessId,state]);
+    const replayRange=(identity,state)=>{
+      const prefix=actorUid?[identity.ownerUid,identity.businessId,actorUid,state]:[identity.ownerUid,identity.businessId,state];
+      return root.IDBKeyRange.bound([...prefix,0],[...prefix,Number.MAX_SAFE_INTEGER]);
+    };
     const db = await new Promise((resolve, reject) => {
-      const request = root.indexedDB.open(options.databaseName || 'click360-modular-outbox-v1', 3);
+      const request = root.indexedDB.open(options.databaseName || 'click360-modular-outbox-v1', 5);
       request.onupgradeneeded = () => {
         const store=request.result.objectStoreNames.contains('operations')
           ?request.transaction.objectStore('operations'):request.result.createObjectStore('operations', { keyPath:'key' });
         if(!store.indexNames.contains('tenantState'))store.createIndex('tenantState',['ownerUid','businessId','state']);
         if(!store.indexNames.contains('tenantProjection'))store.createIndex('tenantProjection',['ownerUid','businessId','projectionState']);
+        if(!store.indexNames.contains('tenantActorState'))store.createIndex('tenantActorState',['ownerUid','businessId','actorUid','state']);
+        if(!store.indexNames.contains('tenantActorProjection'))store.createIndex('tenantActorProjection',['ownerUid','businessId','actorUid','projectionState']);
+        if(!store.indexNames.contains('tenantReplay'))store.createIndex('tenantReplay',['ownerUid','businessId','state','createdAt']);
+        if(!store.indexNames.contains('tenantActorReplay'))store.createIndex('tenantActorReplay',['ownerUid','businessId','actorUid','state','createdAt']);
+        const clocks=request.result.objectStoreNames.contains('enqueueClocks')
+          ?request.transaction.objectStore('enqueueClocks'):request.result.createObjectStore('enqueueClocks');
+        const maxima=new Map();
         // Old confirmation proves the server commit, not that its local view
         // finished durably. Preserve every request and recover conservatively.
         const cursor=store.openCursor();
         cursor.onsuccess=()=>{
           const row=cursor.result;
-          if(!row)return;
-          if(row.value.state==='confirmed'&&!row.value.projectionState)
-            row.update({...row.value,projectionState:'pending'});
+          if(!row){for(const [scope,value]of maxima)clocks.put(value,scope);return;}
+          const scope=`${row.value.ownerUid}:${row.value.businessId}`;
+          maxima.set(scope,Math.max(maxima.get(scope)||0,row.value.createdAt||0));
+          row.update({...row.value,actorUid:typeof row.value.payload?.actorUid==='string'?row.value.payload.actorUid:'',
+            ...(row.value.state==='confirmed'&&!row.value.projectionState?{projectionState:'pending'}:{})});
           row.continue();
         };
       };
@@ -55,7 +74,7 @@
       let result, failure;
       const request = store.get(id);
       request.onsuccess = () => {
-        try { result = mutate(request.result); if (result) store.put(result); }
+        try { actorCheck(request.result);result = mutate(request.result); if (result) store.put(result); }
         catch (error) { failure = error; tx.abort(); }
       };
       tx.oncomplete = () => resolve(result);
@@ -67,18 +86,34 @@
       const request = tx.objectStore('operations').get(id);
       let row;
       request.onsuccess = () => { row = request.result; };
-      tx.oncomplete = () => resolve(row);
+      tx.oncomplete = () => {try{actorCheck(row);resolve(row);}catch(error){reject(error);}};
       tx.onabort = () => reject(tx.error || Error('JOURNAL_READ_ABORTED'));
     });
+    const guardUnattributed=identity=>{
+      if(!actorUid)return Promise.resolve();
+      // Preserve old issuer-less rows and fail closed. They remain fully
+      // visible to the unscoped recovery census; never manufacture zero UNKNOWN.
+      return new Promise((resolve,reject)=>{
+        const tx=db.transaction('operations','readonly'),store=tx.objectStore('operations');let count=0;
+        for(const state of ['queued','unknown','inflight']){
+          const request=store.index('tenantActorState').count(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,'',state]));
+          request.onsuccess=()=>{count+=request.result;};
+        }
+        const projection=store.index('tenantActorProjection').count(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,'','pending']));
+        projection.onsuccess=()=>{count+=projection.result;};
+        tx.oncomplete=()=>count?reject(Error('OUTBOX_UNATTRIBUTED_RECONCILIATION_REQUIRED')):resolve();
+        tx.onabort=()=>reject(tx.error||Error('JOURNAL_READ_ABORTED'));
+      });
+    };
     return Object.freeze({
       close: () => db.close(),
       get: (identity, operationId) => read(key(identity, operationId)),
       async countProjectionPending(identity) {
         key(identity,'identity-check');
+        await guardUnattributed(identity);
         return new Promise((resolve,reject)=>{
           const tx=db.transaction('operations','readonly');
-          const request=tx.objectStore('operations').index('tenantProjection')
-            .count(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,'pending']));
+          const request=tx.objectStore('operations').index(indexName('Projection')).count(range(identity,'pending'));
           let count;
           request.onsuccess=()=>{count=request.result;};
           tx.oncomplete=()=>resolve(count);
@@ -88,10 +123,10 @@
       async listProjectionPending(identity,limit=25) {
         key(identity,'identity-check');
         if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
+        await guardUnattributed(identity);
         return new Promise((resolve,reject)=>{
           const tx=db.transaction('operations','readonly');
-          const request=tx.objectStore('operations').index('tenantProjection')
-            .getAll(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,'pending']),limit);
+          const request=tx.objectStore('operations').index(indexName('Projection')).getAll(range(identity,'pending'),limit);
           let rows;
           request.onsuccess=()=>{rows=request.result;};
           tx.oncomplete=()=>resolve(rows);
@@ -108,11 +143,12 @@
       },
       async countPending(identity) {
         key(identity,'identity-check');
+        await guardUnattributed(identity);
         return new Promise((resolve,reject)=>{
           const tx=db.transaction('operations','readonly');
-          const index=tx.objectStore('operations').index('tenantState'),counts={};
+          const index=tx.objectStore('operations').index(indexName('State')),counts={};
           for(const state of ['queued','unknown','inflight']){
-            const request=index.count(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,state]));
+            const request=index.count(range(identity,state));
             request.onsuccess=()=>{counts[state]=request.result;};
           }
           tx.oncomplete=()=>resolve({pendingCount:counts.queued,unknownCount:counts.unknown+counts.inflight,
@@ -123,12 +159,13 @@
       async listPending(identity, limit=25) {
         key(identity,'identity-check');
         if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
+        await guardUnattributed(identity);
         return new Promise((resolve,reject)=>{
           const tx=db.transaction('operations','readonly');
-          const index=tx.objectStore('operations').index('tenantState');
+          const index=tx.objectStore('operations').index(indexName('Replay'));
           const rows=[];
           for(const state of ['queued','unknown','inflight']){
-            const request=index.getAll(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,state]),limit);
+            const request=index.getAll(replayRange(identity,state),limit);
             request.onsuccess=()=>rows.push(...request.result);
           }
           tx.oncomplete=()=>resolve(rows.sort((a,b)=>a.createdAt-b.createdAt||a.key.localeCompare(b.key)).slice(0,limit));
@@ -137,20 +174,22 @@
       },
       async listPendingPage(identity, {limit=100, after=null}={}) {
         key(identity,'identity-check');
+        await guardUnattributed(identity);
         const states=['queued','unknown','inflight'];
         if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('INVALID_REPLAY_LIMIT');
         if(after && (after.ownerUid!==identity.ownerUid || after.businessId!==identity.businessId
+          || (after.actorUid??null)!==actorUid
           || !states.includes(after.state) || typeof after.key!=='string'
           || !after.key.startsWith(`${identity.ownerUid}:${identity.businessId}:`)))throw Error('INVALID_OUTBOX_CURSOR');
         // Keyset pagination over the scoped state index. No offset or full-store
         // scan; the extra row proves whether enumeration is complete.
         return new Promise((resolve,reject)=>{
-          const tx=db.transaction('operations','readonly'),index=tx.objectStore('operations').index('tenantState');
+          const tx=db.transaction('operations','readonly'),index=tx.objectStore('operations').index(indexName('State'));
           const found=[];let stateIndex=after?states.indexOf(after.state):0;
           const scan=()=>{
             if(stateIndex>=states.length)return;
             const state=states[stateIndex];
-            const request=index.openCursor(root.IDBKeyRange.only([identity.ownerUid,identity.businessId,state]));
+            const request=index.openCursor(range(identity,state));
             request.onsuccess=()=>{
               const cursor=request.result;
               if(!cursor){stateIndex++;scan();return;}
@@ -167,7 +206,7 @@
           tx.oncomplete=()=>{
             const rows=found.slice(0,limit),last=rows.at(-1),hasMore=found.length>limit;
             resolve({rows,complete:!hasMore,next:hasMore?{ownerUid:identity.ownerUid,businessId:identity.businessId,
-              state:last.state,key:last.key}:null});
+              state:last.state,key:last.key,...(actorUid?{actorUid}:{})}:null});
           };
           tx.onabort=()=>reject(tx.error||Error('JOURNAL_READ_ABORTED'));
         });
@@ -176,14 +215,32 @@
         const id = key(identity, operationId);
         // Clone before hashing: callers cannot mutate the queued request later.
         const candidate = structuredClone(payload);
+        actorCheck({payload:candidate});
         const payloadHash = await digest(candidate);
-        return change(id, current => {
-          if (current) {
-            if (current.payloadHash !== payloadHash) throw Error('OPERATION_ID_PAYLOAD_CONFLICT');
-            return current;
-          }
-          return { key: id, ownerUid: identity.ownerUid, businessId: identity.businessId, operationId, payload: candidate, payloadHash,
-            schemaVersion: 1, state: 'queued', revision: 1, attempts: 0, createdAt: Date.now() };
+        return new Promise((resolve,reject)=>{
+          const tx=db.transaction(['operations','enqueueClocks'],'readwrite'),store=tx.objectStore('operations'),clocks=tx.objectStore('enqueueClocks');
+          let result,failure;
+          const fail=error=>{failure=error;tx.abort();};
+          store.get(id).onsuccess=e=>{
+            const current=e.target.result;
+            try{actorCheck(current);
+              if(current){if(current.payloadHash!==payloadHash)throw Error('OPERATION_ID_PAYLOAD_CONFLICT');result=current;return;}
+              const scope=`${identity.ownerUid}:${identity.businessId}`;
+              clocks.get(scope).onsuccess=clock=>{
+                // Transactional monotonic ordering survives equal timestamps,
+                // clock rollback, restart and concurrent enqueue. IDs are not
+                // chronology; taking the first ID-sorted page loses causality.
+                const createdAt=Math.max(Date.now(),(clock.target.result||0)+1);
+                result={key:id,ownerUid:identity.ownerUid,businessId:identity.businessId,
+                  actorUid:typeof candidate.actorUid==='string'?candidate.actorUid:'',operationId,payload:candidate,payloadHash,
+                  schemaVersion:1,state:'queued',revision:1,attempts:0,createdAt};
+                clocks.put(createdAt,scope);store.put(result);
+              };
+            }catch(error){fail(error);}
+          };
+          tx.oncomplete=()=>resolve(result);
+          tx.onabort=()=>reject(failure||tx.error||Error('JOURNAL_TRANSACTION_ABORTED'));
+          tx.onerror=()=>{};
         });
       },
       async claim(identity, operationId, deviceId, now = Date.now()) {

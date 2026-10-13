@@ -33,29 +33,36 @@
       });
       context();
     }
-    async function server(ref){
-      context();const snap=await ref.get({source:'server'});context();
+    async function server(ref,stage='server_read'){
+      context();let snap;
+      try{snap=await ref.get({source:'server'});}catch(error){error.sparkStage=stage;throw error;}
+      context();
       if(snap.metadata?.fromCache!==false||snap.metadata?.hasPendingWrites!==false)throw Error('SPARK_BOOTSTRAP_SERVER_REQUIRED');
       return snap;
     }
     async function mode(){
       const path=actorUid===ownerUid?`businesses/${ownerUid}/metadata/storage`
         :`businesses/${ownerUid}/businessUnits/${resolveBusiness()}/storage/v2/metadata/storage`;
-      const snap=await server(db.doc(path));
+      const snap=await server(db.doc(path),'storage_mode');
       if(!snap.exists)return {storageMode:'legacy'};
-      const raw=snap.data(),c=actorUid===ownerUid?raw:raw.data;
+      const raw=snap.data(),c=actorUid===ownerUid?raw:await codec.unpack(raw,
+        {identity:{ownerUid,businessId:resolveBusiness()},moduleName:'metadata',recordId:'storage'});
       if(raw.ownerUid!==ownerUid||raw.schemaVersion!==2||!['legacy','migrating','modular','frozen'].includes(c?.storageMode))
         throw Error('SPARK_BOOTSTRAP_CONTROL_INVALID');
       if(actorUid!==ownerUid&&(raw.businessId!==resolveBusiness()||raw.id!=='storage'))throw Error('SPARK_BOOTSTRAP_CONTROL_INVALID');
-      if(c.storageMode==='modular'&&actorUid===ownerUid&&(c.phase!=='MODULAR'||c.semanticEquality!=='PASS'
-        ||c.sourceHash!==c.reconstructedHash||!Array.isArray(c.businessIds)||!c.businessIds.length))throw Error('SPARK_BOOTSTRAP_CUTOVER_NOT_VERIFIED');
+      if(c.storageMode==='modular'&&(c.phase!=='MODULAR'||c.semanticEquality!=='PASS'
+        ||c.sourceHash!==c.reconstructedHash||(actorUid===ownerUid&&(!Array.isArray(c.businessIds)||!c.businessIds.length))))throw Error('SPARK_BOOTSTRAP_CUTOVER_NOT_VERIFIED');
       return {...c,businessIds:actorUid===ownerUid?c.businessIds:[resolveBusiness()]};
     }
     async function permissions(businessId){
       if(actorUid===ownerUid)return null;
-      const snap=await server(db.doc(`businesses/${ownerUid}/businessUnits/${businessId}/members/${actorUid}`)),p=snap.data();
+      const snap=await server(db.doc(`businesses/${ownerUid}/businessUnits/${businessId}/members/${actorUid}`),'membership'),p=snap.data();
       if(!snap.exists||p.uid!==actorUid||p.ownerUid!==ownerUid||p.businessId!==businessId||p.status!=='active')
         throw Error('SPARK_BOOTSTRAP_MEMBERSHIP_INVALID');
+      if(!p.permissions||typeof p.permissions!=='object'||Array.isArray(p.permissions))throw Error('SPARK_BOOTSTRAP_MEMBERSHIP_INVALID');
+      // UI permission projection comes from the same scoped server membership
+      // enforced by Rules, not stale approvedUsers/cache permissions.
+      root.click360User.permissions=structuredClone(p.permissions);
       return p.permissions;
     }
     function readable(module,p){
@@ -71,14 +78,19 @@
       let q=db.collection(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/${module}`).orderBy('__name__').limit(limit);
       if(actorUid!==ownerUid&&module==='auditEvents')q=q.where('createdBy','==',actorUid);
       if(after)q=q.startAfter(after);
-      const snap=await server(q),records=[];
+      const snap=await server(q,`module_${module}`),records=[];
       for(const document of snap.docs){records.push(await codec.unpack(document.data(),{identity,moduleName:module,recordId:document.id}));context();}
       return {records,next:records.length===limit?snap.docs.at(-1).id:null};
     }
-    async function configs(control){
+    async function configs(control,p){
       const businesses=[];
       for(const businessId of control.businessIds){
-        const s=await server(db.doc(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/config/main`));
+        if(!readable('config',p)){
+          // No settings permission means no config read. The assigned path ID
+          // is sufficient for selection; do not expose private owner settings.
+          businesses.push({id:businessId,name:'Negocio',status:'activo'});continue;
+        }
+        const s=await server(db.doc(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/config/main`),'business_config');
         if(!s.exists)throw Error('SPARK_BOOTSTRAP_BUSINESS_CONFIG_REQUIRED');
         businesses.push(await codec.unpack(s.data(),{identity:{ownerUid,businessId},moduleName:'config',recordId:'main'}));
       }
@@ -139,7 +151,7 @@
       const businessId=preferredBusiness||(control.businessIds.includes(resolveBusiness())?resolveBusiness():control.businessIds[0]);
       if(!control.businessIds.includes(businessId))throw Error('SPARK_BOOTSTRAP_BUSINESS_NOT_VERIFIED');
       if(session&&session.identity.businessId!==businessId){await drain();context();}
-      const p=await permissions(businessId),configuration=await configs(control);context();
+      const p=await permissions(businessId),configuration=await configs(control,p);context();
       await installBusiness({businessId,configuration});context();
       if(session){session.close();session=null;root.click360SparkOperationalSession=null;}
       session=await root.CLICK360_SPARK_OPERATIONAL_UI.create({projectId,db,ownerUid,businessId,actorUid,deviceId,
@@ -175,7 +187,7 @@
       context();if(flight)return flight;
       if(session?.isBusy()){deferred=true;return Promise.resolve({handled:true,deferred:true});}
       const token=++epoch;
-      flight=run(businessId).catch(error=>{if(!closed&&token===epoch)publish('BLOCKED',String(error.code||error.message));throw error;})
+      flight=run(businessId).catch(error=>{if(!closed&&token===epoch)publish('BLOCKED',String(error.code||error.message)+(error.sparkStage?`:${error.sparkStage}`:''));throw error;})
         .finally(()=>{if(token===epoch)flight=null;});
       return flight;
     }

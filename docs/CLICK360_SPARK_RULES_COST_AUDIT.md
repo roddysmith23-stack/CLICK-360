@@ -1,5 +1,23 @@
 # PR #96 — Rules cost audit, continuation 2026-10-10
 
+## Current worker bootstrap continuation — 2026-10-12
+
+Current candidate Rules SHA256: `95007fec1ba1b002ce9935c1b195c6c2b7e09202714ee58117342d5e80008ef8`. Exact-source and RAM-only `+16` suites passed with zero expression/access/internal evaluator errors. Proofs: `artifacts/spark-rules-proof/exact-source.json` and `headroom.json`; logs: `output/spark-worker-rules-20261012.log` and `spark-worker-rules-headroom-20261012.log`. These are working-source emulator results, not production/staging deployment or clean-HEAD CI.
+
+Worker writes now inherit the canonical owner's writable account, not just an active member grant. Reads remain separately scoped. Owner auth/path fast path still has no membership lookup. The worker authorization source set adds the existing owner account (or approved-owner fallback); it does not add a new plan document or a client-controlled entitlement. Scoped commercial proof publication is checked against that same owner contract.
+
+That extra security check exposed an expression-headroom failure in the previous 12-manual-line ledger validator. Removing the account check was rejected as a solution. Pure set computations are now bound once; the same twelve manual-line proofs are split across **five mandatory records in one atomic commit**: ledger 0–1, sale 2–4, payment movement 5–8, exact session 9–10, runtime 11. Runtime is already read by the sale; its cursor is updated in the same financial transaction. The session proof requires that runtime's `lastOperationId`, so omitting the runtime write rejects every commercial record. No financial write or validation was deferred. Only the existing derived audit remains separate.
+
+| Operation | Change from preceding candidate | Authorization / proof budget evidence |
+|---|---|---|
+| SALE | One runtime-after cross-record source and one runtime write, no new historical read | Owner/worker 12-stock, 12-manual and mixed/deposit/pending cases pass exact and +16; all 12 tampered manual positions and omitted runtime reject without budget exhaustion |
+| INVENTORY_ADJUSTMENT | Financial shape unchanged | Worker account check plus existing member/feature sources; exact/+16 positive and adversarial tests pass |
+| CASH_OPEN / CASH_CLOSE | Financial shape unchanged | Exact session and runtime unchanged; exact/+16 owner and scoped worker tests pass |
+| PRODUCT_CREATE / PRODUCT_EDIT | Financial shape unchanged | Resource/request identity, revision and stock checks retained; expired owner worker denied without mutation |
+| Scoped worker mode proof | Bootstrap-only, not a per-sale publication | Owner account/fallback, root control and scoped identity; foreign entitlement / worker publication denied |
+
+Older `A=2` worksheets below are historical and **do not describe the current worker authorization**: worker now references membership, feature flag and account/fallback. Distinct source lists are an over-approximation, not a per-request count: resource data and same-path caching vary by validator. The actual Web SDK emulator access-limit gate and stricter expression probe are mandatory. The +16 PASS establishes tolerance of those sixteen added predicates, not a guessed percentage margin or a billed-read estimate.
+
 Candidate only. Production remains `21409a1d2dc7`. The expanded owner/worker suite passed with zero budget errors, including the QA-only stricter expression probe, followed by exact-source and full legacy compatibility runs. New HEAD CI remains a separate gate. This document is NOT public UI, staging or production certification or a released cart-line limit.
 
 ## Two separate budgets

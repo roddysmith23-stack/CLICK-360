@@ -2,6 +2,21 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta.url),'utf8');
+// Execute the actual worker approval gate, including a late response from the
+// preceding actor. Never inherit an old approval or leave the requested route.
+{
+  const app=readFileSync(new URL('./app.js',import.meta.url),'utf8');
+  const start=app.indexOf('let workerAccessGateChecked = false;'),end=app.indexOf('function requiresWorkerAccessGate()',start);
+  const renders=[];let release;
+  const scope=vm.createContext({activeTenantContext:{authUid:'worker-a'},route:'workerAccessGate',
+    window:{click360GetWorkerAccessRequestStatus:()=>new Promise(resolve=>release=resolve)},renderApp:r=>renders.push(r)});
+  vm.runInContext(app.slice(start,end)+';globalThis.gate={check:ensureWorkerAccessGateChecked,reset:resetWorkerAccessGate,route:r=>workerAccessRequestedRoute=r,status:()=>workerAccessGateStatus};',scope);
+  const old=scope.gate.check();scope.gate.reset();scope.activeTenantContext={authUid:'worker-b'};
+  release({status:'approved'});await old;assert.equal(scope.gate.status(),null);assert.equal(renders.length,0);
+  scope.window.click360GetWorkerAccessRequestStatus=async()=>({status:'approved'});
+  scope.gate.route('inventory');await scope.gate.check();assert.equal(renders.at(-1),'inventory');
+  scope.gate.reset();assert.equal(scope.gate.status(),null,'User changes cannot inherit a preceding approval');
+}
 // A closed day is deliberately "not started" in the domain. The actual cash
 // renderer must check the closed state before offering a new initial opening.
 {

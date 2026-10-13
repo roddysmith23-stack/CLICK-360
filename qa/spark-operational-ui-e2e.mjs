@@ -14,6 +14,7 @@ import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,stopProce
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
 const rules=readFileSync(path.join(root,'firestore.spark.rules'),'utf8');
+if(process.env.CLICK360_SPARK_UI_WORKER_ONLY==='1'&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
 const output=path.join(root,'output/playwright/spark-operational-ui');mkdirSync(output,{recursive:true});
 const config=writeEmulatorConfig(),log=createWriteStream(path.join(output,`emulators-${Date.now()}.log`),{flags:'wx'});
 const emulators=spawn(path.join(root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',projectId,'--config',config],
@@ -26,6 +27,7 @@ try{
     new Promise((_,reject)=>emulators.once('exit',code=>reject(Error(`Emulator exited ${code}`))))]);
   env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:firestorePort,rules}});
   const uid=await createEmulatorUser(),base=`businesses/${uid}/businessUnits/${uid}/storage/v2`,identity={ownerUid:uid,businessId:uid};
+  const workerEmail=`spark-worker-${Date.now()}@example.test`,workerUid=await createEmulatorUser(workerEmail);
   const record=async(moduleName,id)=>{
     let data;await seed(env,async db=>{const snap=await getDocFromServer(doc(db,`${base}/${moduleName}/${id}`));assert(!snap.metadata.fromCache,'Fresh server required');data=snap.data();});
     return data?globalThis.CLICK360_SPARK_RECORD_CODEC.unpack(data,{identity,moduleName,recordId:id}):null;
@@ -39,7 +41,7 @@ try{
     const otherBusiness=`second-${uid}`;
     data.businesses.push({id:otherBusiness,name:'Segundo negocio sintético',status:'activo',type:'ropa',settings:{}});
     data.products.push({id:'other-product',businessId:otherBusiness,code:'OTHER-BUSINESS',name:'Producto aislado',stock:7,qty:7,price:5,cardPrice:5,cost:1});
-    await seed(env,async db=>{await setDoc(doc(db,'accountAccess',uid),accountAccess(uid));await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,1,data));});
+    await seed(env,async db=>{await setDoc(doc(db,'accountAccess',uid),{...accountAccess(uid),manualLimitOverrides:{businesses:1,workers:1,productsActive:600}});await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,1,data));});
     const manifest=await globalThis.CLICK360_SPARK_MIGRATION.plan({ownerUid:uid,snapshot:data,
       identity:stateDocument(uid,1,data).payload.identity,remoteRevision:1});
     await seed(env,async db=>{
@@ -64,6 +66,8 @@ try{
     assert(await page.evaluate(()=>click360GetTenantState().legalAcceptances?.some(a=>a.id==='legal-qa')),
       'Restore existing consent from its actual configuration source path; do not waive the legal gate');
     const legacyBefore=await readCloud(env,uid);
+    let restarted=page;
+    if(process.env.CLICK360_SPARK_UI_WORKER_ONLY!=='1'){
     await page.evaluate(async({projectId,uid})=>{
       window.addEventListener('click360-spark-operation-status',event=>{window.SPARK_UI_STATUS=event.detail;});
       const session=window.click360SparkOperationalSession;
@@ -298,7 +302,7 @@ try{
         stock:state.products.map(p=>[p.id,p.stock]).sort(),deleted:state.deletedProducts.map(p=>p.id).sort()};
     });
     await page.close();
-    const restarted=await device.context.newPage();device.page=restarted;
+    restarted=await device.context.newPage();device.page=restarted;
     await restarted.goto(url,{waitUntil:'domcontentloaded'});
     await restarted.waitForFunction(()=>{
       if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason);
@@ -380,7 +384,177 @@ try{
       appFirestoreTransport:'long_polling',customerCreateAndEdit:true,customerDeletePreservesHistory:true,
       fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
+    }
+    // Publish the business-only mode proof with the OWNER WEB SDK/Rules, not
+    // disabled Rules. A worker must never read the private owner root proof.
+    await restarted.evaluate(async({ownerUid,businessId})=>{
+      const proof=(await click360Db.doc(`businesses/${ownerUid}/metadata/storage`).get({source:'server'})).data();
+      const account=(await click360Db.doc(`accountAccess/${ownerUid}`).get({source:'server'})).data();
+      const flat={id:'storage',ownerUid,businessId,tenantKey:`owner:${ownerUid}:business:${businessId}`,
+        storageSchemaVersion:2,module:'metadata',recordVersion:1,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',
+        sourceHash:proof.sourceHash,reconstructedHash:proof.reconstructedHash,
+        accountPlan:account.plan,manualLimitOverrides:account.manualLimitOverrides||{}};
+      const raw=await CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity:{ownerUid,businessId},moduleName:'metadata',recordId:'storage'});
+      await click360Db.doc(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/storage`).set(raw);
+    },{ownerUid:uid,businessId:uid});
+    if(process.env.CLICK360_SPARK_UI_WORKER_ONLY!=='1'){
+      await restarted.waitForFunction(()=>!click360SparkOperationalSession.isBusy()&&!click360SparkCoordinator.isBusy()
+        &&click360DebugCriticalActionGate().size===0);
+      await restarted.evaluate(()=>{location.hash='#cash';});await restarted.locator('#closeDayBtn').click();
+      await restarted.locator('#efectivoFisico').fill('0');
+      await restarted.evaluate(()=>{window.FINAL_OWNER_CLOSE=null;window.addEventListener('click360-spark-operation-status',e=>window.FINAL_OWNER_CLOSE=e.detail);});
+      await restarted.locator('#closeDaySubmitBtn').click();await restarted.waitForFunction(()=>window.FINAL_OWNER_CLOSE?.status==='CONFIRMED');
+      assert(!(await restarted.evaluate(()=>click360GetTenantState().cashSessions.some(s=>s.status==='open'))),'Owner leaves no orphan open session before the worker journey');
+    }
     await device.context.close();device=null;console.log(`PASS served Spark UI ${label}`);
+    const workerPermissions={products:{read:true,create:true,update:true},sales:{read:true,create:true},
+      cashSessions:{read:true,create:true,close:true},movements:{read:true,create:true},customers:{read:true,create:true,update:true},
+      settings:{read:true},layaways:{read:true,payment:true}};
+    await seed(env,async db=>{
+      await setDoc(doc(db,`businesses/${uid}/featureFlags/workers`),{enabled:true});
+      await setDoc(doc(db,`businesses/${uid}/businessUnits/${uid}/members/${workerUid}`),{
+        uid:workerUid,ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,boundarySchemaVersion:1,
+        status:'active',role:'cashier',permissions:workerPermissions});
+      await setDoc(doc(db,`approvedUsers/${workerUid}`),{uid:workerUid,ownerId:uid,businessUnitId:uid,role:'cashier',
+        approved:true,status:'active',email:workerEmail,name:'Trabajador sintético',permissions:workerPermissions});
+      await setDoc(doc(db,`workerAccessRequests/${uid}_${workerUid}`),{ownerId:uid,uid:workerUid,businessUnitId:uid,status:'approved'});
+    });
+    device=await openSignedIn(browser,{width:390,height:844},workerEmail);
+    let wp=device.page;
+    await wp.evaluate(()=>{
+      window.SPARK_WORKER_STATUS=null;
+      window.addEventListener('click360-spark-operation-status',e=>{window.SPARK_WORKER_STATUS=e.detail;});
+    });
+    assert(await wp.evaluate(({ownerUid,actorUid})=>click360SparkOperationalSession.identity.ownerUid===ownerUid
+      &&click360User.uid===actorUid&&click360GetTenantState().businesses.length===1,{ownerUid:uid,actorUid:workerUid}),
+      'Actual worker login installs only the authorized business and actor');
+    const denial=await wp.evaluate(async({ownerUid,otherBusiness})=>{
+      const denied=async path=>{try{await click360Db.doc(path).get({source:'server'});return false;}catch(e){return e.code==='permission-denied';}};
+      return {root:await denied(`businesses/${ownerUid}/metadata/storage`),
+        foreignBusiness:await denied(`businesses/${ownerUid}/businessUnits/${otherBusiness}/storage/v2/products/other-product`)};
+    },{ownerUid:uid,otherBusiness});
+    assert(denial.root&&denial.foreignBusiness,'Worker cannot read owner-wide proof or another business');
+    assert(await wp.evaluate(()=>click360User.access.plan==='founder_legacy'
+      &&CLICK360_TENANT_QUOTA.planEntitlements(CLICK360_V16_DOMAIN,click360User.access.plan,click360User.manualLimitOverrides).limits.productsActive===2000),
+      'Worker inherits the owner contract; a historical override 600 does not become Basic 150');
+    await wp.locator('#newProduct').click();await wp.locator('#pCode').fill('WORKER-NEW');await wp.locator('#pName').fill('Producto de trabajador');
+    await wp.locator('#pQty').fill('3');await wp.locator('#pCost').fill('1');await wp.locator('#pPrice').fill('5');await wp.locator('#pCardPrice').fill('5');
+    await wp.locator('#productForm button[type="submit"]').click();await wp.waitForFunction(()=>window.SPARK_WORKER_STATUS?.status==='CONFIRMED');
+    const workerProduct=await wp.evaluate(()=>click360GetTenantState().products.find(p=>p.code==='WORKER-NEW'));
+    assert((await record('products',workerProduct.id)).stock===3,'Worker product creates one opening inventory record');
+    await wp.locator('#productSearch').fill('WORKER-NEW');await wp.locator(`[data-edit="${workerProduct.id}"]`).click();
+    await wp.locator('#pQty').fill('4');await wp.evaluate(()=>{window.SPARK_WORKER_STATUS=null;});await wp.locator('#productForm button[type="submit"]').click();
+    await wp.waitForFunction(()=>window.SPARK_WORKER_STATUS?.status==='CONFIRMED');
+    assert((await record('products',workerProduct.id)).stock===4,'Worker adjustment adds exactly one stock unit');
+    await wp.evaluate(()=>{location.hash='#crm';});await wp.locator('#newCustomerBtn').click();
+    await wp.locator('#customerName').fill('Cliente de trabajador');await wp.evaluate(()=>{window.SPARK_WORKER_STATUS=null;});
+    await wp.locator('#customerForm button[type="submit"]').click();await wp.waitForFunction(()=>window.SPARK_WORKER_STATUS?.status==='CONFIRMED');
+    const workerCustomer=await wp.evaluate(()=>click360GetTenantState().settings.customers.find(c=>c.name==='Cliente de trabajador'));
+    assert((await record('customers',workerCustomer.id)).createdBy===workerUid,'Worker customer persists with actor identity');
+    assert(await wp.evaluate(()=>click360SparkMutationGate({kind:'product_delete'}).allowed===false),'Worker UI refuses a missing delete permission');
+    const deniedDelete=await wp.evaluate(async({ownerUid,productId})=>{
+      try{await click360Db.doc(`businesses/${ownerUid}/businessUnits/${ownerUid}/storage/v2/products/${productId}`).delete();return false;}
+      catch(e){return e.code==='permission-denied';}
+    },{ownerUid:uid,productId:workerProduct.id});
+    assert(deniedDelete&&(await record('products',workerProduct.id)).stock===4,'Client Rules reject deletion without altering inventory');
+    await wp.waitForFunction(()=>!click360SparkOperationalSession.isBusy()&&!click360SparkCoordinator.isBusy()
+      &&click360DebugCriticalActionGate().size===0);
+    await wp.evaluate(()=>{location.hash='#cash';});
+    // The owner's journey already closed today's session. Do not reopen it
+    // as a worker or mistake that legitimate restriction for a boot failure.
+    await wp.locator('#workingDateInput').fill('2026-09-05');await wp.locator('#workingDateInput').dispatchEvent('change');
+    await wp.locator('#apertureAmountInput').fill('0');
+    await wp.evaluate(()=>{window.SPARK_WORKER_STATUS=null;});
+    await wp.locator('#startDayBtnCash').click();
+    await wp.waitForFunction(()=>window.SPARK_WORKER_STATUS?.status==='CONFIRMED');
+    const ws=await wp.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
+    assert((await record('cashSessions',ws.id)).createdBy===workerUid,'Worker opens exact session through actual UI and Rules');
+    await wp.evaluate(()=>{location.hash='#sell';});await wp.locator('#manualCode').fill('WORKER-NEW');await wp.locator('#addCode').click();
+    await wp.locator('#payMethod').selectOption('Transferencia');await wp.evaluate(()=>{window.SPARK_WORKER_STATUS=null;});await wp.locator('#chargeBtn').click();
+    await wp.waitForFunction(()=>window.SPARK_WORKER_STATUS?.status==='CONFIRMED');
+    const workerSale=await wp.evaluate(()=>click360GetTenantState().sales.at(-1));
+    assert((await record('sales',workerSale.operationId)).createdBy===workerUid,'Worker sale confirmed by server with original actor');
+    assert((await record('products',workerProduct.id)).stock===3&&(await record('movements',workerSale.operationId)).amount===5,
+      'Worker sale consumes exactly one unit of the active product and one exact receipt');
+    await wp.waitForFunction(()=>!click360SparkOperationalSession.isBusy()&&!click360SparkCoordinator.isBusy()
+      &&click360DebugCriticalActionGate().size===0);
+    // Reload the served application with its original native databases intact.
+    // Auth, mode and member permissions must install the worker writer again,
+    // without adopting an owner journal or replaying the confirmed sale.
+    await wp.reload();
+    await wp.waitForFunction(()=>!!window.click360SparkOperationalSession&&!!window.click360SparkCoordinator
+      &&!click360SparkCoordinator.isBusy());
+    assert(await wp.evaluate(({actorUid,sessionId,operationId,productId})=>click360User.uid===actorUid
+      &&click360GetTenantState().businesses.length===1
+      &&click360GetTenantState().cashSessions.some(s=>s.id===sessionId&&s.status==='open')
+      &&click360GetTenantState().sales.filter(s=>s.operationId===operationId).length===1
+      &&click360GetTenantState().products.find(p=>p.id===productId)?.stock===3,
+      {actorUid:workerUid,sessionId:ws.id,operationId:workerSale.operationId,productId:workerProduct.id}),
+      'Worker native bootstrap restores the exact session, sale and stock after reload');
+    await device.context.setOffline(true);
+    assert(await wp.evaluate(()=>!!click360SparkOperationalSession),'Temporary disconnection does not delete the authenticated worker journal');
+    await device.context.setOffline(false);
+    await wp.waitForFunction(()=>!!window.click360SparkCoordinator&&!click360SparkCoordinator.isBusy());
+    const workerHealth=await wp.evaluate(()=>click360SparkOperationalSession.health());
+    assert(workerHealth.pendingCount+workerHealth.unknownCount+workerHealth.projectionPendingCount===0,
+      'Worker reload and reconnect leave no unconfirmed journal or projection');
+    assert((await record('products',workerProduct.id)).stock===3
+      &&(await record('sales',workerSale.operationId)).createdBy===workerUid,
+      'Worker reconnect preserves one confirmed operation and its exact stock');
+    await device.context.setOffline(true);
+    await wp.waitForFunction(()=>navigator.onLine===false);
+    await wp.evaluate(()=>{
+      location.hash='#sell';
+      window.addEventListener('click360-spark-operation-status',e=>{window.SPARK_WORKER_STATUS=e.detail;});
+    });
+    const offlineIds=[];
+    for(let i=0;i<2;i++){
+      await wp.locator('#manualCode').fill('WORKER-NEW');await wp.locator('#addCode').click();
+      await wp.locator('#payMethod').selectOption('Transferencia');await wp.evaluate(()=>{window.SPARK_WORKER_STATUS=null;});
+      await wp.locator('#chargeBtn').click();await wp.locator('#doneSaleBtn').waitFor({state:'visible'});
+      offlineIds.push(await wp.evaluate(()=>click360GetTenantState().sales.at(-1).operationId));
+      assert(await wp.evaluate(()=>window.SPARK_WORKER_STATUS?.status==='PENDING'),
+        'A known offline sale remains pending, never falsely cloud-confirmed');
+      await wp.locator('#doneSaleBtn').click();
+    }
+    const pendingWorker=await wp.evaluate(()=>click360SparkOperationalSession.health());
+    assert(pendingWorker.pendingCount===2&&pendingWorker.unknownCount===0,'Both actual offline UI commands are durable');
+    assert(await wp.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id).stock===1,workerProduct.id),
+      'Optimistic projection retains both offline stock deductions');
+    assert((await record('products',workerProduct.id)).stock===3,'Offline candidates do not pretend to have changed server stock');
+    await wp.close();
+    await device.context.setOffline(false);
+    wp=await device.context.newPage();device.page=wp;
+    await wp.goto(url,{waitUntil:'domcontentloaded'});
+    await wp.waitForFunction(()=>{
+      if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(click360SparkBootstrapState.reason);
+      return window.click360SparkBootstrapState?.phase==='READY'&&!!window.click360SparkOperationalSession;
+    });
+    const replayedWorker=await wp.evaluate(()=>click360SparkOperationalSession.health());
+    assert(replayedWorker.pendingCount+replayedWorker.unknownCount+replayedWorker.projectionPendingCount===0,
+      'Cold document recovery drains the whole actor queue and durable projections');
+    for(const id of offlineIds){
+      assert((await record('sales',id)).createdBy===workerUid&&(await record('movements',id)).amount===5,
+        'Each offline sale becomes one server sale and one exact payment movement');
+      assert(await wp.evaluate(id=>click360GetTenantState().sales.filter(s=>s.operationId===id).length===1,id),
+        'Server projection preserves the operation once in the actual UI');
+    }
+    assert((await record('products',workerProduct.id)).stock===1&&(await record('cashSessions',ws.id)).saleCount===3,
+      'Restart replay applies the two stock deltas and cash counters exactly once');
+    const nativeBefore=await wp.evaluate(()=>CLICK360_V16_STORAGE.getSnapshot(click360TenantContext));
+    await seed(env,async db=>{await setDoc(doc(db,`businesses/${uid}/businessUnits/${uid}/members/${workerUid}`),{
+      uid:workerUid,ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,boundarySchemaVersion:1,
+      status:'revoked',role:'cashier',permissions:workerPermissions});});
+    await wp.waitForFunction(()=>!click360User&& !click360SparkOperationalSession);
+    assert(nativeBefore?.snapshot?.sales?.some(s=>s.operationId===workerSale.operationId),'Confirmed worker sale is durable before revocation');
+    assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Worker does not write the legacy monolith');
+    if(process.env.CLICK360_SPARK_UI_WORKER_ONLY==='1')results.push({browser:label,workerFocusedDiagnostic:true,fullOperationalUI:false,migration:false,productionWrites:0});
+    results.at(-1).workerNativeBootstrap=true;results.at(-1).workerCashAndSale=true;
+    results.at(-1).workerBusinessIsolation=true;results.at(-1).workerRevocation=true;
+    results.at(-1).workerProductAndInventory=true;results.at(-1).workerCustomer=true;results.at(-1).workerFounderFloor=true;
+    results.at(-1).workerReloadRecovery=true;results.at(-1).workerReconnect=true;
+    results.at(-1).workerTwoOfflineSalesColdRecovery=true;
+    await device.context.close();device=null;console.log(`PASS served Spark worker ${label}`);
   }
   const budgetFailure=failureReason(readFileSync(path.join(path.dirname(config),'firestore-debug.log'),'utf8'));
   assert(!budgetFailure,budgetFailure);

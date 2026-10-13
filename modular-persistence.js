@@ -651,6 +651,10 @@
           stage('movements',op,null,{operationId:op,saleId:op,cashSessionId:sessionId,date:sale.date,kind:'ingreso',amount:received,
             paymentMethod:paymentMethod||'Pendiente',paymentType:sale.method==='Apartado'?'receivable_payment':'sale',lastOperationId:op});
           for(const [index,row]of stockRows.entries())stage('products',row.id,row.product,{...row.product,stock:row.stock,qty:row.stock,lastOperationId:op,saleStockIndex:index});
+          // Advance the already-read exact-session runtime in this SAME
+          // financial transaction. This is a bounded confirmation cursor,
+          // never a new history snapshot or a separate stock/cash commit.
+          stage('metadata','runtime',runtime,{...runtime,lastOperationId:op});
           result={saleId:op,movementId:op,cashSessionId:sessionId,...(layawayId?{layawayId}:{})};
         }else if(kind==='receivable_payment'){
           const saleId=safeId(p.saleId,'saleId'),sale=await tx.get('sales',saleId);
