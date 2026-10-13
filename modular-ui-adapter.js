@@ -135,10 +135,11 @@
       const active=resolveIdentity();
       if(active?.ownerUid!==identity.ownerUid||active?.businessId!==identity.businessId||active?.tenantKey!==identity.tenantKey)throw Error('MODULAR_UI_CONTEXT_CHANGED');
     };
-    const emit=(operationId,status,reason=null)=>{
+    const emit=(operationId,status,reason=null,causeCode=null)=>{
       assertContext();
       // No UID/email/request contents in support-facing status events.
-      const detail={operationId,status,reason,operationalCloudConfirmed:status==='CONFIRMED'};
+      const detail={operationId,status,reason,operationalCloudConfirmed:status==='CONFIRMED',
+        ...(causeCode?{causeCode}: {})};
       onStatus(detail);return detail;
     };
     async function confirm(row){
@@ -167,7 +168,8 @@
         const result=await coordinator.process(row.operationId);
         assertContext();
         if(result.status==='confirmed')return await confirm(await journal.get(identity,row.operationId));
-        return emit(row.operationId,'UNKNOWN','server_reconciliation_required');
+        const causeCode=/^[a-zA-Z][a-zA-Z0-9_/-]{0,80}$/.test(result.reason||'')?result.reason:'server_confirmation_unknown';
+        return emit(row.operationId,'UNKNOWN','server_reconciliation_required',causeCode);
       }catch(error){
         // Context changes never project another tenant's operation into this UI.
         assertContext();

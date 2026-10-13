@@ -13,6 +13,8 @@ const PROJECT='click360-staging-7620168025',URL=`https://${PROJECT}.web.app/`;
 const args=Object.fromEntries(process.argv.slice(2).map(s=>s.split('=')));
 assert.equal(args['--project'],PROJECT,'EXPLICIT_SYNTHETIC_STAGING_REQUIRED');
 assert.match(args['--sha']||'',/^[a-f0-9]{40}$/,'EXACT_SOURCE_SHA_REQUIRED');
+assert(args['--browser']===undefined||['chromium','webkit'].includes(args['--browser']),'UNSUPPORTED_FOCUSED_BROWSER');
+assert(!args['--browser']||process.env.CI!=='true','FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_MATRIX');
 for(const key of ['FIRESTORE_EMULATOR_HOST','FIREBASE_AUTH_EMULATOR_HOST'])assert(!process.env[key],'REAL_STAGING_MUST_NOT_USE_EMULATOR');
 const digest=b=>createHash('sha256').update(b).digest('hex');
 const manifest=await fetch(URL+'release-manifest.json',{cache:'no-store'}).then(r=>r.json());
@@ -31,6 +33,7 @@ assert.equal(admin.projectId,PROJECT,'ADMIN_FIXTURE_PROJECT_MISMATCH');
 const results=[];let browser;
 try{
   for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']]){
+    if(args['--browser']&&args['--browser']!==name)continue;
     console.log(JSON.stringify({stage:'START',engine:name,project:PROJECT}));
     const uid='qa-spark-staging-'+randomUUID(),email=uid+'@click360-qa.invalid',password=randomBytes(32).toString('base64url');
     assert(uid.startsWith('qa-spark-staging-'));
@@ -104,7 +107,17 @@ try{
     let {context,page}=await open();
     await page.evaluate(()=>{location.hash='#cash';});
     await page.locator('#apertureAmountInput').fill('0');await page.locator('#startDayBtnCash').click();
-    await page.waitForFunction(()=>window.QA_SPARK_STATUS?.status==='CONFIRMED');
+    try{await page.waitForFunction(()=>window.QA_SPARK_STATUS?.status==='CONFIRMED');}
+    catch(error){
+      const diagnostic=await page.evaluate(async()=>({status:window.QA_SPARK_STATUS,
+        lastFailure:window.click360LastSaveFailure,bootstrap:window.click360SparkBootstrapState,
+        progress:window.click360SparkBootstrapProgress,mixedBuild:window.click360IsMixedBuild?.(),
+        storageMode:window.click360GetStorageState?.()?.mode,gateReason:window.click360WriteGate?.()?.reason,
+        accessReason:window.click360SparkAccessGate?.()?.reason,
+        health:await window.click360SparkOperationalSession?.health(),toast:document.querySelector('#toast')?.textContent}));
+      await writeFile(`${directory}/${name}-opening-failure.json`,JSON.stringify(diagnostic),{flag:'wx',mode:0o600});
+      console.log(JSON.stringify({stage:'OPENING_FAILED',engine:name,diagnostic}));throw error;
+    }
     const cash=await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.status==='open'));
     await page.evaluate(()=>{window.QA_SPARK_STATUS=null;location.hash='#sell';});
     await page.locator('#manualCode').fill('STAGE-SPARK');await page.locator('#addCode').click();await page.locator('#payMethod').selectOption('Transferencia');
@@ -356,7 +369,7 @@ try{
     console.log(JSON.stringify({stage:'RETAIL_JOURNEY_PASS',engine:name}));
     await context.close();await browser.close();browser=null;
   }
-  const evidence={status:'PASS',scope:'REAL_STAGING_RETAIL_JOURNEY_ONLY',buildSha:manifest.buildSha,projectId:PROJECT,url:URL,rulesSha256:digest(deployed.content),assets,results,productionWrites:0,commercialCutover:false};
+  const evidence={status:'PASS',scope:args['--browser']?'FOCUSED_REAL_STAGING_RETAIL_DIAGNOSTIC':'REAL_STAGING_RETAIL_JOURNEY_ONLY',fullBrowserMatrix:!args['--browser'],buildSha:manifest.buildSha,projectId:PROJECT,url:URL,rulesSha256:digest(deployed.content),assets,results,productionWrites:0,commercialCutover:false};
   await writeFile(`${directory}/results.json`,JSON.stringify(evidence,null,2),{flag:'wx',mode:0o600});
   console.log(JSON.stringify(evidence));
 }finally{await browser?.close();await admin.terminate();}
