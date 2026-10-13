@@ -52,12 +52,12 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
   assert.equal(JSON.parse(JSON.stringify(scope.state)).legalAcceptances[0].id,'legal-qa');
   assert.equal(JSON.parse(JSON.stringify(scope.state)).settings.workers[0].name,'Trabajador');
 }
-function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false}={}){
+function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false,moduleNames=['products','sales']}={}){
   const events=new Map(),phases=[],writes=[],observed={restored:0,installed:0,created:0,replayed:0,closed:0};
-  let actor='owner',business='business',projections=0,releaseRead=null,queryBarrier=null,busy=false;
+  let actor='owner',business='business',projections=0,releaseRead=null,queryBarrier=null,moduleBarrier=null,busy=false;
   const root={navigator:{onLine:true,locks:{request:async(_name,_options,callback)=>callback({name:'fixture-lock'})}},document:{visibilityState:'visible',addEventListener(){},removeEventListener(){}},
     addEventListener:(name,fn)=>events.set(name,fn),removeEventListener:name=>events.delete(name),
-    CLICK360_SPARK_MIGRATION:{arrays:{products:'products',sales:'sales'},hash:async()=>''},
+    CLICK360_SPARK_MIGRATION:{arrays:Object.fromEntries(moduleNames.map(name=>[name,name])),hash:async()=>''},
     CLICK360_SPARK_RECORD_CODEC:{unpack:async record=>record},
     CLICK360_MODULAR_PERSISTENCE:{identity:(ownerUid,businessId)=>({ownerUid,businessId})},
     firebase:{firestore:{FieldValue:{serverTimestamp(){throw Error('Bootstrap must not issue writes');}}}}};
@@ -73,7 +73,12 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
       const q={orderBy:()=>q,limit:()=>q,startAfter:value=>{after=value;return q;},where:()=>q,
         get:async options=>{
           assert.equal(options.source,'server');if(queryBarrier)await queryBarrier;
+          const operational=path.includes('/storage/v2/');
+          if(operational){observed.activeModuleReads=(observed.activeModuleReads||0)+1;
+            observed.maxModuleReads=Math.max(observed.maxModuleReads||0,observed.activeModuleReads);
+            if(moduleBarrier)await moduleBarrier;}
           const docs=paging&&path.endsWith('/sales')?Array.from({length:after?2:100},(_,i)=>({id:`sale-${after?100+i:i}`,data:()=>({id:`sale-${after?100+i:i}`})})):[];
+          if(operational)observed.activeModuleReads--;
           return {docs,size:docs.length,metadata:{fromCache:cache,hasPendingWrites:false}};
         }};
       return q;
@@ -98,7 +103,27 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
     onPhase:detail=>phases.push(detail)});
   root.click360SparkCoordinator=coordinator;
   return {coordinator,observed,phases,writes,events,changeActor:value=>actor=value,
-    blockReads:promise=>releaseRead=promise,blockQueries:promise=>queryBarrier=promise,setBusy:value=>busy=value};
+    blockReads:promise=>releaseRead=promise,blockQueries:promise=>queryBarrier=promise,
+    blockModuleReads:promise=>moduleBarrier=promise,setBusy:value=>busy=value};
+}
+{
+  const f=fixture();let release;f.blockModuleReads(new Promise(resolve=>release=resolve));
+  const flight=f.coordinator.recover();
+  // A deterministic barrier, not a timeout increase or latency-based sleep.
+  for(let turn=0;turn<20&&f.observed.activeModuleReads!==2;turn++)await new Promise(resolve=>setImmediate(resolve));
+  const started=f.observed.activeModuleReads;release();await flight;
+  assert.equal(started,2,'Independent server views must not serialize all network round trips');
+  assert(f.observed.maxModuleReads<=3,'Keep Firestore request concurrency bounded');
+  assert.equal(f.phases.at(-1).phase,'READY');f.coordinator.close();
+}
+{
+  const f=fixture({moduleNames:['products','sales','movements','cashSessions','dailyReports']});
+  let release;f.blockModuleReads(new Promise(resolve=>release=resolve));const flight=f.coordinator.recover();
+  for(let turn=0;turn<20&&f.observed.activeModuleReads!==3;turn++)await new Promise(resolve=>setImmediate(resolve));
+  const started=f.observed.activeModuleReads;f.changeActor('another-user');release();
+  await assert.rejects(flight,/CONTEXT_CHANGED/);
+  assert.equal(started,3);assert.equal(f.observed.maxModuleReads,3);
+  assert.equal(f.observed.installed,0,'Parallel reads cannot publish a preceding user view');f.coordinator.close();
 }
 {
   const f=fixture({paging:true});await f.coordinator.recover();assert.equal(f.coordinator.hasMore('sales'),true);

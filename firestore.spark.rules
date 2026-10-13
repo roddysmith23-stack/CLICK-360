@@ -509,37 +509,7 @@ service cloud.firestore {
         && sparkModeMatchesPhase(data);
     }
 
-    function sparkShadowOwner(ownerUid, businessId) {
-      let control = get(sparkControlPath(ownerUid)).data;
-      return control.storageMode == "migrating" && control.phase == "SHADOW_WRITING"
-        && businessId in control.businessIds && sparkOwner(ownerUid);
-    }
-
-    function sparkModuleReadable(ownerUid, businessId, moduleName, recordId) {
-      let control = get(sparkControlPath(ownerUid)).data;
-      return signedIn() && control.storageMode in ["migrating", "modular", "frozen"]
-        && businessId in control.businessIds
-        && (request.auth.uid == ownerUid ? sparkOwnerReadableAccess(ownerUid) : (isPlatformAdmin()
-          || (control.storageMode == "modular"
-            && sparkWorkerRecordRead(ownerUid, businessId, moduleName, recordId))));
-    }
-
-    function sparkWorkerRecordRead(ownerUid, businessId, moduleName, recordId) {
-      return (moduleName in ["products", "sales", "layaways", "cashSessions", "dailyReports", "movements", "metadata", "customers", "config", "labelTemplates", "labelProfiles", "reminders"]
-          && !(moduleName == "metadata" && recordId == "storage")
-          && sparkPermission(ownerUid, businessId,
-            moduleName in ["cashSessions", "dailyReports", "metadata"] ? "cashSessions" : (moduleName in ["config", "labelTemplates", "labelProfiles", "reminders"] ? "settings" : moduleName), "read"))
-        || (moduleName in ["operationLedger", "auditEvents"] && sparkActiveMember(ownerUid, businessId)
-          && ((request.method == "get" && !exists(request.path)) || resource.data.createdBy == request.auth.uid))
-        // A sale-authorized actor must be able to confirm their own atomic
-        // receipt without gaining general visibility over cash movements.
-        || (moduleName == "movements" && sparkActiveMember(ownerUid, businessId)
-          && ((request.method == "get" && !exists(request.path))
-            || (resource.data.createdBy == request.auth.uid && resource.data.data.operationId == recordId
-              && get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(recordId)).data.createdBy == request.auth.uid
-              && get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(recordId)).data.data.status == "committed")));
-    }
-
+    // Also used by the business membership path outside operational storage.
     function sparkActiveMember(ownerUid, businessId) {
       let member = businessUnitMemberData(ownerUid, businessId);
       return signedIn() && workersFeatureFlagEnabled(ownerUid)
@@ -547,671 +517,6 @@ service cloud.firestore {
         && validBusinessUnitIdentity(member, ownerUid, businessId)
         && member.uid == request.auth.uid && member.status == "active"
         && supportedMemberRole(member.role) && member.permissions is map;
-    }
-
-    function sparkScopedEntitlements(ownerUid, data) {
-      // Publish only the owner's existing commercial contract, not private
-      // account fields. Lower Founder overrides still use the shared floor.
-      let account = exists(/databases/$(database)/documents/accountAccess/$(ownerUid))
-        ? get(/databases/$(database)/documents/accountAccess/$(ownerUid)).data
-        : get(/databases/$(database)/documents/approvedUsers/$(ownerUid)).data;
-      let overrides = account.get("manualLimitOverrides", {});
-      return data.accountPlan == account.get("plan", "founder_legacy")
-        && data.accountPlan in ["base", "pro", "business", "enterprise", "founder", "founder_legacy"]
-        && data.manualLimitOverrides is map
-        && data.manualLimitOverrides == (overrides is map ? overrides : {});
-    }
-
-    function sparkWorkerPermission(ownerUid, businessId, moduleName, action) {
-      let member = businessUnitMemberData(ownerUid, businessId);
-      return signedIn() && request.auth.uid != ownerUid && workersFeatureFlagEnabled(ownerUid)
-        && exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/members/$(request.auth.uid))
-        && validBusinessUnitIdentity(member, ownerUid, businessId)
-        && member.uid == request.auth.uid && member.status == "active"
-        && supportedMemberRole(member.role) && member.permissions is map
-        && member.permissions.get(moduleName, {}).get(action, false) == true
-        // Owner authorization already checks the account. Keep its fast path
-        // unchanged; staff writes must inherit the same writable contract.
-        && (action == "read" || (exists(/databases/$(database)/documents/accountAccess/$(ownerUid))
-          ? sparkAccountWritable(ownerUid) : sparkApprovedOwnerReadable(ownerUid)));
-    }
-
-    function sparkPermission(ownerUid, businessId, moduleName, action) {
-      return sparkOwner(ownerUid) || sparkWorkerPermission(ownerUid, businessId, moduleName, action);
-    }
-
-    function sparkOperational(ownerUid, businessId) {
-      let c = get(sparkControlPath(ownerUid)).data;
-      return c.storageMode == "modular" && c.phase == "MODULAR" && c.schemaVersion == 2
-        && c.semanticEquality == "PASS" && c.reconstructedHash == c.sourceHash
-        && businessId in c.businessIds;
-    }
-
-    function sparkAfter(ownerUid, businessId, moduleName, recordId) {
-      return getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/$(moduleName)/$(recordId)).data;
-    }
-
-    function sparkLedger(ownerUid, businessId, operationId) {
-      return getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(operationId)).data.data;
-    }
-
-    function sparkNewLedger(ownerUid, businessId, operationId) {
-      return operationId is string && operationId.size() > 0
-        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(operationId));
-      // Every caller ALSO executes its module mutation proof, which reads
-      // getAfter(ledger).kind/result. An absent post-write ledger fails that
-      // proof. Its CREATE rule certifies status/mode/permissions atomically.
-      // Repeating existsAfter here adds no invariant, only evaluation cost.
-    }
-
-    function sparkValidOperationalRecord(ownerUid, businessId, moduleName, recordId) {
-      let d = request.resource.data;
-      return d.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash",
-          "recordVersion", "createdAt", "updatedAt", "closedAt", "createdBy", "updatedBy", "lastOperationId", "operational", "operationalHash", "saleStockIndex"])
-        && [d.id, d.ownerUid, d.businessId, d.schemaVersion, d.module] == [recordId, ownerUid, businessId, 2, moduleName]
-        && [d.data.id, d.data.businessId] == [recordId, businessId]
-        && d.data is map && d.dataHash is string && d.dataHash.matches("^[a-f0-9]{64}$")
-        && d.recordVersion is int
-        && d.updatedBy == request.auth.uid && d.updatedAt == request.time
-        ;
-    }
-
-    function sparkOperationalCreate(ownerUid, businessId, moduleName, recordId) {
-      // The new immutable ledger certifies mode and permissions once for the
-      // entire atomic commit. Related records cannot exist without that ledger.
-      return sparkValidOperationalRecord(ownerUid, businessId, moduleName, recordId)
-        && request.resource.data.recordVersion == 1 && request.resource.data.createdBy == request.auth.uid
-        && request.resource.data.createdAt == request.time
-        && !request.resource.data.keys().hasAny(["sourceHash", "sourcePath"]);
-    }
-
-    function sparkOperationalUpdate(ownerUid, businessId, moduleName, recordId) {
-      let d = request.resource.data;
-      return sparkValidOperationalRecord(ownerUid, businessId, moduleName, recordId)
-        && resource.data.get("recordVersion", 1) >= 1
-        && d.recordVersion == resource.data.get("recordVersion", 1) + 1
-        && d.createdAt == resource.data.get("createdAt", request.time)
-        && d.createdBy == resource.data.get("createdBy", request.auth.uid)
-        && d.get("sourceHash", "") == resource.data.get("sourceHash", "")
-        && d.get("sourcePath", []) == resource.data.get("sourcePath", []);
-    }
-
-    function sparkKindPermission(ownerUid, businessId, kind) {
-      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment"]
-        && sparkPermission(ownerUid, businessId,
-          kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
-            (kind == "cash_movement" ? "movements" : "cashSessions")))),
-          kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
-            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"))));
-    }
-
-    function sparkBoundOperation(ownerUid, businessId) {
-      let op = request.resource.data.lastOperationId;
-      // Permission is certified once by the immutable ledger CREATE rule.
-      // Every related record binds to that NEW ledger in this atomic write;
-      // a denied ledger rejects the entire transaction, not just its receipt.
-      return sparkNewLedger(ownerUid, businessId, op);
-    }
-
-    function sparkLedgerProof(ownerUid, businessId, operationId) {
-      let d = request.resource.data.data;
-      let r = d.result;
-      let kind = d.kind;
-      return sparkOperational(ownerUid, businessId)
-        && d.keys().hasOnly(["id", "businessId", "operationId", "kind", "status", "payloadHash", "result"])
-        && d.operationId == operationId && d.status == "committed" && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
-        && sparkKindPermission(ownerUid, businessId, kind)
-        && (kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
-          : kind in ["customer_create", "customer_edit", "customer_delete"] ? (r.keys().hasOnly(["customerId"])
-            && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/customers/$(r.customerId)).data.lastOperationId == operationId)
-          : kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ?
-            (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.lastOperationId == operationId
-              && (kind in ["product_edit", "product_delete"] || (kind == "product_create"
-                && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.data.stock == 0)
-                || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId)).data.lastOperationId == operationId))
-          : kind in ["cash_open", "cash_close", "cash_reopen", "cash_movement"] ?
-            (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(r.cashSessionId)).data.lastOperationId == operationId
-              && (kind != "cash_close" || (!exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId))
-                && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.data.operationId == operationId))
-              && (kind != "cash_reopen" || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.lastOperationId == operationId)
-              && (kind != "cash_open" || sparkCashOpeningOrigin(ownerUid, businessId, operationId, r)))
-          : kind == "receivable_payment" ? sparkPaymentLedgerProof(ownerUid, businessId, operationId, r) : false);
-    }
-
-    function sparkCashOpeningOrigin(ownerUid, businessId, op, result) {
-      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(result.cashSessionId)).data;
-      return result.get("previousReportId", "") == ""
-        ? (session.data.get("reopened", false) == false
-            && !session.data.keys().hasAny(["previousCashSessionId", "reopenReason"]))
-        : (request.auth.uid == ownerUid
-            && session.data.reopened == true && session.data.reopenReason is string
-            && session.data.reopenReason.size() >= 4
-            && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(result.previousReportId)).data.lastOperationId == op);
-    }
-
-    function sparkReceivableLedgerProof(ownerUid, businessId, operationId) {
-      let d = request.resource.data.data;
-      return sparkOperational(ownerUid, businessId)
-        && d.keys().hasOnly(["id", "businessId", "operationId", "kind", "status", "payloadHash", "result"])
-        && d.operationId == operationId && d.kind == "receivable_payment" && d.status == "committed"
-        && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
-        // The existing cashier contract grants collection via payment,
-        // not general sale editing. UPDATE fields stay strictly bounded.
-        && sparkPermission(ownerUid, businessId, "layaways", "payment")
-        && sparkPaymentLedgerProof(ownerUid, businessId, operationId, d.result);
-    }
-
-    function sparkPaymentLedgerProof(ownerUid, businessId, op, result) {
-      return request.resource.data.get("module", "") == "operationLedger"
-        && request.resource.data.get("data", {}).get("kind", "") == "receivable_payment"
-        && sparkPaymentLedgerLinks(ownerUid, businessId, op, result);
-    }
-
-    function sparkPaymentLedgerLinks(ownerUid, businessId, op, result) {
-      let sale = sparkAfter(ownerUid, businessId, "sales", result.saleId);
-      let movement = sparkAfter(ownerUid, businessId, "movements", op);
-      let session = sparkAfter(ownerUid, businessId, "cashSessions", result.cashSessionId);
-      return result.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
-        && result.movementId == op && movement.lastOperationId == op && sale.lastOperationId == op && session.lastOperationId == op
-        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op))
-        && movement.data.saleId == result.saleId && movement.data.cashSessionId == result.cashSessionId
-        && (sale.data.method == "Apartado" ? (result.layawayId == sale.data.layawayId
-          && sparkAfter(ownerUid, businessId, "layaways", result.layawayId).lastOperationId == op) : !result.keys().hasAny(["layawayId"]));
-    }
-
-    function sparkPaymentSaleMutation(ownerUid, businessId, recordId) {
-      return resource != null && resource.data is map
-        && resource.data.get("data", {}).get("status", "") in ["layaway", "pending_payment"]
-        && sparkPaymentSaleDelta(ownerUid, businessId, recordId);
-    }
-
-    function sparkPaymentSaleDelta(ownerUid, businessId, recordId) {
-      let d = request.resource.data.data;
-      let old = resource.data.data;
-      let op = request.resource.data.lastOperationId;
-      let movement = sparkAfter(ownerUid, businessId, "movements", op).data;
-      let before = old.get("payments", []);
-      return sparkLedger(ownerUid, businessId, op).kind == "receivable_payment"
-        && old.status in ["layaway", "pending_payment"] && old.balance > 0
-        && sparkMoneyEqual(old.received + old.balance, old.total)
-        && d.diff(old).affectedKeys().hasOnly(["received", "balance", "payments", "status"])
-        && movement.saleId == recordId && movement.paymentType == "receivable_payment" && movement.amount > 0 && movement.amount <= old.balance
-        && sparkMoneyEqual(d.received, old.received + movement.amount) && sparkMoneyEqual(d.balance, old.balance - movement.amount)
-        && d.status == (d.balance == 0 ? "paid" : old.status)
-        && d.payments is list && d.payments.size() == before.size() + 1
-        && d.payments[d.payments.size() - 1] == movement.payment
-        && d.payments.toSet() == before.toSet().union([movement.payment].toSet());
-    }
-
-    function sparkPaymentMovement(ownerUid, businessId, op, movement) {
-      // A denied composite write can evaluate alternate proof branches.
-      // Reject the local non-receipt shape BEFORE entering a helper with
-      // getAfter let bindings. This is a reject-only guard, not permission.
-      return movement.keys().hasAll(["payment"])
-        && sparkPaymentMovementProof(ownerUid, businessId, op, movement);
-    }
-
-    function sparkPaymentMovementProof(ownerUid, businessId, op, movement) {
-      let session = sparkAfter(ownerUid, businessId, "cashSessions", movement.cashSessionId);
-      return movement.keys().hasOnly(["id", "businessId", "operationId", "saleId", "cashSessionId", "date", "kind", "amount", "paymentMethod", "paymentType", "payment"])
-        && movement.kind == "ingreso" && movement.amount > 0 && movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"]
-        && movement.paymentType == "receivable_payment" && session.lastOperationId == op && session.data.status == "open" && session.data.date == movement.date
-        && movement.payment == {"id": op, "operationId": op, "date": movement.date, "amount": movement.amount,
-          "method": movement.paymentMethod, "createdBy": request.auth.uid};
-    }
-
-    function sparkPaymentSessionMutation(ownerUid, businessId, op, counters) {
-      return request.resource.data.get("module", "") == "cashSessions"
-        && sparkPaymentSessionShape(ownerUid, businessId, op, counters);
-    }
-
-    function sparkPaymentSessionShape(ownerUid, businessId, op, counters) {
-      let changed = counters.diff(resource.data.operational).affectedKeys();
-      return changed.hasOnly(["cashBalance", "paymentTotals"]) && changed.hasAny(["paymentTotals"])
-        && sparkPaymentSessionDelta(ownerUid, businessId, op, counters);
-    }
-
-    function sparkPaymentSessionDelta(ownerUid, businessId, op, counters) {
-      let movement = sparkAfter(ownerUid, businessId, "movements", op).data;
-      let old = resource.data.operational;
-      let p = counters.paymentTotals;
-      return movement.cashSessionId == request.resource.data.id && movement.date == resource.data.data.date
-        && p.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
-        && sparkMoneyEqual(counters.cashBalance, old.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
-        && sparkMoneyEqual(p.cash, old.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
-        && sparkMoneyEqual(p.card, old.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
-        && sparkMoneyEqual(p.transfer, old.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
-        && sparkMoneyEqual(p.receivablePayments, old.paymentTotals.receivablePayments + movement.amount);
-    }
-
-    function sparkPaymentLayawayMutation(ownerUid, businessId, recordId) {
-      return resource != null && resource.data is map
-        && resource.data.get("data", {}).get("saleId", "") != ""
-        && sparkPaymentLayawayDelta(ownerUid, businessId, recordId);
-    }
-
-    function sparkPaymentLayawayDelta(ownerUid, businessId, recordId) {
-      let d = request.resource.data.data;
-      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
-      let sale = sparkAfter(ownerUid, businessId, "sales", d.saleId).data;
-      return ledger.kind == "receivable_payment" && ledger.result.layawayId == recordId && sale.layawayId == recordId
-        && d.diff(resource.data.data).affectedKeys().hasOnly(["paid", "balance", "payments", "status"])
-        && d.paid == sale.received && d.balance == sale.balance && d.payments == sale.payments
-        && d.status == (d.balance == 0 ? "paid" : "partially_paid");
-    }
-
-    function sparkSaleLedgerProof(ownerUid, businessId, operationId, result) {
-      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(operationId)).data.data;
-      let movement = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId)).data.data;
-      return result.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
-        && [result.saleId, result.movementId, result.cashSessionId] == [operationId, operationId, sale.cashSessionId]
-        && (sale.method == "Apartado" ? result.layawayId == sale.layawayId : !result.keys().hasAny(["layawayId"]))
-        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(operationId))
-        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId))
-        && [sale.operationId, movement.operationId] == [operationId, operationId]
-        && (sale.customOrder.size() == 0 ? true : (sparkSaleLine(sale, 0)
-          && (sale.customOrder.size() == 1 ? true : sparkSaleLine(sale, 1))));
-    }
-
-    function sparkMoneyEqual(actual, expected) {
-      // Subtraction itself rejects missing/non-numeric operands in Rules.
-      // Same strict tolerance on BOTH sides, with one native comparison.
-      // This helper is called repeatedly by a single atomic cash update.
-      return math.abs(actual - expected) < 0.000001;
-    }
-
-    function sparkDerivedAudit(ownerUid, businessId, recordId) {
-      let d = request.resource.data.data;
-      let ledger = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(d.operationId)).data;
-      return sparkOperational(ownerUid, businessId)
-        && (sparkOwner(ownerUid) || (ledger.createdBy == request.auth.uid && sparkActiveMember(ownerUid, businessId)))
-        && ledger.data.status == "committed" && ledger.data.operationId == d.operationId
-        && recordId == "audit-" + d.operationId && request.resource.data.lastOperationId == d.operationId
-        && d.keys().hasOnly(["id", "businessId", "operationId", "action", "actorUid", "payloadHash", "lastOperationId"])
-        && d.action == ledger.data.kind && d.actorUid == ledger.createdBy && d.payloadHash == ledger.data.payloadHash;
-    }
-
-    function sparkSalePayments(ownerUid, businessId, op, counters) {
-      let movement = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data;
-      let previous = resource.data.operational;
-      return movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia", "Pendiente"]
-        && movement.paymentType in ["sale", "receivable_payment"]
-        && sparkMoneyEqual(counters.cashBalance, previous.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
-        && counters.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
-        && sparkMoneyEqual(counters.paymentTotals.cash, previous.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
-        && sparkMoneyEqual(counters.paymentTotals.card, previous.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
-        && sparkMoneyEqual(counters.paymentTotals.transfer, previous.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
-        && sparkMoneyEqual(counters.paymentTotals.receivablePayments, previous.paymentTotals.receivablePayments + (movement.paymentType == "receivable_payment" ? movement.amount : 0));
-    }
-
-    function sparkCashMovementTotals(ownerUid, businessId, op, counters) {
-      let movement = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data;
-      let previous = resource.data.operational;
-      return movement.cashSessionId == request.resource.data.id && movement.date == request.resource.data.data.date
-        && sparkMoneyEqual(counters.cashBalance, previous.cashBalance + (movement.kind == "ingreso" ? movement.amount : -movement.amount))
-        && sparkMoneyEqual(counters.incomeCash, previous.incomeCash + (movement.kind == "ingreso" ? movement.amount : 0))
-        && sparkMoneyEqual(counters.expenseCash, previous.expenseCash + (movement.kind == "ingreso" ? 0 : movement.amount));
-    }
-
-    // Every stock-bearing sale points to the first product; each product write
-    // proves the next write with a strictly increasing index. This closes the
-    // omitted-product hole without enumerating a fixed number of cart lines.
-    // A stale product cannot satisfy a NEW operation's lastOperationId.
-    function sparkStockSuccessor(ownerUid, businessId, op, order, index) {
-      let next = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(order[index + 1])).data;
-      return next.lastOperationId == op && next.saleStockIndex == index + 1;
-    }
-
-    function sparkStockChain(ownerUid, businessId, recordId, op, order) {
-      let index = request.resource.data.saleStockIndex;
-      return index is int && index >= 0 && index < order.size()
-        && order[index] == recordId
-        && (index == order.size() - 1 ? true : sparkStockSuccessor(ownerUid, businessId, op, order, index));
-    }
-
-    function sparkStockHead(ownerUid, businessId, op, order) {
-      let first = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(order[0])).data;
-      return first.lastOperationId == op && first.saleStockIndex == 0;
-    }
-
-    function sparkProductSaleMutation(ownerUid, businessId, recordId, op) {
-      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
-      let itemIndex = sale.stockItemIndices[recordId];
-      let line = sale.items[itemIndex];
-      let d = request.resource.data.data;
-      return sparkStockChain(ownerUid, businessId, recordId, op, sale.stockOrder)
-        && itemIndex is int && itemIndex >= 0 && itemIndex < sale.items.size()
-        && sale.itemOrder[itemIndex] == recordId
-        && line.productId == recordId && line.get("id", recordId) == recordId && line.isCustom == false
-        && line.qty is int && line.qty > 0 && line.qty == sale.stockDeltas[recordId]
-        && d.diff(resource.data.data).affectedKeys().hasOnly(["stock", "qty", "id", "businessId"])
-        && sale.stockDeltas[recordId] > 0 && d.stock == resource.data.data.stock - sale.stockDeltas[recordId];
-    }
-
-    function sparkProductStoredIdentity(businessId, recordId) {
-      let old = resource == null ? null : resource.data.data;
-      return old is map && old.get("id", recordId) == recordId
-        && old.get("businessId", businessId) == businessId && old.get("deleted", false) == false;
-    }
-
-    function sparkProductMutation(ownerUid, businessId, recordId, creating) {
-      let d = request.resource.data.data;
-      let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(ownerUid, businessId, op);
-      let kind = ledger.kind;
-      return d.id == recordId && d.businessId == businessId && d.stock is number && d.stock >= 0 && d.qty == d.stock
-        && (creating || sparkProductStoredIdentity(businessId, recordId))
-        && (kind == "product_delete" || d.get("deleted", false) == false)
-        && (kind == "product_create" ? (creating && ledger.result.productId == recordId)
-          : kind == "product_delete" ? (!creating && ledger.result.productId == recordId && d.deleted == true
-              && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"])
-              && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
-          : kind == "product_edit" ? (!creating && ledger.result.productId == recordId
-              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData"])
-              && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
-          : kind == "inventory_adjust" ? (!creating && ledger.result.productId == recordId
-              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData", "stock", "qty"])
-              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.productId == recordId
-              && d.stock == resource.data.data.stock + getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.quantityDelta)
-          : kind == "sale" ? (!creating
-              && sparkProductSaleMutation(ownerUid, businessId, recordId, op)) : false);
-    }
-
-    function sparkSaleLine(d, index) {
-      // Caller dispatches only existing indices. Do not evaluate the same
-      // length guard twice per manual line in a compound financial write.
-      let key = d.customOrder[index];
-      let itemIndex = d.customItemIndices[key];
-      let line = d.items[itemIndex];
-      // Native list indexing rejects non-integer/out-of-range indices. The
-      // tuple binds order, canonical ID, legacy alias and custom provenance
-      // without repeating four equivalent boolean branches per line.
-      return [d.itemOrder[itemIndex], line.productId, line.get("id", key), line.isCustom] == [key, key, key, true]
-        && line.qty is int && line.qty > 0;
-    }
-
-    function sparkSaleLines(d) {
-      // Bind each pure set once. These are identical identity/uniqueness
-      // proofs, not weaker predicates or an additional database read.
-      let n = d.items.size();
-      let order = d.itemOrder.toSet();
-      let custom = d.customOrder.toSet();
-      let stockIndices = d.stockItemIndices.keys().toSet();
-      let customIndices = d.customItemIndices.keys().toSet();
-      return n <= 12 && d.itemOrder is list && d.itemOrder.size() == n
-        && order.size() == n
-        && d.customOrder is list && custom.size() == d.customOrder.size()
-        && d.stockItemIndices is map && d.customItemIndices is map
-        && stockIndices == d.stockDeltas.keys().toSet()
-        && customIndices == custom
-        && !stockIndices.hasAny(d.customOrder)
-        && order == stockIndices.union(customIndices)
-        && n == d.stockItemIndices.size() + d.customItemIndices.size();
-    }
-
-    function sparkCustomSalePart(d, start) {
-      let n = d.customOrder.size();
-      // Mandatory core records share these proofs in the SAME new-ledger
-      // atomic commit. Balance by validator work, not just number of rows:
-      // 0..1 ledger; 2..4 sale; 5..8 movement; 9..10 session; 11 runtime.
-      // Leave ledger headroom for the worker's authoritative account check.
-      return n <= start ? true : sparkSaleLine(d, start)
-        && (n <= start + 1 ? true : sparkSaleLine(d, start + 1)
-          && (n <= start + 2 ? true : sparkSaleLine(d, start + 2)));
-    }
-
-    function sparkCustomSalePart4(d, start) {
-      return sparkCustomSalePart(d, start)
-        && (d.customOrder.size() <= start + 3 ? true : sparkSaleLine(d, start + 3));
-    }
-
-    function sparkSaleQuantity(d) {
-      let items = d.items;
-      let n = items.size();
-      return items[0].qty + (n > 1 ? items[1].qty : 0) + (n > 2 ? items[2].qty : 0)
-        + (n > 3 ? items[3].qty : 0) + (n > 4 ? items[4].qty : 0) + (n > 5 ? items[5].qty : 0)
-        + (n > 6 ? items[6].qty : 0) + (n > 7 ? items[7].qty : 0) + (n > 8 ? items[8].qty : 0)
-        + (n > 9 ? items[9].qty : 0) + (n > 10 ? items[10].qty : 0) + (n > 11 ? items[11].qty : 0);
-    }
-
-    function sparkSaleCounterDelta(ownerUid, businessId, op, counters) {
-      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
-      let previous = resource.data.operational;
-      return sale.cashSessionId == request.resource.data.id && sale.date == request.resource.data.data.date
-        && counters.saleCount == previous.saleCount + 1
-        && counters.itemCount == previous.itemCount + sale.itemCount
-        && sparkMoneyEqual(counters.taxTotal, previous.taxTotal + sale.iva)
-        && sparkMoneyEqual(counters.salesTotal, previous.salesTotal + sale.total)
-        && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.lastOperationId == op
-        && (sale.customOrder.size() <= 9 ? true : (sparkSaleLine(sale, 9)
-          && (sale.customOrder.size() <= 10 ? true : sparkSaleLine(sale, 10))));
-    }
-
-    function sparkSaleMutation(ownerUid, businessId, recordId) {
-      let d = request.resource.data.data;
-      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data;
-      return sparkLedger(ownerUid, businessId, recordId).kind == "sale"
-        && request.resource.data.lastOperationId == recordId
-        && d.operationId == recordId && d.cashSessionId is string && d.cashSessionId.size() > 0
-        && d.total is number && d.total >= 0 && d.received is number && d.received >= 0 && d.received <= d.total
-        && sparkMoneyEqual(d.balance, d.total - d.received)
-        && (d.method == "Apartado" ? d.status == "layaway"
-          : (d.method == "Pendiente" ? (d.status == "pending_payment" && d.received == 0)
-            : (d.method in ["Efectivo", "Tarjeta", "Transferencia"] && d.status == "paid" && d.received == d.total)))
-        && (d.method == "Apartado" ? sparkSaleLayaway(ownerUid, businessId, recordId, d)
-          : !d.keys().hasAny(["layawayId"]))
-        && d.items is list && d.items.size() > 0 && d.stockDeltas is map
-        && sparkSaleLines(d) && sparkCustomSalePart(d, 2)
-        && d.itemCount is int && d.iva is number && d.iva >= 0
-        && d.stockOrder is list && d.stockOrder.toSet() == d.stockDeltas.keys().toSet()
-        && d.stockOrder.size() == d.stockDeltas.size()
-        && (d.stockOrder.size() == 0 ? true : sparkStockHead(ownerUid, businessId, recordId, d.stockOrder))
-        && session.data.status == "open" && session.data.date == d.date && session.lastOperationId == recordId
-        // Require a NEW exact-session update even if a malformed/imported old
-        // record happened to carry this operation ID. Its update rule owns
-        // the final manual-line proof and every authoritative counter delta.
-        && session.recordVersion == get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data.get("recordVersion", 1) + 1;
-    }
-
-    function sparkSaleLayaway(ownerUid, businessId, operationId, sale) {
-      let linked = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(sale.layawayId)).data;
-      // A pre-existing reservation cannot authorize a second sale. The new
-      // linked record's CREATE rule proves amounts and permission atomically.
-      return sale.layawayId is string && sale.layawayId.size() > 0
-        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(sale.layawayId))
-        && linked.lastOperationId == operationId && linked.data.saleId == operationId;
-    }
-
-    function sparkLayawayMutation(ownerUid, businessId, recordId) {
-      let d = request.resource.data.data;
-      let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(ownerUid, businessId, op);
-      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
-      return ledger.kind == "sale" && ledger.result.layawayId == recordId
-        && sparkPermission(ownerUid, businessId, "layaways", "create")
-        && sale.method == "Apartado" && sale.layawayId == recordId && d.saleId == op
-        && d.total == sale.total && d.paid == sale.received && d.balance == sale.balance;
-    }
-
-    function sparkCashMutation(ownerUid, businessId, recordId, creating) {
-      let d = request.resource.data.data;
-      let counters = request.resource.data.operational;
-      let op = request.resource.data.lastOperationId;
-      let kind = sparkLedger(ownerUid, businessId, op).kind;
-      return counters.summaryVersion == 1 && counters.saleCount is int && counters.saleCount >= 0
-        && counters.salesTotal is number && counters.salesTotal >= 0 && counters.paymentTotals is map
-        && counters.cashBalance is number && counters.closeCycle is int && counters.closeCycle >= 1
-        && request.resource.data.operationalHash is string && request.resource.data.operationalHash.matches("^[a-f0-9]{64}$")
-        && d.date is string && d.status in ["open", "closed"]
-        && (kind == "cash_open" ? (creating && counters.saleCount == 0 && counters.salesTotal == 0
-              && counters.itemCount == 0 && counters.taxTotal == 0 && counters.incomeCash == 0 && counters.expenseCash == 0 && counters.closeCycle == 1
-              && counters.paymentTotals == {"cash": 0, "card": 0, "transfer": 0, "receivablePayments": 0}
-              && counters.openingAmount is number && counters.openingAmount >= 0
-              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.lastOperationId == op
-              && d.status == "open" && counters.cashBalance == counters.openingAmount
-              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == recordId)
-          : kind == "sale" ? (!creating && resource.data.data.status == "open" && d.status == "open"
-              && d.date == resource.data.data.date
-              && d == resource.data.data
-              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "paymentTotals"])
-              && sparkSaleCounterDelta(ownerUid, businessId, op, counters)
-              && sparkSalePayments(ownerUid, businessId, op, counters)
-              )
-          : kind == "receivable_payment" ? (!creating && resource.data.data.status == "open" && d == resource.data.data
-              && sparkPaymentSessionMutation(ownerUid, businessId, op, counters))
-          : kind == "cash_close" ? (!creating && resource.data.data.status == "open" && d.status == "closed"
-              && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reportId"])
-              && counters == resource.data.operational
-              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(d.reportId)).data.data.cashSessionId == recordId
-              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == "")
-          : kind == "cash_reopen" ? (!creating && resource.data.data.status == "closed" && d.status == "open"
-              && d.diff(resource.data.data).affectedKeys().hasOnly(["status"])
-              && counters.closeCycle == resource.data.operational.closeCycle + 1
-              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["closeCycle"])
-              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == recordId)
-          : kind == "cash_movement" ? (!creating && resource.data.data.status == "open" && d.status == "open"
-              && d == resource.data.data
-              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["cashBalance", "incomeCash", "expenseCash"])
-              && sparkCashMovementTotals(ownerUid, businessId, op, counters)
-              && counters.saleCount == resource.data.operational.saleCount && counters.salesTotal == resource.data.operational.salesTotal) : false);
-    }
-
-    function sparkMovementMutation(ownerUid, businessId, recordId) {
-      let d = request.resource.data.data;
-      let ledger = sparkLedger(ownerUid, businessId, recordId);
-      let kind = ledger.kind;
-      return request.resource.data.lastOperationId == recordId
-        && d.id == recordId && d.businessId == businessId && d.operationId == recordId
-        && d.amount is number && d.amount >= 0 && d.date is string
-        // Dispatch from the immutable ledger, not overlapping OR proofs.
-        // A rejected sale must not evaluate receipt-only cross-record reads.
-        && (kind == "sale" ? (d.saleId == recordId
-              && sparkSaleMovement(ownerUid, businessId, recordId, d))
-          : kind == "inventory_adjust" ? (d.kind == "inventory_adjustment"
-              && d.productId == ledger.result.productId && d.quantityDelta is number && d.quantityDelta != 0 && d.amount == 0)
-          : kind == "product_create" ? (d.kind == "inventory_opening"
-              && d.productId == ledger.result.productId && d.quantityDelta > 0 && d.amount == 0
-              && d.quantityDelta == getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(d.productId)).data.data.stock)
-          : kind == "cash_open" ? (d.kind == "apertura" && d.cashSessionId == ledger.result.cashSessionId
-              && d.amount == getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data.operational.openingAmount)
-          : kind == "cash_movement" ? (d.kind in ["ingreso", "egreso", "retiro", "compra"]
-              && d.cashSessionId == ledger.result.cashSessionId)
-          : kind == "receivable_payment" ? sparkPaymentMovement(ownerUid, businessId, recordId, d) : false);
-    }
-
-    function sparkSaleMovement(ownerUid, businessId, recordId, movement) {
-      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(recordId)).data.data;
-      // The ledger requires this NEW movement and sale in the same commit.
-      // Distribute cross-record proofs between their CREATE rules, never
-      // between separate commits: a rejected manual line rejects all writes.
-      return movement.saleId == recordId && movement.cashSessionId == sale.cashSessionId && movement.date == sale.date
-        && movement.kind == "ingreso" && movement.amount == sale.received
-        && movement.paymentType == (sale.method == "Apartado" ? "receivable_payment" : "sale")
-        && (sale.received == 0 ? movement.paymentMethod == "Pendiente"
-          : (sale.method == "Apartado" ? movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"] : movement.paymentMethod == sale.method))
-        && sale.itemCount == sparkSaleQuantity(sale)
-        && sparkCustomSalePart4(sale, 5);
-    }
-
-    function sparkReportMutation(ownerUid, businessId, recordId, creating) {
-      let d = request.resource.data.data;
-      let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(ownerUid, businessId, op);
-      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data;
-      return ledger.kind == "cash_open"
-        ? (!creating && request.auth.uid == ownerUid && resource.data.data.status == "closed"
-            && d.id == recordId && d.businessId == businessId && d.status == "reopened"
-            && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])
-            && ledger.result.previousReportId == recordId && ledger.result.cashSessionId != d.cashSessionId
-            && session.data.status == "closed" && session.data.reportId == recordId && session.data.date == d.date
-            && sparkSuccessorSession(ownerUid, businessId, op, ledger.result.cashSessionId, d))
-        : d.id == recordId && d.businessId == businessId && ledger.result.reportId == recordId
-        && ledger.result.cashSessionId == d.cashSessionId && session.lastOperationId == op
-        && ((creating && ledger.kind == "cash_close" && session.data.status == "closed"
-              && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "status", "renderVersion", "openingAmount", "closeCash", "declaredCash", "theoreticalCash", "difference", "saleCount", "total", "totalItems", "totalIva", "incomeCash", "expenseCash", "paymentTotals", "observations", "closeCycle", "lastOperationId"])
-              && session.data.reportId == recordId && d.status == "closed"
-              && d.total == session.operational.salesTotal && d.saleCount == session.operational.saleCount
-              && d.theoreticalCash == session.operational.cashBalance && d.paymentTotals == session.operational.paymentTotals
-              && d.openingAmount == session.operational.openingAmount && d.incomeCash == session.operational.incomeCash && d.expenseCash == session.operational.expenseCash
-              && d.totalItems == session.operational.itemCount && d.totalIva == session.operational.taxTotal && d.closeCycle == session.operational.closeCycle
-              && d.declaredCash is number && d.declaredCash >= 0 && d.closeCash == d.declaredCash
-              && sparkMoneyEqual(d.difference, d.declaredCash - d.theoreticalCash))
-          || (!creating && ledger.kind == "cash_reopen" && session.data.status == "open"
-              && d.status == "reopened" && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])));
-    }
-
-    function sparkSuccessorSession(ownerUid, businessId, op, sessionId, report) {
-      let next = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(sessionId)).data;
-      return next.lastOperationId == op && next.data.status == "open" && next.data.date == report.date
-        && next.data.reopened == true && next.data.previousCashSessionId == report.cashSessionId
-        && next.data.reopenReason == report.reopenReason && report.reopenReason is string && report.reopenReason.size() >= 4
-        && report.declaredCash >= 0 && report.closeCash == report.declaredCash
-        && next.operational.openingAmount == report.declaredCash;
-    }
-
-    function sparkRuntimeMutation(ownerUid, businessId, recordId) {
-      let d = request.resource.data.data;
-      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
-      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(ledger.result.cashSessionId)).data;
-      return recordId == "runtime" && d.summaryVersion == 1
-        && d.diff(resource.data.data).affectedKeys().hasOnly(["openCashSessionId"])
-        && session.lastOperationId == request.resource.data.lastOperationId
-        && ((ledger.kind in ["cash_open", "cash_reopen"] && resource.data.data.openCashSessionId == ""
-              && d.openCashSessionId == ledger.result.cashSessionId && session.data.status == "open")
-          || (ledger.kind == "cash_close" && resource.data.data.openCashSessionId == ledger.result.cashSessionId
-              && d.openCashSessionId == "" && session.data.status == "closed")
-          || (ledger.kind == "sale" && d == resource.data.data && session.data.status == "open"
-              && d.openCashSessionId == ledger.result.cashSessionId
-              && sparkSaleRuntimeLine(ownerUid, businessId, request.resource.data.lastOperationId)));
-    }
-
-    function sparkSaleRuntimeLine(ownerUid, businessId, op) {
-      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
-      return sale.customOrder.size() <= 11 ? true : sparkSaleLine(sale, 11);
-    }
-
-    function sparkCustomerMutation(ownerUid, businessId, recordId, creating) {
-      let d = request.resource.data.data;
-      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
-      return ledger.result.customerId == recordId
-        // Imported rows can lack embedded IDs. Normalize only an absent ID;
-        // an existing foreign ID/scope cannot be rewritten through CRUD.
-        && (creating || sparkCustomerStoredIdentity(businessId, recordId))
-        && (ledger.kind == "customer_delete" ? (!creating && d.deleted == true
-            && resource.data.data.get("deleted", false) == false
-            && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"]))
-          : (ledger.kind == (creating ? "customer_create" : "customer_edit")
-            && d.name is string && d.name.matches(".*[^\\s].*") && d.phone is string && d.notes is string
-            && (creating ? d.keys().hasOnly(["id", "businessId", "name", "phone", "notes"])
-              : resource.data.data.get("deleted", false) == false
-                && d.diff(resource.data.data).affectedKeys().hasOnly(["name", "phone", "notes", "id", "businessId"]))));
-    }
-
-    function sparkCustomerStoredIdentity(businessId, recordId) {
-      return resource != null && resource.data is map
-        && [resource.data.data.get("id", recordId), resource.data.data.get("businessId", businessId)] == [recordId, businessId];
-    }
-
-    function sparkOperationalMutation(ownerUid, businessId, moduleName, recordId, creating) {
-      return (moduleName == "operationLedger" && creating && sparkLedgerProof(ownerUid, businessId, recordId))
-        || (moduleName == "products"
-          && sparkProductMutation(ownerUid, businessId, recordId, creating))
-        || (moduleName == "customers"
-          && sparkCustomerMutation(ownerUid, businessId, recordId, creating))
-        || (moduleName == "sales" && creating
-          && sparkSaleMutation(ownerUid, businessId, recordId))
-        || (moduleName == "movements" && creating
-          && sparkMovementMutation(ownerUid, businessId, recordId))
-        || (moduleName == "cashSessions"
-          && sparkCashMutation(ownerUid, businessId, recordId, creating))
-        || (moduleName == "dailyReports"
-          && sparkReportMutation(ownerUid, businessId, recordId, creating))
-        || (moduleName == "metadata" && !creating
-          && sparkRuntimeMutation(ownerUid, businessId, recordId))
-        || (moduleName == "auditEvents" && creating
-          && recordId == "audit-" + request.resource.data.data.operationId
-          && request.resource.data.data.actorUid == request.auth.uid
-          && request.resource.data.data.action == sparkLedger(ownerUid, businessId, request.resource.data.data.operationId).kind);
     }
 
     function sparkValidShadow(ownerUid, businessId, moduleName, recordId) {
@@ -2305,9 +1610,708 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Modular validators belong only to modular paths. Keep legacy scopes
+    // small; predicate bodies and effective document paths are unchanged.
+    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2 {
+    function sparkShadowOwner(ownerUid, businessId) {
+      let control = get(sparkControlPath(ownerUid)).data;
+      return control.storageMode == "migrating" && control.phase == "SHADOW_WRITING"
+        && businessId in control.businessIds && sparkOwner(ownerUid);
+    }
+
+    function sparkModuleReadable(ownerUid, businessId, moduleName, recordId) {
+      let control = get(sparkControlPath(ownerUid)).data;
+      return signedIn() && control.storageMode in ["migrating", "modular", "frozen"]
+        && businessId in control.businessIds
+        && (request.auth.uid == ownerUid ? sparkOwnerReadableAccess(ownerUid) : (isPlatformAdmin()
+          || (control.storageMode == "modular"
+            && sparkWorkerRecordRead(ownerUid, businessId, moduleName, recordId))));
+    }
+
+    function sparkWorkerRecordRead(ownerUid, businessId, moduleName, recordId) {
+      return (moduleName in ["products", "sales", "layaways", "cashSessions", "dailyReports", "movements", "metadata", "customers", "config", "labelTemplates", "labelProfiles", "reminders"]
+          && !(moduleName == "metadata" && recordId == "storage")
+          && sparkPermission(ownerUid, businessId,
+            moduleName in ["cashSessions", "dailyReports", "metadata"] ? "cashSessions" : (moduleName in ["config", "labelTemplates", "labelProfiles", "reminders"] ? "settings" : moduleName), "read"))
+        || (moduleName in ["operationLedger", "auditEvents"] && sparkActiveMember(ownerUid, businessId)
+          && ((request.method == "get" && !exists(request.path)) || resource.data.createdBy == request.auth.uid))
+        // A sale-authorized actor must be able to confirm their own atomic
+        // receipt without gaining general visibility over cash movements.
+        || (moduleName == "movements" && sparkActiveMember(ownerUid, businessId)
+          && ((request.method == "get" && !exists(request.path))
+            || (resource.data.createdBy == request.auth.uid && resource.data.data.operationId == recordId
+              && get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(recordId)).data.createdBy == request.auth.uid
+              && get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(recordId)).data.data.status == "committed")));
+    }
+
+    function sparkScopedEntitlements(ownerUid, data) {
+      // Publish only the owner's existing commercial contract, not private
+      // account fields. Lower Founder overrides still use the shared floor.
+      let account = exists(/databases/$(database)/documents/accountAccess/$(ownerUid))
+        ? get(/databases/$(database)/documents/accountAccess/$(ownerUid)).data
+        : get(/databases/$(database)/documents/approvedUsers/$(ownerUid)).data;
+      let overrides = account.get("manualLimitOverrides", {});
+      return data.accountPlan == account.get("plan", "founder_legacy")
+        && data.accountPlan in ["base", "pro", "business", "enterprise", "founder", "founder_legacy"]
+        && data.manualLimitOverrides is map
+        && data.manualLimitOverrides == (overrides is map ? overrides : {});
+    }
+
+    function sparkWorkerPermission(ownerUid, businessId, moduleName, action) {
+      let member = businessUnitMemberData(ownerUid, businessId);
+      return signedIn() && request.auth.uid != ownerUid && workersFeatureFlagEnabled(ownerUid)
+        && exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/members/$(request.auth.uid))
+        && validBusinessUnitIdentity(member, ownerUid, businessId)
+        && member.uid == request.auth.uid && member.status == "active"
+        && supportedMemberRole(member.role) && member.permissions is map
+        && member.permissions.get(moduleName, {}).get(action, false) == true
+        // Owner authorization already checks the account. Keep its fast path
+        // unchanged; staff writes must inherit the same writable contract.
+        && (action == "read" || (exists(/databases/$(database)/documents/accountAccess/$(ownerUid))
+          ? sparkAccountWritable(ownerUid) : sparkApprovedOwnerReadable(ownerUid)));
+    }
+
+    function sparkPermission(ownerUid, businessId, moduleName, action) {
+      return sparkOwner(ownerUid) || sparkWorkerPermission(ownerUid, businessId, moduleName, action);
+    }
+
+    function sparkOperational(ownerUid, businessId) {
+      let c = get(sparkControlPath(ownerUid)).data;
+      return c.storageMode == "modular" && c.phase == "MODULAR" && c.schemaVersion == 2
+        && c.semanticEquality == "PASS" && c.reconstructedHash == c.sourceHash
+        && businessId in c.businessIds;
+    }
+
+    function sparkAfter(ownerUid, businessId, moduleName, recordId) {
+      return getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/$(moduleName)/$(recordId)).data;
+    }
+
+    function sparkLedger(ownerUid, businessId, operationId) {
+      return getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(operationId)).data.data;
+    }
+
+    function sparkNewLedger(ownerUid, businessId, operationId) {
+      return operationId is string && operationId.size() > 0
+        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(operationId));
+      // Every caller ALSO executes its module mutation proof, which reads
+      // getAfter(ledger).kind/result. An absent post-write ledger fails that
+      // proof. Its CREATE rule certifies status/mode/permissions atomically.
+      // Repeating existsAfter here adds no invariant, only evaluation cost.
+    }
+
+    function sparkValidOperationalRecord(ownerUid, businessId, moduleName, recordId) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash",
+          "recordVersion", "createdAt", "updatedAt", "closedAt", "createdBy", "updatedBy", "lastOperationId", "operational", "operationalHash", "saleStockIndex"])
+        && [d.id, d.ownerUid, d.businessId, d.schemaVersion, d.module] == [recordId, ownerUid, businessId, 2, moduleName]
+        && [d.data.id, d.data.businessId] == [recordId, businessId]
+        && d.data is map && d.dataHash is string && d.dataHash.matches("^[a-f0-9]{64}$")
+        && d.recordVersion is int
+        && d.updatedBy == request.auth.uid && d.updatedAt == request.time
+        ;
+    }
+
+    function sparkOperationalCreate(ownerUid, businessId, moduleName, recordId) {
+      // The new immutable ledger certifies mode and permissions once for the
+      // entire atomic commit. Related records cannot exist without that ledger.
+      return sparkValidOperationalRecord(ownerUid, businessId, moduleName, recordId)
+        && request.resource.data.recordVersion == 1 && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && !request.resource.data.keys().hasAny(["sourceHash", "sourcePath"]);
+    }
+
+    function sparkOperationalUpdate(ownerUid, businessId, moduleName, recordId) {
+      let d = request.resource.data;
+      return sparkValidOperationalRecord(ownerUid, businessId, moduleName, recordId)
+        && resource.data.get("recordVersion", 1) >= 1
+        && d.recordVersion == resource.data.get("recordVersion", 1) + 1
+        && d.createdAt == resource.data.get("createdAt", request.time)
+        && d.createdBy == resource.data.get("createdBy", request.auth.uid)
+        && d.get("sourceHash", "") == resource.data.get("sourceHash", "")
+        && d.get("sourcePath", []) == resource.data.get("sourcePath", []);
+    }
+
+    function sparkKindPermission(ownerUid, businessId, kind) {
+      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment"]
+        && sparkPermission(ownerUid, businessId,
+          kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
+            (kind == "cash_movement" ? "movements" : "cashSessions")))),
+          kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
+            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"))));
+    }
+
+    function sparkBoundOperation(ownerUid, businessId) {
+      let op = request.resource.data.lastOperationId;
+      // Permission is certified once by the immutable ledger CREATE rule.
+      // Every related record binds to that NEW ledger in this atomic write;
+      // a denied ledger rejects the entire transaction, not just its receipt.
+      return sparkNewLedger(ownerUid, businessId, op);
+    }
+
+    function sparkLedgerProof(ownerUid, businessId, operationId) {
+      let d = request.resource.data.data;
+      let r = d.result;
+      let kind = d.kind;
+      return sparkOperational(ownerUid, businessId)
+        && d.keys().hasOnly(["id", "businessId", "operationId", "kind", "status", "payloadHash", "result"])
+        && d.operationId == operationId && d.status == "committed" && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
+        && sparkKindPermission(ownerUid, businessId, kind)
+        && (kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
+          : kind in ["customer_create", "customer_edit", "customer_delete"] ? (r.keys().hasOnly(["customerId"])
+            && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/customers/$(r.customerId)).data.lastOperationId == operationId)
+          : kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ?
+            (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.lastOperationId == operationId
+              && (kind in ["product_edit", "product_delete"] || (kind == "product_create"
+                && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(r.productId)).data.data.stock == 0)
+                || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId)).data.lastOperationId == operationId))
+          : kind in ["cash_open", "cash_close", "cash_reopen", "cash_movement"] ?
+            (getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(r.cashSessionId)).data.lastOperationId == operationId
+              && (kind != "cash_close" || (!exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId))
+                && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.data.operationId == operationId))
+              && (kind != "cash_reopen" || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.lastOperationId == operationId)
+              && (kind != "cash_open" || sparkCashOpeningOrigin(ownerUid, businessId, operationId, r)))
+          : kind == "receivable_payment" ? sparkPaymentLedgerProof(ownerUid, businessId, operationId, r) : false);
+    }
+
+    function sparkCashOpeningOrigin(ownerUid, businessId, op, result) {
+      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(result.cashSessionId)).data;
+      return result.get("previousReportId", "") == ""
+        ? (session.data.get("reopened", false) == false
+            && !session.data.keys().hasAny(["previousCashSessionId", "reopenReason"]))
+        : (request.auth.uid == ownerUid
+            && session.data.reopened == true && session.data.reopenReason is string
+            && session.data.reopenReason.size() >= 4
+            && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(result.previousReportId)).data.lastOperationId == op);
+    }
+
+    function sparkReceivableLedgerProof(ownerUid, businessId, operationId) {
+      let d = request.resource.data.data;
+      return sparkOperational(ownerUid, businessId)
+        && d.keys().hasOnly(["id", "businessId", "operationId", "kind", "status", "payloadHash", "result"])
+        && d.operationId == operationId && d.kind == "receivable_payment" && d.status == "committed"
+        && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
+        // The existing cashier contract grants collection via payment,
+        // not general sale editing. UPDATE fields stay strictly bounded.
+        && sparkPermission(ownerUid, businessId, "layaways", "payment")
+        && sparkPaymentLedgerProof(ownerUid, businessId, operationId, d.result);
+    }
+
+    function sparkPaymentLedgerProof(ownerUid, businessId, op, result) {
+      return request.resource.data.get("module", "") == "operationLedger"
+        && request.resource.data.get("data", {}).get("kind", "") == "receivable_payment"
+        && sparkPaymentLedgerLinks(ownerUid, businessId, op, result);
+    }
+
+    function sparkPaymentLedgerLinks(ownerUid, businessId, op, result) {
+      let sale = sparkAfter(ownerUid, businessId, "sales", result.saleId);
+      let movement = sparkAfter(ownerUid, businessId, "movements", op);
+      let session = sparkAfter(ownerUid, businessId, "cashSessions", result.cashSessionId);
+      return result.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
+        && result.movementId == op && movement.lastOperationId == op && sale.lastOperationId == op && session.lastOperationId == op
+        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op))
+        && movement.data.saleId == result.saleId && movement.data.cashSessionId == result.cashSessionId
+        && (sale.data.method == "Apartado" ? (result.layawayId == sale.data.layawayId
+          && sparkAfter(ownerUid, businessId, "layaways", result.layawayId).lastOperationId == op) : !result.keys().hasAny(["layawayId"]));
+    }
+
+    function sparkPaymentSaleMutation(ownerUid, businessId, recordId) {
+      return resource != null && resource.data is map
+        && resource.data.get("data", {}).get("status", "") in ["layaway", "pending_payment"]
+        && sparkPaymentSaleDelta(ownerUid, businessId, recordId);
+    }
+
+    function sparkPaymentSaleDelta(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let old = resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let movement = sparkAfter(ownerUid, businessId, "movements", op).data;
+      let before = old.get("payments", []);
+      return sparkLedger(ownerUid, businessId, op).kind == "receivable_payment"
+        && old.status in ["layaway", "pending_payment"] && old.balance > 0
+        && sparkMoneyEqual(old.received + old.balance, old.total)
+        && d.diff(old).affectedKeys().hasOnly(["received", "balance", "payments", "status"])
+        && movement.saleId == recordId && movement.paymentType == "receivable_payment" && movement.amount > 0 && movement.amount <= old.balance
+        && sparkMoneyEqual(d.received, old.received + movement.amount) && sparkMoneyEqual(d.balance, old.balance - movement.amount)
+        && d.status == (d.balance == 0 ? "paid" : old.status)
+        && d.payments is list && d.payments.size() == before.size() + 1
+        && d.payments[d.payments.size() - 1] == movement.payment
+        && d.payments.toSet() == before.toSet().union([movement.payment].toSet());
+    }
+
+    function sparkPaymentMovement(ownerUid, businessId, op, movement) {
+      // A denied composite write can evaluate alternate proof branches.
+      // Reject the local non-receipt shape BEFORE entering a helper with
+      // getAfter let bindings. This is a reject-only guard, not permission.
+      return movement.keys().hasAll(["payment"])
+        && sparkPaymentMovementProof(ownerUid, businessId, op, movement);
+    }
+
+    function sparkPaymentMovementProof(ownerUid, businessId, op, movement) {
+      let session = sparkAfter(ownerUid, businessId, "cashSessions", movement.cashSessionId);
+      return movement.keys().hasOnly(["id", "businessId", "operationId", "saleId", "cashSessionId", "date", "kind", "amount", "paymentMethod", "paymentType", "payment"])
+        && movement.kind == "ingreso" && movement.amount > 0 && movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"]
+        && movement.paymentType == "receivable_payment" && session.lastOperationId == op && session.data.status == "open" && session.data.date == movement.date
+        && movement.payment == {"id": op, "operationId": op, "date": movement.date, "amount": movement.amount,
+          "method": movement.paymentMethod, "createdBy": request.auth.uid};
+    }
+
+    function sparkPaymentSessionMutation(ownerUid, businessId, op, counters) {
+      return request.resource.data.get("module", "") == "cashSessions"
+        && sparkPaymentSessionShape(ownerUid, businessId, op, counters);
+    }
+
+    function sparkPaymentSessionShape(ownerUid, businessId, op, counters) {
+      let changed = counters.diff(resource.data.operational).affectedKeys();
+      return changed.hasOnly(["cashBalance", "paymentTotals"]) && changed.hasAny(["paymentTotals"])
+        && sparkPaymentSessionDelta(ownerUid, businessId, op, counters);
+    }
+
+    function sparkPaymentSessionDelta(ownerUid, businessId, op, counters) {
+      let movement = sparkAfter(ownerUid, businessId, "movements", op).data;
+      let old = resource.data.operational;
+      let p = counters.paymentTotals;
+      return movement.cashSessionId == request.resource.data.id && movement.date == resource.data.data.date
+        && p.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+        && sparkMoneyEqual(counters.cashBalance, old.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && sparkMoneyEqual(p.cash, old.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && sparkMoneyEqual(p.card, old.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
+        && sparkMoneyEqual(p.transfer, old.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
+        && sparkMoneyEqual(p.receivablePayments, old.paymentTotals.receivablePayments + movement.amount);
+    }
+
+    function sparkPaymentLayawayMutation(ownerUid, businessId, recordId) {
+      return resource != null && resource.data is map
+        && resource.data.get("data", {}).get("saleId", "") != ""
+        && sparkPaymentLayawayDelta(ownerUid, businessId, recordId);
+    }
+
+    function sparkPaymentLayawayDelta(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
+      let sale = sparkAfter(ownerUid, businessId, "sales", d.saleId).data;
+      return ledger.kind == "receivable_payment" && ledger.result.layawayId == recordId && sale.layawayId == recordId
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["paid", "balance", "payments", "status"])
+        && d.paid == sale.received && d.balance == sale.balance && d.payments == sale.payments
+        && d.status == (d.balance == 0 ? "paid" : "partially_paid");
+    }
+
+    function sparkSaleLedgerProof(ownerUid, businessId, operationId, result) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(operationId)).data.data;
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId)).data.data;
+      return result.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
+        && [result.saleId, result.movementId, result.cashSessionId] == [operationId, operationId, sale.cashSessionId]
+        && (sale.method == "Apartado" ? result.layawayId == sale.layawayId : !result.keys().hasAny(["layawayId"]))
+        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(operationId))
+        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(operationId))
+        && [sale.operationId, movement.operationId] == [operationId, operationId]
+        && (sale.customOrder.size() == 0 ? true : (sparkSaleLine(sale, 0)
+          && (sale.customOrder.size() == 1 ? true : sparkSaleLine(sale, 1))));
+    }
+
+    function sparkMoneyEqual(actual, expected) {
+      // Subtraction itself rejects missing/non-numeric operands in Rules.
+      // Same strict tolerance on BOTH sides, with one native comparison.
+      // This helper is called repeatedly by a single atomic cash update.
+      return math.abs(actual - expected) < 0.000001;
+    }
+
+    function sparkDerivedAudit(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let ledger = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(d.operationId)).data;
+      return sparkOperational(ownerUid, businessId)
+        && (sparkOwner(ownerUid) || (ledger.createdBy == request.auth.uid && sparkActiveMember(ownerUid, businessId)))
+        && ledger.data.status == "committed" && ledger.data.operationId == d.operationId
+        && recordId == "audit-" + d.operationId && request.resource.data.lastOperationId == d.operationId
+        && d.keys().hasOnly(["id", "businessId", "operationId", "action", "actorUid", "payloadHash", "lastOperationId"])
+        && d.action == ledger.data.kind && d.actorUid == ledger.createdBy && d.payloadHash == ledger.data.payloadHash;
+    }
+
+    function sparkSalePayments(ownerUid, businessId, op, counters) {
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data;
+      let previous = resource.data.operational;
+      return movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia", "Pendiente"]
+        && movement.paymentType in ["sale", "receivable_payment"]
+        && sparkMoneyEqual(counters.cashBalance, previous.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && counters.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+        && sparkMoneyEqual(counters.paymentTotals.cash, previous.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && sparkMoneyEqual(counters.paymentTotals.card, previous.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
+        && sparkMoneyEqual(counters.paymentTotals.transfer, previous.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
+        && sparkMoneyEqual(counters.paymentTotals.receivablePayments, previous.paymentTotals.receivablePayments + (movement.paymentType == "receivable_payment" ? movement.amount : 0));
+    }
+
+    function sparkCashMovementTotals(ownerUid, businessId, op, counters) {
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data;
+      let previous = resource.data.operational;
+      return movement.cashSessionId == request.resource.data.id && movement.date == request.resource.data.data.date
+        && sparkMoneyEqual(counters.cashBalance, previous.cashBalance + (movement.kind == "ingreso" ? movement.amount : -movement.amount))
+        && sparkMoneyEqual(counters.incomeCash, previous.incomeCash + (movement.kind == "ingreso" ? movement.amount : 0))
+        && sparkMoneyEqual(counters.expenseCash, previous.expenseCash + (movement.kind == "ingreso" ? 0 : movement.amount));
+    }
+
+    // Every stock-bearing sale points to the first product; each product write
+    // proves the next write with a strictly increasing index. This closes the
+    // omitted-product hole without enumerating a fixed number of cart lines.
+    // A stale product cannot satisfy a NEW operation's lastOperationId.
+    function sparkStockSuccessor(ownerUid, businessId, op, order, index) {
+      let next = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(order[index + 1])).data;
+      return next.lastOperationId == op && next.saleStockIndex == index + 1;
+    }
+
+    function sparkStockChain(ownerUid, businessId, recordId, op, order) {
+      let index = request.resource.data.saleStockIndex;
+      return index is int && index >= 0 && index < order.size()
+        && order[index] == recordId
+        && (index == order.size() - 1 ? true : sparkStockSuccessor(ownerUid, businessId, op, order, index));
+    }
+
+    function sparkStockHead(ownerUid, businessId, op, order) {
+      let first = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(order[0])).data;
+      return first.lastOperationId == op && first.saleStockIndex == 0;
+    }
+
+    function sparkProductSaleMutation(ownerUid, businessId, recordId, op) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
+      let itemIndex = sale.stockItemIndices[recordId];
+      let line = sale.items[itemIndex];
+      let d = request.resource.data.data;
+      return sparkStockChain(ownerUid, businessId, recordId, op, sale.stockOrder)
+        && itemIndex is int && itemIndex >= 0 && itemIndex < sale.items.size()
+        && sale.itemOrder[itemIndex] == recordId
+        && line.productId == recordId && line.get("id", recordId) == recordId && line.isCustom == false
+        && line.qty is int && line.qty > 0 && line.qty == sale.stockDeltas[recordId]
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["stock", "qty", "id", "businessId"])
+        && sale.stockDeltas[recordId] > 0 && d.stock == resource.data.data.stock - sale.stockDeltas[recordId];
+    }
+
+    function sparkProductStoredIdentity(businessId, recordId) {
+      let old = resource == null ? null : resource.data.data;
+      return old is map && old.get("id", recordId) == recordId
+        && old.get("businessId", businessId) == businessId && old.get("deleted", false) == false;
+    }
+
+    function sparkProductMutation(ownerUid, businessId, recordId, creating) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(ownerUid, businessId, op);
+      let kind = ledger.kind;
+      return d.id == recordId && d.businessId == businessId && d.stock is number && d.stock >= 0 && d.qty == d.stock
+        && (creating || sparkProductStoredIdentity(businessId, recordId))
+        && (kind == "product_delete" || d.get("deleted", false) == false)
+        && (kind == "product_create" ? (creating && ledger.result.productId == recordId)
+          : kind == "product_delete" ? (!creating && ledger.result.productId == recordId && d.deleted == true
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"])
+              && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
+          : kind == "product_edit" ? (!creating && ledger.result.productId == recordId
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData"])
+              && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
+          : kind == "inventory_adjust" ? (!creating && ledger.result.productId == recordId
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData", "stock", "qty"])
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.productId == recordId
+              && d.stock == resource.data.data.stock + getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.quantityDelta)
+          : kind == "sale" ? (!creating
+              && sparkProductSaleMutation(ownerUid, businessId, recordId, op)) : false);
+    }
+
+    function sparkSaleLine(d, index) {
+      // Caller dispatches only existing indices. Do not evaluate the same
+      // length guard twice per manual line in a compound financial write.
+      let key = d.customOrder[index];
+      let itemIndex = d.customItemIndices[key];
+      let line = d.items[itemIndex];
+      // Native list indexing rejects non-integer/out-of-range indices. The
+      // tuple binds order, canonical ID, legacy alias and custom provenance
+      // without repeating four equivalent boolean branches per line.
+      return [d.itemOrder[itemIndex], line.productId, line.get("id", key), line.isCustom] == [key, key, key, true]
+        && line.qty is int && line.qty > 0;
+    }
+
+    function sparkSaleLines(d) {
+      // Bind each pure set once. These are identical identity/uniqueness
+      // proofs, not weaker predicates or an additional database read.
+      let n = d.items.size();
+      let order = d.itemOrder.toSet();
+      let custom = d.customOrder.toSet();
+      let stockIndices = d.stockItemIndices.keys().toSet();
+      let customIndices = d.customItemIndices.keys().toSet();
+      return n <= 12 && d.itemOrder is list && d.itemOrder.size() == n
+        && order.size() == n
+        && d.customOrder is list && custom.size() == d.customOrder.size()
+        && d.stockItemIndices is map && d.customItemIndices is map
+        && stockIndices == d.stockDeltas.keys().toSet()
+        && customIndices == custom
+        && !stockIndices.hasAny(d.customOrder)
+        && order == stockIndices.union(customIndices)
+        && n == d.stockItemIndices.size() + d.customItemIndices.size();
+    }
+
+    function sparkCustomSalePart(d, start) {
+      let n = d.customOrder.size();
+      // Mandatory core records share these proofs in the SAME new-ledger
+      // atomic commit. Balance by validator work, not just number of rows:
+      // 0..1 ledger; 2..4 sale; 5..8 movement; 9..10 session; 11 runtime.
+      // Leave ledger headroom for the worker's authoritative account check.
+      return n <= start ? true : sparkSaleLine(d, start)
+        && (n <= start + 1 ? true : sparkSaleLine(d, start + 1)
+          && (n <= start + 2 ? true : sparkSaleLine(d, start + 2)));
+    }
+
+    function sparkCustomSalePart4(d, start) {
+      return sparkCustomSalePart(d, start)
+        && (d.customOrder.size() <= start + 3 ? true : sparkSaleLine(d, start + 3));
+    }
+
+    function sparkSaleQuantity(d) {
+      let items = d.items;
+      let n = items.size();
+      return items[0].qty + (n > 1 ? items[1].qty : 0) + (n > 2 ? items[2].qty : 0)
+        + (n > 3 ? items[3].qty : 0) + (n > 4 ? items[4].qty : 0) + (n > 5 ? items[5].qty : 0)
+        + (n > 6 ? items[6].qty : 0) + (n > 7 ? items[7].qty : 0) + (n > 8 ? items[8].qty : 0)
+        + (n > 9 ? items[9].qty : 0) + (n > 10 ? items[10].qty : 0) + (n > 11 ? items[11].qty : 0);
+    }
+
+    function sparkSaleCounterDelta(ownerUid, businessId, op, counters) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
+      let previous = resource.data.operational;
+      return sale.cashSessionId == request.resource.data.id && sale.date == request.resource.data.data.date
+        && counters.saleCount == previous.saleCount + 1
+        && counters.itemCount == previous.itemCount + sale.itemCount
+        && sparkMoneyEqual(counters.taxTotal, previous.taxTotal + sale.iva)
+        && sparkMoneyEqual(counters.salesTotal, previous.salesTotal + sale.total)
+        && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.lastOperationId == op
+        && (sale.customOrder.size() <= 9 ? true : (sparkSaleLine(sale, 9)
+          && (sale.customOrder.size() <= 10 ? true : sparkSaleLine(sale, 10))));
+    }
+
+    function sparkSaleMutation(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data;
+      return sparkLedger(ownerUid, businessId, recordId).kind == "sale"
+        && request.resource.data.lastOperationId == recordId
+        && d.operationId == recordId && d.cashSessionId is string && d.cashSessionId.size() > 0
+        && d.total is number && d.total >= 0 && d.received is number && d.received >= 0 && d.received <= d.total
+        && sparkMoneyEqual(d.balance, d.total - d.received)
+        && (d.method == "Apartado" ? d.status == "layaway"
+          : (d.method == "Pendiente" ? (d.status == "pending_payment" && d.received == 0)
+            : (d.method in ["Efectivo", "Tarjeta", "Transferencia"] && d.status == "paid" && d.received == d.total)))
+        && (d.method == "Apartado" ? sparkSaleLayaway(ownerUid, businessId, recordId, d)
+          : !d.keys().hasAny(["layawayId"]))
+        && d.items is list && d.items.size() > 0 && d.stockDeltas is map
+        && sparkSaleLines(d) && sparkCustomSalePart(d, 2)
+        && d.itemCount is int && d.iva is number && d.iva >= 0
+        && d.stockOrder is list && d.stockOrder.toSet() == d.stockDeltas.keys().toSet()
+        && d.stockOrder.size() == d.stockDeltas.size()
+        && (d.stockOrder.size() == 0 ? true : sparkStockHead(ownerUid, businessId, recordId, d.stockOrder))
+        && session.data.status == "open" && session.data.date == d.date && session.lastOperationId == recordId
+        // Require a NEW exact-session update even if a malformed/imported old
+        // record happened to carry this operation ID. Its update rule owns
+        // the final manual-line proof and every authoritative counter delta.
+        && session.recordVersion == get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data.get("recordVersion", 1) + 1;
+    }
+
+    function sparkSaleLayaway(ownerUid, businessId, operationId, sale) {
+      let linked = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(sale.layawayId)).data;
+      // A pre-existing reservation cannot authorize a second sale. The new
+      // linked record's CREATE rule proves amounts and permission atomically.
+      return sale.layawayId is string && sale.layawayId.size() > 0
+        && !exists(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(sale.layawayId))
+        && linked.lastOperationId == operationId && linked.data.saleId == operationId;
+    }
+
+    function sparkLayawayMutation(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(ownerUid, businessId, op);
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
+      return ledger.kind == "sale" && ledger.result.layawayId == recordId
+        && sparkPermission(ownerUid, businessId, "layaways", "create")
+        && sale.method == "Apartado" && sale.layawayId == recordId && d.saleId == op
+        && d.total == sale.total && d.paid == sale.received && d.balance == sale.balance;
+    }
+
+    function sparkCashMutation(ownerUid, businessId, recordId, creating) {
+      let d = request.resource.data.data;
+      let counters = request.resource.data.operational;
+      let op = request.resource.data.lastOperationId;
+      let kind = sparkLedger(ownerUid, businessId, op).kind;
+      return counters.summaryVersion == 1 && counters.saleCount is int && counters.saleCount >= 0
+        && counters.salesTotal is number && counters.salesTotal >= 0 && counters.paymentTotals is map
+        && counters.cashBalance is number && counters.closeCycle is int && counters.closeCycle >= 1
+        && request.resource.data.operationalHash is string && request.resource.data.operationalHash.matches("^[a-f0-9]{64}$")
+        && d.date is string && d.status in ["open", "closed"]
+        && (kind == "cash_open" ? (creating && counters.saleCount == 0 && counters.salesTotal == 0
+              && counters.itemCount == 0 && counters.taxTotal == 0 && counters.incomeCash == 0 && counters.expenseCash == 0 && counters.closeCycle == 1
+              && counters.paymentTotals == {"cash": 0, "card": 0, "transfer": 0, "receivablePayments": 0}
+              && counters.openingAmount is number && counters.openingAmount >= 0
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.lastOperationId == op
+              && d.status == "open" && counters.cashBalance == counters.openingAmount
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == recordId)
+          : kind == "sale" ? (!creating && resource.data.data.status == "open" && d.status == "open"
+              && d.date == resource.data.data.date
+              && d == resource.data.data
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "paymentTotals"])
+              && sparkSaleCounterDelta(ownerUid, businessId, op, counters)
+              && sparkSalePayments(ownerUid, businessId, op, counters)
+              )
+          : kind == "receivable_payment" ? (!creating && resource.data.data.status == "open" && d == resource.data.data
+              && sparkPaymentSessionMutation(ownerUid, businessId, op, counters))
+          : kind == "cash_close" ? (!creating && resource.data.data.status == "open" && d.status == "closed"
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reportId"])
+              && counters == resource.data.operational
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(d.reportId)).data.data.cashSessionId == recordId
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == "")
+          : kind == "cash_reopen" ? (!creating && resource.data.data.status == "closed" && d.status == "open"
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["status"])
+              && counters.closeCycle == resource.data.operational.closeCycle + 1
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["closeCycle"])
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == recordId)
+          : kind == "cash_movement" ? (!creating && resource.data.data.status == "open" && d.status == "open"
+              && d == resource.data.data
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["cashBalance", "incomeCash", "expenseCash"])
+              && sparkCashMovementTotals(ownerUid, businessId, op, counters)
+              && counters.saleCount == resource.data.operational.saleCount && counters.salesTotal == resource.data.operational.salesTotal) : false);
+    }
+
+    function sparkMovementMutation(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, recordId);
+      let kind = ledger.kind;
+      return request.resource.data.lastOperationId == recordId
+        && d.id == recordId && d.businessId == businessId && d.operationId == recordId
+        && d.amount is number && d.amount >= 0 && d.date is string
+        // Dispatch from the immutable ledger, not overlapping OR proofs.
+        // A rejected sale must not evaluate receipt-only cross-record reads.
+        && (kind == "sale" ? (d.saleId == recordId
+              && sparkSaleMovement(ownerUid, businessId, recordId, d))
+          : kind == "inventory_adjust" ? (d.kind == "inventory_adjustment"
+              && d.productId == ledger.result.productId && d.quantityDelta is number && d.quantityDelta != 0 && d.amount == 0)
+          : kind == "product_create" ? (d.kind == "inventory_opening"
+              && d.productId == ledger.result.productId && d.quantityDelta > 0 && d.amount == 0
+              && d.quantityDelta == getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/products/$(d.productId)).data.data.stock)
+          : kind == "cash_open" ? (d.kind == "apertura" && d.cashSessionId == ledger.result.cashSessionId
+              && d.amount == getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data.operational.openingAmount)
+          : kind == "cash_movement" ? (d.kind in ["ingreso", "egreso", "retiro", "compra"]
+              && d.cashSessionId == ledger.result.cashSessionId)
+          : kind == "receivable_payment" ? sparkPaymentMovement(ownerUid, businessId, recordId, d) : false);
+    }
+
+    function sparkSaleMovement(ownerUid, businessId, recordId, movement) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(recordId)).data.data;
+      // The ledger requires this NEW movement and sale in the same commit.
+      // Distribute cross-record proofs between their CREATE rules, never
+      // between separate commits: a rejected manual line rejects all writes.
+      return movement.saleId == recordId && movement.cashSessionId == sale.cashSessionId && movement.date == sale.date
+        && movement.kind == "ingreso" && movement.amount == sale.received
+        && movement.paymentType == (sale.method == "Apartado" ? "receivable_payment" : "sale")
+        && (sale.received == 0 ? movement.paymentMethod == "Pendiente"
+          : (sale.method == "Apartado" ? movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"] : movement.paymentMethod == sale.method))
+        && sale.itemCount == sparkSaleQuantity(sale)
+        && sparkCustomSalePart4(sale, 5);
+    }
+
+    function sparkReportMutation(ownerUid, businessId, recordId, creating) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(ownerUid, businessId, op);
+      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data;
+      return ledger.kind == "cash_open"
+        ? (!creating && request.auth.uid == ownerUid && resource.data.data.status == "closed"
+            && d.id == recordId && d.businessId == businessId && d.status == "reopened"
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])
+            && ledger.result.previousReportId == recordId && ledger.result.cashSessionId != d.cashSessionId
+            && session.data.status == "closed" && session.data.reportId == recordId && session.data.date == d.date
+            && sparkSuccessorSession(ownerUid, businessId, op, ledger.result.cashSessionId, d))
+        : d.id == recordId && d.businessId == businessId && ledger.result.reportId == recordId
+        && ledger.result.cashSessionId == d.cashSessionId && session.lastOperationId == op
+        && ((creating && ledger.kind == "cash_close" && session.data.status == "closed"
+              && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "status", "renderVersion", "openingAmount", "closeCash", "declaredCash", "theoreticalCash", "difference", "saleCount", "total", "totalItems", "totalIva", "incomeCash", "expenseCash", "paymentTotals", "observations", "closeCycle", "lastOperationId"])
+              && session.data.reportId == recordId && d.status == "closed"
+              && d.total == session.operational.salesTotal && d.saleCount == session.operational.saleCount
+              && d.theoreticalCash == session.operational.cashBalance && d.paymentTotals == session.operational.paymentTotals
+              && d.openingAmount == session.operational.openingAmount && d.incomeCash == session.operational.incomeCash && d.expenseCash == session.operational.expenseCash
+              && d.totalItems == session.operational.itemCount && d.totalIva == session.operational.taxTotal && d.closeCycle == session.operational.closeCycle
+              && d.declaredCash is number && d.declaredCash >= 0 && d.closeCash == d.declaredCash
+              && sparkMoneyEqual(d.difference, d.declaredCash - d.theoreticalCash))
+          || (!creating && ledger.kind == "cash_reopen" && session.data.status == "open"
+              && d.status == "reopened" && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])));
+    }
+
+    function sparkSuccessorSession(ownerUid, businessId, op, sessionId, report) {
+      let next = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(sessionId)).data;
+      return next.lastOperationId == op && next.data.status == "open" && next.data.date == report.date
+        && next.data.reopened == true && next.data.previousCashSessionId == report.cashSessionId
+        && next.data.reopenReason == report.reopenReason && report.reopenReason is string && report.reopenReason.size() >= 4
+        && report.declaredCash >= 0 && report.closeCash == report.declaredCash
+        && next.operational.openingAmount == report.declaredCash;
+    }
+
+    function sparkRuntimeMutation(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
+      let session = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(ledger.result.cashSessionId)).data;
+      return recordId == "runtime" && d.summaryVersion == 1
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["openCashSessionId"])
+        && session.lastOperationId == request.resource.data.lastOperationId
+        && ((ledger.kind in ["cash_open", "cash_reopen"] && resource.data.data.openCashSessionId == ""
+              && d.openCashSessionId == ledger.result.cashSessionId && session.data.status == "open")
+          || (ledger.kind == "cash_close" && resource.data.data.openCashSessionId == ledger.result.cashSessionId
+              && d.openCashSessionId == "" && session.data.status == "closed")
+          || (ledger.kind == "sale" && d == resource.data.data && session.data.status == "open"
+              && d.openCashSessionId == ledger.result.cashSessionId
+              && sparkSaleRuntimeLine(ownerUid, businessId, request.resource.data.lastOperationId)));
+    }
+
+    function sparkSaleRuntimeLine(ownerUid, businessId, op) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
+      return sale.customOrder.size() <= 11 ? true : sparkSaleLine(sale, 11);
+    }
+
+    function sparkCustomerMutation(ownerUid, businessId, recordId, creating) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
+      return ledger.result.customerId == recordId
+        // Imported rows can lack embedded IDs. Normalize only an absent ID;
+        // an existing foreign ID/scope cannot be rewritten through CRUD.
+        && (creating || sparkCustomerStoredIdentity(businessId, recordId))
+        && (ledger.kind == "customer_delete" ? (!creating && d.deleted == true
+            && resource.data.data.get("deleted", false) == false
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"]))
+          : (ledger.kind == (creating ? "customer_create" : "customer_edit")
+            && d.name is string && d.name.matches(".*[^\\s].*") && d.phone is string && d.notes is string
+            && (creating ? d.keys().hasOnly(["id", "businessId", "name", "phone", "notes"])
+              : resource.data.data.get("deleted", false) == false
+                && d.diff(resource.data.data).affectedKeys().hasOnly(["name", "phone", "notes", "id", "businessId"]))));
+    }
+
+    function sparkCustomerStoredIdentity(businessId, recordId) {
+      return resource != null && resource.data is map
+        && [resource.data.data.get("id", recordId), resource.data.data.get("businessId", businessId)] == [recordId, businessId];
+    }
+
+    function sparkOperationalMutation(ownerUid, businessId, moduleName, recordId, creating) {
+      return (moduleName == "operationLedger" && creating && sparkLedgerProof(ownerUid, businessId, recordId))
+        || (moduleName == "products"
+          && sparkProductMutation(ownerUid, businessId, recordId, creating))
+        || (moduleName == "customers"
+          && sparkCustomerMutation(ownerUid, businessId, recordId, creating))
+        || (moduleName == "sales" && creating
+          && sparkSaleMutation(ownerUid, businessId, recordId))
+        || (moduleName == "movements" && creating
+          && sparkMovementMutation(ownerUid, businessId, recordId))
+        || (moduleName == "cashSessions"
+          && sparkCashMutation(ownerUid, businessId, recordId, creating))
+        || (moduleName == "dailyReports"
+          && sparkReportMutation(ownerUid, businessId, recordId, creating))
+        || (moduleName == "metadata" && !creating
+          && sparkRuntimeMutation(ownerUid, businessId, recordId))
+        || (moduleName == "auditEvents" && creating
+          && recordId == "audit-" + request.resource.data.data.operationId
+          && request.resource.data.data.actorUid == request.auth.uid
+          && request.resource.data.data.action == sparkLedger(ownerUid, businessId, request.resource.data.data.operationId).kind);
+    }
+
     // Shadow records remain immutable until the verified control reaches
     // MODULAR. Operational writes then require an atomic, new ledger entry.
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/{moduleName}/{recordId} {
+    match /{moduleName}/{recordId} {
       allow read: if (sparkShadowModule(moduleName) || moduleName in ["metadata", "operationLedger"])
         && sparkModuleReadable(ownerUid, businessId, moduleName, recordId);
       allow create: if request.resource.data.keys().hasAll(["sourceHash", "sourcePath"])
@@ -2315,7 +2319,7 @@ service cloud.firestore {
         && sparkValidShadow(ownerUid, businessId, moduleName, recordId);
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/customers/{recordId} {
+    match /customers/{recordId} {
       allow create: if request.resource.data.get("module", "") == "customers" && signedIn()
         && sparkCustomerMutation(ownerUid, businessId, recordId, true)
         && sparkBoundOperation(ownerUid, businessId)
@@ -2328,7 +2332,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/products/{recordId} {
+    match /products/{recordId} {
       allow create: if request.resource.data.get("module", "") == "products" && signedIn()
         && sparkProductMutation(ownerUid, businessId, recordId, true)
         && sparkBoundOperation(ownerUid, businessId)
@@ -2341,7 +2345,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/sales/{recordId} {
+    match /sales/{recordId} {
       allow create: if request.resource.data.get("module", "") == "sales" && signedIn()
         && sparkSaleMutation(ownerUid, businessId, recordId)
         && sparkBoundOperation(ownerUid, businessId)
@@ -2358,7 +2362,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/movements/{recordId} {
+    match /movements/{recordId} {
       allow create: if request.resource.data.get("module", "") == "movements" && signedIn()
         && sparkBoundOperation(ownerUid, businessId)
         && sparkOperationalCreate(ownerUid, businessId, "movements", recordId)
@@ -2366,7 +2370,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/layaways/{recordId} {
+    match /layaways/{recordId} {
       allow create: if request.resource.data.get("module", "") == "layaways" && signedIn()
         && sparkBoundOperation(ownerUid, businessId)
         && sparkOperationalCreate(ownerUid, businessId, "layaways", recordId)
@@ -2378,7 +2382,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/cashSessions/{recordId} {
+    match /cashSessions/{recordId} {
       allow create: if request.resource.data.get("module", "") == "cashSessions" && signedIn()
         && sparkCashMutation(ownerUid, businessId, recordId, true)
         && sparkBoundOperation(ownerUid, businessId)
@@ -2391,7 +2395,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/dailyReports/{recordId} {
+    match /dailyReports/{recordId} {
       allow create: if request.resource.data.get("module", "") == "dailyReports" && signedIn()
         && sparkReportMutation(ownerUid, businessId, recordId, true)
         && sparkBoundOperation(ownerUid, businessId)
@@ -2404,7 +2408,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/metadata/{recordId} {
+    match /metadata/{recordId} {
       // A worker sees only the assigned business's cutover proof, not the
       // owner's global business list. The proof is linked to root authority.
       allow read: if recordId == "storage" && signedIn()
@@ -2438,18 +2442,20 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/operationLedger/{recordId} {
+    match /operationLedger/{recordId} {
       allow create: if request.resource.data.get("module", "") == "operationLedger" && signedIn()
         && sparkOperationalCreate(ownerUid, businessId, "operationLedger", recordId)
         && sparkLedgerProof(ownerUid, businessId, recordId);
       allow delete: if false;
     }
 
-    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/auditEvents/{recordId} {
+    match /auditEvents/{recordId} {
       allow create: if request.resource.data.get("module", "") == "auditEvents" && signedIn()
         && sparkOperationalCreate(ownerUid, businessId, "auditEvents", recordId)
         && sparkDerivedAudit(ownerUid, businessId, recordId);
       allow delete: if false;
+    }
+
     }
 
     match /businesses/{businessId}/legacyBackups/{backupId} {

@@ -160,14 +160,26 @@
         persistCandidate:root.click360PersistSparkCandidate,projectConfirmed:root.click360ProjectSparkOperation});
       context();root.click360SparkOperationalSession=session;publish('RECOVERING');await drain();context();
       const records={};cursors.clear();
-      for(const [source,module]of Object.entries(api.arrays)){
-        if(!readable(module,p))continue;
-        let next=null;records[source]=[];
-        do{
-          const result=await page(businessId,module,{after:next});context();records[source].push(...result.records);next=result.next;
-        }while(module==='products'&&next);
-        cursors.set(source,{module,businessId,next});
-      }
+      publish('LOADING_SERVER_VIEW');
+      // Independent bounded views do not need one serialized network round
+      // trip per collection. Keep the SAME queries/pages and server proof,
+      // and install nothing until all workers complete. Product pagination
+      // remains sequential within its own module, never an unbounded fanout.
+      const modules=Object.entries(api.arrays).filter(([,module])=>readable(module,p));
+      for(const [source]of modules)records[source]=[];
+      let nextModule=0,failed=false;
+      await Promise.all(Array.from({length:Math.min(3,modules.length)},async()=>{
+        try{
+          while(!failed&&nextModule<modules.length){
+            context();const [source,module]=modules[nextModule++];let next=null;
+            do{
+              const result=await page(businessId,module,{after:next});context();records[source].push(...result.records);next=result.next;
+            }while(module==='products'&&next);
+            context();cursors.set(source,{module,businessId,next});
+          }
+        }catch(error){failed=true;throw error;}
+      }));
+      context();
       if(readable('cashSessions',p)){
         // The active session is not a history page. Read its exact runtime
         // pointer and summary in one server transaction, even beyond row 100.
