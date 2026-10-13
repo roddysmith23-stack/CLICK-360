@@ -31,6 +31,24 @@ assert.throws(()=>globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView({...repo
 assert.equal(report.paymentTotals.layawayPayments,undefined,'Derived print view cannot mutate server report');
 const helper=await readFile('qa/r38-emulator-support.mjs','utf8');
 const firebaseSource=await readFile('firebase-service.js','utf8');
+// READY cannot escape before the actual lifecycle owner is installed.
+// Otherwise a restart/navigation observes a cursorless UI and a previous
+// idle phase as though the new bootstrap/reconnect were finished.
+{
+  const body=firebaseSource.match(/onPhase:detail=>\{([\s\S]*?)\}\}\);/)?.[1];
+  assert(body,'Actual native bootstrap phase callback must be tested');
+  const coordinator={},calls=[],phaseContext={window:{click360SparkCoordinator:null},coordinator,
+    setSyncStatus:(status,message,extra)=>calls.push({status,extra})};
+  vm.createContext(phaseContext);vm.runInContext(`globalThis.publish=detail=>{${body}};`,phaseContext);
+  phaseContext.publish({phase:'READY',operationalCloudConfirmed:true});
+  assert.equal(phaseContext.window.click360SparkBootstrapState.phase,'INSTALLING_UI');
+  assert.equal(phaseContext.window.click360SparkBootstrapState.operationalCloudConfirmed,false);
+  assert.equal(calls.at(-1).status,'modular_pending');
+  phaseContext.window.click360SparkCoordinator=coordinator;
+  phaseContext.publish({phase:'READY',operationalCloudConfirmed:true});
+  assert.equal(phaseContext.window.click360SparkBootstrapState.phase,'READY');
+  assert.equal(calls.at(-1).status,'modular_confirmed');
+}
 const transportStart=firebaseSource.indexOf('const db = firebase.firestore();');
 const transportEnd=firebaseSource.indexOf('window.click360Auth = auth;',transportStart);
 assert(transportStart>0&&transportEnd>transportStart);

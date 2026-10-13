@@ -4127,9 +4127,14 @@
               },readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),
               installBusiness:window.click360InstallSparkBusiness,installView:window.click360InstallSparkView,
               onPhase:detail=>{
-                window.click360SparkBootstrapState=detail;
-                if(detail.phase!=='LEGACY')setSyncStatus(detail.phase==='READY'?'modular_confirmed':'modular_pending',detail.phase==='READY'
-                  ?'Guardado y respaldado en nube':'Estamos actualizando CLICK 360 y protegiendo tu información.',detail);
+                // Source verification finishes before the caller installs the
+                // lifecycle owner and unlocks Auth/UI. Do not expose that
+                // intermediate state as a fully ready operational interface.
+                const phase=detail.phase==='READY'&&window.click360SparkCoordinator!==coordinator?'INSTALLING_UI':detail.phase;
+                const verified={...detail,phase,operationalCloudConfirmed:phase==='READY'};
+                window.click360SparkBootstrapState=verified;
+                if(phase!=='LEGACY')setSyncStatus(phase==='READY'?'modular_confirmed':'modular_pending',phase==='READY'
+                  ?'Guardado y respaldado en nube':'Estamos actualizando CLICK 360 y protegiendo tu información.',verified);
               }});
             sparkCoordinator=coordinator;
             const result=await coordinator.recover();
@@ -4161,6 +4166,11 @@
                     deactivateActiveAccount();showGate('No pudimos verificar tu acceso al negocio.',ACCESS_UI_STATES.BLOCKED);
                   });
               }
+              window.click360SparkBootstrapState={phase:'READY',reason:null,operationalCloudConfirmed:true};
+              setSyncStatus('modular_confirmed','Guardado y respaldado en nube',window.click360SparkBootstrapState);
+              window.dispatchEvent(new CustomEvent('click360-spark-view-ready',{
+                detail:{businessId:result.businessId,source:'server'}
+              }));
               return true;
             }
             coordinator.close();
