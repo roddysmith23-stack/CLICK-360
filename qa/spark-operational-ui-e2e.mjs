@@ -421,6 +421,16 @@ try{
     });
     device=await openSignedIn(browser,{width:390,height:844},workerEmail);
     let wp=device.page;
+    const workerLifecycle=device.workerLifecycle=[];
+    let workerStage='worker_started';
+    const mark=stage=>{workerStage=stage;workerLifecycle.push({at:Date.now(),stage});};
+    const observeWorkerPage=p=>{
+      p.on('crash',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'page_crash'}));
+      p.on('close',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'page_close'}));
+    };
+    observeWorkerPage(wp);
+    device.context.on('close',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'context_close'}));
+    browser.on('disconnected',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'browser_disconnected'}));
     await wp.evaluate(()=>{
       window.SPARK_WORKER_STATUS=null;
       window.addEventListener('click360-spark-operation-status',e=>{window.SPARK_WORKER_STATUS=e.detail;});
@@ -491,17 +501,28 @@ try{
       &&click360GetTenantState().products.find(p=>p.id===productId)?.stock===3,
       {actorUid:workerUid,sessionId:ws.id,operationId:workerSale.operationId,productId:workerProduct.id}),
       'Worker native bootstrap restores the exact session, sale and stock after reload');
-    await device.context.setOffline(true);
+    mark('first_offline');await device.context.setOffline(true);
+    await wp.waitForFunction(()=>navigator.onLine===false);
     assert(await wp.evaluate(()=>!!click360SparkOperationalSession),'Temporary disconnection does not delete the authenticated worker journal');
+    // Idle can still be the PRE-online state: arm a fresh event before
+    // reconnect, then require its actual server recovery to finish. Do not
+    // immediately interrupt that flight with the next offline transition.
+    await wp.evaluate(()=>{
+      window.WORKER_RECONNECT_PROOF=false;
+      window.addEventListener('click360-spark-view-ready',()=>{window.WORKER_RECONNECT_PROOF=true;},{once:true});
+    });
+    mark('reconnecting');
     await device.context.setOffline(false);
-    await wp.waitForFunction(()=>!!window.click360SparkCoordinator&&!click360SparkCoordinator.isBusy());
+    await wp.waitForFunction(()=>window.WORKER_RECONNECT_PROOF===true
+      &&click360SparkBootstrapState?.phase==='READY'&&!!window.click360SparkCoordinator&&!click360SparkCoordinator.isBusy());
+    mark('fresh_reconnect_complete');
     const workerHealth=await wp.evaluate(()=>click360SparkOperationalSession.health());
     assert(workerHealth.pendingCount+workerHealth.unknownCount+workerHealth.projectionPendingCount===0,
       'Worker reload and reconnect leave no unconfirmed journal or projection');
     assert((await record('products',workerProduct.id)).stock===3
       &&(await record('sales',workerSale.operationId)).createdBy===workerUid,
       'Worker reconnect preserves one confirmed operation and its exact stock');
-    await device.context.setOffline(true);
+    mark('second_offline');await device.context.setOffline(true);
     await wp.waitForFunction(()=>navigator.onLine===false);
     await wp.evaluate(()=>{
       location.hash='#sell';
@@ -509,6 +530,7 @@ try{
     });
     const offlineIds=[];
     for(let i=0;i<2;i++){
+      mark(`offline_sale_${i+1}`);
       await wp.locator('#manualCode').fill('WORKER-NEW');await wp.locator('#addCode').click();
       await wp.locator('#payMethod').selectOption('Transferencia');await wp.evaluate(()=>{window.SPARK_WORKER_STATUS=null;});
       await wp.locator('#chargeBtn').click();await wp.locator('#doneSaleBtn').waitFor({state:'visible'});
@@ -522,9 +544,10 @@ try{
     assert(await wp.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id).stock===1,workerProduct.id),
       'Optimistic projection retains both offline stock deductions');
     assert((await record('products',workerProduct.id)).stock===3,'Offline candidates do not pretend to have changed server stock');
-    await wp.close();
+    mark('intentional_document_close');await wp.close();
     await device.context.setOffline(false);
     wp=await device.context.newPage();device.page=wp;
+    observeWorkerPage(wp);mark('cold_online_recovery');
     await wp.goto(url,{waitUntil:'domcontentloaded'});
     await wp.waitForFunction(()=>{
       if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(click360SparkBootstrapState.reason);
@@ -566,7 +589,7 @@ try{
     commit:window.SPARK_UI_COMMIT,lastFailure:window.click360LastSaveFailure,gate:window.click360WriteGate?.(),
     bootstrap:window.click360SparkBootstrapState,accessGate:window.click360SparkAccessGate?.(),
     gateText:document.querySelector('#click360-auth-gate')?.textContent,state:click360GetTenantState()?.cashSessions})).catch(()=>null)));
-  if(device)console.log(JSON.stringify({pageErrors:device.pageErrors}));
+  if(device)console.log(JSON.stringify({pageErrors:device.pageErrors,workerLifecycle:device.workerLifecycle||[]}));
   throw error;
 }finally{
   await device?.context.close();for(const browser of browsers)await browser.close();await env?.cleanup();stopProcessTree(server);stopProcessTree(emulators);log.end();
