@@ -4141,6 +4141,7 @@
                 }).prepare();
               },
               installBusiness:window.click360InstallSparkBusiness,installView:window.click360InstallSparkView,
+              onProgress:detail=>{window.click360SparkBootstrapProgress=detail;},
               onPhase:detail=>{
                 // Source verification finishes before the caller installs the
                 // lifecycle owner and unlocks Auth/UI. Do not expose that

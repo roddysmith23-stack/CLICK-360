@@ -88,6 +88,7 @@ try{
         const diagnostic=await page.evaluate(async()=>({
           authPresent:!!window.click360Auth?.currentUser,userPresent:!!window.click360User,
           phase:window.click360SparkBootstrapState?.phase,reason:window.click360SparkBootstrapState?.reason,
+          progress:window.click360SparkBootstrapProgress,
           coordinatorPresent:!!window.click360SparkCoordinator,sessionPresent:!!window.click360SparkOperationalSession,
           hydrated:window.click360IsTenantDataHydrated?.(),online:navigator.onLine,
           syncStatus:window.click360SyncStatus?.status,criticalActions:window.click360DebugCriticalActionGate?.().size,

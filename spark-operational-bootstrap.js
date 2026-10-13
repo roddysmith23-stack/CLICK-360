@@ -4,7 +4,7 @@
   const projects=new Set(['demo-click360-spark-modular','click360-staging-7620168025']);
   function create(options){
     const {projectId,db,ownerUid,actorUid,deviceId,resolveUser,resolveContext,resolveBusiness,
-      restoreLocal,readLocal,installView,installBusiness,onPhase=()=>{}}=options;
+      restoreLocal,readLocal,installView,installBusiness,onPhase=()=>{},onProgress=()=>{}}=options;
     if(!projects.has(projectId)||db.app?.options?.projectId!==projectId)throw Error('SPARK_BOOTSTRAP_NONPRODUCTION_ONLY');
     if([restoreLocal,readLocal,installView,installBusiness,resolveContext,resolveBusiness,resolveUser].some(f=>typeof f!=='function'))
       throw Error('SPARK_BOOTSTRAP_CALLBACKS_REQUIRED');
@@ -176,20 +176,25 @@
       // remains sequential within its own module, never an unbounded fanout.
       const modules=Object.entries(api.arrays).filter(([,module])=>readable(module,p));
       for(const [source]of modules)records[source]=[];
-      let nextModule=0,failed=false;
+      let nextModule=0,completedModules=0,failed=false;const activeModules=new Set();
+      const progress=()=>{context();onProgress({phase:'LOADING_SERVER_VIEW',completedModules,totalModules:modules.length,
+        activeModules:[...activeModules]});};
       await Promise.all(Array.from({length:Math.min(3,modules.length)},async()=>{
         try{
           while(!failed&&nextModule<modules.length){
             context();const [source,module]=modules[nextModule++];let next=null;
+            activeModules.add(module);progress();
             do{
               const result=await page(businessId,module,{after:next});context();records[source].push(...result.records);next=result.next;
             }while(module==='products'&&next);
             context();cursors.set(source,{module,businessId,next});
+            activeModules.delete(module);completedModules++;progress();
           }
         }catch(error){failed=true;throw error;}
       }));
       context();
       if(readable('cashSessions',p)){
+        onProgress({phase:'VERIFYING_CURRENT_CASH',completedModules,totalModules:modules.length,activeModules:[]});
         // The active session is not a history page. Read its exact runtime
         // pointer and summary in one server transaction, even beyond row 100.
         const current=await session.currentCash();context();
