@@ -10,6 +10,22 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
     await page.route('https://journal.example.test/**', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Synthetic journal only</title>' }));
     await page.goto('https://journal.example.test/');
     await page.addScriptTag({ content: source });
+    const coverage=await page.evaluate(async()=>{
+      const journal=await CLICK360_MODULAR_JOURNAL.open({databaseName:'synthetic-owner-coverage'});
+      const identity={ownerUid:'census-owner',businessId:'covered-business'};
+      for(let i=0;i<100;i++)await journal.enqueue(identity,`op-${i}`,{actorUid:'census-owner',type:'cash_open'});
+      await journal.enqueue({...identity,businessId:'omitted-business'},'tail-unknown',{actorUid:'census-owner',type:'cash_open'});
+      const omitted={...identity,businessId:'omitted-business'};
+      const uncertain=await journal.claim(omitted,'tail-unknown','census-device');
+      await journal.markUnknown(omitted,'tail-unknown',uncertain.revision);
+      await journal.enqueue({ownerUid:'different-owner',businessId:'foreign-business'},'foreign-op',{actorUid:'different-owner'});
+      let stopped=false;try{await journal.assertOwnerCoverage(identity.ownerUid,[identity.businessId]);}
+      catch(error){stopped=error.message==='OWNER_OUTBOX_BUSINESS_COVERAGE_REQUIRED';}
+      const full=await journal.assertOwnerCoverage(identity.ownerUid,[identity.businessId,'omitted-business']);
+      journal.close();return {stopped,full};
+    });
+    assert.equal(coverage.stopped,true,'An omitted business beyond the first 100 rows must block owner-wide migration');
+    assert.deepEqual(coverage.full,{enumerationComplete:true,recordCount:101});
     for(const oldVersion of [1,2,3,4]){
     const upgrade=await page.evaluate(async oldVersion=>{
       const oldRow={key:'old-owner:old-business:old-op',ownerUid:'old-owner',businessId:'old-business',operationId:'old-op',state:'unknown',revision:9,payload:{total:30},payloadHash:'preserve-exact-hash',createdAt:1};

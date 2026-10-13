@@ -76,6 +76,19 @@ device key deliberately and requires successful cold shadow resume. The real
 staging shadow harness uses a small representative synthetic dataset and the
 same failure, without weakening deployed Rules or using Admin for migration.
 
+## Whole-owner journal coverage
+
+The migration callback additionally checks the entire owner primary-key range,
+not only secondary-index pages for businesses already present in the source.
+It rejects omitted businesses and malformed identity/state rows, without claiming,
+deleting or changing an operation. The check is repeated by the migration guard.
+This introduces no journal database upgrade and does not affect operational replay.
+
+Native IndexedDB tests in Chromium, WebKit and Firefox place an UNKNOWN after
+100 valid operations under an omitted business. Source-only coverage fails;
+complete coverage returns 101 records. A foreign owner's row is excluded.
+Evidence: `output/spark-owner-outbox-coverage-unknown-20261013.log`.
+
 Logs: `output/spark-migration-bootstrap-client-rules-20261013.log`,
 `output/spark-migration-bootstrap-qa-20261013.log`,
 `output/spark-migration-bootstrap-spark-20261013.log`.

@@ -20,7 +20,9 @@ function fixture({enabled=true,automaticShadow=true,rows=[],cache=false}={}){
   }})};
   globalThis.CLICK360_MODULAR_JOURNAL={open:async options=>{
     assert.equal(options,undefined,'Migration must census all local actors without claiming their rows');
-    return {countPending:async i=>({countIsBounded:false,total:rows.filter(r=>r.businessId===i.businessId).length,
+    return {assertOwnerCoverage:async(_owner,businesses)=>{
+      if(rows.some(row=>row.ownerUid===_owner&&!businesses.includes(row.businessId)))throw Error('OWNER_OUTBOX_BUSINESS_COVERAGE_REQUIRED');
+    },countPending:async i=>({countIsBounded:false,total:rows.filter(r=>r.businessId===i.businessId).length,
       pendingCount:rows.filter(r=>r.businessId===i.businessId).length,unknownCount:0}),countProjectionPending:async()=>0,
       listPendingPage:async(i,{limit,after})=>{
         const scoped=rows.filter(r=>r.businessId===i.businessId),offset=after?.offset||0,end=offset+limit;
@@ -68,6 +70,10 @@ for(const count of [1,99,100,101,250,1000]){
 }
 for(const change of [f=>f.actor('worker'),f=>f.lease(false)]){
   const f=fixture();change(f);await assert.rejects(f.run(),/CONTEXT_CHANGED/);assert.equal(f.calls.length,0);
+}
+{
+  const f=fixture({rows:[{operationId:'outside-source',ownerUid,businessId:'omitted-business',payloadHash:'a'.repeat(64),payload:{actorUid:ownerUid}}]});
+  await assert.rejects(f.run(),/OWNER_OUTBOX_BUSINESS_COVERAGE_REQUIRED/);assert.equal(f.counts().imports,0);
 }
 {
   const f=fixture();let reads=0;

@@ -81,6 +81,7 @@ try{
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),'storageRollout/sparkV1'),{
     enabled:true,automaticShadow:true,pilotOwnerUids:[ownerUid]}));
   globalThis.CLICK360_MODULAR_JOURNAL={open:async()=>({
+    assertOwnerCoverage:async()=>({enumerationComplete:true,recordCount:0}),
     countPending:async()=>({countIsBounded:false,total:0,pendingCount:0,unknownCount:0}),
     countProjectionPending:async()=>0,listPendingPage:async()=>({rows:[],next:null,complete:true}),close(){}})};
   globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({...input.recovery,deviceIdentity:async()=>({ownerUid,deviceId:input.deviceId,durable:true}),close(){}})};

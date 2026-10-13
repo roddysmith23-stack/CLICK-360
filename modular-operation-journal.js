@@ -108,6 +108,28 @@
     return Object.freeze({
       close: () => db.close(),
       get: (identity, operationId) => read(key(identity, operationId)),
+      async assertOwnerCoverage(ownerUid,businessIds) {
+        if(actorUid!==null||!Array.isArray(businessIds)||!businessIds.length)throw Error('UNSCOPED_OWNER_CENSUS_REQUIRED');
+        key({ownerUid,businessId:businessIds[0]},'owner-coverage');
+        const allowed=new Set(businessIds),prefix=`${ownerUid}:`;
+        // Primary-key owner prefix also catches malformed rows missing fields
+        // from secondary indices. This readonly census never claims a row.
+        return new Promise((resolve,reject)=>{
+          const tx=db.transaction('operations','readonly');let failure,count=0;
+          const request=tx.objectStore('operations').openCursor(root.IDBKeyRange.bound(prefix,`${ownerUid};`,false,true));
+          request.onsuccess=()=>{
+            const cursor=request.result;if(!cursor)return;
+            try{
+              const row=cursor.value;
+              if(row.ownerUid!==ownerUid||key(row,row.operationId)!==row.key||!allowed.has(row.businessId)
+                ||!['queued','inflight','unknown','confirmed'].includes(row.state))throw Error('OWNER_OUTBOX_BUSINESS_COVERAGE_REQUIRED');
+              count++;cursor.continue();
+            }catch(error){failure=error;tx.abort();}
+          };
+          tx.oncomplete=()=>resolve({enumerationComplete:true,recordCount:count});
+          tx.onabort=()=>reject(failure||tx.error||Error('JOURNAL_READ_ABORTED'));
+        });
+      },
       async countProjectionPending(identity) {
         key(identity,'identity-check');
         await guardUnattributed(identity);

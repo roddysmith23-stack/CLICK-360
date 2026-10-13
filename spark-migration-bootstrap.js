@@ -56,6 +56,7 @@
         // Unscoped READ-ONLY census includes pending rows issued by a different
         // actor on this partition. They block migration, never get claimed.
         journal=await root.CLICK360_MODULAR_JOURNAL.open();
+        await journal.assertOwnerCoverage(ownerUid,selected.businessIds);context();
         const reconciliations=[];
         for(const businessId of selected.businessIds){
           const identity={ownerUid,businessId};
@@ -84,6 +85,7 @@
           readSource,recovery:preservedRecovery,onProgress,readGuard:async()=>{
             context();const current=await readLocal();context();
             if(current?.deviceRevision!==deviceRevision)throw Error('SPARK_MIGRATION_DEVICE_DRIFT_STOP');
+            await journal.assertOwnerCoverage(ownerUid,selected.businessIds);context();
             for(const businessId of selected.businessIds){
               const identity={ownerUid,businessId},counts=await journal.countPending(identity);
               if(counts.countIsBounded!==false||counts.total!==0
