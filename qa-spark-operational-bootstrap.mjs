@@ -1,6 +1,7 @@
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
+import './qa-spark-migration-bootstrap.mjs';
 const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta.url),'utf8');
 // Execute the actual worker approval gate, including a late response from the
 // preceding actor. Never inherit an old approval or leave the requested route.
@@ -52,7 +53,7 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
   assert.equal(JSON.parse(JSON.stringify(scope.state)).legalAcceptances[0].id,'legal-qa');
   assert.equal(JSON.parse(JSON.stringify(scope.state)).settings.workers[0].name,'Trabajador');
 }
-function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false,moduleNames=['products','sales']}={}){
+function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false,moduleNames=['products','sales'],prepareMigration}={}){
   const events=new Map(),phases=[],writes=[],observed={restored:0,installed:0,created:0,replayed:0,closed:0};
   let actor='owner',business='business',projections=0,releaseRead=null,queryBarrier=null,moduleBarrier=null,busy=false;
   const root={navigator:{onLine:true,locks:{request:async(_name,_options,callback)=>callback({name:'fixture-lock'})}},document:{visibilityState:'visible',addEventListener(){},removeEventListener(){}},
@@ -99,7 +100,7 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
   const coordinator=root.CLICK360_SPARK_BOOTSTRAP.create({projectId:db.app.options.projectId,db,ownerUid:'owner',actorUid:'owner',deviceId:'device',
     resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid:'owner'}),resolveBusiness:()=>business,
     restoreLocal:async()=>{observed.restored++;},readLocal:async()=>local,
-    installBusiness:async value=>{business=value.businessId;},installView:async()=>{observed.installed++;},
+    prepareMigration,installBusiness:async value=>{business=value.businessId;},installView:async()=>{observed.installed++;},
     onPhase:detail=>phases.push(detail)});
   root.click360SparkCoordinator=coordinator;
   return {coordinator,observed,phases,writes,events,changeActor:value=>actor=value,
@@ -162,6 +163,17 @@ for(const options of [{unknown:101,replayStatus:'UNKNOWN'},
   release();await first;assert.equal(f.observed.created,1);
   f.changeActor('different-user');assert.throws(()=>f.coordinator.recover(),/CONTEXT_CHANGED/);
   f.coordinator.close();
+}
+for(const mode of ['legacy','migrating']){
+  let invoked=0;
+  const f=fixture({mode,prepareMigration:async({leaseHeld})=>{assert.equal(leaseHeld(),true);invoked++;return {prepared:true};}});
+  await assert.rejects(f.coordinator.recover(),/SHADOW_VERIFIED_CUTOVER_DISABLED/);
+  assert.equal(invoked,1);assert.equal(f.observed.installed,0);assert.equal(f.observed.created,0);
+  assert.equal(f.phases.at(-1).phase,'BLOCKED');f.coordinator.close();
+}
+{
+  const f=fixture({mode:'legacy',prepareMigration:async()=>({prepared:false})});
+  assert.equal((await f.coordinator.recover()).handled,false);f.coordinator.close();
 }
 console.log(JSON.stringify({status:'PASS',automaticBootstrap:true,fullDrainCounts:[99,100,101,250,1000],
   cacheNotAuthoritative:true,unknownAndLegacyPendingPreserved:true,actorIsolation:true,singleFlight:true,

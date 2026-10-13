@@ -407,4 +407,4 @@ function writeEmulatorConfig() {
 }
 
 
-export {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,identity,assert,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig};
+export {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,identity,assert,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,newAppContext,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig,email as emulatorOwnerEmail,password as emulatorPassword};

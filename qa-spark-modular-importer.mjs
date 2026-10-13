@@ -4,6 +4,8 @@ import {initializeTestEnvironment,assertFails} from '@firebase/rules-unit-testin
 import {doc,setDoc,deleteDoc,getDocFromServer,getDocsFromServer,collection,query,orderBy,documentId,limit,startAfter,runTransaction,serverTimestamp} from 'firebase/firestore';
 import './spark-modular-migration.js';
 import './spark-modular-importer.js';
+import './spark-migration-bootstrap.js';
+import './spark-modular-reconciliation.js';
 import './spark-modular-record-codec.js';
 import './spark-modular-transaction-transport.js';
 if(process.env.FIRESTORE_EMULATOR_HOST!=='127.0.0.1:48944')throw Error('EXACT_SPARK_DEMO_EMULATOR_REQUIRED');
@@ -14,7 +16,11 @@ let beforePageRead=null;
 const wrap=snap=>({exists:snap.exists(),data:()=>snap.data()});
 // SDK-shape compatibility only: all reads, transactions and Rules are executed
 // by the real authenticated Web client, never an Admin transport.
-const db={app:{options:{projectId}},doc:path=>doc(client,path),
+const db={app:{options:{projectId}},doc:path=>{
+  const ref=doc(client,path);
+  ref.get=async options=>{assert.equal(options.source,'server');const s=await getDocFromServer(ref);return {...wrap(s),metadata:s.metadata};};
+  return ref;
+},
   collection:path=>({orderBy:field=>{
     const constraints=[orderBy(field)];
     const page={limit:n=>{constraints.push(limit(n));return page;},startAfter:id=>{constraints.push(startAfter(id));return page;},
@@ -63,6 +69,21 @@ try{
   assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/products/p-0`))).data().data.stock,1);
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),savedControl));
   const retry=await importer.prepareShadow();assert.deepEqual(retry.equality,result.equality);
+  // Exercise the bootstrap connection with the AUTHENTICATED Web SDK and
+  // real Rules. This still uses an explicit synthetic recovery/journal adapter;
+  // physical IndexedDB is independently tested by the browser suite.
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),'storageRollout/sparkV1'),{
+    enabled:true,automaticShadow:true,pilotOwnerUids:[ownerUid]}));
+  globalThis.CLICK360_MODULAR_JOURNAL={open:async()=>({
+    countPending:async()=>({countIsBounded:false,total:0,pendingCount:0,unknownCount:0}),
+    countProjectionPending:async()=>0,listPendingPage:async()=>({rows:[],next:null,complete:true}),close(){}})};
+  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({...input.recovery,close(){}})};
+  const connected=await CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({...input,actorUid:ownerUid,
+    resolveContext:()=>({authUid:ownerUid,ownerUid}),leaseHeld:()=>true,
+    readLocal:async()=>({snapshot:local,identity,deviceRevision:'device-43',baseRevision:42,
+      pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['persist-existing']})}).prepare();
+  assert.equal(connected.prepared,true);assert.equal(connected.operationalCloudConfirmed,false);
+  assert.deepEqual(connected.equality,result.equality);assert.equal(connected.cutoverPerformed,false);
   // A revision alone is not a hash precondition. Simulate authorized external
   // maintenance during the server reread, after the initial revision CAS.
   const drift=structuredClone(rootState);drift.payload.data.products[1].stock=3;drift.payload.data.products[1].qty=3;

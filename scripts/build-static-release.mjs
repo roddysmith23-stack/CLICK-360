@@ -16,6 +16,10 @@ const files = [
   'safe-update.js',
   'app.js',
   'spark-modular-migration.js',
+  'spark-modular-reconciliation.js',
+  'spark-modular-recovery.js',
+  'spark-modular-importer.js',
+  'spark-migration-bootstrap.js',
   'spark-modular-record-codec.js',
   'spark-modular-transaction-transport.js',
   'modular-operation-journal.js',
@@ -74,7 +78,7 @@ const swPath = join(output, 'service-worker.js');
 await writeFile(swPath, (await readFile(swPath, 'utf8')).replace('__CLICK360_SW_BUILD_SHA__', shortSha));
 // Catch a first upgrade boot served partly by an older network-first worker.
 for (const entry of ['app.js', 'firebase-service.js', 'tenant-quota-overrides.js', 'v16-storage.js',
-  'spark-modular-migration.js','spark-modular-record-codec.js','spark-modular-transaction-transport.js',
+  'spark-modular-migration.js','spark-modular-reconciliation.js','spark-modular-recovery.js','spark-modular-importer.js','spark-migration-bootstrap.js','spark-modular-record-codec.js','spark-modular-transaction-transport.js',
   'modular-operation-journal.js','modular-persistence.js','modular-operation-coordinator.js',
   'modular-ui-adapter.js','spark-operational-ui-runtime.js','spark-operational-bootstrap.js']) {
   const file = join(output, entry);

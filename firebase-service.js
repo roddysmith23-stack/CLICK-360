@@ -4131,6 +4131,15 @@
                 const record=await window.CLICK360_V16_STORAGE.getSnapshot(context);
                 if(record&&!await window.click360LoadIndexedTenantCache(context))throw Error('SPARK_BOOTSTRAP_INVALID_DEVICE_STATE');
               },readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),
+              prepareMigration:async({leaseHeld})=>{
+                if(user.uid!==context.ownerUid)return {prepared:false};
+                return window.CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                  ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],
+                  resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+                  readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld,
+                  onProgress:detail=>{window.click360SparkMigrationState=detail;}
+                }).prepare();
+              },
               installBusiness:window.click360InstallSparkBusiness,installView:window.click360InstallSparkView,
               onPhase:detail=>{
                 // Source verification finishes before the caller installs the

@@ -10,11 +10,13 @@ import {initializeTestEnvironment} from '@firebase/rules-unit-testing';
 import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
 import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
+import {certifyShadowPreparation} from './spark-migration-shadow-pwa.mjs';
 import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,stopProcessTree,waitForUrl,createEmulatorUser,
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
 const rules=readFileSync(path.join(root,'firestore.spark.rules'),'utf8');
 if(process.env.CLICK360_SPARK_UI_WORKER_ONLY==='1'&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
+if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
 const output=path.join(root,'output/playwright/spark-operational-ui');mkdirSync(output,{recursive:true});
 const config=writeEmulatorConfig(),log=createWriteStream(path.join(output,`emulators-${Date.now()}.log`),{flags:'wx'});
 const emulators=spawn(path.join(root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',projectId,'--config',config],
@@ -35,6 +37,10 @@ try{
   browsers=[await chromium.launch(),await webkit.launch()];
   for(const [i,browser]of browsers.entries()){
     const label=i?'webkit':'chromium';console.log(`START served Spark UI ${label}`);
+    await certifyShadowPreparation({browser,env,uid,label});
+    if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'){
+      results.push({browser:label,shadowPreparation:true,fullOperationalUI:false,cutover:false,productionWrites:0});continue;
+    }
     await env.clearFirestore();
     const data=largeTenantData(uid);data.sales=[];data.movements=[];data.cashSessions=[];data.auditLogs=[];
     data.products[0]={...data.products[0],code:'SPARK-LIVE',price:30,cardPrice:30,stock:2,qty:2};

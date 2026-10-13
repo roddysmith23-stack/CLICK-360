@@ -135,6 +135,15 @@
       context();publish('CHECKING');const control=await mode();
       await restoreLocal();context();
       const local=await readLocal();context();
+      if(actorUid===ownerUid&&['legacy','migrating'].includes(control.storageMode)&&typeof options.prepareMigration==='function'){
+        await acquireLease();context();publish('MIGRATION_PREPARING');
+        const shadow=await options.prepareMigration({leaseHeld:()=>!!releaseLease&&!closed});context();
+        if(shadow?.prepared){
+          // Shadow equality is not operational activation. Never fall through
+          // to a legacy writer or present a verified backup as sync completion.
+          throw Error('SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED');
+        }
+      }
       if(control.storageMode==='legacy'){
         if(local?.source==='spark_operational_candidate')throw Error('SPARK_BOOTSTRAP_LEGACY_DOWNGRADE_BLOCKED');
         publish('LEGACY');return {handled:false};
