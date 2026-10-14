@@ -95,10 +95,10 @@ export async function certifyRecoveryCopy({browser,env,uid,label}){
     try{
       const rejected=await page.evaluate(async({uid,captureHash})=>{
         const r=await CLICK360_SPARK_RECOVERY.open({ownerUid:uid,resolveUser:()=>click360Auth.currentUser});
-        try{await r.preserveCloud({captureHash,db:click360Db,firebase,projectId:CLICK360_FIREBASE_CONFIG.projectId,assertStable:async()=>{}});return false;}
-        catch(error){return error.message==='SPARK_RECOVERY_REMOTE_PART_CONFLICT';}finally{r.close();}
+        try{await r.preserveCloud({captureHash,db:click360Db,firebase,projectId:click360Db.app.options.projectId,assertStable:async()=>{}});return {denied:false,reason:'unexpected_success'};}
+        catch(error){return {denied:error.message==='SPARK_RECOVERY_REMOTE_PART_CONFLICT',reason:String(error.code||error.message)};}finally{r.close();}
       },{uid,captureHash:copy.captureHash});
-      assert(rejected,'A previously client-verified flag cannot hide a corrupt fragment on independent re-verification');
+      assert(rejected.denied,'A previously client-verified flag cannot hide a corrupt fragment on independent re-verification: '+rejected.reason);
     }finally{await seed(env,db=>setDoc(doc(db,partPath),originalPart));}
     await seed(env,async db=>assert(JSON.stringify((await getDocFromServer(doc(db,`businesses/${uid}/state/main`))).data())===JSON.stringify(envelope)));
     console.log(JSON.stringify({stage:'RECOVERY_COPY_CLIENT_VERIFIED',browser:label,...copy,coldRestart:true,
