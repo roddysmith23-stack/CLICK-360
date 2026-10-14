@@ -26,7 +26,12 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
         movement:{date:'2026-09-03',cashSessionId:'cash',amount:30,kind:'ingreso'},productChanges:[{productId:'p',quantity:1,expectedStock:stock,expectedRecordVersion:version}]});
       let journal=await CLICK360_MODULAR_JOURNAL.open(),online=true,active=identity,unavailable=false,lookups=0;
       const views=new Map(),statuses=[];let projectionFailure=false;
-      const transport={...repository,lookupOperation:async(...args)=>{lookups++;if(unavailable)throw Error('NETWORK');return repository.lookupOperation(...args);}};
+      const transport={...repository,lookupOperation:async(...args)=>{
+        lookups++;
+        if(unavailable==='quota')throw Object.assign(Error('Synthetic exhausted service'),{code:'resource-exhausted'});
+        if(unavailable)throw Error('NETWORK');
+        return repository.lookupOperation(...args);
+      }};
       const create=()=>CLICK360_MODULAR_UI_ADAPTER.create({repository:transport,journal,deviceId:'synthetic-device',resolveIdentity:()=>active,isOnline:()=>online,
         onStatus:detail=>{statuses.push(detail);document.querySelector('#status').textContent=detail.status;},
         onConfirmed:async receipt=>{if(projectionFailure)throw Error('DEVICE_PERSISTENCE_FAILED');views.set(receipt.operationId,receipt);}});
@@ -48,7 +53,9 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
       journal.close();journal=await CLICK360_MODULAR_JOURNAL.open();adapter=create();
       const survived=await journal.get(identity,'sale-ui-2');
       online=true;const replay=await adapter.replay({limit:1});
-      unavailable=true;const unknown=await adapter.submit('sale',input('sale-ui-3',8,3));
+      unavailable='quota';const unknown=await adapter.submit('sale',input('sale-ui-3',8,3));
+      if(unknown.causeCode!=='resource-exhausted'||unknown.operationalCloudConfirmed)
+        throw Error('QUOTA_CAUSE_HIDDEN_OR_FALSE_CLOUD_CONFIRMATION');
       const uncertain=await journal.get(identity,'sale-ui-3');
       unavailable=false;
       const recovered=await adapter.replay({limit:1});

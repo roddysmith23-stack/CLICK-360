@@ -87,7 +87,8 @@
         candidateDurable=true;
         assertActive();
         const result=await adapter.submit(command.kind,input);
-        return {ok:true,pending:result.status!=='CONFIRMED',operationalCloudConfirmed:result.status==='CONFIRMED',reason:result.reason};
+        return {ok:true,pending:result.status!=='CONFIRMED',operationalCloudConfirmed:result.status==='CONFIRMED',reason:result.reason,
+          ...(result.causeCode?{causeCode:result.causeCode}:{})};
       }catch(error){
         // A pinned command is recoverable, but its failed device projection
         // cannot be used as the basis of additional optimistic commands.

@@ -57,6 +57,12 @@
         if (latest?.state === 'inflight' && latest.claimedBy === deviceId && latest.revision === ownedRevision) {
           try { await journal.markUnknown(identity, operationId, latest.revision); } catch {}
         }
+        // A quota rejection is not authoritative evidence of absence. Retain
+        // UNKNOWN, but do not spend another request on the exhausted service
+        // in this attempt. A later replay still enters the ledger lookup above
+        // before it can claim/resend the immutable commercial command.
+        if (['resource-exhausted', 'firestore/resource-exhausted'].includes(error.code))
+          return { status:'unknown', operationId, reason:String(error.code) };
         try {
           const pending = await journal.get(identity, operationId);
           const evidence = await lookup();
