@@ -2,6 +2,61 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /storageRollout/{policyId} {
+      allow read: if policyId == "sparkV1" && signedIn();
+      allow create, update: if policyId == "sparkV1" && isPlatformAdmin();
+      allow delete: if false;
+    }
+
+    // Optional owner-only recovery preservation, NOT operational storage or
+    // independent server verification. It never changes metadata/storage and
+    // therefore cannot fence another legacy business or activate a writer.
+    function sparkRecoveryCopyWriter(ownerUid) {
+      let p = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
+      return signedIn() && request.auth.uid == ownerUid && ownerUser()
+        && p.enabled == true && p.automaticRecoveryCopy == true && p.automaticShadow == false
+        && p.pilotOwnerUids is list && ownerUid in p.pilotOwnerUids;
+    }
+    function sparkRecoveryManifest(ownerUid, captureHash) {
+      let d = request.resource.data;
+      return d.keys().hasAll(["ownerUid", "captureHash", "schemaVersion", "sourceHash", "journalHash", "deviceRevision", "deviceId", "buildSha", "payloadBytes", "partCount", "state", "createdAt", "remoteRevision", "remoteHash"])
+        && d.keys().hasOnly(["ownerUid", "captureHash", "schemaVersion", "sourceHash", "journalHash", "deviceRevision", "deviceId", "buildSha", "payloadBytes", "partCount", "state", "createdAt", "clientVerifiedAt", "remoteRevision", "remoteHash"])
+        && d.ownerUid == ownerUid && d.captureHash == captureHash && d.schemaVersion == 2
+        && captureHash.matches("^[a-f0-9]{64}$") && d.sourceHash.matches("^[a-f0-9]{64}$") && d.journalHash.matches("^[a-f0-9]{64}$")
+        && d.deviceRevision is string && d.deviceRevision.size() > 0 && d.deviceRevision.size() <= 120
+        && d.deviceId is string && d.deviceId.size() > 0 && d.deviceId.size() <= 120
+        && d.buildSha.matches("^[a-f0-9]{12,40}$")
+        && d.remoteRevision is int && d.remoteRevision >= 0 && d.remoteHash.matches("^[a-f0-9]{64}$")
+        && d.payloadBytes is int && d.payloadBytes > 0 && d.payloadBytes <= 16777216
+        && d.partCount is int && d.partCount > 0 && d.partCount <= 1024;
+    }
+    match /businesses/{ownerUid}/recoveryCopies/{captureHash} {
+      allow read: if (signedIn() && request.auth.uid == ownerUid && ownerReadUser());
+      allow create: if sparkRecoveryCopyWriter(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
+        && request.resource.data.state == "UPLOADING" && request.resource.data.createdAt == request.time
+        && !request.resource.data.keys().hasAny(["clientVerifiedAt"]);
+      allow update: if sparkRecoveryCopyWriter(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
+        && resource.data.state == "UPLOADING" && request.resource.data.state == "CLIENT_VERIFIED"
+        && request.resource.data.clientVerifiedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "clientVerifiedAt"]);
+      allow delete: if false;
+      match /parts/{partId} {
+        allow read: if (signedIn() && request.auth.uid == ownerUid && ownerReadUser());
+        allow create: if sparkRecoveryCopyWriter(ownerUid)
+          && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(captureHash)).data.state == "UPLOADING"
+          && request.resource.data.keys().hasAll(["ownerUid", "captureHash", "schemaVersion", "position", "content", "contentHash"])
+          && request.resource.data.keys().hasOnly(["ownerUid", "captureHash", "schemaVersion", "position", "content", "contentHash"])
+          && request.resource.data.ownerUid == ownerUid && request.resource.data.captureHash == captureHash
+          && request.resource.data.schemaVersion == 2 && request.resource.data.position is int
+          && request.resource.data.position >= 0
+          && request.resource.data.position < get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(captureHash)).data.partCount
+          && partId == "p" + string(request.resource.data.position)
+          && request.resource.data.content is string && request.resource.data.content.size() <= 48000
+          && request.resource.data.contentHash.matches("^[a-f0-9]{64}$");
+        allow update, delete: if false;
+      }
+    }
+
     function signedIn() {
       return request.auth != null;
     }

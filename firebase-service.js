@@ -3906,6 +3906,8 @@
 	    localUpdatedAtMs: localPayloadUpdatedAtMs()
 	  });
 	  function deactivateActiveAccount() {
+	    window.click360SparkRecoveryCopy = null;
+	    window.click360SparkMigrationState = null;
 	    AUTH_EPOCH += 1;
 	    AUTH_APPROVED = false;
 	    PULL_COMPLETE = false;
@@ -4052,8 +4054,59 @@
     }, (error) => console.warn('No se pudo escuchar el acceso de cuenta:', error.message));
   }
 
+  let P0A_RECOVERY_RUN = null;
+  async function runP0ARecovery(user, expectedEpoch) {
+    if(!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user))return;
+    if(P0A_RECOVERY_RUN)return P0A_RECOVERY_RUN;
+    const run=(async()=>{
+        const sparkProjectId=db.app.options.projectId;
+        // Production may prepare ONLY an explicitly piloted recovery copy.
+        // This release has no P0B migration/bootstrap/cutover implementation.
+        // Missing/disabled policy and a new account with no durable source
+        // retain the existing application path; never manufacture a seed.
+        if(['click-360','click360-staging-7620168025','demo-click360-spark-modular'].includes(sparkProjectId)&&window.click360User?.ownerId===user.uid
+          &&window.CLICK360_P0A_BOOTSTRAP){
+          const context=ACTIVE_CONTEXT;
+          try{
+            const policy=await db.doc('storageRollout/sparkV1').get({source:'server'}),p=policy.data();
+            if(policy.metadata.fromCache===false&&policy.metadata.hasPendingWrites===false&&p?.enabled===true
+              &&p.automaticRecoveryCopy===true&&p.automaticShadow===false&&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
+              await window.click360PrepareTenantStorage?.(context);
+              const source=await window.CLICK360_V16_STORAGE.getSnapshot(context);
+              if(source?.snapshot&&source.deviceRevision){
+                if(!navigator.locks?.request)throw Error('SPARK_RECOVERY_DEVICE_LOCK_UNAVAILABLE');
+                await navigator.locks.request(`click360-spark:${sparkProjectId}:${context.ownerUid}:${user.uid}`,{ifAvailable:true},async lock=>{
+                  if(!lock)throw Error('SPARK_RECOVERY_DEVICE_ALREADY_ACTIVE');
+                  await window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                    productionRecoveryOnly:true,ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),
+                    buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+                    readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld:()=>!!lock,
+                    onProgress:detail=>{window.click360SparkMigrationState=detail;
+                      if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED')window.click360SparkRecoveryCopy={...detail};}
+                  }).prepare();
+                });
+              }
+            }
+          }catch(error){
+            if(isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context)
+              window.click360SparkRecoveryCopy={status:'PENDING',operationalCloudConfirmed:false,
+                reason:/^[a-zA-Z0-9_/-]{1,80}$/.test(error.code||error.message||'')?String(error.code||error.message):'recovery_unavailable'};
+            // Optional preservation cannot erase, replace or replay local data.
+            // Existing legacy capacity/dirty guards still control normal sync.
+          }
+          if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context)return;
+        }
+    })();
+    P0A_RECOVERY_RUN=run;
+    try{return await run;}finally{if(P0A_RECOVERY_RUN===run)P0A_RECOVERY_RUN=null;}
+  }
+  window.addEventListener('online',()=>{
+    if(AUTH_APPROVED&&auth.currentUser)runP0ARecovery(auth.currentUser,AUTH_EPOCH).catch(()=>{});
+  });
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
 		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+        await runP0ARecovery(user,expectedEpoch);
+        if (!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user)) return false;
 	    if (MODULAR_MODE && MODULAR_GATEWAY) {
 	      await window.click360PrepareTenantStorage?.(ACTIVE_CONTEXT);
 	      if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;

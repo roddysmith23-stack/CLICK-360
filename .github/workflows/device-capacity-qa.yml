@@ -21,6 +21,9 @@ jobs:
           distribution: temurin
           java-version: '21'
       - run: npm run qa:capacity
+      - run: node qa-p0a-release-boundary.mjs
+      - run: node qa-p0a-journal-e2e.mjs
+      - run: node qa-p0a-recovery-e2e.mjs
       - run: npm run qa:capacity:e2e
       - run: npm run build:static
       - run: node qa/founder-opening-readiness-e2e.mjs
@@ -39,3 +42,11 @@ jobs:
       - run: node qa/founder-pwa-upgrade-e2e.mjs
         env:
           CLICK360_OLD_BUILD_DIR: ${{ runner.temp }}/click360-before-capacity/dist
+      - name: Preserve exact production PWA before P0A
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/click360-before-p0a" 21409a1d2dc710315ab8c3c27e5da566f004cc8e
+          cd "$RUNNER_TEMP/click360-before-p0a"
+          node scripts/build-static-release.mjs
+      - run: node qa/founder-pwa-upgrade-e2e.mjs
+        env:
+          CLICK360_OLD_BUILD_DIR: ${{ runner.temp }}/click360-before-p0a/dist
