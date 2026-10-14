@@ -27,7 +27,7 @@ const admin=await connectAdmin(PROJECT,'spark-shadow-synthetic-staging'),auth=aw
 assert.equal(admin.projectId,PROJECT);
 let browser;const results=[];
 try{
-  for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']]){
+  for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']].filter(([,name])=>!args['--browser']||args['--browser']===name)){
     const uid='qa-spark-staging-'+randomUUID(),email=uid+'@click360-qa.invalid',password=randomBytes(32).toString('base64url');
     assert(uid.startsWith('qa-spark-staging-'));await auth.createUser({uid,email,password,emailVerified:true});
     await writeFile(directory+'/'+name+'.private.json',JSON.stringify({projectId:PROJECT,uid,email,password}),{mode:0o600,flag:'wx'});
@@ -56,6 +56,15 @@ try{
         pilotOwnerUids:[...new Set([...(p?.pilotOwnerUids||[]),uid])]});
     });
     browser=await engine.launch();const context=await browser.newContext({viewport:{width:390,height:844}});
+    if(args['--transport-experiment']==='long-polling'){
+      // Diagnostic A/B only. Never counted as exact served-artifact certification.
+      await context.route('**/firebase-service.js*',async route=>{
+        const response=await route.fetch(),body=await response.text();
+        assert(body.includes('const db = firebase.firestore();'));
+        await route.fulfill({response,body:body.replace('const db = firebase.firestore();',
+          'const db = firebase.firestore(); db.settings({merge:true,experimentalForceLongPolling:true,experimentalAutoDetectLongPolling:false});')});
+      });
+    }
     await context.addInitScript(()=>{
       const original=Storage.prototype.setItem;
       Storage.prototype.setItem=function(key,value){
@@ -88,10 +97,17 @@ try{
       await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email,password});
       const verify=async()=>{
         if(recoveryOnly){
-          await page.waitForFunction(()=>{
+          try{await page.waitForFunction(()=>{
             if(window.click360SparkRecoveryCopy?.status==='PENDING')throw Error(window.click360SparkRecoveryCopy.reason);
             return window.click360SparkRecoveryCopy?.status==='RECOVERY_COPY_CLIENT_VERIFIED';
-          },null,{timeout:30000});
+          },null,{timeout:30000});}catch(error){
+            console.log(JSON.stringify({stage:'RECOVERY_BOOT_DIAGNOSTIC',browser:name,
+              detail:await page.evaluate(()=>({copy:window.click360SparkRecoveryCopy,progress:window.click360SparkMigrationState,
+                auth:!!window.click360Auth?.currentUser,ownerContext:window.click360User?.ownerId===window.click360Auth?.currentUser?.uid,
+                build:window.CLICK360_RELEASE_ASSETS,project:window.click360Db?.app?.options?.projectId,
+                route:location.hash,online:navigator.onLine}))}));
+            throw error;
+          }
           const copy=await page.evaluate(async({uid,sourceHash})=>{
             const copy=click360SparkRecoveryCopy;
             const path=`businesses/${uid}/recoveryCopies/${copy.captureHash}`;
@@ -133,8 +149,7 @@ try{
       console.log(JSON.stringify({stage:'REAL_SHADOW_PREPARATION_PASS',...results.at(-1)}));
     }finally{await context.close();await browser.close();browser=null;}
   }
-  const result={status:'PASS',scope:recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,
+  const result={status:'PASS',scope:args['--transport-experiment']?'DIAGNOSTIC_TRANSPORT_AB_ONLY':recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,
     rulesHash,results,productionWrites:0,operationalCutover:false};
   await writeFile(directory+'/result.json',JSON.stringify(result),{mode:0o600,flag:'wx'});console.log(JSON.stringify(result));
 }finally{await browser?.close();await admin.terminate();}
-

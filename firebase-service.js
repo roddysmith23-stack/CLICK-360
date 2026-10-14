@@ -4055,9 +4055,17 @@
   }
 
   let P0A_RECOVERY_RUN = null;
+  let P0A_RECOVERY_EPOCH = null;
   async function runP0ARecovery(user, expectedEpoch) {
     if(!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user))return;
-    if(P0A_RECOVERY_RUN)return P0A_RECOVERY_RUN;
+    if(P0A_RECOVERY_RUN){
+      if(P0A_RECOVERY_EPOCH===expectedEpoch)return P0A_RECOVERY_RUN;
+      // Auth may redeliver the same owner before legacy unlock completes.
+      // Drain the invalidated epoch, then capture under the CURRENT context.
+      // Do not inherit its result or bypass recovery on this legitimate boot.
+      await P0A_RECOVERY_RUN.catch(()=>{});
+      return runP0ARecovery(user,expectedEpoch);
+    }
     const run=(async()=>{
         const sparkProjectId=db.app.options.projectId;
         // Production may prepare ONLY an explicitly piloted recovery copy.
@@ -4079,9 +4087,11 @@
                   if(!lock)throw Error('SPARK_RECOVERY_DEVICE_ALREADY_ACTIVE');
                   await window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
                     productionRecoveryOnly:true,ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),
-                    buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+                    buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,
+                    resolveContext:()=>isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context?context:null,
                     readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld:()=>!!lock,
-                    onProgress:detail=>{window.click360SparkMigrationState=detail;
+                    onProgress:detail=>{if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context)return;
+                      window.click360SparkMigrationState=detail;
                       if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED')window.click360SparkRecoveryCopy={...detail};}
                   }).prepare();
                 });
@@ -4098,6 +4108,7 @@
         }
     })();
     P0A_RECOVERY_RUN=run;
+    P0A_RECOVERY_EPOCH=expectedEpoch;
     try{return await run;}finally{if(P0A_RECOVERY_RUN===run)P0A_RECOVERY_RUN=null;}
   }
   window.addEventListener('online',()=>{

@@ -14,6 +14,12 @@ write, operational ledger write or cutover implementation in this artifact.
 Existing production app.js, access, entitlements and financial domain remain
 unchanged. Founder effective acquired floor remains 2 / 2 / 2000.
 
+Recovery runs are scoped to the authenticated epoch as well as the owner Web
+Lock. A redundant same-owner Auth delivery before legacy unlock must drain the
+invalidated run and enter recovery under its current context. Stale progress
+cannot confirm the new epoch. A deterministic regression reproduces the missing
+second run before the correction. This is not a timed retry or commercial replay.
+
 The original journal is opened without a version, read with a full primary-key
 cursor, never upgraded or confirmed by P0A. A missing journal is not created.
 Raw source snapshot, metadata, all journal states including UNKNOWN and remote
