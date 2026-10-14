@@ -20,6 +20,15 @@ invalidated run and enter recovery under its current context. Stale progress
 cannot confirm the new epoch. A deterministic regression reproduces the missing
 second run before the correction. This is not a timed retry or commercial replay.
 
+Necessary transport dependency selectively ported from #96 commit
+`fa2e6ecdd168948ede763f9b1055cb7a7c41f672`: configure supported Firestore
+long-poll framing before persistence/reads. In the real WebKit A/B the patched
+first page completed verification; its cold restart used the unpatched original
+SW-cached asset and stalled again before recovery progress. Diagnostic asset
+interception is never accepted as release certification. The exact unmodified
+served candidate must pass both boots. No timeout increase or verification
+relaxation is permitted.
+
 The original journal is opened without a version, read with a full primary-key
 cursor, never upgraded or confirmed by P0A. A missing journal is not created.
 Raw source snapshot, metadata, all journal states including UNKNOWN and remote

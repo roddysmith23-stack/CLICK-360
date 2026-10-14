@@ -14,6 +14,9 @@ for(const file of ['p0a-canonical.js','p0a-journal-reader.js','p0a-recovery-stor
   assert(!/CLICK360_SPARK_(IMPORTER|BOOTSTRAP|RECONCILIATION|RECORD_CODEC)|prepareShadow|storageMode\s*[:=]/.test(s),file);
 }
 const bootstrap=await readFile('p0a-recovery-bootstrap.js','utf8');
+const service=await readFile('firebase-service.js','utf8');
+assert(service.indexOf('experimentalForceLongPolling:true')<service.indexOf('db.enablePersistence('));
+assert(service.includes('experimentalAutoDetectLongPolling:false'));
 assert(bootstrap.includes('policy.automaticShadow!==false'));
 const reader=await readFile('p0a-journal-reader.js','utf8');
 assert(!reader.includes("'readwrite'")&&!reader.includes('deleteDatabase'));

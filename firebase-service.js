@@ -29,6 +29,12 @@
 
 	  const auth = firebase.auth();
 	  const db = firebase.firestore();
+  // Required recovery transport dependency already certified in #96.
+  // WebKit can leave streaming Listen reads at HTTP 200 without delivering
+  // their first result. Use supported bounded long-poll framing before reads;
+  // never change identity, persistence, Rules or confirmation requirements.
+  db.settings({merge:true,experimentalForceLongPolling:true,experimentalAutoDetectLongPolling:false});
+  window.click360FirestoreTransport='long_polling';
 	  db.enablePersistence({ synchronizeTabs: true }).catch(err => {
 	    console.warn("Persistencia offline de Firestore no disponible:", err.message);
 	  });
