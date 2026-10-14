@@ -66,6 +66,29 @@ try{
       await device.page.waitForFunction(()=>window.click360GetTenantState().products.some(p=>p.code==='FOUNDER-HOSTED')&&!window.click360GetCapacityStatus().deviceSavePending);
       const product=await device.page.evaluate(()=>window.click360GetTenantState().products.find(p=>p.code==='FOUNDER-HOSTED'));
       await device.page.locator('#productSearch').fill('FOUNDER-HOSTED'); await device.page.locator(`[data-edit="${product.id}"]`).click();
+      // Deterministically reproduce the same state replacement a background
+      // durable save may complete while a human has the editor open.
+      await device.page.evaluate(()=>window.click360PersistTenantState());
+      await device.page.waitForFunction(()=>!window.click360GetCapacityStatus().deviceSavePending);
+      await device.page.locator('#pQty').fill('6');await device.page.locator('#productForm button[type="submit"]').click();
+      await device.page.waitForFunction(id=>window.click360GetTenantState().products.find(p=>p.id===id)?.stock===6&&!window.click360GetCapacityStatus().deviceSavePending,product.id);
+      // A genuinely different live record must not be overwritten through an
+      // older modal. This is not a network retry or a bypass of write gates.
+      await device.page.locator(`[data-edit="${product.id}"]`).click();
+      await device.page.evaluate(id=>{
+        const state=window.click360GetTenantState(),p=state.products.find(p=>p.id===id);
+        p.stock=8;p.qty=8;
+        window.click360ApplyTenantState(state,window.click360TenantContext);
+        if(!window.click360PersistTenantState())throw Error('conflict fixture must be durable');
+      },product.id);
+      await device.page.waitForFunction(()=>!window.click360GetCapacityStatus().deviceSavePending);
+      const pendingBeforeConflict=await device.page.evaluate(()=>window.click360GetCapacityStatus().pendingOperations);
+      await device.page.locator('#pQty').fill('9');await device.page.locator('#productForm button[type="submit"]').click();
+      await device.page.waitForFunction(()=>document.querySelector('#toast')?.textContent.includes('El producto cambió mientras lo editabas'));
+      assert.equal(await device.page.evaluate(id=>window.click360GetTenantState().products.find(p=>p.id===id).stock,product.id),8);
+      assert.equal(await device.page.evaluate(()=>window.click360GetCapacityStatus().pendingOperations),pendingBeforeConflict,'rejected stale edit must not enqueue a write');
+      await device.page.locator('.modalHeader [data-close]').click();
+      await device.page.locator(`[data-edit="${product.id}"]`).click();
       await device.page.locator('#pQty').fill('6');await device.page.locator('#productForm button[type="submit"]').click();
       await device.page.waitForFunction(id=>window.click360GetTenantState().products.find(p=>p.id===id)?.stock===6&&!window.click360GetCapacityStatus().deviceSavePending,product.id);
       await device.page.evaluate(()=>window.click360Route('sell'));
@@ -78,8 +101,11 @@ try{
       assert.equal(final.readiness.cloudCapacityBlocked,true);assert.notEqual(final.sync.status,'clean');
       assert.deepEqual(await readCloud(env,uid),original,'all oversized operations remain local; legacy server document is unchanged');
       await device.page.evaluate(()=>window.click360Route('backup'));assert.equal(await device.page.getByText('Nube sincronizada',{exact:false}).count(),0);
-      results.push({platform:name,result:'PASS',auth:'real demo emulator',bytes:final.readiness.payloadBytes,openingOnce:true,coldRestart:true,productCRUD:true,saleOnce:true,stockExact:true,legacyUnchanged:true});
+      results.push({platform:name,result:'PASS',auth:'real demo emulator',bytes:final.readiness.payloadBytes,openingOnce:true,coldRestart:true,productCRUD:true,durableEditorReplacement:true,staleEditDenied:true,saleOnce:true,stockExact:true,legacyUnchanged:true});
       console.log('PASS hosted '+name+': real Auth, old override600->2000, durable opening/cold restart/product create-edit/sale/stock; cloud pending truthfully');
+    }catch(error){
+      console.error('HOSTED_COMMERCE_FAILURE',JSON.stringify({platform:name,error:error.message,pageErrors:device.pageErrors,diagnostic:await device.page.evaluate(()=>({product:window.click360GetTenantState?.().products.find(p=>p.code==='FOUNDER-HOSTED'),capacity:window.click360GetCapacityStatus?.(),gate:window.click360WriteGate?.(),confirmation:window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS,toast:document.querySelector('#toast')?.textContent,form:document.querySelector('#productForm')?.outerHTML,sync:window.click360GetSyncState?.()})).catch(()=>null)}));
+      throw error;
     }finally{await device.context.close();}
   }
   await mkdir(path.join(root,'output/playwright'),{recursive:true});await writeFile(path.join(root,'output/playwright/founder-hosted-commerce.json'),JSON.stringify({url,results},null,2));
