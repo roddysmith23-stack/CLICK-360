@@ -10,7 +10,7 @@ import {initializeTestEnvironment} from '@firebase/rules-unit-testing';
 import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
 import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
-import {certifyShadowPreparation} from './spark-migration-shadow-pwa.mjs';
+import {certifyShadowPreparation,certifyRecoveryCopy} from './spark-migration-shadow-pwa.mjs';
 import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,stopProcessTree,waitForUrl,createEmulatorUser,
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
@@ -37,6 +37,7 @@ try{
   browsers=[await chromium.launch(),await webkit.launch()];
   for(const [i,browser]of browsers.entries()){
     const label=i?'webkit':'chromium';console.log(`START served Spark UI ${label}`);
+    await certifyRecoveryCopy({browser,env,uid,label});
     await certifyShadowPreparation({browser,env,uid,label});
     if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'){
       results.push({browser:label,shadowPreparation:true,fullOperationalUI:false,cutover:false,productionWrites:0});continue;

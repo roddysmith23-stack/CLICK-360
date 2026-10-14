@@ -22,6 +22,12 @@ for (const [name, engine] of Object.entries({ chromium, webkit, firefox })) {
       let stopped=false;try{await journal.assertOwnerCoverage(identity.ownerUid,[identity.businessId]);}
       catch(error){stopped=error.message==='OWNER_OUTBOX_BUSINESS_COVERAGE_REQUIRED';}
       const full=await journal.assertOwnerCoverage(identity.ownerUid,[identity.businessId,'omitted-business']);
+      const captured=await journal.captureOwner(identity.ownerUid);
+      if(!captured.enumerationComplete||captured.recordCount!==101||captured.rows.length!==101
+        ||captured.rows.find(r=>r.operationId==='tail-unknown')?.state!=='unknown'
+        ||captured.rows.some(r=>r.ownerUid!==identity.ownerUid))throw Error('INCOMPLETE_OWNER_RECOVERY_CAPTURE');
+      captured.rows[0].state='tampered';
+      if((await journal.captureOwner(identity.ownerUid)).rows[0].state==='tampered')throw Error('MUTABLE_JOURNAL_CAPTURE');
       journal.close();return {stopped,full};
     });
     assert.equal(coverage.stopped,true,'An omitted business beyond the first 100 rows must block owner-wide migration');

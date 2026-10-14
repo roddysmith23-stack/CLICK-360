@@ -3984,6 +3984,8 @@
 	    MODULAR_BASELINE = null;
 	    MODULAR_MODE = false;
       SPARK_WORKER_CONTEXT = null;
+      window.click360SparkRecoveryCopy = null;
+      window.click360SparkMigrationState = null;
       if (SPARK_MEMBER_UNSUBSCRIBE) { SPARK_MEMBER_UNSUBSCRIBE(); SPARK_MEMBER_UNSUBSCRIBE = null; }
 	    ACTIVE_CONTEXT = null;
 	    LAST_REMOTE_REVISION = 0;
@@ -4116,6 +4118,42 @@
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
 		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
         const sparkProjectId=db.app.options.projectId;
+        // Production may prepare ONLY an explicitly piloted recovery copy.
+        // Operational modular bootstrap/cutover remains staging-only below.
+        // Missing/disabled policy and a new account with no durable source
+        // retain the existing application path; never manufacture a seed.
+        if(sparkProjectId==='click-360'&&window.click360User?.ownerId===user.uid
+          &&window.CLICK360_SPARK_MIGRATION_BOOTSTRAP){
+          const context=ACTIVE_CONTEXT;
+          try{
+            const policy=await db.doc('storageRollout/sparkV1').get({source:'server'}),p=policy.data();
+            if(policy.metadata.fromCache===false&&policy.metadata.hasPendingWrites===false&&p?.enabled===true
+              &&p.automaticRecoveryCopy===true&&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
+              await window.click360PrepareTenantStorage?.(context);
+              const source=await window.CLICK360_V16_STORAGE.getSnapshot(context);
+              if(source?.snapshot&&source.deviceRevision){
+                if(!navigator.locks?.request)throw Error('SPARK_RECOVERY_DEVICE_LOCK_UNAVAILABLE');
+                await navigator.locks.request(`click360-spark:${sparkProjectId}:${context.ownerUid}:${user.uid}`,{ifAvailable:true},async lock=>{
+                  if(!lock)throw Error('SPARK_RECOVERY_DEVICE_ALREADY_ACTIVE');
+                  await window.CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                    productionRecoveryOnly:true,ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),
+                    buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+                    readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld:()=>!!lock,
+                    onProgress:detail=>{window.click360SparkMigrationState=detail;
+                      if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED')window.click360SparkRecoveryCopy={...detail};}
+                  }).prepare();
+                });
+              }
+            }
+          }catch(error){
+            if(isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context)
+              window.click360SparkRecoveryCopy={status:'PENDING',operationalCloudConfirmed:false,
+                reason:/^[a-zA-Z0-9_/-]{1,80}$/.test(error.code||error.message||'')?String(error.code||error.message):'recovery_unavailable'};
+            // Optional preservation cannot erase, replace or replay local data.
+            // Existing legacy capacity/dirty guards still control normal sync.
+          }
+          if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context)return false;
+        }
         if(['demo-click360-spark-modular','click360-staging-7620168025'].includes(sparkProjectId)
           && window.CLICK360_SPARK_BOOTSTRAP && (window.click360User?.ownerId===user.uid || SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT)){
           let sparkCoordinator=null;
@@ -4137,7 +4175,10 @@
                   ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],
                   resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
                   readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld,
-                  onProgress:detail=>{window.click360SparkMigrationState=detail;}
+                  onProgress:detail=>{
+                    window.click360SparkMigrationState=detail;
+                    if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED')window.click360SparkRecoveryCopy={...detail};
+                  }
                 }).prepare();
               },
               installBusiness:window.click360InstallSparkBusiness,installView:window.click360InstallSparkView,

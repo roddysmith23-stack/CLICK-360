@@ -8,19 +8,19 @@ const identity={ownerUid,ownerId:ownerUid,businessId:ownerUid,tenantKey:`owner:$
 const remote={businesses:businessIds.map(id=>({id})),products:[],sales:[],movements:[],cashSessions:[],dailyReports:[]};
 const local={...structuredClone(remote),identity};
 local.sales.push({id:'local-sale',businessId:businessIds[0],total:30});
-function fixture({enabled=true,automaticShadow=true,rows=[],cache=false}={}){
+function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,rows=[],cache=false}={}){
   let actor=ownerUid,lease=true,revision='device-2',closed=0,imports=0;
-  const calls=[],pins=new Map();
+  const calls=[],pins=new Map(),captures=new Map();
   const record={snapshot:local,deviceRevision:revision,baseRevision:1,pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['snapshot-save-id']};
   const db={app:{options:{projectId:'demo-click360-spark-modular'}},doc:path=>({get:async options=>{
     assert.equal(options.source,'server');calls.push(path);
-    const value=path==='storageRollout/sparkV1'?{enabled,automaticShadow,pilotOwnerUids:[ownerUid]}:
+    const value=path==='storageRollout/sparkV1'?{enabled,automaticShadow,automaticRecoveryCopy,pilotOwnerUids:[ownerUid]}:
       path.endsWith('/state/main')?{revision:1,payload:{identity,data:remote}}:null;
     return {exists:!!value,data:()=>value,metadata:{fromCache:cache,hasPendingWrites:false}};
   }})};
   globalThis.CLICK360_MODULAR_JOURNAL={open:async options=>{
     assert.equal(options,undefined,'Migration must census all local actors without claiming their rows');
-    return {assertOwnerCoverage:async(_owner,businesses)=>{
+    return {captureOwner:async()=>({ownerUid,rows:structuredClone(rows),recordCount:rows.length,enumerationComplete:true}),assertOwnerCoverage:async(_owner,businesses)=>{
       if(rows.some(row=>row.ownerUid===_owner&&!businesses.includes(row.businessId)))throw Error('OWNER_OUTBOX_BUSINESS_COVERAGE_REQUIRED');
     },countPending:async i=>({countIsBounded:false,total:rows.filter(r=>r.businessId===i.businessId).length,
       pendingCount:rows.filter(r=>r.businessId===i.businessId).length,unknownCount:0}),countProjectionPending:async()=>0,
@@ -29,7 +29,10 @@ function fixture({enabled=true,automaticShadow=true,rows=[],cache=false}={}){
         return {rows:scoped.slice(offset,end),next:end<scoped.length?{offset:end}:null,complete:end>=scoped.length};
       },close:()=>closed++};
   }};
-  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>({ownerUid,deviceId:'durable-device',durable:true}),close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true})})};
+  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>({ownerUid,deviceId:'durable-device',durable:true}),
+    captureDevice:async value=>{const captureHash=await api.hash(value);captures.set(captureHash,structuredClone(value));return {captureHash,durable:true};},
+    preserveCloud:async({captureHash,assertStable})=>{await assertStable();assert(captures.has(captureHash));return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,operationalCloudConfirmed:false};},
+    close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true})})};
   globalThis.CLICK360_SPARK_IMPORTER={create:options=>({prepareShadow:async()=>{
     imports++;const source=await options.readSource(),selected=await api.selectSource({ownerUid,...source});
     const guard=await options.readGuard();assert.equal(guard.mutationLockHeld,true);
@@ -40,7 +43,7 @@ function fixture({enabled=true,automaticShadow=true,rows=[],cache=false}={}){
   const options={db,projectId:db.app.options.projectId,firebase:{},ownerUid,actorUid:ownerUid,deviceId:'device',buildSha:'21409a1d2dc7',
     resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid}),leaseHeld:()=>lease,
     readLocal:async()=>({...record,deviceRevision:revision})};
-  return {options,record,calls,pins,run:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).prepare(),
+  return {options,record,calls,pins,captures,run:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).prepare(),
     actor:value=>actor=value,lease:value=>lease=value,revision:value=>revision=value,counts:()=>({closed,imports})};
 }
 {
@@ -57,11 +60,30 @@ function fixture({enabled=true,automaticShadow=true,rows=[],cache=false}={}){
 for(const config of [{enabled:false},{automaticShadow:false}]){
   const f=fixture(config);assert.deepEqual(await f.run(),{prepared:false});assert.deepEqual(f.counts(),{closed:0,imports:0});
 }
+for(const automaticRecoveryCopy of [false,true]){
+  const f=fixture({automaticShadow:true,automaticRecoveryCopy});
+  f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';f.options.productionRecoveryOnly=true;
+  const result=await f.run();
+  assert.equal(result.prepared,false,'Production recovery cannot activate shadow/cutover even when the shadow policy is true');
+  assert.equal(f.counts().imports,0);
+  if(automaticRecoveryCopy)assert.equal(result.recoveryCopy.status,'RECOVERY_COPY_CLIENT_VERIFIED');
+  else assert.equal(f.captures.size,0);
+}
 for(const count of [1,99,100,101,250,1000]){
   const rows=Array.from({length:count},(_,i)=>({operationId:`operation-${i}`,ownerUid,businessId:businessIds[0],payloadHash:'a'.repeat(64),payload:{actorUid:ownerUid}}));
   const f=fixture({rows});await assert.rejects(f.run(),/COMMAND_HANDOFF_REQUIRED/);
   assert.equal(f.calls.filter(path=>path.includes('/operationLedger/')).length,count,'No truncated census');
   assert.equal(f.counts().imports,0);assert.equal(f.pins.size,0);
+  assert.equal(f.captures.size,1,'Device capture must survive a blocked command handoff');
+  assert.equal([...f.captures.values()][0].journalCapture.rows.length,count);
+}
+{
+  const f=fixture({automaticShadow:false,automaticRecoveryCopy:true,rows:[{ownerUid,businessId:businessIds[0],operationId:'unknown',state:'unknown',payloadHash:'a'.repeat(64)}]});
+  const before=structuredClone(f.record),r=await f.run();
+  assert.equal(r.prepared,false);assert.equal(r.recoveryCopy.status,'RECOVERY_COPY_CLIENT_VERIFIED');
+  assert.equal(r.operationalCloudConfirmed,false);assert.equal(f.counts().imports,0);
+  assert.equal([...f.captures.values()][0].journalCapture.rows[0].state,'unknown');
+  assert.deepEqual(f.record,before);assert(!f.calls.some(p=>p.includes('/operationLedger/')),'Copy is never a retry or confirmation');
 }
 {
   const f=fixture({rows:[{operationId:'foreign',ownerUid,businessId:businessIds[1],payloadHash:'a'.repeat(64),payload:{actorUid:'worker'}}]});

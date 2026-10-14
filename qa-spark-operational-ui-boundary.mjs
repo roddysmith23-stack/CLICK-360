@@ -31,6 +31,38 @@ assert.throws(()=>globalThis.CLICK360_MODULAR_UI_ADAPTER.cashReportView({...repo
 assert.equal(report.paymentTotals.layawayPayments,undefined,'Derived print view cannot mutate server report');
 const helper=await readFile('qa/r38-emulator-support.mjs','utf8');
 const firebaseSource=await readFile('firebase-service.js','utf8');
+// Execute the actual production entry branch, not a parallel demo UI.
+// Only optional recovery may be enabled; operational modular remains denied.
+{
+  const start=firebaseSource.indexOf('const sparkProjectId=db.app.options.projectId;');
+  const end=firebaseSource.indexOf("if(['demo-click360-spark-modular','click360-staging-7620168025'].includes(sparkProjectId)",start);
+  assert(start>0&&end>start);
+  for(const scenario of ['disabled','pilot','not_pilot','worker','no_source','network_failure','locked']){
+    const context={ownerUid:'owner',authUid:scenario==='worker'?'worker':'owner'},user={uid:context.authUid};
+    const calls=[],record={snapshot:{sales:[{id:'retained'}]},deviceRevision:'device-42'};
+    const window={click360User:{ownerId:'owner'},CLICK360_RELEASE_ASSETS:{'app.js':'5c1c657a7f99'},
+      CLICK360_V16_STORAGE:{getSnapshot:async()=>scenario==='no_source'?null:structuredClone(record)},
+      CLICK360_SPARK_MIGRATION_BOOTSTRAP:{create:options=>{
+        assert.equal(options.productionRecoveryOnly,true);assert.equal(options.projectId,'click-360');assert.equal(options.leaseHeld(),true);
+        return {prepare:async()=>{calls.push('capture');options.onProgress({phase:'RECOVERY_COPY_CLIENT_VERIFIED',operationalCloudConfirmed:false});return {prepared:false};}};
+      }}};
+    const scope=vm.createContext({window,user,ACTIVE_CONTEXT:context,expectedEpoch:1,firebase:{},auth:{currentUser:user},
+      getDeviceId:()=> 'device',isCurrentAuthEpoch:()=>true,
+      navigator:{locks:{request:async(_name,_options,fn)=>fn(scenario==='locked'?null:{})}},
+      db:{app:{options:{projectId:'click-360'}},doc:path=>({get:async options=>{
+        assert.equal(path,'storageRollout/sparkV1');assert.equal(options.source,'server');
+        if(scenario==='network_failure')throw Object.assign(Error('offline'),{code:'unavailable'});
+        return {metadata:{fromCache:false,hasPendingWrites:false},data:()=>({enabled:scenario!=='disabled',automaticRecoveryCopy:true,
+          pilotOwnerUids:scenario==='not_pilot'?[]:['owner']})};
+      }})}});
+    vm.runInContext(`globalThis.run=async()=>{${firebaseSource.slice(start,end)}return 'legacy';};`,scope);
+    assert.equal(await scope.run(),'legacy');
+    assert.equal(calls.length,scenario==='pilot'?1:0);
+    assert.deepEqual(record.snapshot.sales,[{id:'retained'}]);
+    if(scenario==='pilot')assert.equal(window.click360SparkRecoveryCopy.operationalCloudConfirmed,false);
+    if(scenario==='locked')assert.equal(window.click360SparkRecoveryCopy.status,'PENDING');
+  }
+}
 // READY cannot escape before the actual lifecycle owner is installed.
 // Otherwise a restart/navigation observes a cursorless UI and a previous
 // idle phase as though the new bootstrap/reconnect were finished.

@@ -108,6 +108,29 @@
     return Object.freeze({
       close: () => db.close(),
       get: (identity, operationId) => read(key(identity, operationId)),
+      async captureOwner(ownerUid) {
+        if(actorUid!==null)throw Error('UNSCOPED_OWNER_CENSUS_REQUIRED');
+        key({ownerUid,businessId:'capture'},'capture');
+        const prefix=`${ownerUid}:`;
+        // One readonly transaction over PRIMARY keys, not a truncated pending
+        // index. Include confirmed rows, projection failures and other issuers;
+        // preservation does not claim or replay any of them.
+        return new Promise((resolve,reject)=>{
+          const tx=db.transaction('operations','readonly'),rows=[];let failure;
+          const request=tx.objectStore('operations').openCursor(root.IDBKeyRange.bound(prefix,`${ownerUid};`,false,true));
+          request.onsuccess=()=>{
+            const cursor=request.result;if(!cursor)return;
+            try{
+              const row=cursor.value;
+              if(row.ownerUid!==ownerUid||key(row,row.operationId)!==row.key)
+                throw Error('OWNER_OUTBOX_CAPTURE_IDENTITY_INVALID');
+              rows.push(structuredClone(row));cursor.continue();
+            }catch(error){failure=error;tx.abort();}
+          };
+          tx.oncomplete=()=>resolve({ownerUid,rows,recordCount:rows.length,enumerationComplete:true});
+          tx.onabort=()=>reject(failure||tx.error||Error('JOURNAL_READ_ABORTED'));
+        });
+      },
       async assertOwnerCoverage(ownerUid,businessIds) {
         if(actorUid!==null||!Array.isArray(businessIds)||!businessIds.length)throw Error('UNSCOPED_OWNER_CENSUS_REQUIRED');
         key({ownerUid,businessId:businessIds[0]},'owner-coverage');
