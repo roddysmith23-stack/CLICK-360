@@ -22,5 +22,15 @@ rechazado sin encolar escritura, reapertura y edición válida, venta única y
 remoto legacy intacto. No se aumentan timeouts ni se omiten controles.
 
 Esta dependencia de seguridad no incluye P0B. #96 se conserva separado.
+
+La comprobación adicional del comercio servido desde staging encontró un
+segundo fallo distinto: Auth persistido podía resolver antes de que el parser
+ejecutara app.js. Chromium en el segundo arranque mostró identidad aún no
+hidratada y `La interfaz segura todavía no está lista`, no un error de Rules.
+firebase-service precede app.js en index.html. Se sustituye el inicio inmediato
+por DOMContentLoaded una sola vez, o inmediato si el documento ya está listo.
+No se añaden esperas temporizadas ni reintentos. El test de Auth cubre loading,
+interactive y complete usando el fragmento real; PWA/comercio servido prueban
+el arranque completo con SDK y persistencia reales.
 El piloto y producción siguen retenidos hasta CI final, staging y publicación
 exacta verificados. No implica recuperación del iPhone real.

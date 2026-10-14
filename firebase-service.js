@@ -4429,5 +4429,12 @@
 	    });
   }
 
-  boot();
+  // This service script precedes app.js. Persisted Auth may resolve while the
+  // parser is still downloading the UI, especially on a hosted cold restart.
+  // Start once the real interface has executed, never by a timeout/retry.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => boot(), { once:true });
+  } else {
+    boot();
+  }
 })();
