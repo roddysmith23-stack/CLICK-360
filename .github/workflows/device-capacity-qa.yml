@@ -5,7 +5,7 @@ on:
     branches: [main]
 jobs:
   device-capacity-required:
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
         with:
