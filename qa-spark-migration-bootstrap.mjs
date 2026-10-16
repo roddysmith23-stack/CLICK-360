@@ -56,6 +56,41 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
   assert.equal(pin.remoteSourceHash,await api.hash(remote));assert.equal(pin.deviceRecordMetadata.deviceRevision,'device-2');
   assert.deepEqual(pin.deviceRecordMetadata.pendingOperations,['snapshot-save-id']);assert.equal(pin.reconciliations.length,2);
   assert.equal(pin.sourceDeviceId,'durable-device');
+  assert.equal(pin.capacityProof.results.length,1);
+  assert.equal(pin.capacityProof.results[0].replayAllowed,false);
+  assert.equal(pin.capacityProof.sourceHash,await api.hash(local));
+  assert.equal(pin.cashProofs.length,2);
+  assert(pin.cashProofs.every(proof=>proof.canProceed));
+}
+for(const count of [76,101,1000]){
+  const f=fixture();
+  f.record.pendingOperations=Array.from({length:count},(_,i)=>`device-save-${i}`);
+  const before=structuredClone(f.record);
+  await f.run();
+  const proof=[...f.pins.values()][0].capacityProof;
+  assert.equal(proof.results.length,count,'Legacy pending saves are not the modular journal');
+  assert(proof.results.every(row=>row.replayAllowed===false&&row.action==='IMPORT_RECONCILED_SOURCE_ONLY'));
+  assert(!f.calls.some(path=>path.includes('/operationLedger/')),'Snapshot save IDs are never commercial commands');
+  assert.deepEqual(f.record,before);
+}
+for(const pendingOperations of [['duplicate','duplicate'],[{operationId:'not-a-snapshot-reference',state:'unknown'}]]){
+  const f=fixture();f.record.pendingOperations=pendingOperations;
+  await assert.rejects(f.run(),/SPARK_CAPACITY_PENDING_PROOF_REQUIRED|MIGRATION_UNKNOWN_OPERATIONS_STOP/);
+  assert.equal(f.counts().imports,0);assert.equal(f.captures.size,1);
+}
+// A lossless record-codec roundtrip is not proof that imported sessions have
+// verified financial counters. The REAL bootstrap must reject before calling
+// the importer, while retaining the original local snapshot and recovery pin.
+for(const businessId of businessIds){
+  const f=fixture();
+  f.record.snapshot=structuredClone(f.record.snapshot);
+  f.record.snapshot.cashSessions.push({id:'unverified-session',businessId,
+    operationId:'opening',date:'2026-09-03',status:'open',openingAmount:0});
+  const before=structuredClone(f.record);
+  await assert.rejects(f.run(),/SPARK_MIGRATION_CASH_PROOF_REQUIRED/);
+  assert.equal(f.counts().imports,0);
+  assert.equal(f.captures.size,1,'Financial preflight must never erase the original source');
+  assert.deepEqual(f.record,before);
 }
 for(const config of [{enabled:false},{automaticShadow:false}]){
   const f=fixture(config);assert.deepEqual(await f.run(),{prepared:false});assert.deepEqual(f.counts(),{closed:0,imports:0});

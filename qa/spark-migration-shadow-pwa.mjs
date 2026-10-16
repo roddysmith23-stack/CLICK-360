@@ -115,11 +115,19 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
   for(const product of local.products)if(product.businessId===uid)product.notes='x'.repeat(1900);
   local.products[0].stock--;local.products[0].qty--;
   const sessionId='local-historical-session';
-  local.cashSessions.push({id:sessionId,businessId:uid,businessDate:'2026-09-03',status:'open'});
+  local.cashSessions.push({id:sessionId,operationId:'local-opening',businessId:uid,
+    date:'2026-09-03',businessDate:'2026-09-03',status:'open',openingAmount:0});
   local.sales.push({id:'local-historical-sale',operationId:'local-historical-sale',businessId:uid,cashSessionId:sessionId,
-    businessDate:'2026-09-03',total:30,items:[{id:local.products[0].id,qty:1,price:30}]});
-  local.movements.push({id:'local-historical-movement',businessId:uid,cashSessionId:sessionId,saleId:'local-historical-sale',amount:30});
+    date:'2026-09-03',businessDate:'2026-09-03',total:30,received:30,iva:0,method:'Transferencia',
+    items:[{id:local.products[0].id,qty:1,price:30}]});
+  local.movements.push({id:'local-opening',operationId:'local-opening',businessId:uid,
+    cashSessionId:sessionId,date:'2026-09-03',kind:'apertura',amount:0},
+    {id:'local-historical-movement',operationId:'local-historical-sale',businessId:uid,
+      cashSessionId:sessionId,saleId:'local-historical-sale',date:'2026-09-03',kind:'ingreso',
+      paymentType:'sale',paymentMethod:'Transferencia',amount:30});
   local.identity=identity(uid);
+  const cashProof=await CLICK360_SPARK_MIGRATION.deriveCashSummaries({snapshot:local,businessId:uid});
+  assert(cashProof.canProceed,'The served shadow fixture must contain a financially provable historical session');
   const sourceHash=await CLICK360_SPARK_MIGRATION.hash(local);
   assert(CLICK360_SPARK_MIGRATION.byteLength(local)>850000,'Oversized durable device source required');
   await seed(env,async db=>{

@@ -3,6 +3,21 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import './qa-spark-migration-bootstrap.mjs';
 const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta.url),'utf8');
+// Production #98 is not optional when the modular candidate succeeds it.
+// Execute the actual startup boundary for all document readiness states.
+{
+  const service=readFileSync(new URL('./firebase-service.js',import.meta.url),'utf8');
+  const start=service.lastIndexOf("  if (document.readyState === 'loading')"),end=service.lastIndexOf('})();');
+  assert(start>0&&end>start);
+  for(const readyState of ['loading','interactive','complete']){
+    let calls=0,ready;
+    vm.runInNewContext(service.slice(start,end),{document:{readyState,addEventListener:(event,fn,options)=>{
+      assert.equal(event,'DOMContentLoaded');assert.equal(options.once,true);ready=fn;
+    }},boot:()=>calls++});
+    assert.equal(calls,readyState==='loading'?0:1);
+    if(readyState==='loading'){ready();assert.equal(calls,1);}
+  }
+}
 // Execute the actual worker approval gate, including a late response from the
 // preceding actor. Never inherit an old approval or leave the requested route.
 {

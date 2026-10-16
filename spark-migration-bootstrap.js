@@ -81,7 +81,8 @@
           context();onProgress({phase:copy.status,...copy});
           if(productionRecoveryOnly||policy.automaticShadow!==true)return {prepared:false,recoveryCopy:copy,operationalCloudConfirmed:false};
         }
-        const selected=await api.selectSource({ownerUid,...await readSource()});
+        const source=await readSource();
+        const selected=await api.selectSource({ownerUid,...source});
         // Unscoped READ-ONLY census includes pending rows issued by a different
         // actor on this partition. They block migration, never get claimed.
         await journal.assertOwnerCoverage(ownerUid,selected.businessIds);context();
@@ -102,10 +103,31 @@
           // handoff first. Snapshot persistence IDs below are NOT commands.
           if(reconciliation.results.length)throw Error('SPARK_MIGRATION_COMMAND_HANDOFF_REQUIRED');
         }
+        // Capacity-bridge save references are a separate queue from the
+        // modular command journal. Enumerating zero command rows must not
+        // silently discard those original references or turn them into sales.
+        // Preserve the existing explicit proof contract; it never authorizes
+        // replay and stops on malformed IDs, duplicates or remote drift.
+        const capacityProof=local.cloudCapacityBlocked===true
+          ?await root.CLICK360_SPARK_RECONCILIATION.capacitySnapshotProof({ownerUid,
+            localRecord:{...local,durable:true},remote:source.remote,unknownOperations:0})
+          :null;
+        context();await assertStable();
+        // The preservation codec proves byte/semantic identity, not that an
+        // imported cash session can safely become operational. Run the actual
+        // financial proof for EVERY covered business before any shadow write.
+        // Never manufacture zero counters or infer session identity from dates.
+        const cashProofs=[];
+        for(const businessId of selected.businessIds){
+          const proof=await api.deriveCashSummaries({snapshot:selected.snapshot,businessId});
+          context();await assertStable();
+          if(!proof.canProceed)throw Error('SPARK_MIGRATION_CASH_PROOF_REQUIRED');
+          cashProofs.push({businessId,...proof});
+        }
         const {snapshot:preservedSnapshot,...deviceRecordMetadata}=local;
         const preservedRecovery={read:hash=>recovery.read(hash),pin:input=>recovery.pin({...input,
           remoteSourceHash:selected.remoteHash,businessIds:selected.businessIds,sourceDeviceId:device.deviceId,
-          deviceRecordMetadata,reconciliations})};
+          deviceRecordMetadata,reconciliations,capacityProof,cashProofs})};
         const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,deviceId:device.deviceId,buildSha,resolveUser,
           readSource,recovery:preservedRecovery,onProgress,readGuard:async()=>{
             context();const current=await readLocal();context();

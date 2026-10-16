@@ -7340,9 +7340,22 @@ function parseMoney(value) {
 	      // re-deriving "baseline" from a fresh clone of the (possibly
 	      // already-rebased) current `state` at submit time.
 	      const editOpenBaseline = product ? cloneState(product) : null;
-	      let savedProduct = product;
+	      const productFingerprint = (candidate) => candidate ? JSON.stringify({
+	        id:candidate.id, businessId:candidate.businessId, code:candidate.code,
+	        category:candidate.category || '', name:candidate.name || '',
+	        qty:Number(candidate.qty ?? candidate.stock ?? 0), stock:Number(candidate.stock ?? candidate.qty ?? 0),
+	        cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
+	        taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
+	      }) : '';
+      // Preserve production #98: a durable commit can replace state while
+      // this modal is open. Edit the live record, never a detached reference,
+      // and never overwrite a product that actually changed in the meantime.
+      let savedProduct = product ? state.products.find(candidate=>candidate.id===product.id && candidate.businessId===b.id) : null;
+      if (product && (!savedProduct || productFingerprint(savedProduct)!==productFingerprint(editOpenBaseline))) {
+        return toast('Hay un conflicto de sincronización pendiente. El producto cambió mientras lo editabas. Vuelve a abrirlo para revisar el cambio; no se guardó esta edición.', 'err');
+      }
 	      // Write both 'stock' (canonical, read by modular gateway) and 'qty' (legacy UI field) so both paths stay in sync.
-	      if(product) Object.assign(product,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
+	      if(product) Object.assign(savedProduct,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
 	      else { savedProduct = {id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
 	      if (restaurantModuleEnabled()) {
 	        const ingredients = $('#pRecipeIngredients')?.value.trim() || '';
@@ -7361,13 +7374,6 @@ function parseMoney(value) {
 	      const desiredProduct = cloneState(savedProduct);
 	      const desiredRecipe = cloneState(state.restaurantRecipes.find((recipe) => recipe.productId === savedProduct.id && recipe.businessId === b.id) || null);
 	      const baselineProduct = editOpenBaseline || previousState.products.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id) || null;
-	      const productFingerprint = (candidate) => candidate ? JSON.stringify({
-	        id:candidate.id, businessId:candidate.businessId, code:candidate.code,
-	        category:candidate.category || '', name:candidate.name || '',
-	        qty:Number(candidate.qty ?? candidate.stock ?? 0), stock:Number(candidate.stock ?? candidate.qty ?? 0),
-	        cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
-	        taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
-	      }) : '';
 	      const remoteApplied = (next) => {
 	        const remoteProduct = next.products?.find((candidate) => candidate.id === savedProduct.id && candidate.businessId === b.id);
 	        const fieldMatches = remoteProduct ? {

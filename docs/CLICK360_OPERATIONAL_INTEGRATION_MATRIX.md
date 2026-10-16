@@ -60,4 +60,12 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 
 Do not remove nonproduction activation guards, enable automatic migrations, merge or deploy production based on partial rows. A whole served business journey, automatic mode routing, all required operational commands, complete durable replay/overlay, real Spark staging, PWA upgrade and forward-safe recovery must pass first.
 
-Physical iPhone source/outbox remains unobserved. Remote historical records cannot certify the client's newer local operations. Real cutover needs reconciled device evidence and final owner authorization; nothing here supplies either.
+Remote historical records cannot certify the client's newer local operations.
+Recovery copies can now be inspected independently with the read-only support
+tool documented in `CLICK360_RECOVERY_COPY_INSPECTION.md`; its private results
+must not be confused with physical-origin/latest-state correlation or
+operational cloud confirmation. The real bootstrap now pins the full separate
+capacity-save proof (not just a zero-row modular journal), and requires verified
+cash summaries in every covered business before starting shadow writes.
+Real cutover still needs reconciled device evidence, operational certification
+and final owner authorization; a local codec roundtrip supplies none of these.

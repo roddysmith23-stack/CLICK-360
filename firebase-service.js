@@ -4547,5 +4547,11 @@
 	    });
   }
 
-  boot();
+  // Preserve production #98: Auth must not resolve before the actual UI
+  // script has executed on a hosted cold restart. No timer or blind retry.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => boot(), { once:true });
+  } else {
+    boot();
+  }
 })();
