@@ -29,14 +29,12 @@
 
 	  const auth = firebase.auth();
 	  const db = firebase.firestore();
-  // Supported WebChannel transport: close each hanging GET after delivering
-  // data instead of relying on indefinitely streaming Fetch responses. Linux
-  // WebKit reproduced a 200/header-only Listen stall even with no browser/SW
-  // interception. This changes connection framing, not queries, Rules, cache,
-  // transaction semantics or the evidence required for cloud confirmation.
-  // Configure before persistence or any read; never terminate/clear user data.
-  db.settings({ merge:true, experimentalForceLongPolling:true, experimentalAutoDetectLongPolling:false });
-  window.click360FirestoreTransport = 'long_polling';
+  // Required recovery transport dependency already certified in #96.
+  // WebKit can leave streaming Listen reads at HTTP 200 without delivering
+  // their first result. Use supported bounded long-poll framing before reads;
+  // never change identity, persistence, Rules or confirmation requirements.
+  db.settings({merge:true,experimentalForceLongPolling:true,experimentalAutoDetectLongPolling:false});
+  window.click360FirestoreTransport='long_polling';
 	  db.enablePersistence({ synchronizeTabs: true }).catch(err => {
 	    console.warn("Persistencia offline de Firestore no disponible:", err.message);
 	  });
@@ -3965,6 +3963,8 @@
 	    localUpdatedAtMs: localPayloadUpdatedAtMs()
 	  });
 	  function deactivateActiveAccount() {
+	    window.click360SparkRecoveryCopy = null;
+	    window.click360SparkMigrationState = null;
 	    AUTH_EPOCH += 1;
 	    AUTH_APPROVED = false;
 	    PULL_COMPLETE = false;
@@ -4115,31 +4115,46 @@
     }, (error) => console.warn('No se pudo escuchar el acceso de cuenta:', error.message));
   }
 
-	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
-		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+  let P0A_RECOVERY_RUN = null;
+  let P0A_RECOVERY_EPOCH = null;
+  async function runP0ARecovery(user, expectedEpoch) {
+    if(!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user))return;
+    if(P0A_RECOVERY_RUN){
+      if(P0A_RECOVERY_EPOCH===expectedEpoch)return P0A_RECOVERY_RUN;
+      // Auth may redeliver the same owner before legacy unlock completes.
+      // Drain the invalidated epoch, then capture under the CURRENT context.
+      // Do not inherit its result or bypass recovery on this legitimate boot.
+      await P0A_RECOVERY_RUN.catch(()=>{});
+      return runP0ARecovery(user,expectedEpoch);
+    }
+    const run=(async()=>{
+        let recoveryOnly=false;
         const sparkProjectId=db.app.options.projectId;
         // Production may prepare ONLY an explicitly piloted recovery copy.
-        // Operational modular bootstrap/cutover remains staging-only below.
+        // This preservation path never invokes P0B migration or cutover.
         // Missing/disabled policy and a new account with no durable source
         // retain the existing application path; never manufacture a seed.
-        if(sparkProjectId==='click-360'&&window.click360User?.ownerId===user.uid
-          &&window.CLICK360_SPARK_MIGRATION_BOOTSTRAP){
+        if(['click-360','click360-staging-7620168025','demo-click360-spark-modular'].includes(sparkProjectId)&&window.click360User?.ownerId===user.uid
+          &&window.CLICK360_P0A_BOOTSTRAP){
           const context=ACTIVE_CONTEXT;
           try{
             const policy=await db.doc('storageRollout/sparkV1').get({source:'server'}),p=policy.data();
             if(policy.metadata.fromCache===false&&policy.metadata.hasPendingWrites===false&&p?.enabled===true
-              &&p.automaticRecoveryCopy===true&&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
+              &&p.automaticRecoveryCopy===true&&p.automaticShadow===false&&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
+              recoveryOnly=true;
               await window.click360PrepareTenantStorage?.(context);
               const source=await window.CLICK360_V16_STORAGE.getSnapshot(context);
               if(source?.snapshot&&source.deviceRevision){
                 if(!navigator.locks?.request)throw Error('SPARK_RECOVERY_DEVICE_LOCK_UNAVAILABLE');
                 await navigator.locks.request(`click360-spark:${sparkProjectId}:${context.ownerUid}:${user.uid}`,{ifAvailable:true},async lock=>{
                   if(!lock)throw Error('SPARK_RECOVERY_DEVICE_ALREADY_ACTIVE');
-                  await window.CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                  await window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
                     productionRecoveryOnly:true,ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),
-                    buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+                    buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,
+                    resolveContext:()=>isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context?context:null,
                     readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld:()=>!!lock,
-                    onProgress:detail=>{window.click360SparkMigrationState=detail;
+                    onProgress:detail=>{if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context)return;
+                      window.click360SparkMigrationState=detail;
                       if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED')window.click360SparkRecoveryCopy={...detail};}
                   }).prepare();
                 });
@@ -4152,9 +4167,23 @@
             // Optional preservation cannot erase, replace or replay local data.
             // Existing legacy capacity/dirty guards still control normal sync.
           }
-          if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context)return false;
+          if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context)return;
         }
-        if(['demo-click360-spark-modular','click360-staging-7620168025'].includes(sparkProjectId)
+        return recoveryOnly;
+    })();
+    P0A_RECOVERY_RUN=run;
+    P0A_RECOVERY_EPOCH=expectedEpoch;
+    try{return await run;}finally{if(P0A_RECOVERY_RUN===run)P0A_RECOVERY_RUN=null;}
+  }
+  window.addEventListener('online',()=>{
+    if(AUTH_APPROVED&&auth.currentUser)runP0ARecovery(auth.currentUser,AUTH_EPOCH).catch(()=>{});
+  });
+	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
+		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
+        const p0aRecoveryOnly=await runP0ARecovery(user,expectedEpoch);
+        if (!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user)) return false;
+        const sparkProjectId=db.app.options.projectId;
+        if(!p0aRecoveryOnly&&['demo-click360-spark-modular','click360-staging-7620168025'].includes(sparkProjectId)
           && window.CLICK360_SPARK_BOOTSTRAP && (window.click360User?.ownerId===user.uid || SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT)){
           let sparkCoordinator=null;
           try{
@@ -4547,8 +4576,9 @@
 	    });
   }
 
-  // Preserve production #98: Auth must not resolve before the actual UI
-  // script has executed on a hosted cold restart. No timer or blind retry.
+  // This service script precedes app.js. Persisted Auth may resolve while the
+  // parser is still downloading the UI, especially on a hosted cold restart.
+  // Start once the real interface has executed, never by a timeout/retry.
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => boot(), { once:true });
   } else {

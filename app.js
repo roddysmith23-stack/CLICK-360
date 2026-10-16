@@ -7347,9 +7347,10 @@ function parseMoney(value) {
 	        cost:Number(candidate.cost || 0), price:Number(candidate.price || 0), cardPrice:Number(candidate.cardPrice ?? candidate.price ?? 0),
 	        taxMode:candidate.taxMode || 'inherit', notes:candidate.notes || '', imageData:candidate.imageData || ''
 	      }) : '';
-      // Preserve production #98: a durable commit can replace state while
-      // this modal is open. Edit the live record, never a detached reference,
-      // and never overwrite a product that actually changed in the meantime.
+      // A durable device commit replaces state with its protected snapshot.
+      // The modal's original product may therefore be detached, even without
+      // any remote edit. Mutate the live record, but never overwrite a record
+      // whose commercial fields changed while this editor was open.
       let savedProduct = product ? state.products.find(candidate=>candidate.id===product.id && candidate.businessId===b.id) : null;
       if (product && (!savedProduct || productFingerprint(savedProduct)!==productFingerprint(editOpenBaseline))) {
         return toast('Hay un conflicto de sincronización pendiente. El producto cambió mientras lo editabas. Vuelve a abrirlo para revisar el cambio; no se guardó esta edición.', 'err');

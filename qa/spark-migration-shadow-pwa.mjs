@@ -45,7 +45,7 @@ export async function certifyRecoveryCopy({browser,env,uid,label}){
       };
     });
     await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email:emulatorOwnerEmail,password:emulatorPassword});
-    await page.waitForFunction(()=>window.RECOVERY_RESPONSE_LOST_INJECTED&&window.click360SparkBootstrapState?.reason==='unavailable');
+    await page.waitForFunction(()=>window.RECOVERY_RESPONSE_LOST_INJECTED&&window.click360SparkRecoveryCopy?.reason==='unavailable');
     const interruptedHash=await page.evaluate(()=>click360SparkMigrationState.captureHash);
     await seed(env,async db=>{
       const m=(await getDocFromServer(doc(db,`businesses/${uid}/recoveryCopies/${interruptedHash}`))).data();
@@ -94,7 +94,7 @@ export async function certifyRecoveryCopy({browser,env,uid,label}){
     });
     try{
       const rejected=await page.evaluate(async({uid,captureHash})=>{
-        const r=await CLICK360_SPARK_RECOVERY.open({ownerUid:uid,resolveUser:()=>click360Auth.currentUser});
+        const r=await CLICK360_P0A_RECOVERY.open({ownerUid:uid,resolveUser:()=>click360Auth.currentUser});
         try{await r.preserveCloud({captureHash,db:click360Db,firebase,projectId:click360Db.app.options.projectId,assertStable:async()=>{}});return {denied:false,reason:'unexpected_success'};}
         catch(error){return {denied:error.message==='SPARK_RECOVERY_REMOTE_PART_CONFLICT',reason:String(error.code||error.message)};}finally{r.close();}
       },{uid,captureHash:copy.captureHash});

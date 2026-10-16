@@ -36,6 +36,10 @@ const files = [
   'v16-storage.js',
   'access-flow.js',
   'firebase-service.js',
+  'p0a-canonical.js',
+  'p0a-journal-reader.js',
+  'p0a-recovery-store.js',
+  'p0a-recovery-bootstrap.js',
   'printing-service.js',
   'smart-print-core.js',
   'p2-web-safe-flags.js',
@@ -80,7 +84,8 @@ await writeFile(swPath, (await readFile(swPath, 'utf8')).replace('__CLICK360_SW_
 for (const entry of ['app.js', 'firebase-service.js', 'tenant-quota-overrides.js', 'v16-storage.js',
   'spark-modular-migration.js','spark-modular-reconciliation.js','spark-modular-recovery.js','spark-modular-importer.js','spark-migration-bootstrap.js','spark-modular-record-codec.js','spark-modular-transaction-transport.js',
   'modular-operation-journal.js','modular-persistence.js','modular-operation-coordinator.js',
-  'modular-ui-adapter.js','spark-operational-ui-runtime.js','spark-operational-bootstrap.js']) {
+  'modular-ui-adapter.js','spark-operational-ui-runtime.js','spark-operational-bootstrap.js',
+  'p0a-canonical.js','p0a-journal-reader.js','p0a-recovery-store.js','p0a-recovery-bootstrap.js']) {
   const file = join(output, entry);
   const stamp = `globalThis.CLICK360_RELEASE_ASSETS ||= {}; globalThis.CLICK360_RELEASE_ASSETS[${JSON.stringify(entry)}] = ${JSON.stringify(shortSha)};\n`;
   await writeFile(file, stamp + await readFile(file, 'utf8'));
