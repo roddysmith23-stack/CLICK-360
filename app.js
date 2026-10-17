@@ -3683,11 +3683,20 @@ function parseMoney(value) {
 		  if (nextStatus === 'picked_up' && !confirm('Confirma que el cliente recibio todos los productos reservados.')) return;
 		  const previousState = cloneState(state);
 		  const operationId = uid('laystatus');
+		  const changedAt = new Date().toISOString();
+		  let sparkCommand;
+		  if(window.click360SparkOperationalSession){
+		    try {sparkCommand=window.CLICK360_MODULAR_UI_ADAPTER.layawayStatusCommand({
+		      sale:previousState.sales.find((item) => item.id === layaway.saleId && item.businessId === layaway.businessId),
+		      layaway:previousState.layaways.find((item) => item.id === layawayId && item.businessId === layaway.businessId),
+		      identity:window.click360SparkOperationalSession.identity,operationId,nextStatus,changedAt});}
+		    catch {return toast('No pudimos validar la entrega. Tu apartado y sus pagos permanecen intactos.', 'err');}
+		  }
 		  layaway.status = nextStatus;
-		  layaway.updatedAt = new Date().toISOString();
+		  layaway.updatedAt = changedAt;
 		  if (nextStatus === 'picked_up') layaway.pickedUpAt = layaway.updatedAt;
 		  addAudit('layaway_status_updated', { layawayId, saleId: layaway.saleId, status: nextStatus, operationId, entityType:'layaway', entityId:layawayId });
-		  const committed = await commitCriticalMutation(previousState, 'layaway_status_updated', (next) => next.layaways?.some((item) => item.id === layawayId && item.status === nextStatus));
+		  const committed = await commitCriticalMutation(previousState, 'layaway_status_updated', (next) => next.layaways?.some((item) => item.id === layawayId && item.status === nextStatus),{sparkCommand});
 		  if (!committed.ok) return;
 		  renderApp('debtors');
 		  toast(committed.pending ? 'Cambio guardado; sincronización pendiente.' : (nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro'));
@@ -7184,45 +7193,57 @@ function parseMoney(value) {
 	    });
 
     $$('[data-edit-tpl]').forEach((button) => button.onclick = () => openLabelModal(labelSample, button.dataset.editTpl));
-    $$('[data-rename-tpl]').forEach((button) => button.onclick = () => {
+    $$('[data-rename-tpl]').forEach((button) => button.onclick = async () => {
       const template = labelTemplatesForBiz().find((item) => item.id === button.dataset.renameTpl);
       if (!template) return;
       const name = prompt('Nuevo nombre de la plantilla:', template.name);
       if (!name?.trim()) return;
+      const previousState=cloneState(state);
       template.name = name.trim();
       template.updatedAt = new Date().toISOString();
-      if (!save()) return;
+      if (!(await commitScopedPrintSetting(previousState,'labelTemplates',template)).ok) return;
       renderApp('inventory');
       toast('Plantilla renombrada');
     });
-    $$('[data-duplicate-tpl]').forEach((button) => button.onclick = () => {
+    $$('[data-duplicate-tpl]').forEach((button) => button.onclick = async () => {
       const template = labelTemplatesForBiz().find((item) => item.id === button.dataset.duplicateTpl);
       if (!template) return;
-      const copy = JSON.parse(JSON.stringify(template));
+      const previousState=cloneState(state),copy = JSON.parse(JSON.stringify(template));
       copy.id = uid('tpl');
       copy.name = `${template.name} copia`;
       copy.isDefault = false;
       copy.createdAt = new Date().toISOString();
       copy.updatedAt = copy.createdAt;
       state.settings.labelTemplates.push(copy);
-      if (!save()) return;
+      if (!(await commitScopedPrintSetting(previousState,'labelTemplates',copy)).ok) return;
       renderApp('inventory');
       toast('Plantilla duplicada');
     });
     $$('[data-default-tpl]').forEach((button) => button.onclick = () => {
+      // This legacy action changes several records. Do not split its single
+      // intended preference change into independently confirmed modular writes.
+      if(window.click360SparkOperationalSession)return toast('La selección predeterminada aún no está disponible. Puedes elegir tu diseño al imprimir.', 'err');
       labelTemplatesForBiz().forEach((template) => { template.isDefault = template.id === button.dataset.defaultTpl; });
       if (!save()) return;
       renderApp('inventory');
       toast('Plantilla predeterminada actualizada');
     });
     $$('[data-del-tpl]').forEach(btn => {
-       btn.onclick = () => {
+       btn.onclick = async () => {
           if (confirm('¿Estás seguro de eliminar esta plantilla de etiquetas?')) {
              const tplId = btn.dataset.delTpl;
              state.settings ||= {};
              state.settings.labelTemplates ||= [];
              const businessId = currentBusiness().id;
-             const previous = [...state.settings.labelTemplates];
+             const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
+             const existing=previous.find(template=>template.id===tplId&&template.businessId===businessId);
+             if(window.click360SparkOperationalSession){
+               if(!existing)return toast('Plantilla no encontrada.', 'err');
+               state.settings.labelTemplates=previous.map(template=>template===existing?{...template,deleted:true}:template);
+               addAudit('label_template_deleted',{templateId:tplId,businessId});
+               if(!(await commitScopedPrintSetting(previousState,'labelTemplates',{...existing,deleted:true})).ok)return;
+               renderApp('inventory');toast('Plantilla eliminada','ok');return;
+             }
              state.settings.labelTemplates = previous.filter((template) =>
                template.id !== tplId || !(
                  template.businessId === businessId
@@ -11416,11 +11437,15 @@ function parseMoney(value) {
 	      $('#deleteTemplateBtn').disabled = !activeTemplateId;
 	      updateLabelEditorIdentity();
 	    };
-	    const persistTemplate = ({ forceNew = false, suggestedName = '', nameOverride = '', silent = false, deferSave = false } = {}) => {
+	    const persistTemplate = async ({ forceNew = false, suggestedName = '', nameOverride = '', silent = false, deferSave = false } = {}) => {
 		       if (!editorBusinessIsActive()) {
 		         toast('El negocio activo cambió. Reabre el asistente para guardar con seguridad.', 'err');
 		         return null;
 		       }
+           if(deferSave&&window.click360SparkOperationalSession){
+             toast('El guardado combinado de diseño y perfil aún no está disponible. Guarda el diseño por separado.', 'err');return null;
+           }
+		       const previousState=cloneState(state);
 		       const existing = forceNew ? null : labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	       const name = nameOverride || prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
 		       if (!name?.trim()) return null;
@@ -11433,6 +11458,7 @@ function parseMoney(value) {
 	         startSlot:currentOpts.startSlot
 	       });
 		       const tpl = {
+          ...(existing || {}),
           id: existing?.id || uid('tpl'),
           name: name.trim(),
           bgColor: currentOpts.bgColor,
@@ -11490,8 +11516,8 @@ function parseMoney(value) {
 	         refreshInventoryTemplateSection();
 	         return tpl;
 	       }
-	       if(!save()) {
-	          state.settings.labelTemplates = previousTemplates;
+	       if(!(await commitScopedPrintSetting(previousState,'labelTemplates',tpl)).ok) {
+	          if(!window.click360SparkOperationalSession)state.settings.labelTemplates = previousTemplates;
 	          activeTemplateId = previousTemplateId;
 	          window.click360RecordTelemetry?.('template_save_failure', { requestId: tpl.id, errorCode: 'local_save_rejected' }).catch?.(() => {});
 	          refreshTemplateSelect();
@@ -11511,12 +11537,18 @@ function parseMoney(value) {
 	      const current = labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	      persistTemplate({ forceNew: true, suggestedName: `${current?.name || 'Mi Plantilla QR'} - copia` });
 	    };
-	    $('#deleteTemplateBtn').onclick = () => {
+	    $('#deleteTemplateBtn').onclick = async () => {
 	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
 	      const current = labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	      if (!current || !confirm(`¿Eliminar la plantilla "${current.name}"?`)) return;
 	      const businessId = editorBusinessId;
-	      const previous = [...(state.settings.labelTemplates || [])];
+	      const previousState=cloneState(state),previous = [...(state.settings.labelTemplates || [])];
+	      if(window.click360SparkOperationalSession){
+            state.settings.labelTemplates=previous.map(template=>template===current?{...template,deleted:true}:template);
+            addAudit('label_template_deleted',{templateId:current.id,name:current.name});
+            if(!(await commitScopedPrintSetting(previousState,'labelTemplates',{...current,deleted:true})).ok)return;
+            activeTemplateId='';refreshTemplateSelect();refreshInventoryTemplateSection();toast('Plantilla eliminada','ok');return;
+          }
 	      state.settings.labelTemplates = previous.filter((template) =>
 	        template.id !== activeTemplateId || !(
 	          template.businessId === businessId
@@ -11587,8 +11619,9 @@ function parseMoney(value) {
 	      }
 	      applyPrintProfile(labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === selectedId));
 	    };
-	    const persistPrintProfile = ({ forceNew = false, suggestedName = '' } = {}) => {
+	    const persistPrintProfile = async ({ forceNew = false, suggestedName = '' } = {}) => {
 	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+          if(window.click360SparkOperationalSession)return toast('El guardado combinado de diseño y perfil aún no está disponible. Guarda el diseño por separado.', 'err');
 	      const preflight = updateSheetPreview();
 	      if (preflight.blocking) return toast('Corrige los errores rojos antes de guardar el perfil.', 'err');
 	      const existing = forceNew ? null : labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
@@ -11601,7 +11634,7 @@ function parseMoney(value) {
 	      const templateName = activeTemplateId
 	        ? (labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId)?.name || `${name.trim()} - diseño`)
 	        : `${name.trim()} - diseño`;
-	      const templateSnapshot = persistTemplate({
+	      const templateSnapshot = await persistTemplate({
 	        forceNew: !activeTemplateId,
 	        suggestedName: templateName,
 	        nameOverride: templateName,
@@ -11679,6 +11712,7 @@ function parseMoney(value) {
 	    };
 	    $('#deletePrintProfileBtn').onclick = () => {
 	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+          if(window.click360SparkOperationalSession)return toast('La modificación de este perfil avanzado aún no está disponible. Tus preferencias siguen intactas.', 'err');
 	      const current = labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
 	      if (!current || !confirm(`¿Eliminar el perfil "${current.name}" de este negocio?`)) return;
 	      const previous = JSON.parse(JSON.stringify(state.settings.labelProfiles || []));

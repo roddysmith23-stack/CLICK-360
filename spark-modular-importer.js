@@ -1,5 +1,22 @@
 (function(root){
   'use strict';
+  // Migration transport, not a commercial transaction limit. Bound BOTH row
+  // count and serialized request size; never let 25 near-limit records form
+  // an oversized request or force one round trip per tiny legacy fragment.
+  const SHADOW_CHUNK_RECORDS=100,SHADOW_CHUNK_BYTES=1024*1024;
+  function shadowChunks(records){
+    const api=root.CLICK360_SPARK_MIGRATION,chunks=[];let chunk=[],bytes=0;
+    for(const row of records){
+      const size=api.byteLength(row)+256; // conservative per-write RPC envelope
+      if(size>SHADOW_CHUNK_BYTES)throw Error('SPARK_IMPORT_REQUEST_RECORD_TOO_LARGE');
+      if(chunk.length&&(chunk.length===SHADOW_CHUNK_RECORDS||bytes+size>SHADOW_CHUNK_BYTES)){
+        chunks.push(chunk);chunk=[];bytes=0;
+      }
+      chunk.push(row);bytes+=size;
+    }
+    if(chunk.length)chunks.push(chunk);
+    return chunks;
+  }
   // Explicit transport, not loaded/started by production. Uses only the client
   // Firestore SDK. Recovery must independently read back an IndexedDB pin.
   function create({db,firebase,projectId,ownerUid,buildSha,deviceId,resolveUser,readSource,readGuard,recovery,
@@ -67,14 +84,14 @@
       });
     }
     async function writeShadow(manifest){
-      for(let offset=0;offset<manifest.records.length;offset+=25){
+      let completed=0;
+      for(const rows of shadowChunks(manifest.records)){
         await assertGuard(manifest);
-        const rows=manifest.records.slice(offset,offset+25);
         await db.runTransaction(async tx=>{
           context();const control=await tx.get(controlRef);
           if(control.data()?.phase!=='SHADOW_WRITING'||control.data()?.sourceHash!==manifest.sourceHash)throw Error('SPARK_SHADOW_PHASE_CONFLICT');
-          // All IDs are known and independent. Keep the same bounded 25-row
-          // atomic chunk, but do not pay one network round trip per record.
+          // All IDs are known and independent. Bound requests to 100 records
+          // AND 1 MiB including envelopes; all reads precede atomic writes.
           // Nothing is staged until EVERY authoritative read has completed.
           const existing=await Promise.all(rows.map(row=>tx.get(db.doc(row.path))));
           for(let i=0;i<rows.length;i++){
@@ -83,7 +100,8 @@
             }else tx.set(db.doc(rows[i].path),rows[i].content);
           }
         });
-        context();onProgress({phase:'SHADOW_WRITING',completed:Math.min(offset+25,manifest.recordCount),total:manifest.recordCount});
+        completed+=rows.length;
+        context();onProgress({phase:'SHADOW_WRITING',completed,total:manifest.recordCount});
       }
     }
     async function readShadow(manifest){
@@ -173,5 +191,5 @@
     }
     return Object.freeze({prepareShadow});
   }
-  root.CLICK360_SPARK_IMPORTER=Object.freeze({create});
+  root.CLICK360_SPARK_IMPORTER=Object.freeze({create,shadowChunks,SHADOW_CHUNK_RECORDS,SHADOW_CHUNK_BYTES});
 })(typeof window==='undefined'?globalThis:window);

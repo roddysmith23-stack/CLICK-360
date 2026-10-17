@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import './spark-modular-migration.js';
 import './spark-modular-reconciliation.js';
+import './spark-modular-handoff.js';
 import './spark-migration-bootstrap.js';
 const api=globalThis.CLICK360_SPARK_MIGRATION;
 const ownerUid='migration-owner',businessIds=['business-a','business-b'];
@@ -16,7 +17,7 @@ local.movements.push({id:'local-opening',operationId:'local-opening',cashSession
     date:'2026-09-03',kind:'ingreso',amount:30,paymentType:'sale',paymentMethod:'Transferencia'});
 function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,rows=[],cache=false}={}){
   let actor=ownerUid,lease=true,revision='device-2',closed=0,imports=0;
-  const calls=[],pins=new Map(),captures=new Map();
+  const calls=[],pins=new Map(),captures=new Map(),handoffs=new Map();let afterShadow=()=>{},readHandoffCorrupt=false;
   const record={snapshot:local,deviceRevision:revision,baseRevision:1,pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['snapshot-save-id']};
   const db={app:{options:{projectId:'demo-click360-spark-modular'}},doc:path=>({get:async options=>{
     assert.equal(options.source,'server');calls.push(path);
@@ -38,18 +39,23 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
   globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>({ownerUid,deviceId:'durable-device',durable:true}),
     captureDevice:async value=>{const captureHash=await api.hash(value);captures.set(captureHash,structuredClone(value));return {captureHash,durable:true};},
     preserveCloud:async({captureHash,assertStable})=>{await assertStable();assert(captures.has(captureHash));return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,operationalCloudConfirmed:false};},
-    close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true})})};
+    close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true}),
+    pinHandoff:async plan=>{const captureHash=await api.hash(plan);handoffs.set(captureHash,structuredClone(plan));return {captureHash,durable:true};},
+    readHandoff:async captureHash=>({captureHash,durable:true,plan:readHandoffCorrupt?{invalid:true}:structuredClone(handoffs.get(captureHash))})})};
   globalThis.CLICK360_SPARK_IMPORTER={create:options=>({prepareShadow:async()=>{
     imports++;const source=await options.readSource(),selected=await api.selectSource({ownerUid,...source});
     const guard=await options.readGuard();assert.equal(guard.mutationLockHeld,true);
     await options.recovery.pin({sourceHash:selected.sourceHash,snapshot:selected.snapshot});
     assert.equal(await api.hash((await options.recovery.read(selected.sourceHash)).snapshot),selected.sourceHash);
-    return {phase:'READY_TO_CUTOVER',cutoverPerformed:false,equality:{sourceHash:selected.sourceHash,reconstructedHash:selected.sourceHash}};
+    const shadow={phase:'READY_TO_CUTOVER',cutoverPerformed:false,
+      equality:{status:'SEMANTIC_EQUALITY_PASS',sourceHash:selected.sourceHash,reconstructedHash:selected.sourceHash}};
+    afterShadow(shadow);return shadow;
   }})};
   const options={db,projectId:db.app.options.projectId,firebase:{},ownerUid,actorUid:ownerUid,deviceId:'device',buildSha:'21409a1d2dc7',
     resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid}),leaseHeld:()=>lease,
     readLocal:async()=>({...record,deviceRevision:revision})};
-  return {options,record,calls,pins,captures,run:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).prepare(),
+  return {options,record,calls,pins,captures,handoffs,afterShadow:callback=>afterShadow=callback,
+    corruptHandoffRead:()=>readHandoffCorrupt=true,run:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).prepare(),
     actor:value=>actor=value,lease:value=>lease=value,revision:value=>revision=value,counts:()=>({closed,imports})};
 }
 {
@@ -67,6 +73,29 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
   assert.equal(pin.capacityProof.sourceHash,await api.hash(local));
   assert.equal(pin.cashProofs.length,2);
   assert(pin.cashProofs.every(proof=>proof.canProceed));
+  assert.equal(r.handoffPrepared,true);assert.equal(f.handoffs.size,1);
+  assert.equal(r.handoff.plan.sourceHash,await api.hash(local));
+  assert.equal(r.handoff.plan.runtimes[0].content.data.openCashSessionId,'local-session');
+  assert.equal(r.handoff.plan.runtimes[1].content.data.openCashSessionId,'');
+  assert.equal(r.handoff.plan.cutoverAllowed,false);assert(!Object.hasOwn(pin,'handoff'),'Original immutable source pin is not rewritten');
+}
+for(const delta of [{phase:'MODULAR'},{cutoverPerformed:true},{equality:{status:'PENDING'}},
+  {equality:{status:'SEMANTIC_EQUALITY_PASS',sourceHash:'f'.repeat(64),reconstructedHash:'f'.repeat(64)}}]){
+  const f=fixture();f.afterShadow(shadow=>Object.assign(shadow,delta));
+  await assert.rejects(f.run(),/HANDOFF_EQUALITY_REQUIRED/);assert.equal(f.handoffs.size,0);assert.equal(f.captures.size,1);
+}
+{
+  const f=fixture();f.afterShadow(()=>{f.record.pendingOperations.push('late-save-reference');});
+  await assert.rejects(f.run(),/DEVICE_METADATA_DRIFT_STOP/);assert.equal(f.handoffs.size,0);assert.equal(f.captures.size,1);
+}
+{
+  const rows=[],f=fixture({rows});
+  f.afterShadow(()=>rows.push({ownerUid,businessId:businessIds[0],operationId:'late-command',state:'unknown'}));
+  await assert.rejects(f.run(),/OUTBOX_CHANGED_STOP/);assert.equal(f.handoffs.size,0);assert.equal(f.captures.size,1);
+}
+{
+  const f=fixture();f.corruptHandoffRead();
+  await assert.rejects(f.run(),/HANDOFF_PIN_REQUIRED/);assert.equal(f.handoffs.size,1);assert.equal(f.pins.size,1);
 }
 for(const count of [76,101,1000]){
   const f=fixture();

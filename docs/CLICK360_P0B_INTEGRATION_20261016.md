@@ -101,3 +101,53 @@ repository callers retain their original immediate-audit behavior. Synthetic
 transaction and real client-Rules regressions verify materialization, retry and
 unchanged commercial revision. The new served candidate must repeat staging;
 these component proofs do not replace that gate.
+
+## Exact `10b33b55caa918c4173401392fbff2d14139e767` results
+
+All three required workflows finished SUCCESS. Real staging served this exact
+commit with Rules `087ac604399bea893a59e2c90e89ac2bc558178efd45eb7d8ab4f124d16d1a88`.
+Both Chromium and WebKit passed the complete **retail** journey, including owner
+and worker, permission revocation, two businesses, two offline sales followed by
+restart/replay, second device, historical sales, deposits/payments, exact stock,
+close/new session, customers/products and one printed label. Pending/UNKNOWN/
+projection counts were zero; legacy state remained unchanged.
+
+Both browsers also passed the separate real shadow preparation and cold resume.
+The source/reconstructed hashes were respectively
+`61f3400f8dec83eab457327670d1ca8baa3a396eb63498dd2e5484964602e668`
+and `bdaa71d37a77363483269dad47c70ce89cf9be72ed78d660a502f9f1330d3ce3`.
+Each synthetic source was 903721 bytes, covered both businesses and retained its
+newer device records. This is **not** an operational cutover certificate.
+Logs: `output/staging-10b-retail-20261016.log` and
+`output/staging-10b-shadow-20261016.log`.
+
+## Next integration, 2026-10-17
+
+- Fully-paid apartado ready/pickup is a typed, revisioned, permission-scoped
+  operation. Sale, payments, stock and cash are byte-equivalent before/after.
+- Existing advanced print templates retain colors/text/tax/output preferences;
+  save/rename/duplicate/tombstone no longer silently use legacy. Compound
+  default/profile changes remain explicitly blocked before editing memory.
+- After remote semantic equality, the real migration bootstrap derives and
+  durably pins a separate owner-wide exact-session handoff plan. It does not
+  overwrite the original recovery pin, initialize remote runtime or enable a
+  writer. Any nonempty command journal still requires a typed coverage proof.
+- The large WebKit fixture reproduced a 60-second failure both during the
+  80-transaction write phase and later reread. Shadow writes now bound chunks
+  by **100 records and 1 MiB serialized request**, including envelope allowance.
+  This changes neither the 800000-byte record guard nor 850000-byte legacy
+  document guard. Real Web SDK Rules verified a full 100-record commit,
+  interrupted resume, immutable source, and server reread equality. Small-record
+  regression requires 2000 rows to use 20 chunks; UTF-8 request-size tests stop
+  oversized combined requests. Browser repetition remains a separate gate.
+- Current Rules `fad38f2c278c2d455f8d2211608150ff00aa060c7d39eab7769549f062b40cb2`
+  passed exact-source and the stricter +16-predicate client matrix with no
+  expression/access-limit errors. Native backend compilation also passed.
+  These Rules are not deployed to production.
+- Upgrade from reconstructed production source `9090f2105d17` passed Chromium
+  and WebKit: mixed install rejected, complete device record/outbox and valid
+  localStorage preserved. This source is now a permanent mandatory CI upgrade.
+
+Production stays `9090f2105d17`. No commercial source, policy, storage mode,
+production Rules/Hosting or real migration was changed. New source requires
+its own committed CI and served-build certification; do not inherit `10b33b5`.

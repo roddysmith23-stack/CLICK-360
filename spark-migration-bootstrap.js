@@ -25,7 +25,7 @@
       context();
       if(root.document&&['app.js','firebase-service.js','v16-storage.js','modular-operation-journal.js',
         'spark-modular-migration.js','spark-modular-reconciliation.js','spark-modular-recovery.js',
-        'spark-modular-importer.js','spark-modular-record-codec.js','spark-migration-bootstrap.js']
+        'spark-modular-importer.js','spark-modular-record-codec.js','spark-modular-handoff.js','spark-migration-bootstrap.js']
         .some(file=>root.CLICK360_RELEASE_ASSETS?.[file]!==buildSha))throw Error('SPARK_MIGRATION_MIXED_BUILD_STOP');
       const rollout=await server(db.doc('storageRollout/sparkV1')),policy=rollout.data();
       // A server-managed, explicit shadow flag is separate from operational
@@ -156,7 +156,25 @@
             return {ownerUid,deviceRevision,unknownOperations:0,mutationLockHeld:leaseHeld()};
           }});
         const shadow=await importer.prepareShadow();context();await assertStable();
-        return {...shadow,prepared:true,reconciliations,operationalCloudConfirmed:false};
+        if(shadow.phase!=='READY_TO_CUTOVER'||shadow.cutoverPerformed!==false
+          ||shadow.equality?.status!=='SEMANTIC_EQUALITY_PASS'
+          ||shadow.equality.sourceHash!==selected.sourceHash||shadow.equality.reconstructedHash!==selected.sourceHash)
+          throw Error('SPARK_MIGRATION_HANDOFF_EQUALITY_REQUIRED');
+        const journalHash=await api.hash(journalCapture),currentJournal=await journal.captureOwner(ownerUid);context();
+        if(await api.hash(currentJournal)!==journalHash)throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
+        const handoff=await root.CLICK360_SPARK_HANDOFF.plan({ownerUid,snapshot:selected.snapshot,
+          sourceHash:selected.sourceHash,deviceMetadataHash:pinnedMetadataHash,journalHash,journalCapture,
+          businessIds:selected.businessIds,financialProofs:cashProofs,unknownCount:0,conflictCount:0,historicalReadOnly});
+        context();await assertStable();
+        const stored=await recovery.pinHandoff(handoff);context();
+        const preserved=await recovery.readHandoff(stored.captureHash);context();
+        if(preserved?.durable!==true||await api.hash(preserved.plan)!==await api.hash(handoff))
+          throw Error('SPARK_MIGRATION_HANDOFF_PIN_REQUIRED');
+        await assertStable();
+        if(await api.hash(await journal.captureOwner(ownerUid))!==journalHash)throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
+        context();onProgress({phase:'READ_ONLY_HANDOFF_PREPARED',planHash:handoff.planHash,operationalCloudConfirmed:false});
+        return {...shadow,prepared:true,reconciliations,handoffPrepared:true,handoff:preserved,
+          operationalCloudConfirmed:false};
       }finally{journal?.close();recovery?.close();}
     }
     return Object.freeze({prepare});

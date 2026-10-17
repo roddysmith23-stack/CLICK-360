@@ -139,6 +139,23 @@
       expectedRecordVersion:sale.recordVersion,cashSessionId,date:workingDate,amount,method,
       ...(layaway?{layawayId:layaway.id}:{})}};
   }
+  function layawayStatusCommand({sale,layaway,identity,operationId,nextStatus,changedAt}){
+    if(!operationId||!identity?.ownerUid||sale?.businessId!==identity.businessId||layaway?.businessId!==identity.businessId
+      ||!sale.storageRecordId||!layaway.id||layaway.saleId!==sale.id||sale.layawayId!==layaway.id||sale.method!=='Apartado')
+      throw Error('MODULAR_LAYAWAY_STATUS_CONTEXT_INVALID');
+    if(!Number.isSafeInteger(sale.recordVersion)||sale.recordVersion<1
+      ||!Number.isSafeInteger(layaway.recordVersion)||layaway.recordVersion<1)throw Error('MODULAR_LAYAWAY_STATUS_REVISION_REQUIRED');
+    const statuses=['active','partially_paid','paid','expired','ready_for_pickup'];
+    if(!statuses.includes(layaway.status)||layaway.pickedUpAt||!['paid','layaway'].includes(sale.status)
+      ||typeof sale.total!=='number'||!Number.isFinite(sale.total)||sale.total<=0
+      ||sale.received!==sale.total||sale.balance!==0||layaway.total!==sale.total||layaway.paid!==sale.total||layaway.balance!==0
+      ||!['ready_for_pickup','picked_up'].includes(nextStatus)
+      ||(layaway.status==='ready_for_pickup'&&nextStatus!=='picked_up')
+      ||typeof changedAt!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(changedAt)
+      ||!Number.isFinite(Date.parse(changedAt)))throw Error('MODULAR_LAYAWAY_STATUS_TRANSITION_INVALID');
+    return {kind:'layaway_status',input:{operationId,saleId:sale.storageRecordId,layawayId:layaway.id,
+      expectedSaleVersion:sale.recordVersion,expectedLayawayVersion:layaway.recordVersion,nextStatus,changedAt}};
+  }
   function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed}){
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
@@ -263,5 +280,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,cashReportView,cashSuccessorCommand,scopedSettingsCommand});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,layawayStatusCommand,cashReportView,cashSuccessorCommand,scopedSettingsCommand});
 })(typeof window==='undefined'?globalThis:window);

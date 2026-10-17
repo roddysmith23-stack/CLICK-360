@@ -152,6 +152,20 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
         baseRevision:41,revision:41,cloudCapacityBlocked:true,pendingRemoteSync:true,pendingOperations:['legacy-capacity-save']});
       return CLICK360_V16_STORAGE.getSnapshot(tenant);
     },{tenant,local});
+    // Diagnose the actual client transport rather than treating a deadline as
+    // successful migration. No query, source, Rules or timeout is substituted.
+    await page.evaluate(()=>{
+      window.QA_SHADOW_QUERY_TIMINGS=[];
+      const original=firebase.firestore.Query.prototype.get;
+      firebase.firestore.Query.prototype.get=async function(...args){
+        const started=performance.now();
+        try{
+          const result=await original.apply(this,args);
+          window.QA_SHADOW_QUERY_TIMINGS.push({durationMs:Math.round(performance.now()-started),rows:result.size,fromCache:result.metadata.fromCache});
+          return result;
+        }catch(error){window.QA_SHADOW_QUERY_TIMINGS.push({durationMs:Math.round(performance.now()-started),error:String(error.code||error.message)});throw error;}
+      };
+    });
     await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email:emulatorOwnerEmail,password:emulatorPassword});
     // UID belongs to the default emulator owner created by the parent suite.
     try{
@@ -163,6 +177,7 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
     }catch(error){
       console.log(JSON.stringify({stage:'SHADOW_PREPARATION_DIAGNOSTIC',browser:label,
         state:await page.evaluate(()=>({bootstrap:window.click360SparkBootstrapState,progress:window.click360SparkMigrationState,
+          queryTimings:window.QA_SHADOW_QUERY_TIMINGS,
           gate:document.querySelector('#click360-auth-gate')?.textContent?.slice(0,300)}))}));
       throw error;
     }

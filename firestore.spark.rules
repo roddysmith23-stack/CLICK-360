@@ -1817,13 +1817,13 @@ service cloud.firestore {
     function sparkKindPermission(ownerUid, businessId, kind) {
       // Auth/path establishes the owner without calculating a worker module
       // and action first. The writable account contract is STILL enforced.
-      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "scoped_settings"]
+      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "layaway_status", "scoped_settings"]
         && (request.auth.uid == ownerUid ? sparkOwner(ownerUid)
           : (kind != "scoped_settings" && sparkWorkerPermission(ownerUid, businessId,
-          kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
+          kind in ["receivable_payment", "layaway_status"] ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
             (kind == "cash_movement" ? "movements" : "cashSessions")))),
           kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
-            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"))))));
+            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit", "layaway_status"] ? "update" : "close"))))));
     }
 
     function sparkBoundOperation(ownerUid, businessId) {
@@ -1846,6 +1846,11 @@ service cloud.firestore {
             && r.settingsModule in ["config", "labelTemplates", "labelProfiles"]
             && (r.settingsModule != "config" || r.settingsId == "main")
             && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/$(r.settingsModule)/$(r.settingsId)).data.lastOperationId == operationId)
+          : kind == "layaway_status" ? (r.keys().hasOnly(["saleId", "layawayId"])
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(r.layawayId)).data.lastOperationId == operationId
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(r.layawayId)).data.data.saleId == r.saleId
+              && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(r.layawayId)).data.recordVersion
+                == get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(r.layawayId)).data.get("recordVersion", 1) + 1)
           : kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
           : kind in ["customer_create", "customer_edit", "customer_delete"] ? (r.keys().hasOnly(["customerId"])
             && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/customers/$(r.customerId)).data.lastOperationId == operationId)
@@ -1967,6 +1972,25 @@ service cloud.firestore {
         && sparkMoneyEqual(p.card, old.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
         && sparkMoneyEqual(p.transfer, old.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
         && sparkMoneyEqual(p.receivablePayments, old.paymentTotals.receivablePayments + movement.amount);
+    }
+
+    function sparkLayawayStatusMutation(ownerUid, businessId, recordId) {
+      let old = resource.data.data;
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
+      let sale = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(old.saleId)).data;
+      return ledger.kind == "layaway_status" && ledger.result == {"saleId": old.saleId, "layawayId": recordId}
+        && sale.data.method == "Apartado" && sale.data.layawayId == recordId
+        && sale.data.status in ["paid", "layaway"] && !sale.keys().hasAny(["historyPolicy"])
+        && sale.data.total is number && sale.data.total > 0 && sale.data.received == sale.data.total && sale.data.balance == 0
+        && old.total == sale.data.total && old.paid == sale.data.total && old.balance == 0
+        && old.status in ["active", "partially_paid", "paid", "expired", "ready_for_pickup"]
+        && old.get("pickedUpAt", "") == ""
+        && d.diff(old).affectedKeys().hasOnly(["status", "pickedUpAt"])
+        && ((d.status == "ready_for_pickup" && old.status != "ready_for_pickup"
+              && d.get("pickedUpAt", "") == "")
+          || (d.status == "picked_up" && d.pickedUpAt is string
+              && d.pickedUpAt.matches("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$")));
     }
 
     function sparkPaymentLayawayMutation(ownerUid, businessId, recordId) {
@@ -2410,7 +2434,15 @@ service cloud.firestore {
             && d.settings.diff(resource.data.data.get("settings", {})).affectedKeys().hasOnly(["iva", "tax", "policies", "ruc", "phone", "address", "logoUrl"]))
           : moduleName in ["labelTemplates", "labelProfiles"] && d.name is string && d.name.size() > 0
             && d.keys().hasOnly(["id", "businessId", "name", "deleted", "universalDocument", "widthMm", "heightMm", "columns", "rows", "paperType", "dpi", "renderer", "universalProfileId", "schemaVersion", "priceFormat", "isDefault", "status", "universalPaper",
-              "layout", "mediaType", "receiptWidthMm", "receiptHeightMm", "mediaWidthMm", "mediaHeightMm", "marginTopMm", "marginRightMm", "marginBottomMm", "marginLeftMm", "gapXmm", "gapYmm", "contentRotation", "measurementsConfirmed", "showUrl", "showBarcode", "shape", "yOffsetAdj", "nameScale", "priceScale", "createdAt", "updatedAt", "printer", "paper", "design"]));
+              "layout", "mediaType", "receiptWidthMm", "receiptHeightMm", "mediaWidthMm", "mediaHeightMm", "marginTopMm", "marginRightMm", "marginBottomMm", "marginLeftMm", "gapXmm", "gapYmm", "contentRotation", "measurementsConfirmed", "showUrl", "showBarcode", "shape", "yOffsetAdj", "nameScale", "priceScale", "createdAt", "updatedAt", "printer", "paper", "design",
+              "bgColor", "qrBgColor", "fgColor", "social", "address", "customText", "taxDisplay", "qrMargin", "outputMode"])
+            && d.get("bgColor", "#ffffff") is string && d.get("bgColor", "#ffffff").matches("^#[a-fA-F0-9]{3}([a-fA-F0-9]{3})?$")
+            && d.get("qrBgColor", "#ffffff") is string && d.get("qrBgColor", "#ffffff").matches("^#[a-fA-F0-9]{3}([a-fA-F0-9]{3})?$")
+            && d.get("fgColor", "#000000") is string && d.get("fgColor", "#000000").matches("^#[a-fA-F0-9]{3}([a-fA-F0-9]{3})?$")
+            && d.get("social", "") is string && d.get("address", "") is string && d.get("customText", "") is string
+            && d.get("taxDisplay", "inherit") in ["inherit", "included", "excluded", "exempt", "hidden"]
+            && d.get("qrMargin", 5) is number && d.get("qrMargin", 5) >= 2 && d.get("qrMargin", 5) <= 12
+            && d.get("outputMode", "pdf") in ["system", "pdf", "certified", "custom"]);
     }
 
     function sparkBusinessConfigUpdate(ownerUid, businessId) {
@@ -2536,7 +2568,9 @@ service cloud.firestore {
       allow update: if request.resource.data.module == "layaways" && signedIn() && resource.data is map
         && !resource.data.keys().hasAny(["historyPolicy"])
         && sparkBoundOperation(ownerUid, businessId)
-        && sparkPaymentLayawayMutation(ownerUid, businessId, recordId)
+        && (sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "layaway_status"
+          ? sparkLayawayStatusMutation(ownerUid, businessId, recordId)
+          : sparkPaymentLayawayMutation(ownerUid, businessId, recordId))
         && sparkOperationalUpdate(ownerUid, businessId, "layaways", recordId);
       allow delete: if false;
     }

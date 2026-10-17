@@ -274,7 +274,37 @@ for(const method of ['lookupOperation','readOperationProjection']){
   const concurrent=started;release();await flight;
   assert.equal(concurrent,3,`${method} must start all exact linked reads before waiting for the first response`);
 }
+// Delivery status is not a payment, stock movement, new sale or cash event.
+const pendingReservation=await get('layaways','layaway-record');
+const pendingSale=await get('sales','layaway-1');
+const deliveryBase={operationId:'reservation-ready',saleId:'layaway-1',layawayId:'layaway-record',
+  expectedSaleVersion:pendingSale.recordVersion,expectedLayawayVersion:pendingReservation.recordVersion,
+  nextStatus:'ready_for_pickup',changedAt:'2026-10-16T12:00:00.000Z'};
+await assert.rejects(()=>repo.commitOperation('layaway_status',deliveryBase),/TRANSITION_INVALID/);
+await repo.commitOperation('receivable_payment',{operationId:'reservation-final-payment',saleId:'layaway-1',
+  expectedRecordVersion:pendingSale.recordVersion,layawayId:'layaway-record',cashSessionId:'current-session',
+  date:'2026-10-06',amount:15,method:'Transferencia'});
+const fullReservation=await get('layaways','layaway-record'),fullSale=await get('sales','layaway-1');
+const financialBefore=new Map([...rows].filter(([path])=>/\/(sales|products|movements|cashSessions|dailyReports)\//.test(path)).map(([path,value])=>[path,structuredClone(value)]));
+const readyCommand={...deliveryBase,expectedSaleVersion:fullSale.recordVersion,expectedLayawayVersion:fullReservation.recordVersion};
+writeFaults=[{afterCommit:true}];
+assert.equal((await repo.commitOperation('layaway_status',readyCommand)).status,'already_committed');
+assert.equal((await repo.commitOperation('layaway_status',readyCommand)).status,'already_committed');
+assert.equal((await get('layaways','layaway-record')).status,'ready_for_pickup');
+await assert.rejects(()=>repo.commitOperation('layaway_status',{...readyCommand,nextStatus:'picked_up'}),/IDEMPOTENCY_KEY_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('layaway_status',{...readyCommand,operationId:'stale-delivery'}),/REVISION_CONFLICT/);
+await assert.rejects(()=>repo.commitOperation('layaway_status',{...readyCommand,operationId:'financial-tamper',amount:1}),/FIELDS_INVALID/);
+const delivery={...readyCommand,operationId:'reservation-delivered',nextStatus:'picked_up',expectedLayawayVersion:fullReservation.recordVersion+1};
+await repo.commitOperation('layaway_status',delivery);
+const delivered=await get('layaways','layaway-record');assert.equal(delivered.status,'picked_up');assert.equal(delivered.pickedUpAt,delivery.changedAt);
+await assert.rejects(()=>repo.commitOperation('layaway_status',{...delivery,operationId:'second-delivery',expectedLayawayVersion:delivered.recordVersion}),/TRANSITION_INVALID/);
+for(const [path,value]of financialBefore)assert.deepEqual(rows.get(path),value,'Delivery must not change existing financial or stock records');
+const readyPrepared=await repo.prepareOperation('layaway_status',readyCommand);
+assert.equal((await repo.lookupOperation(readyCommand.operationId,'layaway_status',readyPrepared.payloadSha256)).exists,true);
+const deliveryProjection=await repo.readOperationProjection(readyCommand.operationId,'layaway_status',readyPrepared.payloadSha256);
+assert.deepEqual(Object.keys(deliveryProjection.records).filter(module=>module!=='auditEvents').sort(),['layaways','sales']);
 console.log(JSON.stringify({status:'PASS',transport:'synthetic_atomic',historicalDate:true,manualSale:true,partialPayment:true,zeroPayment:true,subsequentReceipts:true,
+  layawayDeliveryStatus:true,deliveryNoFinancialWrite:true,deliveryLostResponseIdempotent:true,
   actorBoundReplay:true,productLogicalDelete:true,productDeleteStockPreserved:true,
   idempotent:true,sameProductRace:true,exactCashSession:true,reopenSeparateReport:true,historyIndependentCoreReads:saleReads,
   derivedAuditRecoverable:true,auditFailureDoesNotRepeatCore:true,productionWrites:0}));

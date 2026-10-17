@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment','scoped_settings']);
+    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -675,6 +675,21 @@
           // never a new history snapshot or a separate stock/cash commit.
           stage('metadata','runtime',runtime,{...runtime,lastOperationId:op});
           result={saleId:op,movementId:op,cashSessionId:sessionId,...(layawayId?{layawayId}:{})};
+        }else if(kind==='layaway_status'){
+          if(Object.keys(p).some(key=>!['operationId','saleId','layawayId','expectedSaleVersion','expectedLayawayVersion','nextStatus','changedAt'].includes(key)))throw Error('LAYAWAY_STATUS_FIELDS_INVALID');
+          const saleId=safeId(p.saleId,'saleId'),layawayId=safeId(p.layawayId,'layawayId');
+          const sale=await tx.get('sales',saleId),layaway=await tx.get('layaways',layawayId);
+          if(!sale||!layaway||sale.method!=='Apartado'||sale.layawayId!==layawayId||layaway.saleId!==saleId)throw Error('LAYAWAY_STATUS_RELATIONSHIP_CONFLICT');
+          if(p.expectedSaleVersion!==sale.recordVersion||p.expectedLayawayVersion!==layaway.recordVersion)throw Error('LAYAWAY_STATUS_REVISION_CONFLICT');
+          if(!['paid','layaway'].includes(sale.status)||layaway.pickedUpAt||!['active','partially_paid','paid','expired','ready_for_pickup'].includes(layaway.status)
+            ||money(sale.total,'SALE_TOTAL')<=0||sale.received!==sale.total||sale.balance!==0
+            ||layaway.total!==sale.total||layaway.paid!==sale.total||layaway.balance!==0
+            ||!['ready_for_pickup','picked_up'].includes(p.nextStatus)||(layaway.status==='ready_for_pickup'&&p.nextStatus!=='picked_up')
+            ||typeof p.changedAt!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(p.changedAt)
+            ||!Number.isFinite(Date.parse(p.changedAt)))throw Error('LAYAWAY_STATUS_TRANSITION_INVALID');
+          stage('layaways',layawayId,layaway,{...layaway,status:p.nextStatus,
+            ...(p.nextStatus==='picked_up'?{pickedUpAt:p.changedAt}:{}),lastOperationId:op});
+          result={saleId,layawayId};
         }else if(kind==='receivable_payment'){
           const saleId=safeId(p.saleId,'saleId'),sale=await tx.get('sales',saleId);
           if(!sale||!['layaway','pending_payment'].includes(sale.status))throw Error('PAYMENT_SALE_NOT_PENDING');

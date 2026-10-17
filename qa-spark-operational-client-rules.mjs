@@ -113,11 +113,21 @@ try{
   assert.equal((await get('config','main')).name,'Synthetic updated');
   await assert.rejects(repo.commitOperation('scoped_settings',{...businessSettings,operationId:'stale-business-settings'}),/SETTINGS_REVISION_CONFLICT/);
   const printSetting={operationId:'print-settings-create',moduleName:'labelTemplates',recordId:'print-template',expectedRecordVersion:0,
-    changes:{id:'print-template',businessId,name:'Synthetic label',universalDocument:{paper:{widthMm:40,heightMm:30},elements:[]}}};
+    changes:{id:'print-template',businessId,name:'Synthetic label',universalDocument:{paper:{widthMm:40,heightMm:30},elements:[]},
+      bgColor:'#ffffff',qrBgColor:'#fff',fgColor:'#000000',social:'Synthetic social',address:'Synthetic address',
+      customText:'Retained advanced preference',taxDisplay:'included',qrMargin:5,outputMode:'pdf'}};
   await repo.commitOperation('scoped_settings',printSetting);
   assert.equal((await repo.commitOperation('scoped_settings',printSetting)).status,'already_committed');
   await repo.commitOperation('scoped_settings',{...printSetting,operationId:'print-settings-delete',expectedRecordVersion:1,changes:{...printSetting.changes,deleted:true}});
   assert.equal((await get('labelTemplates','print-template')).deleted,true);
+  assert.equal((await get('labelTemplates','print-template')).customText,'Retained advanced preference');
+  for(const [field,value]of [['qrMargin',100],['taxDisplay','arbitrary'],['outputMode','arbitrary'],['bgColor','url(secret)'],['customText',{unsafe:true}],['arbitraryPermission',true]]){
+    const operationId=`invalid-print-${field}`;
+    await assertFails(repo.commitOperation('scoped_settings',{...printSetting,operationId,expectedRecordVersion:2,
+      changes:{...printSetting.changes,[field]:value}}));
+    assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/${operationId}`))).exists(),false);
+    assert.equal((await get('labelTemplates','print-template')).recordVersion,2);
+  }
   const settingsProjection=await repo.readOperationProjection('print-settings-delete','scoped_settings',(await repo.prepareOperation('scoped_settings',{
     ...printSetting,operationId:'print-settings-delete',expectedRecordVersion:1,changes:{...printSetting.changes,deleted:true}})).payloadSha256);
   assert.equal(settingsProjection.records.labelTemplates[0].recordVersion,2);
@@ -675,6 +685,29 @@ try{
   assert.equal((await get('cashSessions',workerOpen.cashSessionId)).paymentTotals.transfer,30);
   assert.equal((await get('products','p1')).stock,receiptStockBefore,'Receipts never decrement stock again');
   await budgetObservation('subsequent_receipts');
+  const reserved=await get('sales',reservationReceipt.saleId);
+  await repo.commitOperation('receivable_payment',{...reservationReceipt,operationId:'reservation-paid-in-full',
+    expectedRecordVersion:reserved.recordVersion,amount:18});
+  const paid=await get('sales',reservationReceipt.saleId),paidLayaway=await get('layaways',reservationReceipt.layawayId);
+  const delivery={operationId:'layaway-ready',saleId:paid.id,layawayId:paidLayaway.id,
+    expectedSaleVersion:paid.recordVersion,expectedLayawayVersion:paidLayaway.recordVersion,
+    nextStatus:'ready_for_pickup',changedAt:'2026-10-17T01:00:00.000Z'};
+  const financialBefore={sale:paid,session:await get('cashSessions',workerOpen.cashSessionId),product:await get('products','p1')};
+  await assertFails(workerRepo.commitOperation('layaway_status',delivery));
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),{'permissions.layaways.update':true}));
+  const forgedDelivery=api.createSparkRepository({ownerUid,businessId,actorUid:workerUid,
+    transport:transportFor(worker,workerUid,'',(ref,record)=>ref.path.endsWith(`/layaways/${paidLayaway.id}`)
+      ?{...record,data:{...record.data,paid:0}}:record),serverTimestamp});
+  await assertFails(forgedDelivery.commitOperation('layaway_status',{...delivery,operationId:'forged-layaway-paid'}));
+  await workerRepo.commitOperation('layaway_status',delivery);
+  assert.equal((await workerRepo.commitOperation('layaway_status',delivery)).status,'already_committed');
+  const ready=await get('layaways',paidLayaway.id);
+  await workerRepo.commitOperation('layaway_status',{...delivery,operationId:'layaway-picked-up',
+    expectedLayawayVersion:ready.recordVersion,nextStatus:'picked_up'});
+  assert.equal((await get('layaways',paidLayaway.id)).status,'picked_up');
+  assert.deepEqual({sale:await get('sales',paid.id),session:await get('cashSessions',workerOpen.cashSessionId),product:await get('products','p1')},financialBefore,
+    'Delivery status cannot change financial records, recount sales or consume stock');
+  for(const op of ['layaway-ready','layaway-picked-up'])assert.equal((await getDocFromServer(doc(client,`${base}/movements/${op}`))).exists(),false);
   await workerRepo.closeCashSession({operationId:'worker-close-historical',cashSessionId:workerOpen.cashSessionId,date:workerOpen.date,declaredCash:0});
   assert.equal((await get('cashSessions',workerOpen.cashSessionId)).status,'closed');
   await budgetObservation('worker_cash_inventory');
@@ -719,6 +752,7 @@ try{
     workerSale:true,workerProductDenied:true,ownReceiptOnly:true,ownerMetadataPrivate:true,twoBusinessIsolation:true,
     membershipRevocation:true,featureFlagRevocation:true,expiredOwnerReadOnly:true,expiredOwnerWorkerDenied:true,immutableLedger:true,
     pendingPayment:true,layawayDeposit:true,subsequentReceipts:true,receiptStockUnchanged:true,receiptRace:true,serverPagination:true,secondDevice:true,
+    fullyPaidDelivery:true,deliveryPermissionScoped:true,deliveryFinancialRecordsUnchanged:true,advancedPrintPreferencesPreserved:true,invalidPrintFieldsDenied:true,
     customerDeletePreservesHistory:true,customerResurrectionDenied:true,customerDeletePermissionScoped:true,importedCustomerDelete:true,
     productDeletePreservesHistory:true,productDeleteStockUnchanged:true,productDeletePermissionScoped:true,productResurrectionDenied:true,importedProductDelete:true,
     workerTwelveLineMixed:true,workerTwelveLineReservations:true,workerTwelveLinePending:true,

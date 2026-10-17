@@ -5,6 +5,7 @@ import {doc,setDoc,deleteDoc,getDocFromServer,getDocsFromServer,collection,query
 import './spark-modular-migration.js';
 import './spark-modular-importer.js';
 import './spark-migration-bootstrap.js';
+import './spark-modular-handoff.js';
 import './spark-modular-reconciliation.js';
 import './spark-modular-record-codec.js';
 import './spark-modular-transaction-transport.js';
@@ -34,7 +35,7 @@ const db={app:{options:{projectId}},doc:path=>{
 const firebase={firestore:{FieldValue:{serverTimestamp},FieldPath:{documentId}}};
 const api=globalThis.CLICK360_SPARK_MIGRATION;
 const identity={ownerUid,ownerId:ownerUid,businessId:ownerUid,tenantKey:`owner:${ownerUid}:business:${ownerUid}`,schemaVersion:10};
-const remote={identity,businesses:[{id:businessId,name:'Synthetic import'}],products:Array.from({length:30},(_,i)=>({id:`p-${i}`,businessId,stock:2,qty:2})),sales:[],movements:[],cashSessions:[],dailyReports:[],invoices:[],auditLogs:[],deletedProducts:[],settings:{workers:[],labelTemplates:[]}};
+const remote={identity,businesses:[{id:businessId,name:'Synthetic import'}],products:Array.from({length:130},(_,i)=>({id:`p-${i}`,businessId,stock:2,qty:2})),sales:[],movements:[],cashSessions:[],dailyReports:[],invoices:[],auditLogs:[],deletedProducts:[],settings:{workers:[],labelTemplates:[]}};
 const local=structuredClone(remote);local.products[0].stock=1;local.products[0].qty=1;
 local.cashSessions.push({id:'historical-session',operationId:'historical-opening',businessId,date:'2026-09-03',status:'open',openingAmount:0});
 local.sales.push({id:'historical-sale',operationId:'historical-sale',businessId,cashSessionId:'historical-session',
@@ -52,7 +53,7 @@ const input={db,firebase,projectId,ownerUid,buildSha:'21409a1d2dc710315ab8c3c27e
     local:{identity,durable:true,snapshot:local,deviceRevision:'device-43',baseRevision:42,pendingRemoteSync:true,pendingOperations:[{operationId:'persist-existing'}]},unknownOperations:0};},
   // Synthetic recovery adapter here; physical IndexedDB belongs to PWA E2E.
   recovery:{pin:async row=>pins.set(row.sourceHash,structuredClone(row)),read:async key=>({...structuredClone(pins.get(key)),durable:true})},
-  onProgress:event=>{if(interrupt&&event.completed===25){interrupt=false;throw Error('SIMULATED_INTERRUPTED_UPLOAD');}}};
+  onProgress:event=>{if(interrupt&&event.phase==='SHADOW_WRITING'&&event.completed>0){assert.equal(event.completed,100,'Client Rules certify the full bounded 100-record chunk');interrupt=false;throw Error('SIMULATED_INTERRUPTED_UPLOAD');}}};
 try{
   await env.withSecurityRulesDisabled(async c=>{
     await setDoc(doc(c.firestore(),`approvedUsers/${ownerUid}`),{uid:ownerUid,ownerId:ownerUid,approved:true,status:'active',role:'owner',isOwner:true});
@@ -89,7 +90,10 @@ try{
     assertOwnerCoverage:async()=>({enumerationComplete:true,recordCount:0}),
     countPending:async()=>({countIsBounded:false,total:0,pendingCount:0,unknownCount:0}),
     countProjectionPending:async()=>0,listPendingPage:async()=>({rows:[],next:null,complete:true}),close(){}})};
+  const handoffPins=new Map();
   globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({...input.recovery,
+    pinHandoff:async plan=>{const captureHash=await api.hash(plan);handoffPins.set(captureHash,structuredClone(plan));return {captureHash};},
+    readHandoff:async captureHash=>({durable:true,plan:structuredClone(handoffPins.get(captureHash))}),
     captureDevice:async value=>({captureHash:await api.hash(value),durable:true}),
     deviceIdentity:async()=>({ownerUid,deviceId:input.deviceId,durable:true}),close(){}})};
   const connected=await CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({...input,actorUid:ownerUid,
@@ -97,6 +101,8 @@ try{
     readLocal:async()=>({snapshot:local,identity,deviceRevision:'device-43',baseRevision:42,
       pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['persist-existing']})}).prepare();
   assert.equal(connected.prepared,true);assert.equal(connected.operationalCloudConfirmed,false);
+  assert.equal(connected.handoffPrepared,true);assert.equal(connected.handoff.plan.cutoverAllowed,false);
+  assert.equal(connected.handoff.plan.runtimes[0].content.data.openCashSessionId,'historical-session');
   assert.deepEqual(connected.equality,result.equality);assert.equal(connected.cutoverPerformed,false);
   // A revision alone is not a hash precondition. Simulate authorized external
   // maintenance during the server reread, after the initial revision CAS.

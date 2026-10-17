@@ -1,11 +1,11 @@
 {
   "baseline": "5ac546a9c4a85c4fe7e0ef2faec338ea19e38fff",
-  "authorizationChange": "Retain revoked membership and P0A recovery permissions; add source-bound immutable historical financial records and verified cash summary shadow metadata; owner-only revisioned config/label commands require atomic ledger. Legacy commercial permissions unchanged.",
+  "authorizationChange": "Retain revoked membership and P0A recovery permissions; source-bound immutable historical financial records and verified cash summary shadow metadata; owner-only revisioned config/label commands with exact advanced-print fields; fully-paid layaway delivery requires layaways.update, exact linked sale, immutable finance and atomic ledger. Legacy commercial permissions unchanged.",
   "originalPermissionsHash": "347596035d8c026af71db1cdcc4a0ab19038bf49832208244dadfff1f0b68fb5",
   "fingerprints": {
-    "functionsHash": "3a533150e5a0aecea4e5065c9ed9622f7ebfbb029a1f09349d95e6c45701fcdf",
-    "permissionsHash": "e5bc1d770cb3d7284db4a1c57f7f536f12f92d1e5b4cad3c8c9339fa7c814b4a",
-    "functions": 136,
+    "functionsHash": "8d6fc79a4141f78c32fc4c9f4fea21a68cbb73a0b3924f4fa1acdb964bbd0348",
+    "permissionsHash": "ba5392c1638fbc43ecaa09ea8b59401e0657b89fa6b08c3c7abeaafa5d858eb2",
+    "functions": 137,
     "permissions": 184
   }
 }

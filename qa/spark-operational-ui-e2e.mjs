@@ -17,6 +17,9 @@ assert(projectId==='demo-click360-spark-modular','Exact synthetic project requir
 const rules=readFileSync(path.join(root,'firestore.spark.rules'),'utf8');
 if(process.env.CLICK360_SPARK_UI_WORKER_ONLY==='1'&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
 if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
+const diagnosticBrowser=process.env.CLICK360_SPARK_SHADOW_BROWSER;
+if(diagnosticBrowser&&(!['chromium','webkit'].includes(diagnosticBrowser)||process.env.CI==='true'
+  ||process.env.CLICK360_SPARK_UI_SHADOW_ONLY!=='1'))throw Error('SHADOW_BROWSER_DIAGNOSTIC_ONLY');
 const output=path.join(root,'output/playwright/spark-operational-ui');mkdirSync(output,{recursive:true});
 const config=writeEmulatorConfig(),log=createWriteStream(path.join(output,`emulators-${Date.now()}.log`),{flags:'wx'});
 const emulators=spawn(path.join(root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',projectId,'--config',config],
@@ -36,7 +39,8 @@ try{
   };
   browsers=[await chromium.launch(),await webkit.launch()];
   for(const [i,browser]of browsers.entries()){
-    const label=i?'webkit':'chromium';console.log(`START served Spark UI ${label}`);
+    const label=i?'webkit':'chromium';if(diagnosticBrowser&&diagnosticBrowser!==label)continue;
+    console.log(`START served Spark UI ${label}`);
     await certifyRecoveryCopy({browser,env,uid,label});
     await certifyShadowPreparation({browser,env,uid,label});
     if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'){
@@ -175,6 +179,26 @@ try{
     }
     assert((await record('products',created.id)).stock===9,'Subsequent payments must never discount stock');
     assert((await record('cashSessions',session.id)).saleCount===3,'Subsequent payments must never recount sales');
+    const reservation=await page.evaluate(()=>click360GetTenantState().sales.find(s=>s.method==='Apartado'));
+    await page.locator(`button[onclick*="payLayaway('${reservation.id}')"]`).click();
+    await page.locator('#layawayPaymentAmount').fill(String(reservation.balance));
+    await page.locator('#layawayPaymentMethod').selectOption('Transferencia');
+    await resetStatus();await page.locator('#confirmLayawayPayment').click();await confirmed();
+    const deliveryFinancial={sale:await record('sales',reservation.storageRecordId),
+      session:await record('cashSessions',session.id),product:await record('products',created.id)};
+    for(const nextStatus of ['ready_for_pickup','picked_up']){
+      await page.locator('#layawayStatusFilter').selectOption('all');
+      await resetStatus();
+      await page.locator(`button[onclick*="markLayawayStatus('${reservation.layawayId}','${nextStatus}')"]`).click();
+      await confirmed();
+      const operationId=await page.evaluate(()=>SPARK_UI_STATUS.operationId);
+      assert((await record('layaways',reservation.layawayId)).status===nextStatus,'Actual delivery action persists exact reservation status');
+      assert((await record('operationLedger',operationId)).kind==='layaway_status');
+      assert(await record('movements',operationId)===null,'Delivery cannot manufacture a payment movement');
+      assert.deepEqual({sale:await record('sales',reservation.storageRecordId),
+        session:await record('cashSessions',session.id),product:await record('products',created.id)},deliveryFinancial,
+      'Delivery cannot mutate sales, stock or session counters');
+    }
     await page.evaluate(()=>{location.hash='#cash';});await page.locator('#newMove').click();
     await page.locator('#mKind').selectOption('ingreso');await page.locator('#mAmount').fill('5');await page.locator('#mNote').fill('Ingreso sintético Spark');
     await resetStatus();await page.locator('#moveForm button[type="submit"]').click();await confirmed();
@@ -206,10 +230,10 @@ try{
     await page.evaluate(target=>click360SparkOperationalSession.verifyCashClose(target),{businessId:uid,cashSessionId:session.id,date:session.date});
     await confirmed();
     assert(closeReport.saleCount===3&&closeReport.total===54&&closeReport.totalItems===3
-      &&closeReport.paymentTotals.transfer===39&&closeReport.paymentTotals.receivablePayments===9&&closeReport.theoreticalCash===5&&closeReport.declaredCash===5,'Authoritative close counters');
+      &&closeReport.paymentTotals.transfer===46&&closeReport.paymentTotals.receivablePayments===16&&closeReport.theoreticalCash===5&&closeReport.declaredCash===5,'Authoritative close counters');
     assert((await record('products',created.id)).stock===9&&(await record('products',data.products[0].id)).stock===1,'Cash close cannot decrement stock again');
     const localReport=await page.evaluate(id=>click360GetTenantState().dailyReports.find(r=>r.id===id),closed.reportId);
-    assert(localReport.productQuantity===3&&localReport.paymentTotals.transfer===39&&localReport.paymentTotals.receivablePayments===9&&!localReport.html,'Derived report uses authoritative compact data');
+    assert(localReport.productQuantity===3&&localReport.paymentTotals.transfer===46&&localReport.paymentTotals.receivablePayments===16&&!localReport.html,'Derived report uses authoritative compact data');
     const existingClose=await page.evaluate(target=>window.click360SparkOperationalSession.verifyCashClose(target),
       {businessId:uid,cashSessionId:session.id,date:session.date});
     assert(existingClose.closed&&existingClose.source==='server'&&existingClose.reportId===closed.reportId,'Retry preflight recognizes and durably projects existing close');

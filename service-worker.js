@@ -22,6 +22,7 @@ const ASSETS = [
   './spark-modular-reconciliation.js',
   './spark-modular-recovery.js',
   './spark-modular-importer.js',
+  './spark-modular-handoff.js',
   './spark-migration-bootstrap.js',
   './spark-modular-record-codec.js',
   './spark-modular-transaction-transport.js',

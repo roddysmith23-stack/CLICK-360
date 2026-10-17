@@ -91,6 +91,37 @@
         throw Error('SPARK_RECOVERY_CAPTURE_INTEGRITY_FAILURE');
       return {captureHash,capture:structuredClone(row.capture),durable:true};
     }
+    async function readHandoff(captureHash){
+      const preserved=await readCapture(captureHash);context();
+      if(!preserved)return null;
+      const envelope=preserved.capture,plan=envelope.plan;
+      const {planHash,...material}=plan||{};
+      if(envelope.kind!=='READ_ONLY_HANDOFF_PLAN'||envelope.ownerUid!==ownerUid
+        ||plan?.ownerUid!==ownerUid||plan.status!=='READ_ONLY_HANDOFF_PLAN'
+        ||plan.operationalActivationAllowed!==false||plan.cutoverAllowed!==false||plan.journalReplayAllowed!==false
+        ||await api.hash(material)!==planHash)throw Error('SPARK_RECOVERY_HANDOFF_INTEGRITY_FAILURE');
+      return {captureHash,plan:structuredClone(plan),durable:true};
+    }
+    async function pinHandoff(plan){
+      context();const capture={kind:'READ_ONLY_HANDOFF_PLAN',ownerUid,plan:structuredClone(plan)};
+      const captureHash=await api.hash(capture),row={key:key(captureHash),ownerUid,captureHash,capture};
+      if(api.byteLength(capture)>8*1024*1024)throw Error('SPARK_RECOVERY_DEVICE_CAPACITY_EXCEEDED');
+      const {planHash,...material}=plan||{};
+      if(plan?.ownerUid!==ownerUid||plan.status!=='READ_ONLY_HANDOFF_PLAN'
+        ||plan.operationalActivationAllowed!==false||plan.cutoverAllowed!==false||plan.journalReplayAllowed!==false
+        ||await api.hash(material)!==planHash)throw Error('SPARK_RECOVERY_HANDOFF_INTEGRITY_FAILURE');
+      await new Promise((resolve,reject)=>{
+        const tx=db.transaction('captures','readwrite'),store=tx.objectStore('captures');let failure;
+        store.get(row.key).onsuccess=e=>{
+          try{context();const previous=e.target.result;
+            if(previous&&api.canonicalJson(previous)!==api.canonicalJson(row))throw Error('SPARK_RECOVERY_HANDOFF_CONFLICT');
+            if(!previous)store.add(row);
+          }catch(error){failure=error;tx.abort();}
+        };
+        tx.oncomplete=resolve;tx.onabort=()=>reject(failure||tx.error||Error('SPARK_RECOVERY_HANDOFF_WRITE_FAILED'));
+      });
+      return readHandoff(captureHash);
+    }
     async function captureDevice({record,journalCapture,deviceId,buildSha,remoteReference=null}){
       context();
       const identity=record?.identity||record?.snapshot?.identity;
@@ -202,7 +233,7 @@
       return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,sourceHash:core.sourceHash,journalHash:core.journalHash,
         partCount:parts.length,payloadBytes:core.payloadBytes,operationalCloudConfirmed:false,cutoverPerformed:false};
     }
-    return Object.freeze({pin,read,deviceIdentity,captureDevice,readCapture,preserveCloud,close:()=>db.close()});
+    return Object.freeze({pin,read,deviceIdentity,captureDevice,readCapture,pinHandoff,readHandoff,preserveCloud,close:()=>db.close()});
   }
   root.CLICK360_SPARK_RECOVERY=Object.freeze({open});
 })(typeof window==='undefined'?globalThis:window);

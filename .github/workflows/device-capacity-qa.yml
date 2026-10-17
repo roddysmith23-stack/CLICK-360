@@ -51,3 +51,11 @@ jobs:
       - run: node qa/founder-pwa-upgrade-e2e.mjs
         env:
           CLICK360_OLD_BUILD_DIR: ${{ runner.temp }}/click360-before-p0a/dist
+      - name: Preserve the published recovery-only PWA before operational release
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/click360-p0a-production" 9090f2105d17f2b10e2dd97bab7a548df671597b
+          cd "$RUNNER_TEMP/click360-p0a-production"
+          node scripts/build-static-release.mjs
+      - run: node qa/founder-pwa-upgrade-e2e.mjs
+        env:
+          CLICK360_OLD_BUILD_DIR: ${{ runner.temp }}/click360-p0a-production/dist

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import './qa-spark-imported-cash-summaries.mjs';
+import './qa-spark-print-settings-contract.mjs';
 import './modular-ui-adapter.js';
 const api=globalThis.CLICK360_MODULAR_UI_ADAPTER;
 const deletingProduct={id:'catalog-product',businessId:'alpha',recordVersion:3,stock:8,qty:8,name:'Historical product'};
@@ -85,3 +86,22 @@ assert.deepEqual(api.customerMutationCommand(deleting),{kind:'customer_delete',i
 assert.equal(deleting.previous.deleted,undefined);
 assert.throws(()=>api.customerMutationCommand({...deleting,previous:{...deleting.previous,deleted:true}}),/DELETE_REVISION_REQUIRED/);
 assert.throws(()=>api.customerMutationCommand({...deleting,previous:undefined}),/DELETE_REVISION_REQUIRED/);
+const statusSale={id:'legacy-visible-sale',storageRecordId:'canonical-sale',businessId:identity.businessId,
+  method:'Apartado',status:'paid',layawayId:'paid-reservation',total:30,received:30,balance:0,recordVersion:4};
+const statusLayaway={id:'paid-reservation',businessId:identity.businessId,saleId:statusSale.id,
+  status:'paid',total:30,paid:30,balance:0,recordVersion:3};
+const statusInput={identity,operationId:'ready-operation',sale:statusSale,layaway:statusLayaway,
+  nextStatus:'ready_for_pickup',changedAt:'2026-10-16T12:00:00.000Z'};
+const statusBefore=structuredClone(statusInput),statusCommand=api.layawayStatusCommand(statusInput);
+assert.equal(statusCommand.kind,'layaway_status');assert.equal(statusCommand.input.saleId,'canonical-sale');
+assert.equal(statusCommand.input.expectedSaleVersion,4);assert.equal(statusCommand.input.expectedLayawayVersion,3);
+assert.deepEqual(statusInput,statusBefore);
+assert.equal(api.layawayStatusCommand({...statusInput,nextStatus:'picked_up'}).kind,'layaway_status');
+assert.equal(api.layawayStatusCommand({...statusInput,layaway:{...statusLayaway,status:'partially_paid'}}).kind,'layaway_status');
+for(const delta of [{nextStatus:'cancelled'},{nextStatus:'paid'},{changedAt:'yesterday'},
+  {sale:{...statusSale,received:29,balance:1}},{sale:{...statusSale,recordVersion:undefined}},
+  {layaway:{...statusLayaway,balance:1}},{layaway:{...statusLayaway,status:'picked_up'}},
+  {layaway:{...statusLayaway,pickedUpAt:'2026-10-15T12:00:00.000Z'}},
+  {layaway:{...statusLayaway,status:'cancelled'}},{layaway:{...statusLayaway,status:'ready_for_pickup'}},
+  {layaway:{...statusLayaway,saleId:'other'}},{identity:{...identity,businessId:'other'}}])
+  assert.throws(()=>api.layawayStatusCommand({...statusInput,...delta}),/MODULAR_LAYAWAY_STATUS_/);

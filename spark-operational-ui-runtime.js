@@ -50,7 +50,7 @@
       assertActive();
       if(busy)throw Error('SPARK_UI_OPERATION_IN_PROGRESS');
       if(durabilityBlocked)return {ok:false,pending:true,reason:'spark_ui_device_recovery_required',notQueued:true};
-      if(!command||!['cash_open','cash_close','sale','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment','scoped_settings'].includes(command.kind)
+      if(!command||!['cash_open','cash_close','sale','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings'].includes(command.kind)
         ||!((['cash_opened','cash_reopened'].includes(reason)&&command.kind==='cash_open')||(reason==='sale_created'&&command.kind==='sale')
           ||(reason==='product_saved'&&['product_create','product_edit','inventory_adjust'].includes(command.kind))
           ||(reason==='product_deleted'&&command.kind==='product_delete')
@@ -58,6 +58,7 @@
           ||(reason==='customer_saved'&&['customer_create','customer_edit'].includes(command.kind))
           ||(reason==='customer_deleted'&&command.kind==='customer_delete')
           ||(reason==='sale_payment_received'&&command.kind==='receivable_payment')
+          ||(reason==='layaway_status_updated'&&command.kind==='layaway_status')
           ||(['business_profile_updated','print_settings_updated'].includes(reason)&&command.kind==='scoped_settings')))
         return {ok:false,pending:false,reason:'spark_ui_flow_not_certified',notQueued:true};
       const snapshot=structuredClone(candidate),input=structuredClone(command.input);
@@ -74,7 +75,7 @@
         // require their preceding projection instead of inventing revisions.
         if(counts.unknownCount>0||(!offline&&(counts.pendingCount+projections>0))
           ||(offline&&projections>0&&counts.pendingCount===0)
-          ||(counts.pendingCount>0&&['product_edit','product_delete','inventory_adjust','customer_edit','customer_delete','receivable_payment','cash_close','scoped_settings'].includes(command.kind)))
+          ||(counts.pendingCount>0&&['product_edit','product_delete','inventory_adjust','customer_edit','customer_delete','receivable_payment','layaway_status','cash_close','scoped_settings'].includes(command.kind)))
           return {ok:false,pending:true,reason:'spark_ui_recovery_required',notQueued:true};
         const prepared=await repository.prepareOperation(command.kind,input);
         assertActive();

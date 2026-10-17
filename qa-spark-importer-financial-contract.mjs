@@ -51,7 +51,7 @@ function fixture({unverified=false,corruptMetadata=false}={}){
   assert.equal(raw.operationalHash,await api.hash(raw.operational));
   assert.deepEqual(raw.data,original.cashSessions[0]);assert.deepEqual(f.snapshot,original);
   assert.equal(result.cutoverPerformed,false);
-  assert(f.maxReads()>1&&f.maxReads()<=25,'Shadow chunk reads are concurrent but bounded, with unchanged atomic writes');
+  assert(f.maxReads()>1&&f.maxReads()<=100,'Shadow chunk reads are concurrent but bounded, with unchanged atomic writes');
 }
 {
   const f=fixture({unverified:true});
@@ -72,3 +72,19 @@ function fixture({unverified=false,corruptMetadata=false}={}){
   assert.equal(f.pins.size,1,'Source remains preserved after a missing remote fence');
 }
 console.log('PASS importer financial metadata: strict preflight, verified summaries, immutable-history opt-in, original semantic hash, remote fence verification, no cutover. Synthetic transport; client Rules tested separately.');
+{
+  const importer=CLICK360_SPARK_IMPORTER;
+  const rows=Array.from({length:2000},(_,i)=>({path:`synthetic/products/${i}`,content:{notes:'x'.repeat(200)}}));
+  const chunks=importer.shadowChunks(rows);
+  assert.equal(chunks.length,20,'Small-record migration must not require 80 sequential network transactions');
+  assert.deepEqual(chunks.flat(),rows,'Every source row remains present exactly once and in order');
+  const large=Array.from({length:7},(_,i)=>({path:`synthetic/products/${i}`,content:{notes:'🙂'.repeat(100000)}}));
+  const sized=importer.shadowChunks(large);
+  for(const chunk of [...chunks,...sized]){
+    assert(chunk.length<=100);
+    assert(chunk.reduce((n,row)=>n+api.byteLength(row)+256,0)<=1024*1024,'UTF-8 byte bound applies to complete serialized requests');
+  }
+  assert(sized.length>1,'Large records cannot make an oversized combined Firestore request');
+  assert.deepEqual(sized.flat(),large);
+  assert.throws(()=>importer.shadowChunks([{path:'synthetic/huge',content:{notes:'x'.repeat(1024*1024)}}]),/REQUEST_RECORD_TOO_LARGE/);
+}
