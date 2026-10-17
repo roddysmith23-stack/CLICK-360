@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import './qa-spark-imported-cash-summaries.mjs';
 import './qa-spark-print-settings-contract.mjs';
+import './qa-spark-manual-compensation-view.mjs';
 import './modular-ui-adapter.js';
 const api=globalThis.CLICK360_MODULAR_UI_ADAPTER;
 const deletingProduct={id:'catalog-product',businessId:'alpha',recordVersion:3,stock:8,qty:8,name:'Historical product'};
@@ -11,6 +12,17 @@ assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingP
 assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,businessId:'foreign'}}),/CONTEXT_INVALID/);
 assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,deleted:true}}),/CONTEXT_INVALID/);
 const identity={ownerUid:'synthetic-owner',businessId:'alpha'};
+const manualCorrectionInput={identity,actorUid:identity.ownerUid,operationId:'manual-correction',reason:'Correct amount',
+  movement:{id:'manual-original',businessId:identity.businessId,cashSessionId:'exact-session',date:'2026-09-03',
+    recordVersion:2,kind:'egreso',amount:3},replacement:{kind:'egreso',amount:4,note:'Replacement'}};
+const manualCorrectionBefore=structuredClone(manualCorrectionInput);
+assert.equal(api.manualMovementCorrectionCommand(manualCorrectionInput).kind,'manual_movement_correct');
+assert.deepEqual(manualCorrectionInput,manualCorrectionBefore);
+for(const delta of [{actorUid:'worker'},{identity:{...identity,businessId:'foreign'}},
+  ...['saleId','paymentType','productId','compensationSign','compensatedByOperationId'].map(key=>({movement:{...manualCorrectionInput.movement,[key]:'forbidden'}})),
+  {movement:{...manualCorrectionInput.movement,recordVersion:undefined}},
+  {replacement:{kind:'egreso',amount:Infinity,note:'Invalid'}}])
+  assert.throws(()=>api.manualMovementCorrectionCommand({...manualCorrectionInput,...delta}),/MODULAR_MANUAL_CORRECTION_/);
 const settingsInput={identity,actorUid:identity.ownerUid,operationId:'settings-op',moduleName:'config',
   record:{id:'alpha',businessId:'alpha',name:'Synthetic',type:'ropa',settings:{ruc:'000',workers:['must-not-send']}},
   previous:{id:'alpha',businessId:'alpha',recordVersion:3}};

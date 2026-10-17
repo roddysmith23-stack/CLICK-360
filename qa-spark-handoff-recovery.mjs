@@ -26,7 +26,9 @@ for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']]){
         if(await api.hash(await recovery.read(sourceHash))!==await api.hash(original))throw Error('HANDOFF_CHANGED_SOURCE_PIN');
         let denied=false;try{await recovery.pinHandoff({...plan,cutoverAllowed:true});}catch{denied=true;}
         if(!denied)throw Error('HANDOFF_MUTATION_NOT_DENIED');
-        recovery.close();return {sourceHash,captureHash:stored.captureHash,planHash:plan.planHash,original};
+        const approval=await CLICK360_SPARK_HANDOFF.runtimeApproval(plan,'a'.repeat(40));
+        if(approval.captureHash!==stored.captureHash)throw Error('ADMIN_APPROVAL_CAPTURE_NOT_BOUND');
+        recovery.close();return {sourceHash,captureHash:stored.captureHash,planHash:plan.planHash,original,approval};
       });
       await page.close();page=await open();
       const resumed=await page.evaluate(async proof=>{
@@ -34,6 +36,8 @@ for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']]){
         const preserved=await recovery.readHandoff(proof.captureHash),original=await recovery.read(proof.sourceHash);
         if(preserved.plan.planHash!==proof.planHash||!preserved.durable)throw Error('HANDOFF_COLD_RESTART_LOSS');
         if(await CLICK360_SPARK_MIGRATION.hash(original)!==await CLICK360_SPARK_MIGRATION.hash(proof.original))throw Error('ORIGINAL_PIN_CHANGED');
+        const approval=await CLICK360_SPARK_HANDOFF.runtimeApproval(preserved.plan,'a'.repeat(40));
+        if(await CLICK360_SPARK_MIGRATION.hash(approval)!==await CLICK360_SPARK_MIGRATION.hash(proof.approval))throw Error('RUNTIME_APPROVAL_RESTART_DRIFT');
         recovery.close();
         const other=await CLICK360_SPARK_RECOVERY.open({ownerUid:'other-owner',resolveUser:()=>({uid:'other-owner'})});
         if(await other.readHandoff(proof.captureHash)!==null)throw Error('HANDOFF_OWNER_LEAK');other.close();

@@ -1913,8 +1913,15 @@ function parseMoney(value) {
         if(moduleName==='sales')value.storageRecordId=record.id;
         // Preserve receipt/layaway relationships used by the existing UI.
         if(value.saleId){const sale=projection.records.sales?.find(s=>s.id===value.saleId)||next.sales?.find(s=>s.operationId===value.saleId);value.saleId=sale?.legacyId||sale?.id||value.saleId;}
-        const index=target.findIndex(item=>(moduleName==='config'?item.id===businessId:item.businessId===businessId)&&(item.id===id
-          ||(moduleName==='movements'&&item.operationId===value.operationId)));
+        let index=target.findIndex(item=>(moduleName==='config'?item.id===businessId:item.businessId===businessId)&&item.id===id);
+        // One operation may have several immutable financial records (a
+        // compensation plus its replacement). Canonical IDs take precedence.
+        // Only normalize the legacy single-receipt alias whose server ID is
+        // the operation itself; never merge distinct compensation records.
+        if(index<0&&moduleName==='movements'&&id===value.operationId
+          &&!Object.hasOwn(value,'compensationSign')&&!value.replacesMovementId)
+          index=target.findIndex(item=>item.businessId===businessId&&item.operationId===value.operationId
+            &&!Object.hasOwn(item,'compensationSign')&&!item.replacesMovementId);
         if(index<0)target.push(value);else {
           target[index]={...target[index],...value};
           if(moduleName==='dailyReports'&&record.status==='closed')delete target[index].html;
@@ -2718,6 +2725,19 @@ function parseMoney(value) {
     if (!m || m.kind !== 'ingreso' || m.status === 'cancelled') return false;
     return !['Tarjeta', 'Transferencia'].includes(m.paymentMethod || '');
   }
+  function movementEffectiveAmount(m) {
+    const amount=Number(m?.amount||0);
+    if(!Object.hasOwn(m||{},'compensationSign'))return amount;
+    const original=state.movements.find(row=>row.id===m.compensatesMovementId&&row.businessId===m.businessId);
+    if(m.compensationSign!==-1||!Number.isFinite(amount)||amount<0||!original
+      ||!['ingreso','egreso','retiro','compra'].includes(m.kind)||original.kind!==m.kind
+      ||Number(original.amount)!==amount||original.status==='cancelled'
+      ||['saleId','paymentType','productId','compensationSign'].some(key=>Object.hasOwn(original,key))
+      ||!m.operationId||original.compensatedByOperationId!==m.operationId||original.reversalMovementId!==m.id
+      ||original.cashSessionId!==m.cashSessionId||original.date!==m.date)
+      throw Error('CASH_COMPENSATION_RELATION_INVALID');
+    return -amount;
+  }
   function isDayStarted() {
     const bid = currentBusiness()?.id;
     if (!bid) return true;
@@ -3135,10 +3155,10 @@ function parseMoney(value) {
     }
     const b=currentBusiness(), products=productsForBiz(), sales=salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled'), mov=movementsForBiz().filter(m=>m.date===today() && m.status!=='cancelled');
     const apertura=mov.find(m=>m.kind==='apertura')?.amount||0;
-    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
-    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
-    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
-    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+m.amount,0);
+    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
     const out=expenses+compras+retiros;
     const saldo=apertura+income-out;
     const low=products.filter(p=>p.qty<=3).length;
@@ -3363,10 +3383,10 @@ function parseMoney(value) {
       ? allMov.filter((movement) => movement.cashSessionId === displaySession.id)
       : allMov;
     const aperture=mov.slice().reverse().find(m=>m.kind==='apertura')?.amount || 0;
-    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
-    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
-    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
-    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+m.amount,0);
+    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
     const out=expenses+compras+retiros;
     const saldo = aperture + income - out;
 
@@ -3433,7 +3453,7 @@ function parseMoney(value) {
          <div class="movementList">
            ${mov.slice().reverse().map(m=>{
               const isCancelled = m.status === 'cancelled';
-              const editDeleteButtons = (authUser().role === 'owner' && !isCancelled) ? `
+              const editDeleteButtons = (authUser().role === 'owner' && !isCancelled && !m.compensatedByOperationId && m.compensationSign!==-1) ? `
                 <div style="display:flex; gap:6px; margin-top:6px; justify-content:flex-end;">
                   <button class="btn silver" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.editMovement('${actionId(m.id)}')">✎ Editar</button>
                   <button class="btn danger" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.click360GuardedAction(this, () => window.deleteMovement('${actionId(m.id)}'))">🗑 Anular</button>
@@ -3441,7 +3461,8 @@ function parseMoney(value) {
               ` : '';
               const cancelledLabel = isCancelled ? `<br><span style="font-size:11px;color:#ff4d4d;font-weight:bold;">🚫 ANULADO por ${escapeHtml(m.cancelledBy || 'owner')} a las ${escapeHtml(m.cancelledAt || '')}</span>` : '';
               const textStyle = isCancelled ? 'text-decoration: line-through; opacity: 0.5;' : '';
-              const amtDisplay = isCancelled ? `<span style="text-decoration:line-through;color:var(--muted);font-weight:normal;font-size:12px;margin-right:6px;">${fmt(m.originalAmount || 0)}</span><span style="color:#ff4d4d;">$0.00</span>` : `<span class="${m.kind==='ingreso'||m.kind==='apertura'?'pos':'neg'}">${m.kind==='ingreso'||m.kind==='apertura'?'+':'−'}${fmt(m.amount)}</span>`;
+              const effectivePositive=(m.kind==='ingreso'||m.kind==='apertura')!==(movementEffectiveAmount(m)<0);
+              const amtDisplay = isCancelled ? `<span style="text-decoration:line-through;color:var(--muted);font-weight:normal;font-size:12px;margin-right:6px;">${fmt(m.originalAmount || 0)}</span><span style="color:#ff4d4d;">$0.00</span>` : `<span class="${effectivePositive?'pos':'neg'}">${effectivePositive?'+':'−'}${fmt(m.amount)}</span>`;
 
               return `<div class="movement" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0; border-bottom:1px solid var(--line); ${textStyle}">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -8514,8 +8535,8 @@ function parseMoney(value) {
 	  }
 	  function buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId }) {
 	    updateCashCloseDiagnostic('cash_close_calculate_totals', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
-	    const income = basis.closeMovements.filter(isCashIncomeMovement).reduce((a, m) => a + Number(m.amount || 0), 0);
-	    const out = basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura').reduce((a, m) => a + Number(m.amount || 0), 0);
+    const income = basis.closeMovements.filter(isCashIncomeMovement).reduce((a, m) => a + movementEffectiveAmount(m), 0);
+    const out = basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura').reduce((a, m) => a + movementEffectiveAmount(m), 0);
 	    const balanceCalculado = cInicial + income - out;
 	    const diferencia = eFisico - balanceCalculado;
 	    const recordsForSession = globalThis.CLICK360_CASH_RECONCILIATION?.recordsForCashSession;
@@ -13124,12 +13145,12 @@ function parseMoney(value) {
        state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
           if (m.status !== 'cancelled') movCount++;
           const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura';
-          const signedAmount = isOutflow ? -m.amount : m.amount;
+          const signedAmount = (isOutflow ? -1 : 1)*movementEffectiveAmount(m);
           if (m.status !== 'cancelled') {
-             if (isOutflow) totalEgresos += m.amount;
+             if (isOutflow) totalEgresos += movementEffectiveAmount(m);
              else if (m.kind === 'ingreso') {
-                totalIngresos += m.amount;
-                if (isCashIncomeMovement(m)) totalIngresosEfectivo += m.amount;
+                totalIngresos += movementEffectiveAmount(m);
+                if (isCashIncomeMovement(m)) totalIngresosEfectivo += movementEffectiveAmount(m);
              }
           }
           movRows.push([
@@ -13552,6 +13573,39 @@ function parseMoney(value) {
     };
   };
 
+  async function commitSparkManualMovementCorrection(movement,replacement){
+    const live=state.movements.find(row=>row.id===movement?.id&&row.businessId===movement?.businessId);
+    const canonical=window.CLICK360_SPARK_MIGRATION?.canonicalJson;
+    if(!live||live.businessId!==currentBusiness()?.id||typeof canonical!=='function'
+      ||live.recordVersion!==movement.recordVersion||canonical(live)!==canonical(movement))
+      return toast('El movimiento cambió mientras estaba abierto. No se modificó; vuelve a abrirlo.', 'err');
+    // A durable refresh may replace state with equal JSON while the modal
+    // still holds the preceding object. Mutate only the current live record.
+    movement=live;
+    const operationId=uid('manual-correction'),session=state.cashSessions.find(row=>row.id===movement.cashSessionId&&row.businessId===movement.businessId);
+    if(!session||session.status!=='open'||session.summaryVersion!==1)return toast('Este movimiento pertenece a una caja protegida. No se modificó.', 'err');
+    let command;
+    try {command=window.CLICK360_MODULAR_UI_ADAPTER.manualMovementCorrectionCommand({movement,replacement,
+      identity:window.click360SparkOperationalSession.identity,actorUid:window.click360Auth?.currentUser?.uid,operationId,
+      reason:replacement?'Corrección de movimiento manual':'Anulación de movimiento manual'});}
+    catch {return toast('Este movimiento no admite una corrección manual. Su información permanece intacta.', 'err');}
+    const previousState=cloneState(state),reversalId=`${operationId}-rev`,replacementId=replacement?`${operationId}-new`:'';
+    movement.compensatedByOperationId=operationId;movement.reversalMovementId=reversalId;movement.replacementMovementId=replacementId;
+    const shared={businessId:movement.businessId,cashSessionId:movement.cashSessionId,date:movement.date,operationId,createdBy:authUser().name,when:nowLabel()};
+    state.movements.push({...shared,id:reversalId,kind:movement.kind,amount:movement.amount,note:command.input.reason,
+      compensationSign:-1,compensatesMovementId:movement.id});
+    if(replacement)state.movements.push({...shared,id:replacementId,...replacement,replacesMovementId:movement.id});
+    const oldIncome=movement.kind==='ingreso'?movement.amount:0,oldExpense=movement.kind==='ingreso'?0:movement.amount;
+    const newIncome=replacement?.kind==='ingreso'?replacement.amount:0,newExpense=replacement&&replacement.kind!=='ingreso'?replacement.amount:0;
+    session.incomeCash=Math.round((session.incomeCash-oldIncome+newIncome)*100)/100;
+    session.expenseCash=Math.round((session.expenseCash-oldExpense+newExpense)*100)/100;
+    session.cashBalance=Math.round((session.cashBalance-oldIncome+oldExpense+newIncome-newExpense)*100)/100;
+    const reason=replacement?'cash_movement_updated':'cash_movement_cancelled';
+    addAudit(reason,{movementId:movement.id,businessId:movement.businessId,operationId});
+    const committed=await commitCriticalMutation(previousState,reason,next=>next.movements.some(row=>row.id===reversalId),{sparkCommand:command});
+    if(committed.ok){closeModal();renderApp('cash');toast(committed.pending?'Corrección guardada; sincronización pendiente.':'Corrección registrada sin borrar el movimiento original.');}
+    return committed;
+  }
 	  window.editMovement = function(id) {
 	  id = decodeActionId(id);
     if (authUser().role !== 'owner') {
@@ -13604,6 +13658,7 @@ function parseMoney(value) {
        const a = parseMoney($('#emAmount').value);
        const n = $('#emNote').value.trim();
        if (!Number.isFinite(a) || a < 0) { toast('Monto inválido', 'err'); return; }
+       if(window.click360SparkOperationalSession)return await commitSparkManualMovementCorrection(m,{kind:k,amount:a,note:n});
 	       const previousState = cloneState(state);
 	       const operationId = uid('movementedit');
 
@@ -13637,6 +13692,7 @@ function parseMoney(value) {
     if (!mov) return toast('Movimiento no encontrado', 'err');
 	    if (mov.status === 'cancelled') return toast('Este movimiento ya fue anulado.', 'err');
 	    if (isBusinessDateClosed(mov.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular el movimiento.', 'err');
+      if(window.click360SparkOperationalSession)return await commitSparkManualMovementCorrection(mov,null);
 	    const previousState = cloneState(state);
 	    const operationId = uid('movementcancel');
 

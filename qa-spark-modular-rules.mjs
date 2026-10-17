@@ -67,38 +67,53 @@ try{
   await assertSucceeds(updateDoc(doc(ownerDb,controlPath),{phase:'READY_TO_CUTOVER',recordVersion:4,semanticEquality:'PASS',reconstructedHash:manifest.sourceHash,updatedAt:serverTimestamp()}));
   await assertFails(updateDoc(doc(ownerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,reconstructedHash:'f'.repeat(64),updatedAt:serverTimestamp()}));
   const approved={ownerUid:owner,sourceHash:manifest.sourceHash,buildSha:newControl().buildSha,businessIds:[business]};
-  const authorizedPolicy={enabled:true,pilotOwnerUids:[owner],automaticCutover:true,cutoverApprovals:{[owner]:approved}};
+  const authorizedPolicy={enabled:true,pilotOwnerUids:[owner],automaticCutover:true};
+  const approvalPath=`businesses/${owner}/storageApprovals/cutover`;
   const cutover=()=>updateDoc(doc(ownerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()});
   // A client cannot authorize its own cutover, including an approved owner.
   await assertFails(setDoc(doc(ownerDb,'storageRollout/sparkV1'),authorizedPolicy));
   await assertFails(setDoc(doc(workerDb,'storageRollout/sparkV1'),authorizedPolicy));
+  await assertFails(setDoc(doc(ownerDb,approvalPath),approved));
+  await assertFails(setDoc(doc(workerDb,approvalPath),approved));
   await assertFails(cutover()); // Existing shadow policy lacks cutover authority.
-  const rejectedPolicies=[
-    null,
-    {...authorizedPolicy,enabled:false},
-    {...authorizedPolicy,automaticCutover:false},
-    {...authorizedPolicy,automaticCutover:undefined},
-    {...authorizedPolicy,pilotOwnerUids:[other]},
-    {...authorizedPolicy,cutoverApprovals:{}},
-    {...authorizedPolicy,cutoverApprovals:{[other]:approved}},
-    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,ownerUid:other}}},
-    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,sourceHash:'f'.repeat(64)}}},
-    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,buildSha:'fedcba987654'}}},
-    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,businessIds:[]}}},
-    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,businessIds:[business,'omitted-business']}}},
-    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,businessIds:[business,business]}}}
+  const rejectedAuthorizations=[
+    {policy:null,approval:approved},
+    {policy:{...authorizedPolicy,enabled:false},approval:approved},
+    {policy:{...authorizedPolicy,automaticCutover:false},approval:approved},
+    {policy:{enabled:true,pilotOwnerUids:[owner]},approval:approved},
+    {policy:{...authorizedPolicy,pilotOwnerUids:[other]},approval:approved},
+    {policy:authorizedPolicy,approval:null},
+    ...[{ownerUid:other},{sourceHash:'f'.repeat(64)},{buildSha:'fedcba987654'},
+      {businessIds:[]},{businessIds:[business,'omitted-business']},{businessIds:[business,business]},
+      {extraUnreviewedField:true}].map(delta=>({policy:authorizedPolicy,approval:{...approved,...delta}}))
   ];
-  for(const policy of rejectedPolicies){
+  for(const {policy,approval}of rejectedAuthorizations){
     await env.withSecurityRulesDisabled(async c=>{
       const ref=doc(c.firestore(),'storageRollout/sparkV1');
       if(policy===null)await deleteDoc(ref);
-      else{const value={...policy};if(value.automaticCutover===undefined)delete value.automaticCutover;await setDoc(ref,value);}
+      else await setDoc(ref,policy);
+      const privateRef=doc(c.firestore(),approvalPath);
+      if(approval===null)await deleteDoc(privateRef);else await setDoc(privateRef,approval);
     });
     await assertFails(cutover());
     const denied=(await getDoc(doc(ownerDb,controlPath))).data();
     assert.equal(denied.phase,'READY_TO_CUTOVER');assert.equal(denied.storageMode,'migrating');assert.equal(denied.recordVersion,4);
   }
-  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),'storageRollout/sparkV1'),authorizedPolicy));
+  await env.withSecurityRulesDisabled(async c=>{
+    await setDoc(doc(c.firestore(),'storageRollout/sparkV1'),authorizedPolicy);
+    await setDoc(doc(c.firestore(),approvalPath),approved);
+  });
+  assert.deepEqual((await assertSucceeds(getDoc(doc(ownerDb,approvalPath)))).data(),approved);
+  const adminDb=env.authenticatedContext('synthetic-cutover-administrator',{email:'roddysmithceo@gmail.com'}).firestore();
+  assert.deepEqual((await assertSucceeds(getDoc(doc(adminDb,approvalPath)))).data(),approved);
+  await assertSucceeds(setDoc(doc(adminDb,approvalPath),approved));
+  await assertFails(setDoc(doc(adminDb,'storageRollout/sparkV1'),{...authorizedPolicy,cutoverApprovals:{[owner]:approved}}));
+  for(const deniedDb of [otherDb,workerDb,anonymousDb]){
+    await assertFails(getDoc(doc(deniedDb,approvalPath)));
+    await assertFails(setDoc(doc(deniedDb,approvalPath),approved));
+  }
+  const flags=(await getDoc(doc(ownerDb,'storageRollout/sparkV1'))).data();
+  assert(!Object.hasOwn(flags,'runtimePreparationApprovals')&&!Object.hasOwn(flags,'cutoverApprovals'));
   await assertFails(updateDoc(doc(workerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()}));
   await assertFails(updateDoc(doc(otherDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()}));
   await assertSucceeds(updateDoc(doc(ownerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()}));

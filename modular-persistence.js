@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings']);
+    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','manual_movement_correct','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -675,6 +675,40 @@
           // never a new history snapshot or a separate stock/cash commit.
           stage('metadata','runtime',runtime,{...runtime,lastOperationId:op});
           result={saleId:op,movementId:op,cashSessionId:sessionId,...(layawayId?{layawayId}:{})};
+        }else if(kind==='manual_movement_correct'){
+          if(actorUid!==expected.ownerUid)throw Error('MANUAL_CORRECTION_OWNER_REQUIRED');
+          if(Object.keys(p).some(key=>!['operationId','movementId','expectedRecordVersion','cashSessionId','date','reason','replacement'].includes(key)))throw Error('MANUAL_CORRECTION_FIELDS_INVALID');
+          const id=safeId(p.movementId,'movementId'),old=await tx.get('movements',id);
+          if(!old||!['ingreso','egreso','retiro','compra'].includes(old.kind)||old.status==='cancelled'
+            ||['saleId','paymentType','productId','compensationSign','compensatesMovementId','compensatedByOperationId'].some(key=>Object.hasOwn(old,key)))throw Error('MANUAL_CORRECTION_SOURCE_INVALID');
+          if(old.recordVersion!==p.expectedRecordVersion)throw Error('MANUAL_CORRECTION_REVISION_CONFLICT');
+          const provenance=await tx.get('operationLedger',safeId(old.operationId,'originalOperationId'));
+          if(!provenance||provenance.status!=='committed'||!(provenance.kind==='cash_movement'&&provenance.result.movementId===id
+            ||provenance.kind==='manual_movement_correct'&&provenance.result.replacementMovementId===id))throw Error('MANUAL_CORRECTION_PROVENANCE_REQUIRED');
+          const sessionId=safeId(p.cashSessionId,'cashSessionId'),session=await tx.get('cashSessions',sessionId),runtime=await tx.get('metadata','runtime');
+          if(!session||session.status!=='open'||session.date!==date(p.date)||old.date!==p.date||old.cashSessionId!==sessionId
+            ||runtime?.openCashSessionId!==sessionId||runtime?.summaryVersion!==1)throw Error('MANUAL_CORRECTION_SESSION_CONFLICT');
+          summary(session);
+          if(typeof p.reason!=='string'||!p.reason.trim())throw Error('MANUAL_CORRECTION_REASON_REQUIRED');
+          const replacement=p.replacement;
+          if(replacement&&(Object.keys(replacement).some(key=>!['kind','amount','note'].includes(key))
+            ||!['ingreso','egreso','retiro','compra'].includes(replacement.kind)||typeof replacement.note!=='string'))throw Error('MANUAL_CORRECTION_REPLACEMENT_INVALID');
+          const amount=money(old.amount,'ORIGINAL_AMOUNT'),newAmount=replacement?money(replacement.amount,'REPLACEMENT_AMOUNT'):0;
+          const reversalId=safeId(`${op}-rev`,'reversalId'),replacementId=replacement?safeId(`${op}-new`,'replacementId'):'';
+          if(await tx.get('movements',reversalId)||(replacementId&&await tx.get('movements',replacementId)))throw Error('MANUAL_CORRECTION_RECORD_WITHOUT_LEDGER');
+          const oldIncome=old.kind==='ingreso'?amount:0,oldExpense=old.kind==='ingreso'?0:amount;
+          const newIncome=replacement?.kind==='ingreso'?newAmount:0,newExpense=replacement&&replacement.kind!=='ingreso'?newAmount:0;
+          const incomeCash=Math.round((session.incomeCash-oldIncome+newIncome)*100)/100;
+          const expenseCash=Math.round((session.expenseCash-oldExpense+newExpense)*100)/100;
+          if(incomeCash<0||expenseCash<0)throw Error('MANUAL_CORRECTION_COUNTER_CONFLICT');
+          stage('movements',id,old,{...old,compensatedByOperationId:op,reversalMovementId:reversalId,replacementMovementId:replacementId,lastOperationId:op});
+          stage('movements',reversalId,null,{operationId:op,cashSessionId:sessionId,date:p.date,kind:old.kind,amount,
+            note:p.reason.trim(),compensationSign:-1,compensatesMovementId:id,lastOperationId:op});
+          if(replacement)stage('movements',replacementId,null,{operationId:op,cashSessionId:sessionId,date:p.date,
+            kind:replacement.kind,amount:newAmount,note:replacement.note,replacesMovementId:id,lastOperationId:op});
+          stage('cashSessions',sessionId,session,{...session,incomeCash,expenseCash,
+            cashBalance:Math.round((session.cashBalance-oldIncome+oldExpense+newIncome-newExpense)*100)/100,lastOperationId:op});
+          result={movementId:reversalId,originalMovementId:id,replacementMovementId:replacementId,cashSessionId:sessionId};
         }else if(kind==='layaway_status'){
           if(Object.keys(p).some(key=>!['operationId','saleId','layawayId','expectedSaleVersion','expectedLayawayVersion','nextStatus','changedAt'].includes(key)))throw Error('LAYAWAY_STATUS_FIELDS_INVALID');
           const saleId=safeId(p.saleId,'saleId'),layawayId=safeId(p.layawayId,'layawayId');
@@ -830,10 +864,11 @@
           const linked=await tx.get(r.settingsModule,r.settingsId);
           if(!linked)throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
         }
-        const linkedRecords=await Promise.all([['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]
-          .filter(([key])=>r[key]).map(async([key,moduleName])=>({moduleName,linked:await tx.get(moduleName,r[key])})));
-        for(const {moduleName,linked}of linkedRecords){
-          if(!linked||((moduleName==='movements'||(moduleName==='sales'&&kind==='sale'))&&linked.operationId!==operationId)
+        const linkedRecords=await Promise.all([['saleId','sales'],['movementId','movements'],['originalMovementId','movements'],['replacementMovementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]
+          .filter(([key])=>r[key]).map(async([key,moduleName])=>({key,moduleName,linked:await tx.get(moduleName,r[key])})));
+        for(const {key,moduleName,linked}of linkedRecords){
+          if(!linked||(((moduleName==='movements'&&key!=='originalMovementId')||(moduleName==='sales'&&kind==='sale'))&&linked.operationId!==operationId)
+            ||(key==='originalMovementId'&&linked.compensatedByOperationId!==operationId)
             ||(kind==='receivable_payment'&&['sales','layaways'].includes(moduleName)&&!linked.payments?.some(payment=>payment.operationId===operationId))
             ||(moduleName==='dailyReports'&&kind==='cash_close'&&(linked.operationId!==operationId||linked.cashSessionId!==r.cashSessionId)))throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
         }
@@ -853,11 +888,12 @@
           if(!linked)throw Error('SPARK_PROJECTION_RECORD_MISSING');
           records[r.settingsModule]=[linked];
         }
-        const linkedRecords=await Promise.all([['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]
-          .filter(([key])=>r[key]).map(async([key,moduleName])=>({moduleName,value:await tx.get(moduleName,r[key])})));
-        for(const {moduleName,value}of linkedRecords){
+        const linkedRecords=await Promise.all([['saleId','sales'],['movementId','movements'],['originalMovementId','movements'],['replacementMovementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]
+          .filter(([key])=>r[key]).map(async([key,moduleName])=>({key,moduleName,value:await tx.get(moduleName,r[key])})));
+        for(const {key,moduleName,value}of linkedRecords){
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
-          if(((moduleName==='movements'||(moduleName==='sales'&&kind==='sale'))&&value.operationId!==operationId)
+          if((((moduleName==='movements'&&key!=='originalMovementId')||(moduleName==='sales'&&kind==='sale'))&&value.operationId!==operationId)
+            ||(key==='originalMovementId'&&value.compensatedByOperationId!==operationId)
             ||(kind==='receivable_payment'&&['sales','layaways'].includes(moduleName)&&!value.payments?.some(payment=>payment.operationId===operationId))
             ||(moduleName==='dailyReports'&&kind==='cash_close'&&(value.operationId!==operationId||value.cashSessionId!==r.cashSessionId)))
             throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');

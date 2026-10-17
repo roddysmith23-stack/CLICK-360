@@ -472,8 +472,7 @@ service cloud.firestore {
     // one owner's immutable source/build/whole-owner business coverage.
     function sparkCutoverApproved(ownerUid) {
       let policy = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
-      let approvals = policy.get("cutoverApprovals", {});
-      let approval = approvals.get(ownerUid, {});
+      let approval = get(/databases/$(database)/documents/businesses/$(ownerUid)/storageApprovals/$("cutover")).data;
       return policy.enabled == true && policy.get("automaticCutover", false) == true
         && policy.pilotOwnerUids is list && ownerUid in policy.pilotOwnerUids
         && approval.keys().hasOnly(["ownerUid", "sourceHash", "buildSha", "businessIds"])
@@ -1618,8 +1617,19 @@ service cloud.firestore {
 
     match /storageRollout/{policyId} {
       allow read: if policyId == "sparkV1" && signedIn();
-      allow create, update: if policyId == "sparkV1" && isPlatformAdmin();
+      allow create, update: if policyId == "sparkV1" && isPlatformAdmin()
+        && !request.resource.data.keys().hasAny(["runtimePreparationApprovals", "cutoverApprovals"]);
       allow delete: if false;
+    }
+
+    // Approval payloads include business identities and financial summaries.
+    // They must NEVER live in the globally readable rollout flag document.
+    match /businesses/{ownerUid}/storageApprovals/{approvalId} {
+      allow read: if approvalId in ["runtimePreparation", "cutover"] && signedIn()
+        && (request.auth.uid == ownerUid || isPlatformAdmin());
+      allow create, update: if approvalId in ["runtimePreparation", "cutover"]
+        && isPlatformAdmin() && request.resource.data.ownerUid == ownerUid;
+      allow delete: if approvalId in ["runtimePreparation", "cutover"] && isPlatformAdmin();
     }
 
     // Optional owner-only recovery preservation, NOT operational storage or
@@ -1835,9 +1845,9 @@ service cloud.firestore {
     function sparkKindPermission(ownerUid, businessId, kind) {
       // Auth/path establishes the owner without calculating a worker module
       // and action first. The writable account contract is STILL enforced.
-      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "layaway_status", "scoped_settings"]
+      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "manual_movement_correct", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "layaway_status", "scoped_settings"]
         && (request.auth.uid == ownerUid ? sparkOwner(ownerUid)
-          : (kind != "scoped_settings" && sparkWorkerPermission(ownerUid, businessId,
+          : (!(kind in ["scoped_settings", "manual_movement_correct"]) && sparkWorkerPermission(ownerUid, businessId,
           kind in ["receivable_payment", "layaway_status"] ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
             (kind == "cash_movement" ? "movements" : "cashSessions")))),
           kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
@@ -1864,6 +1874,7 @@ service cloud.firestore {
             && r.settingsModule in ["config", "labelTemplates", "labelProfiles"]
             && (r.settingsModule != "config" || r.settingsId == "main")
             && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/$(r.settingsModule)/$(r.settingsId)).data.lastOperationId == operationId)
+          : kind == "manual_movement_correct" ? sparkManualCorrectionLedger(ownerUid, businessId, operationId, r)
           : kind == "layaway_status" ? (r.keys().hasOnly(["saleId", "layawayId"])
               && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(r.layawayId)).data.lastOperationId == operationId
               && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(r.layawayId)).data.data.saleId == r.saleId
@@ -1884,6 +1895,77 @@ service cloud.firestore {
               && (kind != "cash_reopen" || getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/dailyReports/$(r.reportId)).data.lastOperationId == operationId)
               && (kind != "cash_open" || sparkCashOpeningOrigin(ownerUid, businessId, operationId, r)))
           : kind == "receivable_payment" ? sparkPaymentLedgerProof(ownerUid, businessId, operationId, r) : false);
+    }
+
+    function sparkManualOriginal(d) {
+      return d.kind in ["ingreso", "egreso", "retiro", "compra"] && d.amount is number && d.amount >= 0
+        && !d.keys().hasAny(["saleId", "paymentType", "productId", "compensationSign", "compensatesMovementId", "compensatedByOperationId"])
+        && d.get("status", "") != "cancelled";
+    }
+
+    function sparkManualCorrectionLedger(ownerUid, businessId, op, r) {
+      let old = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(r.originalMovementId)).data;
+      let next = sparkAfter(ownerUid, businessId, "movements", r.originalMovementId);
+      return request.auth.uid == ownerUid
+        && r.keys().hasOnly(["movementId", "originalMovementId", "replacementMovementId", "cashSessionId"])
+        && r.movementId == op + "-rev" && r.replacementMovementId in ["", op + "-new"]
+        && r.originalMovementId != r.movementId && r.originalMovementId != r.replacementMovementId
+        && next.lastOperationId == op && next.recordVersion == old.get("recordVersion", 1) + 1
+        && next.data.compensatedByOperationId == op && next.data.reversalMovementId == r.movementId
+        && next.data.replacementMovementId == r.replacementMovementId
+        && sparkAfter(ownerUid, businessId, "movements", r.movementId).lastOperationId == op
+        && (r.replacementMovementId == "" || sparkAfter(ownerUid, businessId, "movements", r.replacementMovementId).lastOperationId == op)
+        && sparkAfter(ownerUid, businessId, "cashSessions", r.cashSessionId).lastOperationId == op;
+    }
+
+    function sparkManualOriginalUpdate(ownerUid, businessId, recordId) {
+      let old = resource.data.data;
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(ownerUid, businessId, op);
+      let origin = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(old.operationId)).data.data;
+      return request.auth.uid == ownerUid && ledger.kind == "manual_movement_correct"
+        && ledger.result.originalMovementId == recordId && sparkManualOriginal(old)
+        && origin.status == "committed" && ((origin.kind == "cash_movement" && origin.result.movementId == recordId)
+          || (origin.kind == "manual_movement_correct" && origin.result.replacementMovementId == recordId))
+        && d.diff(old).affectedKeys().hasOnly(["compensatedByOperationId", "reversalMovementId", "replacementMovementId"])
+        && d.compensatedByOperationId == op && d.reversalMovementId == ledger.result.movementId
+        && d.replacementMovementId == ledger.result.replacementMovementId;
+    }
+
+    function sparkManualCorrectionMovement(ownerUid, businessId, recordId, ledger) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let old = sparkAfter(ownerUid, businessId, "movements", ledger.result.originalMovementId).data;
+      return request.auth.uid == ownerUid && d.operationId == op && d.id == recordId && d.businessId == businessId
+        && d.cashSessionId == ledger.result.cashSessionId && d.cashSessionId == old.cashSessionId && d.date == old.date
+        && d.note is string && d.amount is number && d.amount >= 0
+        && (recordId == ledger.result.movementId
+          ? (d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "kind", "amount", "note", "compensationSign", "compensatesMovementId"])
+              && d.compensationSign == -1 && d.compensatesMovementId == ledger.result.originalMovementId
+              && d.kind == old.kind && d.amount == old.amount)
+          : (recordId == ledger.result.replacementMovementId && d.kind in ["ingreso", "egreso", "retiro", "compra"]
+              && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "kind", "amount", "note", "replacesMovementId"])
+              && d.replacesMovementId == ledger.result.originalMovementId));
+    }
+
+    function sparkManualCorrectionTotals(ownerUid, businessId, op, counters) {
+      let r = sparkLedger(ownerUid, businessId, op).result;
+      let old = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(r.originalMovementId)).data.data;
+      let replacement = r.replacementMovementId == "" ? {"kind": "ingreso", "amount": 0}
+        : sparkAfter(ownerUid, businessId, "movements", r.replacementMovementId).data;
+      let before = resource.data.operational;
+      let oldIncome = old.kind == "ingreso" ? old.amount : 0;
+      let oldExpense = old.kind == "ingreso" ? 0 : old.amount;
+      let newIncome = replacement.kind == "ingreso" ? replacement.amount : 0;
+      let newExpense = replacement.kind == "ingreso" ? 0 : replacement.amount;
+      return r.cashSessionId == request.resource.data.id && old.cashSessionId == r.cashSessionId
+        && old.date == request.resource.data.data.date
+        && get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == r.cashSessionId
+        && counters.incomeCash >= 0 && counters.expenseCash >= 0
+        && sparkMoneyEqual(counters.incomeCash, before.incomeCash - oldIncome + newIncome)
+        && sparkMoneyEqual(counters.expenseCash, before.expenseCash - oldExpense + newExpense)
+        && sparkMoneyEqual(counters.cashBalance, before.cashBalance - oldIncome + oldExpense + newIncome - newExpense);
     }
 
     function sparkCashOpeningOrigin(ownerUid, businessId, op, result) {
@@ -2296,6 +2378,9 @@ service cloud.firestore {
               && counters.closeCycle == resource.data.operational.closeCycle + 1
               && counters.diff(resource.data.operational).affectedKeys().hasOnly(["closeCycle"])
               && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == recordId)
+          : kind == "manual_movement_correct" ? (!creating && resource.data.data.status == "open" && d == resource.data.data
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["cashBalance", "incomeCash", "expenseCash"])
+              && sparkManualCorrectionTotals(ownerUid, businessId, op, counters))
           : kind == "cash_movement" ? (!creating && resource.data.data.status == "open" && d.status == "open"
               && d == resource.data.data
               && counters.diff(resource.data.operational).affectedKeys().hasOnly(["cashBalance", "incomeCash", "expenseCash"])
@@ -2305,9 +2390,10 @@ service cloud.firestore {
 
     function sparkMovementMutation(ownerUid, businessId, recordId) {
       let d = request.resource.data.data;
-      let ledger = sparkLedger(ownerUid, businessId, recordId);
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
       let kind = ledger.kind;
-      return request.resource.data.lastOperationId == recordId
+      return kind == "manual_movement_correct" ? sparkManualCorrectionMovement(ownerUid, businessId, recordId, ledger)
+        : (request.resource.data.lastOperationId == recordId
         && d.id == recordId && d.businessId == businessId && d.operationId == recordId
         && d.amount is number && d.amount >= 0 && d.date is string
         // Dispatch from the immutable ledger, not overlapping OR proofs.
@@ -2322,8 +2408,9 @@ service cloud.firestore {
           : kind == "cash_open" ? (d.kind == "apertura" && d.cashSessionId == ledger.result.cashSessionId
               && d.amount == getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(d.cashSessionId)).data.operational.openingAmount)
           : kind == "cash_movement" ? (d.kind in ["ingreso", "egreso", "retiro", "compra"]
+              && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "kind", "amount", "note"])
               && d.cashSessionId == ledger.result.cashSessionId)
-          : kind == "receivable_payment" ? sparkPaymentMovement(ownerUid, businessId, recordId, d) : false);
+          : kind == "receivable_payment" ? sparkPaymentMovement(ownerUid, businessId, recordId, d) : false));
     }
 
     function sparkSaleMovement(ownerUid, businessId, recordId, movement) {
@@ -2374,6 +2461,59 @@ service cloud.firestore {
         && next.data.reopenReason == report.reopenReason && report.reopenReason is string && report.reopenReason.size() >= 4
         && report.declaredCash >= 0 && report.closeCash == report.declaredCash
         && next.operational.openingAmount == report.declaredCash;
+    }
+
+    function sparkRuntimeInitialSession(ownerUid, businessId, sessionId, approval, sourceHash) {
+      let session = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/cashSessions/$(sessionId)).data;
+      return session.id == sessionId && session.ownerUid == ownerUid && session.businessId == businessId
+        && session.schemaVersion == 2 && session.module == "cashSessions" && session.sourceHash == sourceHash
+        && !session.keys().hasAny(["historyPolicy"]) && session.data.status == "open"
+        && session.operational.summaryVersion == 1
+        // Rules cannot calculate SHA-256: compare the COMPLETE summary with
+        // the administrative approval, not an arbitrary client hash alone.
+        && session.operational == approval.openSessionSummaries[businessId]
+        && session.operationalHash == approval.openSessionSummaryHashes[businessId];
+    }
+
+    function sparkRuntimePreparationApproved(ownerUid, businessId) {
+      let policy = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
+      let approval = get(/databases/$(database)/documents/businesses/$(ownerUid)/storageApprovals/$("runtimePreparation")).data;
+      let control = get(sparkControlPath(ownerUid)).data;
+      let data = request.resource.data;
+      return sparkOwner(ownerUid) && policy.enabled == true
+        && policy.get("automaticRuntimePreparation", false) == true && ownerUid in policy.pilotOwnerUids
+        && approval.ownerUid == ownerUid && approval.sourceHash == control.sourceHash
+        && approval.buildSha == control.buildSha && approval.planHash.matches("^[a-f0-9]{64}$")
+        && approval.captureHash.matches("^[a-f0-9]{64}$")
+        && approval.deviceMetadataHash.matches("^[a-f0-9]{64}$") && approval.journalHash.matches("^[a-f0-9]{64}$")
+        && control.storageMode == "migrating" && control.phase == "READY_TO_CUTOVER"
+        && control.semanticEquality == "PASS" && control.sourceHash == control.reconstructedHash
+        && approval.businessIds.size() == control.businessIds.size()
+        && approval.businessIds.toSet() == control.businessIds.toSet() && businessId in control.businessIds
+        && approval.runtimeRecords.keys().toSet() == control.businessIds.toSet()
+        && approval.runtimeHashes.keys().toSet() == control.businessIds.toSet()
+        && approval.preparedRuntimeHashes.keys().toSet() == control.businessIds.toSet()
+        && approval.openSessionSummaries.keys().toSet() == control.businessIds.toSet()
+        && approval.openSessionSummaryHashes.keys().toSet() == control.businessIds.toSet()
+        && approval.runtimeHashes[businessId].matches("^[a-f0-9]{64}$")
+        && approval.preparedRuntimeHashes[businessId].matches("^[a-f0-9]{64}$")
+        && data == approval.runtimeRecords[businessId]
+        && data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "recordVersion", "data", "dataHash"])
+        && data.id == "runtime" && data.ownerUid == ownerUid && data.businessId == businessId
+        && data.schemaVersion == 2 && data.module == "metadata" && data.recordVersion == 1
+        && data.dataHash.matches("^[a-f0-9]{64}$")
+        && data.data.keys().hasOnly(["id", "businessId", "summaryVersion", "openCashSessionId", "preparation"])
+        && data.data.id == "runtime" && data.data.businessId == businessId && data.data.summaryVersion == 1
+        && data.data.preparation.keys().hasOnly(["planHash", "sourceHash", "buildSha", "deviceMetadataHash", "journalHash", "runtimeHash"])
+        && data.data.preparation.planHash == approval.planHash && data.data.preparation.sourceHash == control.sourceHash
+        && data.data.preparation.buildSha == control.buildSha
+        && data.data.preparation.deviceMetadataHash == approval.deviceMetadataHash
+        && data.data.preparation.journalHash == approval.journalHash
+        && data.data.preparation.runtimeHash == approval.runtimeHashes[businessId]
+        && data.data.openCashSessionId is string
+        && (data.data.openCashSessionId == ""
+          ? approval.openSessionSummaries[businessId] == null && approval.openSessionSummaryHashes[businessId] == null
+          : sparkRuntimeInitialSession(ownerUid, businessId, data.data.openCashSessionId, approval, control.sourceHash));
     }
 
     function sparkRuntimeMutation(ownerUid, businessId, recordId) {
@@ -2575,6 +2715,11 @@ service cloud.firestore {
         && sparkBoundOperation(ownerUid, businessId)
         && sparkOperationalCreate(ownerUid, businessId, "movements", recordId)
         && sparkMovementMutation(ownerUid, businessId, recordId);
+      allow update: if request.resource.data.get("module", "") == "movements" && signedIn()
+        && !resource.data.keys().hasAny(["historyPolicy"])
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkManualOriginalUpdate(ownerUid, businessId, recordId)
+        && sparkOperationalUpdate(ownerUid, businessId, "movements", recordId);
       allow delete: if false;
     }
 
@@ -2622,6 +2767,8 @@ service cloud.firestore {
     }
 
     match /metadata/{recordId} {
+      // Preparation is create-only; it does NOT activate an operational mode.
+      allow create: if recordId == "runtime" && sparkRuntimePreparationApproved(ownerUid, businessId);
       // A worker sees only the assigned business's cutover proof, not the
       // owner's global business list. The proof is linked to root authority.
       allow read: if recordId == "storage" && signedIn()

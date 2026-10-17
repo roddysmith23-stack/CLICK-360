@@ -40,7 +40,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
     captureDevice:async value=>{const captureHash=await api.hash(value);captures.set(captureHash,structuredClone(value));return {captureHash,durable:true};},
     preserveCloud:async({captureHash,assertStable})=>{await assertStable();assert(captures.has(captureHash));return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,operationalCloudConfirmed:false};},
     close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true}),
-    pinHandoff:async plan=>{const captureHash=await api.hash(plan);handoffs.set(captureHash,structuredClone(plan));return {captureHash,durable:true};},
+    pinHandoff:async plan=>{const captureHash=await api.hash({kind:'READ_ONLY_HANDOFF_PLAN',ownerUid,plan});handoffs.set(captureHash,structuredClone(plan));return {captureHash,durable:true};},
     readHandoff:async captureHash=>({captureHash,durable:true,plan:readHandoffCorrupt?{invalid:true}:structuredClone(handoffs.get(captureHash))})})};
   globalThis.CLICK360_SPARK_IMPORTER={create:options=>({prepareShadow:async()=>{
     imports++;const source=await options.readSource(),selected=await api.selectSource({ownerUid,...source});

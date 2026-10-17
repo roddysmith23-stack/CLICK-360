@@ -8,16 +8,19 @@ import {connectAdmin,connectAuth} from '../scripts/lib/firebase-admin-connect.mj
 import {getDeployedFirestoreRules} from '../scripts/lib/firestore-rules-remote.mjs';
 import {largeTenantData,stateDocument,accountAccess,identity} from './r38-emulator-support.mjs';
 import '../spark-modular-migration.js';
+import '../spark-modular-handoff.js';
 const PROJECT='click360-staging-7620168025',URL=`https://${PROJECT}.web.app/`;
 const args=Object.fromEntries(process.argv.slice(2).map(s=>s.split('=')));
 const recoveryOnly=args['--recovery-only']==='true';
+assert(args['--runtime-preparation']===undefined||['true','false'].includes(args['--runtime-preparation']));
+const runtimePreparation=!recoveryOnly&&args['--runtime-preparation']!=='false';
 assert.equal(args['--project'],PROJECT);assert.match(args['--sha']||'',/^[a-f0-9]{40}$/);
 for(const key of ['FIRESTORE_EMULATOR_HOST','FIREBASE_AUTH_EMULATOR_HOST'])assert(!process.env[key]);
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const release=await fetch(URL+'release-manifest.json',{cache:'no-store'}).then(r=>r.json());
 assert(args['--sha'].startsWith(release.buildSha),'SERVED_SHA_MISMATCH');
 for(const file of ['index.html','app.js','firebase-service.js','service-worker.js','spark-migration-bootstrap.js',
-  'spark-modular-importer.js','spark-modular-reconciliation.js','spark-modular-recovery.js']){
+  'spark-modular-importer.js','spark-modular-reconciliation.js','spark-modular-recovery.js','spark-modular-handoff.js']){
   const r=await fetch(URL+file,{cache:'no-store'});assert(r.ok);
   assert(Buffer.from(await r.arrayBuffer()).equals(await readFile('dist/'+file)),`SERVED_BYTES_MISMATCH:${file}`);
 }
@@ -62,6 +65,7 @@ try{
       assert(!p||Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.every(id=>id.startsWith('qa-spark-staging-')),
         'STAGING_POLICY_HAS_NON_FIXTURE_PILOTS_STOP');
       tx.set(ref,{...(p||{}),enabled:true,automaticShadow:!recoveryOnly,automaticRecoveryCopy:recoveryOnly,
+        automaticRuntimePreparation:false,automaticCutover:false,automaticMigration:false,
         pilotOwnerUids:[...new Set([...(p?.pilotOwnerUids||[]),uid])]});
     });
     console.log(JSON.stringify({stage:'REAL_SHADOW_FIXTURE_READY',engine:name,recoveryOnly}));
@@ -129,12 +133,64 @@ try{
         assert.equal(control.sourceHash,sourceHash);assert.equal(control.reconstructedHash,sourceHash);assert.equal(control.semanticEquality,'PASS');
         assert.deepEqual(control.businessIds,[uid,second]);
         assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),envelope);
+        return page.evaluate(async ownerUid=>{
+          const detail=window.click360SparkMigrationState;
+          if(!['READ_ONLY_HANDOFF_PREPARED','RUNTIME_PREPARED'].includes(detail?.phase)||!detail.captureHash)
+            throw Error('SAME_DEVICE_HANDOFF_PROGRESS_REQUIRED');
+          const recovery=await CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser:()=>click360Auth.currentUser});
+          try{
+            const pinned=await recovery.readHandoff(detail.captureHash);
+            if(!pinned?.durable||pinned.plan.planHash!==detail.planHash
+              ||pinned.plan.operationalActivationAllowed!==false||pinned.plan.cutoverAllowed!==false)
+              throw Error('SAME_DEVICE_HANDOFF_PIN_NOT_VERIFIED');
+            return {captureHash:pinned.captureHash,plan:pinned.plan,phase:detail.phase};
+          }finally{recovery.close();}
+        },uid);
       };
       const first=await verify();await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});const resumed=await verify();
       if(recoveryOnly)assert.equal(first.captureHash,resumed.captureHash,'No new recovery copy on cold restart');
+      let runtimeEvidence=null;
+      if(runtimePreparation){
+        assert.equal(first.captureHash,resumed.captureHash,'Unchanged handoff must survive the original browser partition restart');
+        const approval=await CLICK360_SPARK_HANDOFF.runtimeApproval(resumed.plan,release.buildSha);
+        assert.equal(approval.ownerUid,uid);assert.equal(approval.captureHash,resumed.captureHash);
+        assert(uid.startsWith('qa-spark-staging-'),'RUNTIME_ADMIN_APPROVAL_SYNTHETIC_ONLY');
+        for(const row of resumed.plan.runtimes)assert.equal((await admin.doc(row.path).get()).exists,false);
+        // Administrative fixture approval is private to this synthetic owner.
+        // The PWA, not Admin, creates and rereads the actual derived runtimes.
+        await admin.doc(`businesses/${uid}/storageApprovals/runtimePreparation`).create(approval);
+        await admin.runTransaction(async tx=>{
+          const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),policy=snap.data();
+          assert(policy?.pilotOwnerUids?.every(id=>id.startsWith('qa-spark-staging-')),
+            'RUNTIME_POLICY_NON_SYNTHETIC_STOP');
+          assert(policy.pilotOwnerUids.includes(uid));
+          tx.update(ref,{automaticRuntimePreparation:true,automaticCutover:false,automaticMigration:false});
+        });
+        const runtimeHashes={};
+        for(let restart=0;restart<2;restart++){
+          await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});
+          const prepared=await verify();assert.equal(prepared.captureHash,resumed.captureHash);
+          assert.equal(prepared.phase,'RUNTIME_PREPARED');
+          for(const row of resumed.plan.runtimes){
+            const document=await admin.doc(row.path).get();assert(document.exists);
+            const hash=await CLICK360_SPARK_MIGRATION.hash(document.data());
+            assert.equal(hash,approval.preparedRuntimeHashes[row.content.businessId]);
+            assert.deepEqual(document.data(),approval.runtimeRecords[row.content.businessId]);
+            runtimeHashes[row.content.businessId]=hash;
+          }
+          assert.equal(await page.evaluate(()=>!!window.click360SparkOperationalSession),false);
+        }
+        assert.equal(Object.keys(runtimeHashes).length,2);
+        assert.equal(approval.runtimeRecords[uid].data.openCashSessionId,'historical-session');
+        assert.equal(approval.runtimeRecords[second].data.openCashSessionId,'');
+        runtimeEvidence={status:'RUNTIME_PREPARED',planHash:approval.planHash,captureHash:approval.captureHash,
+          runtimeCount:2,runtimeHashes:Object.values(runtimeHashes).sort(),repeatedRestart:true,
+          approvedDerivedRuntimeResume:true,operationalCloudConfirmed:false,cutover:false};
+      }
       results.push({browser:name,sourceHash,reconstructedHash:sourceHash,bytes:CLICK360_SPARK_MIGRATION.byteLength(local),
         ...(recoveryOnly?{captureHash:resumed.captureHash,journalHash:resumed.journalHash,partCount:resumed.partCount,
           status:resumed.status,pending:100,unknown:1,operationalCloudConfirmed:false}:{}),
+        ...(runtimeEvidence?{runtimePreparation:runtimeEvidence}:{}),
         localSnapshotUnchanged:true,legacyUnchanged:true,coldRestartResume:true,localStorageDeviceIdFailureRecovered:true,businesses:2,cutover:false});
       console.log(JSON.stringify({stage:'REAL_SHADOW_PREPARATION_PASS',...results.at(-1)}));
     }catch(error){
@@ -154,9 +210,17 @@ try{
       await writeFile(`${directory}/${name}-failure.private.json`,JSON.stringify({diagnostics,error:String(error)}),{mode:0o600,flag:'wx'});
       console.error(JSON.stringify({stage:'REAL_SHADOW_FAILED',engine:name,recoveryOnly,diagnostics}));
       throw error;
-    }finally{await context.close();await browser.close();browser=null;}
+    }finally{
+      await context.close();await browser.close();browser=null;
+      if(runtimePreparation)await admin.runTransaction(async tx=>{
+        const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),policy=snap.data();
+        assert(policy?.pilotOwnerUids?.every(id=>id.startsWith('qa-spark-staging-')),'RUNTIME_POLICY_NON_SYNTHETIC_STOP');
+        tx.update(ref,{automaticRuntimePreparation:false});
+      });
+    }
   }
-  const result={status:'PASS',scope:recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,
+  const result={status:'PASS',scope:recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':runtimePreparation
+    ?'REAL_STAGING_SHADOW_AND_RUNTIME_PREPARATION_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,
     rulesHash,results,productionWrites:0,operationalCutover:false};
   await writeFile(directory+'/result.json',JSON.stringify(result),{mode:0o600,flag:'wx'});console.log(JSON.stringify(result));
 }finally{await browser?.close();await admin.terminate();}

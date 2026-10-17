@@ -349,7 +349,23 @@
           if(initial.length===1)verifiedInitial.add(initial[0].id);
         }
         for(const movement of linkedMoves){
-          const amount=cents(movement.amount);
+          let amount=cents(movement.amount);
+          if(Object.hasOwn(movement,'compensationSign')){
+            const original=linkedMoves.find(row=>row.id===movement.compensatesMovementId);
+            if(movement.compensationSign!==-1||!original||!['ingreso','egreso','retiro','compra'].includes(movement.kind)
+              ||['saleId','paymentType','productId','compensationSign'].some(key=>Object.hasOwn(original,key))
+              ||original.kind!==movement.kind||cents(original.amount)!==amount
+              ||original.compensatedByOperationId!==movement.operationId||original.reversalMovementId!==movement.id
+              ||original.cashSessionId!==movement.cashSessionId||original.date!==movement.date)
+              throw Error('MIGRATION_CASH_COMPENSATION_UNVERIFIED');
+            amount=-amount;
+          }
+          if(movement.replacesMovementId){
+            const original=linkedMoves.find(row=>row.id===movement.replacesMovementId);
+            if(!original||original.replacementMovementId!==movement.id||original.compensatedByOperationId!==movement.operationId
+              ||original.cashSessionId!==movement.cashSessionId||original.date!==movement.date)
+              throw Error('MIGRATION_CASH_COMPENSATION_UNVERIFIED');
+          }
           if(movement.kind==='apertura')continue;
           if(movement.saleId){
             const sale=saleById.get(movement.saleId);

@@ -205,6 +205,32 @@ try{
     await resetStatus();await page.locator('#moveForm button[type="submit"]').click();await confirmed();
     const cashSession=await record('cashSessions',session.id);
     assert(cashSession.cashBalance===5&&cashSession.incomeCash===5,'Cash movement/session atomic delta');
+    const originalManual=await page.evaluate(()=>click360GetTenantState().movements.find(m=>m.note==='Ingreso sintético Spark'));
+    const financialBefore=await page.evaluate(()=>({sales:click360GetTenantState().sales,products:click360GetTenantState().products}));
+    let editableId=originalManual.id;
+    for(const amount of ['7','5']){
+      await page.evaluate(id=>window.editMovement(id),editableId);
+      // Same-data durable replacement detaches the modal's captured object.
+      // The live handler must rebind it, not persist an unlinked reversal.
+      await page.evaluate(()=>click360PersistSparkCandidate(click360GetTenantState(),
+        {operationId:'synthetic-modal-durable-refresh',pendingRemoteSync:false}));
+      await page.locator('#emAmount').fill(amount);await resetStatus();
+      await page.locator('#editMoveForm button[type="submit"]').click();await confirmed();
+      const preserved=await record('movements',editableId);
+      assert(preserved.compensatedByOperationId&&preserved.reversalMovementId,'Real edit appends a compensating operation');
+      editableId=preserved.replacementMovementId;
+    }
+    assert((await record('movements',originalManual.id)).amount===5,'Original manual amount is never zeroed or replaced');
+    await page.locator('#newMove').click();await page.locator('#mKind').selectOption('egreso');
+    await page.locator('#mAmount').fill('3');await page.locator('#mNote').fill('Gasto para anular sin borrar');
+    await resetStatus();await page.locator('#moveForm button[type="submit"]').click();await confirmed();
+    const expense=await page.evaluate(()=>click360GetTenantState().movements.find(m=>m.note==='Gasto para anular sin borrar'));
+    await resetStatus();await page.evaluate(id=>window.deleteMovement(id),expense.id);await confirmed();
+    const cancelledExpense=await record('movements',expense.id),reversal=await record('movements',cancelledExpense.reversalMovementId);
+    assert(cancelledExpense.amount===3&&reversal.amount===3&&reversal.compensationSign===-1,'Real cancellation preserves original and exact compensation');
+    assert((await record('cashSessions',session.id)).cashBalance===5,'UI correction and cancellation leave authoritative cash exact');
+    strictAssert.deepEqual(await page.evaluate(()=>({sales:click360GetTenantState().sales,products:click360GetTenantState().products})),financialBefore,
+      'Manual corrections cannot create sales or stock deltas');
     // Real financial commit succeeds under client Rules; lose only its
     // response and all immediate confirmation reads. No server state is faked.
     await page.evaluate(reportId=>{

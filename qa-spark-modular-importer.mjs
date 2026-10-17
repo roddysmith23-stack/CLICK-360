@@ -35,7 +35,8 @@ const db={app:{options:{projectId}},doc:path=>{
 const firebase={firestore:{FieldValue:{serverTimestamp},FieldPath:{documentId}}};
 const api=globalThis.CLICK360_SPARK_MIGRATION;
 const identity={ownerUid,ownerId:ownerUid,businessId:ownerUid,tenantKey:`owner:${ownerUid}:business:${ownerUid}`,schemaVersion:10};
-const remote={identity,businesses:[{id:businessId,name:'Synthetic import'}],products:Array.from({length:130},(_,i)=>({id:`p-${i}`,businessId,stock:2,qty:2})),sales:[],movements:[],cashSessions:[],dailyReports:[],invoices:[],auditLogs:[],deletedProducts:[],settings:{workers:[],labelTemplates:[]}};
+const secondBusinessId='runtime-empty-business';
+const remote={identity,businesses:[{id:businessId,name:'Synthetic import'},{id:secondBusinessId,name:'Second synthetic import'}],products:Array.from({length:130},(_,i)=>({id:`p-${i}`,businessId,stock:2,qty:2})),sales:[],movements:[],cashSessions:[],dailyReports:[],invoices:[],auditLogs:[],deletedProducts:[],settings:{workers:[],labelTemplates:[]}};
 const local=structuredClone(remote);local.products[0].stock=1;local.products[0].qty=1;
 local.cashSessions.push({id:'historical-session',operationId:'historical-opening',businessId,date:'2026-09-03',status:'open',openingAmount:0});
 local.sales.push({id:'historical-sale',operationId:'historical-sale',businessId,cashSessionId:'historical-session',
@@ -98,8 +99,8 @@ try{
     countProjectionPending:async()=>0,listPendingPage:async()=>({rows:[],next:null,complete:true}),close(){}})};
   const handoffPins=new Map();
   globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({...input.recovery,
-    pinHandoff:async plan=>{const captureHash=await api.hash(plan);handoffPins.set(captureHash,structuredClone(plan));return {captureHash};},
-    readHandoff:async captureHash=>({durable:true,plan:structuredClone(handoffPins.get(captureHash))}),
+    pinHandoff:async plan=>{const captureHash=await api.hash({kind:'READ_ONLY_HANDOFF_PLAN',ownerUid,plan});handoffPins.set(captureHash,structuredClone(plan));return {captureHash};},
+    readHandoff:async captureHash=>({captureHash,durable:true,plan:structuredClone(handoffPins.get(captureHash))}),
     captureDevice:async value=>({captureHash:await api.hash(value),durable:true}),
     deviceIdentity:async()=>({ownerUid,deviceId:input.deviceId,durable:true}),close(){}})};
   const connected=await CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({...input,actorUid:ownerUid,
@@ -132,6 +133,120 @@ try{
   await assert.rejects(importer.prepareShadow(),/ALREADY_CLAIMED/);
   local.products[0].stock=originalStock;local.products[0].qty=originalStock;
   assert.throws(()=>globalThis.CLICK360_SPARK_IMPORTER.create({...input,projectId:'click-360'}),/NONPRODUCTION_ONLY/);
+  // The SAME authenticated client prepares derived runtime only after an
+  // administrative, source/build/plan/whole-owner approval. No mode changes.
+  const handoff=connected.handoff,approval=await CLICK360_SPARK_HANDOFF.runtimeApproval(handoff.plan,input.buildSha);
+  assert.equal(approval.captureHash,handoff.captureHash);
+  const journalCapture={ownerUid,rows:[],recordCount:0,enumerationComplete:true};
+  input.recovery.readHandoff=async captureHash=>({captureHash,durable:true,plan:structuredClone(handoffPins.get(captureHash))});
+  const guardBase={ownerUid,deviceRevision:'device-43',unknownOperations:0,mutationLockHeld:true,
+    deviceMetadataHash:handoff.plan.deviceMetadataHash,journalCapture};
+  input.readGuard=async()=>structuredClone(guardBase);
+  const runtimeImporter=CLICK360_SPARK_IMPORTER.create(input),runtimeRequest={captureHash:handoff.captureHash};
+  const authorized={enabled:true,pilotOwnerUids:[ownerUid],automaticShadow:true,automaticRuntimePreparation:true};
+  const setPolicy=policy=>env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),'storageRollout/sparkV1'),policy));
+  const approvalPath=`businesses/${ownerUid}/storageApprovals/runtimePreparation`;
+  const setApproval=value=>env.withSecurityRulesDisabled(c=>value===null
+    ?deleteDoc(doc(c.firestore(),approvalPath)):setDoc(doc(c.firestore(),approvalPath),value));
+  const runtime={...handoff.plan.runtimes.find(row=>row.content.businessId===businessId),content:approval.runtimeRecords[businessId]};
+  const runtimeRef=doc(client,runtime.path);
+  await assertFails(setDoc(doc(client,'storageRollout/sparkV1'),authorized),'Client cannot approve its own runtime');
+  await assertFails(setDoc(doc(client,approvalPath),approval),'Owner cannot self-approve private runtime preparation');
+  await assertFails(setDoc(runtimeRef,runtime.content),'Default policy cannot create runtime');
+  await assert.rejects(runtimeImporter.prepareRuntime(runtimeRequest),/ADMIN_APPROVAL_REQUIRED/);
+  for(const candidate of [
+    {policy:{...authorized,automaticRuntimePreparation:false},approval},
+    {policy:{...authorized,pilotOwnerUids:['different-owner']},approval},
+    {policy:authorized,approval:null},
+    ...[{ownerUid:'different-owner'},{sourceHash:'f'.repeat(64)},{buildSha:'f'.repeat(40)},
+      {planHash:'f'.repeat(64)},{businessIds:[businessId]},
+      {runtimeRecords:{...approval.runtimeRecords,[businessId]:{...runtime.content,dataHash:'f'.repeat(64)}}},
+      {runtimeHashes:{...approval.runtimeHashes,[businessId]:'f'.repeat(64)}}]
+      .map(delta=>({policy:authorized,approval:{...approval,...delta}}))
+  ]){
+    await setPolicy(candidate.policy);await setApproval(candidate.approval);
+    await assert.rejects(runtimeImporter.prepareRuntime(runtimeRequest),/ADMIN_APPROVAL_REQUIRED/);
+    await assertFails(setDoc(runtimeRef,runtime.content),'Server Rules must reject the same mismatched approval independently');
+    assert.equal((await getDocFromServer(runtimeRef)).exists(),false);
+  }
+  await setPolicy(authorized);await setApproval(approval);
+  assert.deepEqual((await getDocFromServer(doc(client,approvalPath))).data(),approval);
+  const adminClient=env.authenticatedContext('synthetic-storage-administrator',{email:'roddysmithceo@gmail.com'}).firestore();
+  assert.deepEqual((await getDocFromServer(doc(adminClient,approvalPath))).data(),approval);
+  await setDoc(doc(adminClient,approvalPath),approval);
+  await assertFails(setDoc(doc(adminClient,`businesses/${ownerUid}/storageApprovals/unsupported`),approval));
+  await assertFails(setDoc(doc(adminClient,'storageRollout/sparkV1'),{...authorized,runtimePreparationApprovals:{[ownerUid]:approval}}));
+  const privateWorkerUid='runtime-private-worker';
+  await env.withSecurityRulesDisabled(async c=>{
+    await setDoc(doc(c.firestore(),`approvedUsers/${privateWorkerUid}`),{uid:privateWorkerUid,ownerId:ownerUid,
+      businessUnitId:businessId,approved:true,status:'active',role:'cashier'});
+    await setDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${privateWorkerUid}`),
+      {uid:privateWorkerUid,ownerUid,businessId,status:'active',role:'cashier',permissions:{cashSessions:{read:true}}});
+  });
+  for(const forbidden of [env.authenticatedContext('unrelated-runtime-owner').firestore(),
+    env.authenticatedContext(privateWorkerUid).firestore(),env.unauthenticatedContext().firestore()]){
+    await assertFails(getDocFromServer(doc(forbidden,approvalPath)));
+    await assertFails(setDoc(doc(forbidden,approvalPath),approval));
+  }
+  const publicFlags=(await getDocFromServer(doc(client,'storageRollout/sparkV1'))).data();
+  assert(!Object.hasOwn(publicFlags,'runtimePreparationApprovals')&&!Object.hasOwn(publicFlags,'cutoverApprovals'));
+  for(const delta of [{ownerUid:'other-owner'},{dataHash:'f'.repeat(64)},
+    {data:{...runtime.content.data,openCashSessionId:'another-session'}}])
+    await assertFails(setDoc(runtimeRef,{...runtime.content,...delta}));
+  const stranger=env.authenticatedContext('runtime-stranger').firestore();
+  await assertFails(setDoc(doc(stranger,runtime.path),runtime.content));
+  for(const delta of [{deviceMetadataHash:'f'.repeat(64)},
+    {journalCapture:{...journalCapture,rows:[{state:'unknown'}],recordCount:1}},{unknownOperations:1}]){
+    const bad=CLICK360_SPARK_IMPORTER.create({...input,readGuard:async()=>({...guardBase,...delta})});
+    await assert.rejects(bad.prepareRuntime(runtimeRequest),/DEVICE_OR_JOURNAL_DRIFT_STOP/);
+  }
+  const runtimeRemoteDrift=structuredClone(rootState);runtimeRemoteDrift.payload.data.products[2].stock=3;runtimeRemoteDrift.payload.data.products[2].qty=3;
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),`businesses/${ownerUid}/state/main`),runtimeRemoteDrift));
+  try{await assert.rejects(runtimeImporter.prepareRuntime(runtimeRequest),/CONTROL_CONFLICT|SOURCE_CHANGED_STOP/);}
+  finally{await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),`businesses/${ownerUid}/state/main`),rootState));}
+  // A forged summary with the original hash cannot pass Rules: compare the
+  // whole admin-approved summary, because Rules cannot calculate SHA-256.
+  const sessionRef=doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/cashSessions/historical-session`);
+  const sessionBefore=(await getDocFromServer(sessionRef)).data();
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),sessionRef.path),{
+    ...sessionBefore,operational:{...sessionBefore.operational,saleCount:99}}));
+  await assertFails(setDoc(runtimeRef,runtime.content));
+  await assert.rejects(runtimeImporter.prepareRuntime(runtimeRequest),/EXACT_SESSION_UNVERIFIED/);
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),sessionRef.path),sessionBefore));
+  const commerceBefore=[];
+  for(const row of result.manifest.records){const s=await getDocFromServer(doc(client,row.path));commerceBefore.push({path:row.path,content:s.data()});}
+  let runtimeInterrupted=false;
+  const interruptedRuntime=CLICK360_SPARK_IMPORTER.create({...input,onProgress:event=>{
+    if(event.phase==='RUNTIME_PREPARING'&&!runtimeInterrupted){runtimeInterrupted=true;throw Error('SIMULATED_RUNTIME_INTERRUPTION');}
+  }});
+  await assert.rejects(interruptedRuntime.prepareRuntime(runtimeRequest),/SIMULATED_RUNTIME_INTERRUPTION/);
+  assert.equal((await getDocFromServer(storageRef)).data().storageMode,'migrating');
+  assert.equal((await getDocFromServer(storageRef)).data().phase,'READY_TO_CUTOVER');
+  // The exact approved derived record is allowed on shadow resume, while
+  // every unrelated orphan remains a semantic-comparison failure.
+  assert.deepEqual((await runtimeImporter.prepareShadow()).equality,result.equality);
+  const runtimeResult=await runtimeImporter.prepareRuntime(runtimeRequest);
+  assert.equal(runtimeResult.status,'RUNTIME_PREPARED');assert.equal(runtimeResult.cutoverPerformed,false);
+  assert.deepEqual(await runtimeImporter.prepareRuntime(runtimeRequest),runtimeResult,'Runtime preparation retry creates no duplicate writes');
+  for(const row of handoff.plan.runtimes)assert.deepEqual((await getDocFromServer(doc(client,row.path))).data(),approval.runtimeRecords[row.content.businessId]);
+  assert.equal(handoff.plan.runtimes.find(row=>row.content.businessId===secondBusinessId).content.data.openCashSessionId,'');
+  await assertFails(setDoc(runtimeRef,runtime.content),'Runtime preparation is create-only; existing identical records need no write');
+  await assert.rejects(transport.run(()=>{}),/CUTOVER_NOT_VERIFIED/,'Runtime installation is not writer activation');
+  const metadataOrphan=doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/unapproved`);
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),metadataOrphan.path),{unexpected:true}));
+  await assert.rejects(runtimeImporter.prepareShadow(),/REMOTE_COUNT_MISMATCH/);
+  await env.withSecurityRulesDisabled(c=>deleteDoc(doc(c.firestore(),metadataOrphan.path)));
+  const conflicting={...runtime.content,data:{...runtime.content.data,openCashSessionId:'wrong-session'}};
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),runtime.path),conflicting));
+  await assert.rejects(runtimeImporter.prepareRuntime(runtimeRequest),/EXISTING_CONFLICT/);
+  await assert.rejects(runtimeImporter.prepareShadow(),/UNAPPROVED_DERIVED_RECORD/);
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),runtime.path),runtime.content));
+  assert.deepEqual((await runtimeImporter.prepareShadow()).equality,result.equality);
+  for(const row of commerceBefore)assert.deepEqual((await getDocFromServer(doc(client,row.path))).data(),row.content);
+  assert.deepEqual((await getDocFromServer(storageRef)).data(),savedControl);
+  assert.deepEqual((await getDocFromServer(doc(client,`businesses/${ownerUid}/state/main`))).data(),rootState);
   console.log(JSON.stringify({status:'PASS',clientRules:true,sourceHash:result.equality.sourceHash,reconstructedHash:result.equality.reconstructedHash,
-    records:result.manifest.recordCount,interruptedResume:true,idempotent:true,pendingLocalSalePreserved:true,sameRevisionRemoteDriftStops:true,legacyUnchanged:true,cutover:false,productionWrites:0}));
+    records:result.manifest.recordCount,interruptedResume:true,idempotent:true,pendingLocalSalePreserved:true,sameRevisionRemoteDriftStops:true,
+    runtimePreparation:true,runtimeInterruptedResume:true,runtimeBusinessCoverage:2,approvedDerivedRuntimeOnly:true,
+    commercialRecordsUnchanged:true,legacyUnchanged:true,cutover:false,productionWrites:0}));
 }finally{await env.cleanup();}

@@ -33,6 +33,19 @@ async function input(snapshot,{historicalReadOnly=false}={}){
   for(const flag of ['journalReplayAllowed','operationalActivationAllowed','cutoverAllowed'])assert.equal(result[flag],false);
   assert.deepEqual(await handoff.plan(args),result,'Pure deterministic plan, no timestamps or random IDs');
   const {planHash,...material}=result;assert.equal(planHash,await api.hash(material));
+  const approval=await handoff.runtimeApproval(result,'a'.repeat(40));
+  assert.equal(approval.planHash,planHash);
+  assert.equal(approval.captureHash,await api.hash({kind:'READ_ONLY_HANDOFF_PLAN',ownerUid,plan:result}));
+  for(const row of result.runtimes){
+    const businessId=row.content.businessId,prepared=approval.runtimeRecords[businessId];
+    assert.equal(prepared.data.preparation.planHash,planHash);
+    assert.equal(prepared.data.preparation.runtimeHash,await api.hash(row.content));
+    assert.equal(prepared.dataHash,await api.hash(prepared.data));
+    assert.equal(approval.preparedRuntimeHashes[businessId],await api.hash(prepared));
+    assert.deepEqual(approval.openSessionSummaries[businessId],row.openSessionSummary);
+  }
+  assert.deepEqual(result.runtimes[0].content.data,{id:'runtime',businessId:businessIds[0],summaryVersion:1,openCashSessionId:'historical-exact'},
+    'Administrative candidate generation cannot modify the pinned base plan');
   for(const delta of [{businessIds:[businessIds[0]]},{businessIds:[businessIds[0],businessIds[0]]},
     {financialProofs:[args.financialProofs[0]]},{unknownCount:1},{conflictCount:1},{sourceHash:'f'.repeat(64)},
     {journalHash:'f'.repeat(64)},{journalCapture:{...args.journalCapture,enumerationComplete:false}}])

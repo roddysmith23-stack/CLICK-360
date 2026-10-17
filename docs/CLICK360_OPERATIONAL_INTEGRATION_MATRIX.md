@@ -40,7 +40,7 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 | Cash close | `submitCashClose`, exact preflight / `cash_close` | Exact session + unique compact report + ledger; no stock/sale changes | Served lost-response recovery + readback |
 | Cash reopen | `reopenCashDay`, `cashSuccessorCommand`, exact predecessor `cash_open` | New session + opening + runtime + ledger + prior-report status atomically; prior closed session/financial totals unchanged | Served Chromium/WebKit + owner/worker-denial client Rules; does not use incompatible DEV same-session reopen |
 | Income/expense create | Existing cash movement form / `cash_movement` | Actual movement + exact session counters + ledger | Served Chromium/WebKit |
-| Movement edit/cancel | `cash_movement_updated/cancelled` | Legacy financial mutation | Blocked; compensating adapters missing |
+| Movement edit/cancel | `editMovement` / `deleteMovement` → `manualMovementCorrectionCommand` | Owner-only exact-open-session correction; original financial values retained, append reversal/replacement + ledger + cash counters atomically | Actual PWA Chromium/WebKit journey and client Rules passed for ledger-proven manual movements. Distinct IDs sharing one operation must not merge; equal-data durable modal refresh rebinds the live record, stale revisions stop. Sale-linked, opening, inventory, closed-history and unproven imported movements remain denied, not a legacy fallback |
 | Cash history | `cashView`, bootstrap `loadMore` | Authoritative server pages; durable append under coordinator flight | Actual 103-report history in served Chromium/WebKit; no sale/stock changes |
 | Customers / activity | Existing CRM and Activity + bootstrap `loadMore` | Server pages beyond row 100; Spark activity never calls the V1 reader | Served Chromium/WebKit; no financial writes during pagination |
 | Other histories / aggregates | Current array views; repository bounded queries | Local projection is not server-paginated full history | Sales/report paging control connected; partial summaries labeled, complete aggregate/date integration remains missing |
@@ -60,9 +60,13 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 
 The shadow-to-operational transition also requires a server-enforced
 administrative approval. `storageRollout/sparkV1.automaticCutover` defaults to
-false; its administrative `cutoverApprovals[ownerUid]` must match that owner's
-immutable source hash, build SHA and complete ordered business coverage.
-Client owners/workers cannot create that policy. Semantic equality alone does
+false; the private `businesses/{ownerUid}/storageApprovals/cutover` record must
+match that owner's immutable source hash, build SHA and complete ordered business
+coverage. Runtime preparation has a separate private `runtimePreparation`
+approval with exact records and complete cash summaries. Owners can read only
+their own approvals; workers, other owners and anonymous clients cannot read
+them. Only platform administrators can write these documents. The globally
+readable rollout document must never contain approval payloads. Semantic equality alone does
 not grant authority to activate commercial writers. This gate does not create
 runtime documents or complete the operational handoff.
 

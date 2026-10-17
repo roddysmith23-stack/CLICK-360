@@ -380,6 +380,62 @@ try{
   console.log('PASS operational Rules: last-stock race');
   await repo.commitOperation('cash_movement',{operationId:'cash-income',cashSessionId:open.cashSessionId,date:open.date,movementKind:'ingreso',amount:1});
   await repo.commitOperation('cash_movement',{operationId:'cash-expense',cashSessionId:open.cashSessionId,date:open.date,movementKind:'egreso',amount:1});
+  for(const movementKind of ['ingreso','egreso','retiro','compra']){
+    const prefix=`manual-${movementKind}`,before=await get('cashSessions',open.cashSessionId);
+    await repo.commitOperation('cash_movement',{operationId:prefix,cashSessionId:open.cashSessionId,date:open.date,movementKind,amount:3});
+    const original=await get('movements',prefix),command={operationId:`${prefix}-edit`,movementId:prefix,
+      expectedRecordVersion:original.recordVersion,cashSessionId:open.cashSessionId,date:open.date,
+      reason:'Synthetic correction',replacement:{kind:'egreso',amount:4,note:'Replacement'}};
+    if(movementKind==='ingreso'){
+      const attacks=[
+        (ref,data)=>ref.path.endsWith(`/movements/${prefix}`)?{...data,data:{...data.data,amount:999}}:data,
+        (ref,data)=>ref.path.endsWith('/movements/forged-manual-rev')?null:data,
+        (ref,data)=>ref.path.endsWith('/movements/forged-manual-rev')?{...data,data:{...data.data,compensationSign:1}}:data,
+        (ref,data)=>ref.path.includes('/cashSessions/')?null:data,
+        (ref,data)=>ref.path.includes('/cashSessions/')?{...data,operational:{...data.operational,cashBalance:999}}:data
+      ];
+      for(const attack of attacks){
+        const forged=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+          transport:transportFor(client,ownerUid,'',attack),serverTimestamp});
+        await assertFails(forged.commitOperation('manual_movement_correct',{...command,operationId:'forged-manual'}));
+        assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/forged-manual`))).exists(),false);
+        assert.deepEqual(await get('movements',prefix),original);
+      }
+    }
+    await repo.commitOperation('manual_movement_correct',command);
+    assert.equal((await repo.commitOperation('manual_movement_correct',command)).status,'already_committed');
+    await assert.rejects(()=>repo.commitOperation('manual_movement_correct',{...command,reason:'Changed'}),/IDEMPOTENCY_KEY_CONFLICT/);
+    assert.equal((await get('movements',prefix)).amount,3);
+    assert.equal((await get('movements',prefix)).operationId,prefix);
+    const replacement=await get('movements',`${prefix}-edit-new`);
+    await repo.commitOperation('manual_movement_correct',{operationId:`${prefix}-cancel`,movementId:replacement.id,
+      expectedRecordVersion:replacement.recordVersion,cashSessionId:open.cashSessionId,date:open.date,
+      reason:'Cancel replacement',replacement:null});
+    const after=await get('cashSessions',open.cashSessionId);
+    for(const key of ['cashBalance','incomeCash','expenseCash','salesTotal','saleCount'])assert.equal(after[key],before[key]);
+  }
+  console.log('PASS operational Rules: append-only manual movement corrections, exact cash counters and forged partial writes denied');
+  const selfReferenceOp='manual-self-reference',selfReferenceId=`${selfReferenceOp}-rev`;
+  await repo.commitOperation('cash_movement',{operationId:selfReferenceId,cashSessionId:open.cashSessionId,
+    date:open.date,movementKind:'egreso',amount:1});
+  // Bypass the domain kernel deliberately, but NOT Rules, to prove a forged
+  // ledger cannot call the original record its own compensating reversal.
+  await assertFails(transportFor(client).run(async tx=>{
+    const old=await tx.get('movements',selfReferenceId),cash=await tx.get('cashSessions',open.cashSessionId);
+    await tx.get('operationLedger',selfReferenceOp);
+    const timestamp=serverTimestamp(),updated=record=>({...record,recordVersion:record.recordVersion+1,
+      updatedAt:timestamp,updatedBy:ownerUid,lastOperationId:selfReferenceOp});
+    tx.update('movements',selfReferenceId,{...updated(old),compensatedByOperationId:selfReferenceOp,
+      reversalMovementId:selfReferenceId,replacementMovementId:''});
+    tx.update('cashSessions',open.cashSessionId,{...updated(cash),expenseCash:cash.expenseCash-1,cashBalance:cash.cashBalance+1});
+    tx.create('operationLedger',selfReferenceOp,{...identity,id:selfReferenceOp,module:'operationLedger',recordVersion:1,
+      createdBy:ownerUid,updatedBy:ownerUid,createdAt:timestamp,updatedAt:timestamp,operationId:selfReferenceOp,
+      kind:'manual_movement_correct',status:'committed',payloadHash:'a'.repeat(64),
+      result:{movementId:selfReferenceId,originalMovementId:selfReferenceId,replacementMovementId:'',cashSessionId:open.cashSessionId}});
+  }));
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/${selfReferenceOp}`))).exists(),false);
+  await repo.commitOperation('manual_movement_correct',{operationId:'manual-safe-cancel',movementId:selfReferenceId,
+    expectedRecordVersion:1,cashSessionId:open.cashSessionId,date:open.date,reason:'Exact compensation',replacement:null});
   const forgedReport=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
     transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.includes('/dailyReports/')
       ?{...data,data:{...data.data,paymentTotals:{...data.data.paymentTotals,cash:999}}}:data),serverTimestamp});

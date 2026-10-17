@@ -143,6 +143,31 @@ assert.equal((await get('layaways','layaway-record')).saleId,'layaway-1');
 assert.equal((await get('layaways','layaway-record')).balance,15);
 assert.equal((await get('cashSessions',open.cashSessionId)).paymentTotals.receivablePayments,5);
 await repo.commitOperation('cash_movement',{operationId:'expense-1',cashSessionId:open.cashSessionId,date:open.date,movementKind:'egreso',amount:3});
+// Correction appends exact compensations; original financial history is never
+// zeroed/deleted. Canceling the replacement returns to the pre-fixture totals.
+for(const movementKind of ['ingreso','egreso','retiro','compra']){
+  const prefix=`manual-${movementKind}`,before=await get('cashSessions',open.cashSessionId),stock=await get('products','p1');
+  await repo.commitOperation('cash_movement',{operationId:prefix,cashSessionId:open.cashSessionId,date:open.date,movementKind,amount:3});
+  const original=await get('movements',prefix);
+  const correction={operationId:`${prefix}-edit`,movementId:prefix,expectedRecordVersion:original.recordVersion,
+    cashSessionId:open.cashSessionId,date:open.date,reason:'Synthetic correction',replacement:{kind:movementKind,amount:4,note:'Corrected'}};
+  if(movementKind==='ingreso')writeFaults.push({afterCommit:true});
+  await repo.commitOperation('manual_movement_correct',correction);
+  assert.equal((await repo.commitOperation('manual_movement_correct',correction)).status,'already_committed');
+  await assert.rejects(()=>repo.commitOperation('manual_movement_correct',{...correction,reason:'Different'}),/IDEMPOTENCY_KEY_CONFLICT/);
+  assert.equal((await get('movements',prefix)).amount,3);assert.equal((await get('movements',prefix)).operationId,prefix);
+  assert.equal((await get('movements',`${prefix}-edit-rev`)).compensationSign,-1);
+  await assert.rejects(()=>repo.commitOperation('manual_movement_correct',{...correction,operationId:`${prefix}-again`}),/SOURCE_INVALID/);
+  const replacement=await get('movements',`${prefix}-edit-new`);
+  await repo.commitOperation('manual_movement_correct',{operationId:`${prefix}-cancel`,movementId:replacement.id,
+    expectedRecordVersion:replacement.recordVersion,cashSessionId:open.cashSessionId,date:open.date,reason:'Cancel replacement',replacement:null});
+  const after=await get('cashSessions',open.cashSessionId);
+  for(const key of ['cashBalance','incomeCash','expenseCash','salesTotal','saleCount'])assert.equal(after[key],before[key]);
+  assert.deepEqual(await get('products','p1'),stock);
+  const projection=await repo.readOperationProjection(correction.operationId,'manual_movement_correct',
+    (await repo.prepareOperation('manual_movement_correct',correction)).payloadSha256);
+  assert.equal(projection.records.movements.length,3);
+}
 const close={operationId:'close-1',cashSessionId:open.cashSessionId,date:open.date,declaredCash:5};
 await repo.closeCashSession(close);const report=await get('dailyReports',`report-${open.cashSessionId}-1`);
 assert.equal(report.theoreticalCash,5);assert.equal(report.total,98);assert.equal(report.saleCount,5);assert(!Object.hasOwn(report,'html'));

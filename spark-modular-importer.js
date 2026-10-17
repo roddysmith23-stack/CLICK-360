@@ -109,7 +109,7 @@
       // Also query modules empty in the source. Reading expected IDs only can
       // miss stale/orphan records and falsely certify semantic equality.
       for(const businessId of manifest.businessIds){
-        for(const moduleName of new Set([...Object.values(api.arrays),'config'])){
+        for(const moduleName of new Set([...Object.values(api.arrays),'config','metadata'])){
           scopes.add(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/${moduleName}`);
         }
       }
@@ -173,11 +173,30 @@
       if(phase==='MIGRATION_PREPARING'){await transition('SHADOW_WRITING',manifest);phase='SHADOW_WRITING';}
       if(phase==='SHADOW_WRITING'){await writeShadow(manifest);await transition('SHADOW_VERIFYING',manifest);phase='SHADOW_VERIFYING';}
       if(!['SHADOW_VERIFYING','READY_TO_CUTOVER'].includes(phase))throw Error('SPARK_IMPORT_PHASE_UNSUPPORTED');
-      const remoteRecords=await readShadow(manifest);
+      let remoteRecords=await readShadow(manifest);
       // Semantic comparison proves original data; independently verify the
       // added operational/fence metadata from SERVER records as well. A
       // missing fence or a fabricated summary must never inherit equality.
       const expectedRecords=new Map(manifest.records.map(row=>[row.path,row.content]));
+      const derivedRecords=remoteRecords.filter(row=>!expectedRecords.has(row.path));
+      if(derivedRecords.length){
+        const runtimePaths=new Set(manifest.businessIds.map(businessId=>`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/runtime`));
+        if(derivedRecords.some(row=>!runtimePaths.has(row.path)))throw Error('MIGRATION_REMOTE_COUNT_MISMATCH');
+        const approvalSnapshot=await db.doc(`businesses/${ownerUid}/storageApprovals/runtimePreparation`).get({source:'server'});context();
+        if(approvalSnapshot.metadata?.fromCache!==false||approvalSnapshot.metadata?.hasPendingWrites!==false)
+          throw Error('SPARK_RUNTIME_SERVER_REQUIRED');
+        if(!approvalSnapshot.exists)throw Error('SPARK_RUNTIME_ADMIN_APPROVAL_REQUIRED');
+        const approval=approvalSnapshot.data();
+        const prepared=await prepareRuntime({captureHash:approval?.captureHash,validateOnly:true});
+        const permitted=new Map(prepared.plan.runtimes.map(row=>[row.path,prepared.approval.runtimeRecords[row.content.businessId]]));
+        for(const row of derivedRecords){
+          if(!permitted.has(row.path)||api.canonicalJson(row.content)!==api.canonicalJson(permitted.get(row.path)))
+            throw Error('SPARK_RUNTIME_UNAPPROVED_DERIVED_RECORD');
+        }
+        // Only these exact admin-approved derived runtime records are outside
+        // legacy semantic reconstruction. Every other orphan still fails.
+        remoteRecords=remoteRecords.filter(row=>expectedRecords.has(row.path));
+      }
       for(const row of remoteRecords){
         const expected=expectedRecords.get(row.path);
         for(const key of ['historyPolicy','operational','operationalHash'])
@@ -193,7 +212,99 @@
       // must be certified first. This module only prepares verified shadow.
       return {phase:'READY_TO_CUTOVER',manifest,equality,cashProofs,cutoverPerformed:false};
     }
-    return Object.freeze({prepareShadow});
+    async function prepareRuntime({captureHash,validateOnly=false}){
+      context();
+      if(!requireCashProof||!recovery.readHandoff||!root.CLICK360_SPARK_HANDOFF)
+        throw Error('SPARK_RUNTIME_VERIFIED_HANDOFF_REQUIRED');
+      const policyRef=db.doc('storageRollout/sparkV1');
+      const approvalRef=db.doc(`businesses/${ownerUid}/storageApprovals/runtimePreparation`);
+      async function server(ref){
+        context();const snap=await ref.get({source:'server'});context();
+        if(snap.metadata?.fromCache!==false||snap.metadata?.hasPendingWrites!==false)throw Error('SPARK_RUNTIME_SERVER_REQUIRED');
+        return snap;
+      }
+      async function fresh(){
+        const pinned=await recovery.readHandoff(captureHash);context();
+        if(pinned?.durable!==true||pinned.plan?.ownerUid!==ownerUid)throw Error('SPARK_RUNTIME_VERIFIED_HANDOFF_REQUIRED');
+        const plan=pinned.plan,selected=await source(),guard=await readGuard();context();
+        if(guard?.ownerUid!==ownerUid||guard.mutationLockHeld!==true||guard.unknownOperations!==0
+          ||guard.deviceRevision!==selected.deviceRevision||guard.deviceMetadataHash!==plan.deviceMetadataHash
+          ||!guard.journalCapture||await api.hash(guard.journalCapture)!==plan.journalHash)
+          throw Error('SPARK_RUNTIME_DEVICE_OR_JOURNAL_DRIFT_STOP');
+        const financialProofs=[];
+        for(const businessId of selected.businessIds)
+          financialProofs.push({businessId,...await api.deriveCashSummaries({snapshot:selected.snapshot,businessId,historicalReadOnly})});
+        const derived=await root.CLICK360_SPARK_HANDOFF.plan({ownerUid,snapshot:selected.snapshot,sourceHash:selected.sourceHash,
+          deviceMetadataHash:guard.deviceMetadataHash,journalHash:plan.journalHash,journalCapture:guard.journalCapture,
+          businessIds:selected.businessIds,financialProofs,unknownCount:0,conflictCount:0,historicalReadOnly});
+        context();
+        if(await api.hash(derived)!==await api.hash(plan))throw Error('SPARK_RUNTIME_HANDOFF_DRIFT_STOP');
+        await assertPinned({...selected,deviceRevision:selected.deviceRevision||''});
+        const approval=await root.CLICK360_SPARK_HANDOFF.runtimeApproval(plan,buildSha);
+        if(approval.captureHash!==captureHash)throw Error('SPARK_RUNTIME_HANDOFF_CAPTURE_MISMATCH');
+        return {plan,selected,approval};
+      }
+      function approved(policy,approval,expected){
+        return policy?.enabled===true&&policy.automaticRuntimePreparation===true
+          &&Array.isArray(policy.pilotOwnerUids)&&policy.pilotOwnerUids.includes(ownerUid)
+          &&api.canonicalJson(approval??null)===api.canonicalJson(expected);
+      }
+      function controlled(c,{plan,selected}){
+        return c?.ownerUid===ownerUid&&c.schemaVersion===2&&c.storageMode==='migrating'&&c.phase==='READY_TO_CUTOVER'
+          &&c.semanticEquality==='PASS'&&c.sourceHash===plan.sourceHash&&c.reconstructedHash===plan.sourceHash
+          &&c.remoteHash===selected.remoteHash&&c.remoteRevision===selected.remoteRevision
+          &&c.deviceRevision===selected.deviceRevision&&c.sourceDeviceId===deviceId&&c.buildSha===buildSha
+          &&api.canonicalJson([...(c.businessIds||[])].sort())===api.canonicalJson(plan.businessIds);
+      }
+      let verified=await fresh();
+      if(!approved((await server(policyRef)).data(),(await server(approvalRef)).data(),verified.approval))throw Error('SPARK_RUNTIME_ADMIN_APPROVAL_REQUIRED');
+      if(!controlled((await server(controlRef)).data(),verified))throw Error('SPARK_RUNTIME_CONTROL_CONFLICT');
+      if(validateOnly===true)return {status:'RUNTIME_PLAN_VALIDATED',plan:verified.plan,approval:verified.approval,
+        operationalCloudConfirmed:false,cutoverPerformed:false};
+      for(const row of verified.plan.runtimes){
+        verified=await fresh();
+        const baseRuntime=verified.plan.runtimes.find(r=>r.path===row.path);
+        if(!baseRuntime)throw Error('SPARK_RUNTIME_BUSINESS_COVERAGE_REQUIRED');
+        const expected={...baseRuntime,content:verified.approval.runtimeRecords[baseRuntime.content.businessId]};
+        await db.runTransaction(async tx=>{
+          context();
+          const [control,policy,authorization,legacy,existing]=await Promise.all([
+            tx.get(controlRef),tx.get(policyRef),tx.get(approvalRef),tx.get(legacyRef),tx.get(db.doc(row.path))]);context();
+          if(!approved(policy.data(),authorization.data(),verified.approval))throw Error('SPARK_RUNTIME_ADMIN_APPROVAL_REQUIRED');
+          if(!controlled(control.data(),verified))throw Error('SPARK_RUNTIME_CONTROL_CONFLICT');
+          if(!legacy.exists||legacy.data().revision!==verified.selected.remoteRevision
+            ||await api.hash(legacy.data().payload?.data)!==verified.selected.remoteHash)throw Error('SPARK_RUNTIME_REMOTE_DRIFT_STOP');
+          const active=expected.content.data.openCashSessionId;
+          if(active){
+            const session=await tx.get(db.doc(`businesses/${ownerUid}/businessUnits/${expected.content.businessId}/storage/v2/cashSessions/${active}`));context();
+            const raw=session.data();
+            if(!session.exists||raw?.historyPolicy||raw.ownerUid!==ownerUid||raw.businessId!==expected.content.businessId
+              ||raw.data?.status!=='open'||raw.operational?.summaryVersion!==1
+              ||raw.operationalHash!==expected.openSessionSummaryHash||await api.hash(raw.operational)!==expected.openSessionSummaryHash
+              ||api.canonicalJson(raw.operational)!==api.canonicalJson(expected.openSessionSummary))
+              throw Error('SPARK_RUNTIME_EXACT_SESSION_UNVERIFIED');
+          }
+          if(existing.exists){
+            if(api.canonicalJson(existing.data())!==api.canonicalJson(expected.content))throw Error('SPARK_RUNTIME_EXISTING_CONFLICT');
+          }else tx.set(db.doc(row.path),expected.content);
+        });
+        context();onProgress({phase:'RUNTIME_PREPARING',businessId:row.content.businessId,operationalCloudConfirmed:false});
+      }
+      verified=await fresh();
+      for(const row of verified.plan.runtimes){
+        const actual=await server(db.doc(row.path));
+        if(!actual.exists||await api.hash(actual.data())!==verified.approval.preparedRuntimeHashes[row.content.businessId]
+          ||api.canonicalJson(actual.data())!==api.canonicalJson(verified.approval.runtimeRecords[row.content.businessId]))throw Error('SPARK_RUNTIME_SERVER_RECORD_MISMATCH');
+        const flat=await root.CLICK360_SPARK_RECORD_CODEC.unpack(actual.data(),
+          {identity:{ownerUid,businessId:row.content.businessId},moduleName:'metadata',recordId:'runtime'});context();
+        if(flat.summaryVersion!==1||flat.openCashSessionId!==row.content.data.openCashSessionId)throw Error('SPARK_RUNTIME_SERVER_RECORD_MISMATCH');
+      }
+      if(!controlled((await server(controlRef)).data(),verified)
+        ||!approved((await server(policyRef)).data(),(await server(approvalRef)).data(),verified.approval))throw Error('SPARK_RUNTIME_CONTROL_CONFLICT');
+      return {status:'RUNTIME_PREPARED',planHash:verified.plan.planHash,runtimeHashes:verified.approval.preparedRuntimeHashes,
+        storageMode:'migrating',phase:'READY_TO_CUTOVER',operationalCloudConfirmed:false,cutoverPerformed:false};
+    }
+    return Object.freeze({prepareShadow,prepareRuntime});
   }
   root.CLICK360_SPARK_IMPORTER=Object.freeze({create,shadowChunks,SHADOW_CHUNK_RECORDS,SHADOW_CHUNK_BYTES});
 })(typeof window==='undefined'?globalThis:window);

@@ -138,7 +138,7 @@
           cashProofs.push({businessId,...proof});
         }
         const {snapshot:preservedSnapshot,...deviceRecordMetadata}=local;
-        const preservedRecovery={read:hash=>recovery.read(hash),pin:input=>recovery.pin({...input,
+        const preservedRecovery={read:hash=>recovery.read(hash),readHandoff:hash=>recovery.readHandoff(hash),pin:input=>recovery.pin({...input,
           remoteSourceHash:selected.remoteHash,businessIds:selected.businessIds,sourceDeviceId:device.deviceId,
           deviceRecordMetadata,reconciliations,capacityProof,cashProofs})};
         const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,deviceId:device.deviceId,buildSha,resolveUser,
@@ -153,7 +153,8 @@
               if(counts.countIsBounded!==false||counts.total!==0
                 ||await journal.countProjectionPending(identity)!==0)throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
             }
-            return {ownerUid,deviceRevision,unknownOperations:0,mutationLockHeld:leaseHeld()};
+            return {ownerUid,deviceRevision,unknownOperations:0,mutationLockHeld:leaseHeld(),
+              deviceMetadataHash:pinnedMetadataHash,journalCapture:await journal.captureOwner(ownerUid)};
           }});
         const shadow=await importer.prepareShadow();context();await assertStable();
         if(shadow.phase!=='READY_TO_CUTOVER'||shadow.cutoverPerformed!==false
@@ -172,8 +173,16 @@
           throw Error('SPARK_MIGRATION_HANDOFF_PIN_REQUIRED');
         await assertStable();
         if(await api.hash(await journal.captureOwner(ownerUid))!==journalHash)throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
-        context();onProgress({phase:'READ_ONLY_HANDOFF_PREPARED',planHash:handoff.planHash,operationalCloudConfirmed:false});
+        context();onProgress({phase:'READ_ONLY_HANDOFF_PREPARED',planHash:handoff.planHash,
+          captureHash:preserved.captureHash,operationalCloudConfirmed:false});
+        const runtimePreparation=policy.automaticRuntimePreparation===true
+          ?await importer.prepareRuntime({captureHash:preserved.captureHash}):null;
+        context();await assertStable();
+        if(runtimePreparation)onProgress({phase:'RUNTIME_PREPARED',planHash:handoff.planHash,
+          captureHash:preserved.captureHash,runtimeHashes:runtimePreparation.runtimeHashes,
+          operationalCloudConfirmed:false,cutoverPerformed:false});
         return {...shadow,prepared:true,reconciliations,handoffPrepared:true,handoff:preserved,
+          runtimePreparation,
           operationalCloudConfirmed:false};
       }finally{journal?.close();recovery?.close();}
     }

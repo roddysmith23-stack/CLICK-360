@@ -52,6 +52,7 @@
         content:{id:'runtime',ownerUid,businessId,schemaVersion:2,module:'metadata',recordVersion:1,
           data,dataHash:await api.hash(data)},
         openSessionSummaryHash:verified?.summaryHash||null,
+        openSessionSummary:verified?structuredClone(verified.summary):null,
         closedReadOnlySessionIds:scoped.filter(row=>expected.historyPlan?.historyPolicies?.[`cashSessions/${row.id}`]).map(row=>row.id).sort()});
       financialProofHashes[businessId]=await api.hash(expected);
     }
@@ -60,5 +61,29 @@
       journalReplayAllowed:false,operationalActivationAllowed:false,cutoverAllowed:false};
     return {...result,planHash:await api.hash(result)};
   }
-  root.CLICK360_SPARK_HANDOFF=Object.freeze({plan});
+  // Produces an administrative approval candidate only. This helper never
+  // publishes policy or grants the current client authority to approve it.
+  async function runtimeApproval(plan,buildSha){
+    const api=root.CLICK360_SPARK_MIGRATION,{planHash,...material}=plan||{};
+    if(!api||plan?.status!=='READ_ONLY_HANDOFF_PLAN'||plan.cutoverAllowed!==false
+      ||plan.operationalActivationAllowed!==false||plan.journalReplayAllowed!==false
+      ||await api.hash(material)!==planHash||!/^[a-f0-9]{12,40}$/.test(buildSha||''))
+      throw Error('SPARK_RUNTIME_APPROVAL_PLAN_REQUIRED');
+    const runtimeRecords={},runtimeHashes={},preparedRuntimeHashes={},openSessionSummaries={},openSessionSummaryHashes={};
+    for(const row of plan.runtimes){
+      const businessId=row.content.businessId;
+      const record=structuredClone(row.content);runtimeHashes[businessId]=await api.hash(record);
+      record.data.preparation={planHash,sourceHash:plan.sourceHash,buildSha,
+        deviceMetadataHash:plan.deviceMetadataHash,journalHash:plan.journalHash,runtimeHash:runtimeHashes[businessId]};
+      record.dataHash=await api.hash(record.data);runtimeRecords[businessId]=record;
+      preparedRuntimeHashes[businessId]=await api.hash(record);
+      openSessionSummaries[businessId]=structuredClone(row.openSessionSummary);
+      openSessionSummaryHashes[businessId]=row.openSessionSummaryHash;
+    }
+    const captureHash=await api.hash({kind:'READ_ONLY_HANDOFF_PLAN',ownerUid:plan.ownerUid,plan});
+    return {ownerUid:plan.ownerUid,sourceHash:plan.sourceHash,buildSha,planHash,captureHash,
+      deviceMetadataHash:plan.deviceMetadataHash,journalHash:plan.journalHash,businessIds:[...plan.businessIds],
+      runtimeRecords,runtimeHashes,preparedRuntimeHashes,openSessionSummaries,openSessionSummaryHashes};
+  }
+  root.CLICK360_SPARK_HANDOFF=Object.freeze({plan,runtimeApproval});
 })(typeof window==='undefined'?globalThis:window);

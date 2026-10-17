@@ -156,6 +156,20 @@
     return {kind:'layaway_status',input:{operationId,saleId:sale.storageRecordId,layawayId:layaway.id,
       expectedSaleVersion:sale.recordVersion,expectedLayawayVersion:layaway.recordVersion,nextStatus,changedAt}};
   }
+  function manualMovementCorrectionCommand({movement,identity,actorUid,operationId,reason,replacement=null}){
+    if(actorUid!==identity?.ownerUid||!operationId||!movement?.id||movement.businessId!==identity.businessId
+      ||!movement.cashSessionId||!Number.isSafeInteger(movement.recordVersion)||movement.recordVersion<1
+      ||!['ingreso','egreso','retiro','compra'].includes(movement.kind)
+      ||['saleId','paymentType','productId','compensationSign','compensatesMovementId','compensatedByOperationId'].some(key=>Object.hasOwn(movement,key))
+      ||movement.status==='cancelled'||typeof reason!=='string'||!reason.trim())throw Error('MODULAR_MANUAL_CORRECTION_CONTEXT_INVALID');
+    if(replacement&&(!['ingreso','egreso','retiro','compra'].includes(replacement.kind)
+      ||typeof replacement.amount!=='number'||!Number.isFinite(replacement.amount)||replacement.amount<0
+      ||Math.abs(replacement.amount*100-Math.round(replacement.amount*100))>0.000001
+      ||typeof replacement.note!=='string'))throw Error('MODULAR_MANUAL_CORRECTION_REPLACEMENT_INVALID');
+    return {kind:'manual_movement_correct',input:{operationId,movementId:movement.storageRecordId||movement.id,
+      expectedRecordVersion:movement.recordVersion,cashSessionId:movement.cashSessionId,date:movement.date,
+      reason:reason.trim(),replacement:replacement?{kind:replacement.kind,amount:replacement.amount,note:replacement.note}:null}};
+  }
   function create({repository,journal,deviceId,resolveIdentity,isOnline=()=>root.navigator?.onLine!==false,onStatus=()=>{},onConfirmed}){
     const identity=repository?.identity;
     if(!identity||typeof resolveIdentity!=='function')throw Error('MODULAR_UI_IDENTITY_REQUIRED');
@@ -280,5 +294,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,layawayStatusCommand,cashReportView,cashSuccessorCommand,scopedSettingsCommand});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,layawayStatusCommand,manualMovementCorrectionCommand,cashReportView,cashSuccessorCommand,scopedSettingsCommand});
 })(typeof window==='undefined'?globalThis:window);
