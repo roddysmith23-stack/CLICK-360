@@ -6,13 +6,15 @@ import {readFileSync,mkdirSync,writeFileSync,createWriteStream} from 'node:fs';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {failureReason} from '../qa-spark-emulator-health.mjs';
+import '../qa-emulator-process-lifecycle.mjs';
+import {assertPortsAvailable,waitForOwnedServices,stopOwnedProcessTree} from './emulator-process-lifecycle.mjs';
 import {chromium,webkit} from 'playwright';
 import {initializeTestEnvironment} from '@firebase/rules-unit-testing';
 import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
 import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
 import {certifyShadowPreparation,certifyRecoveryCopy} from './spark-migration-shadow-pwa.mjs';
-import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,stopProcessTree,waitForUrl,createEmulatorUser,
+import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,createEmulatorUser,
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
 const rules=readFileSync(path.join(root,'firestore.spark.rules'),'utf8');
@@ -22,6 +24,9 @@ const diagnosticBrowser=process.env.CLICK360_SPARK_SHADOW_BROWSER;
 if(diagnosticBrowser&&(!['chromium','webkit'].includes(diagnosticBrowser)||process.env.CI==='true'
   ||process.env.CLICK360_SPARK_UI_SHADOW_ONLY!=='1'))throw Error('SHADOW_BROWSER_DIAGNOSTIC_ONLY');
 const output=path.join(root,'output/playwright/spark-operational-ui');mkdirSync(output,{recursive:true});
+let ephemeralRange=null;try{ephemeralRange=readFileSync('/proc/sys/net/ipv4/ip_local_port_range','utf8').trim();}catch{}
+console.log(JSON.stringify({stage:'SPARK_UI_LISTENER_PREFLIGHT',http:port,firestore:firestorePort,auth:authPort,ephemeralRange}));
+await assertPortsAvailable([port,firestorePort,authPort,authPort+10,authPort+20,authPort+30]);
 const config=writeEmulatorConfig(),log=createWriteStream(path.join(output,`emulators-${Date.now()}.log`),{flags:'wx'});
 const emulators=spawn(path.join(root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',projectId,'--config',config],
   {cwd:path.dirname(config),detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,PATH:`${javaDirs.join(':')}:${process.env.PATH}`}});
@@ -29,8 +34,8 @@ emulators.stdout.pipe(log);emulators.stderr.pipe(log);
 const server=spawn(process.execPath,[path.join(root,'node_modules/http-server/bin/http-server'),'dist','-p',String(port),'-c-1'],{cwd:root,detached:true,stdio:'ignore'});
 let env,browsers=[],device;const results=[];
 try{
-  await Promise.race([(async()=>{await waitForUrl(`http://127.0.0.1:${firestorePort}/`,'Firestore');await waitForUrl(`http://127.0.0.1:${authPort}/`,'Auth');await waitForUrl(url,'HTTP');})(),
-    new Promise((_,reject)=>emulators.once('exit',code=>reject(Error(`Emulator exited ${code}`))))]);
+  await waitForOwnedServices([emulators,server],[`http://127.0.0.1:${firestorePort}/`,`http://127.0.0.1:${authPort}/`,url],
+    {readLog:()=>{try{return readFileSync(log.path,'utf8').slice(-8000);}catch{return 'EMULATOR_LOG_NOT_YET_AVAILABLE';}}});
   env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:firestorePort,rules}});
   const uid=await createEmulatorUser(),base=`businesses/${uid}/businessUnits/${uid}/storage/v2`,identity={ownerUid:uid,businessId:uid};
   const workerEmail=`spark-worker-${Date.now()}@example.test`,workerUid=await createEmulatorUser(workerEmail);
@@ -656,5 +661,10 @@ try{
   if(device)console.log(JSON.stringify({pageErrors:device.pageErrors,workerLifecycle:device.workerLifecycle||[]}));
   throw error;
 }finally{
-  await device?.context.close();for(const browser of browsers)await browser.close();await env?.cleanup();stopProcessTree(server);stopProcessTree(emulators);log.end();
+  try{await device?.context.close();for(const browser of browsers)await browser.close();await env?.cleanup();}
+  finally{
+    await Promise.all([stopOwnedProcessTree(server),stopOwnedProcessTree(emulators)]);
+    await new Promise(resolve=>log.end(resolve));
+    await assertPortsAvailable([port,firestorePort,authPort,authPort+10,authPort+20,authPort+30]);
+  }
 }

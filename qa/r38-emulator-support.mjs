@@ -11,9 +11,13 @@ import { createEmulatorIsolation } from './emulator-network-isolation.mjs';
 const root = path.resolve(import.meta.dirname, '..');
 const outputDir = path.join(root, 'output', 'playwright', 'r38-commercial-core');
 const port = Number(process.env.CLICK360_R38_CORE_HTTP_PORT || 4798);
-const firestorePort = Number(process.env.CLICK360_R38_CORE_FIRESTORE_PORT || 48098);
-const authPort = Number(process.env.CLICK360_R38_CORE_AUTH_PORT || 49108);
 const projectId = process.env.CLICK360_R38_CORE_PROJECT || 'demo-click360-r38-core';
+// Linux runners allocate outbound SDK sockets in 32768..60999 by default.
+// Spark follows several SDK suites in the same job: listening on 48098/49108
+// can collide even on the FIRST UI start. Dedicated Spark listeners stay out
+// of that range; existing R38 suites retain their historical defaults.
+const firestorePort = Number(process.env.CLICK360_R38_CORE_FIRESTORE_PORT || (projectId==='demo-click360-spark-modular'?18098:48098));
+const authPort = Number(process.env.CLICK360_R38_CORE_AUTH_PORT || (projectId==='demo-click360-spark-modular'?19108:49108));
 if(!/^demo-click360-(r38-(core|restaurant)|spark-modular)$/.test(projectId))throw new Error('Dedicated emulator project required');
 const apiKey = 'fake-api-key';
 const hostedUrl = process.env.CLICK360_R38_CORE_HTTP_URL || '';

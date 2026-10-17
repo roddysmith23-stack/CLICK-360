@@ -76,7 +76,19 @@ try{
     });
     console.log(JSON.stringify({stage:'REAL_SHADOW_FIXTURE_READY',engine:name,recoveryOnly}));
     browser=await engine.launch();const context=await browser.newContext({viewport:{width:390,height:844}});
+    // Observe existing state publication without changing the coordinator or
+    // its authority. A timeout must retain the exact last completed gate.
+    context.on('page',page=>page.on('console',message=>{
+      if(message.text().startsWith('SPARK_STAGE_GATE '))console.log(message.text());
+    }));
     await context.addInitScript(()=>{
+      for(const key of ['click360SparkMigrationState','click360SparkBootstrapState']){
+        let state;
+        Object.defineProperty(window,key,{configurable:true,get:()=>state,set:value=>{
+          state=value;console.log('SPARK_STAGE_GATE '+JSON.stringify({key,phase:value?.phase,
+            reason:value?.reason,at:Date.now()}));
+        }});
+      }
       const original=Storage.prototype.setItem;
       Storage.prototype.setItem=function(key,value){
         if(String(key).startsWith('CLICK360:V16:DEVICE:'))throw new DOMException('Synthetic device identity quota failure','QuotaExceededError');
@@ -216,6 +228,14 @@ try{
             });
           },uid);
           await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});
+          if(automaticCutover)for(const phase of ['ACTIVATION_VERIFYING','ACTIVATION_SOURCE_VERIFIED']){
+            await page.waitForFunction(expected=>{
+              const c=window.click360SparkBootstrapState;if(c?.phase==='BLOCKED')throw Error(c.reason);
+              const stages=['ACTIVATION_VERIFYING','ACTIVATION_SOURCE_VERIFIED',
+                'ACTIVATION_COMMITTED_VERIFYING','CUTOVER_COMMITTED'];
+              return stages.indexOf(window.click360SparkMigrationState?.phase)>=stages.indexOf(expected);
+            },phase);
+          }
           if(automaticCutover)await page.waitForFunction(()=>{
             const c=window.click360SparkBootstrapState;if(c?.phase==='BLOCKED')throw Error(c.reason);
             // Distinct bounded stages, not a larger catch-all timeout. This
@@ -293,6 +313,7 @@ try{
       console.log(JSON.stringify({stage:'REAL_SHADOW_PREPARATION_PASS',...results.at(-1)}));
     }catch(error){
       const diagnostics=[];
+      const failedControl=(await admin.doc(`businesses/${uid}/metadata/storage`).get()).data();
       for(const page of context.pages()){
         diagnostics.push(await page.evaluate(()=>({
           phase:window.click360SparkBootstrapState?.phase,
@@ -306,7 +327,9 @@ try{
         })).catch(()=>({pageUnavailable:true})));
       }
       await writeFile(`${directory}/${name}-failure.private.json`,JSON.stringify({diagnostics,error:String(error)}),{mode:0o600,flag:'wx'});
-      console.error(JSON.stringify({stage:'REAL_SHADOW_FAILED',engine:name,recoveryOnly,diagnostics}));
+      console.error(JSON.stringify({stage:'REAL_SHADOW_FAILED',engine:name,recoveryOnly,diagnostics,
+        serverControl:failedControl?{storageMode:failedControl.storageMode,phase:failedControl.phase,
+          recordVersion:failedControl.recordVersion}:null}));
       throw error;
     }finally{
       await context.close();await browser.close();browser=null;

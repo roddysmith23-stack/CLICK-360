@@ -145,7 +145,9 @@
     async function activateApproved(){
       // PRE_CUTOVER proof cannot authorize native cache promotion, which
       // separately requires a fresh proof of the confirmed MODULAR mode.
+      onProgress({phase:'ACTIVATION_VERIFYING',operationalCloudConfirmed:false});
       const verified=await verifyLocalHandoff({preCutover:true});context();
+      onProgress({phase:'ACTIVATION_SOURCE_VERIFIED',operationalCloudConfirmed:false});
       if(!Number.isSafeInteger(verified.controlVersion)||verified.controlVersion<1)
         throw Error('SPARK_ACTIVATION_CONTROL_VERSION_REQUIRED');
       const controlRef=db.doc(`businesses/${ownerUid}/metadata/storage`);
@@ -184,6 +186,7 @@
         tx.update(controlRef,{storageMode:'modular',phase:'MODULAR',recordVersion:c.recordVersion+1,
           updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
       });
+      onProgress({phase:'ACTIVATION_COMMITTED_VERIFYING',operationalCloudConfirmed:false});
       context();const confirmed=(await server(controlRef)).data();
       if(confirmed?.storageMode!=='modular'||confirmed.phase!=='MODULAR'
         ||confirmed.sourceHash!==verified.sourceHash||confirmed.reconstructedHash!==verified.sourceHash
