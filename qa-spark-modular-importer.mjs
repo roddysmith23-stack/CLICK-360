@@ -110,6 +110,7 @@ try{
   assert.equal(connected.prepared,true);assert.equal(connected.operationalCloudConfirmed,false);
   assert.equal(connected.handoffPrepared,true);assert.equal(connected.handoff.plan.cutoverAllowed,false);
   assert.equal(connected.handoff.plan.runtimes[0].content.data.openCashSessionId,'historical-session');
+  const connectedSourcePin=structuredClone(pins.get(connected.handoff.plan.sourceHash));
   assert.deepEqual(connected.equality,result.equality);assert.equal(connected.cutoverPerformed,false);
   // A revision alone is not a hash precondition. Simulate authorized external
   // maintenance during the server reread, after the initial revision CAS.
@@ -245,8 +246,43 @@ try{
   for(const row of commerceBefore)assert.deepEqual((await getDocFromServer(doc(client,row.path))).data(),row.content);
   assert.deepEqual((await getDocFromServer(storageRef)).data(),savedControl);
   assert.deepEqual((await getDocFromServer(doc(client,`businesses/${ownerUid}/state/main`))).data(),rootState);
+  // A local bootstrap handoff is a READ-ONLY consumer of an ALREADY approved
+  // cutover. It must read the private approvals, source pin and every module
+  // using the real owner Web SDK, without changing any commercial records.
+  for(const manifest of [{...result.manifest,ownerUid:'other-owner'},
+    {...result.manifest,records:[{...result.manifest.records[0],path:'businesses/other-owner/legacyConfig/stolen'}]}])
+    await assert.rejects(runtimeImporter.readServerRecords(manifest),/READ_SCOPE_INVALID/);
+  pins.set(connected.handoff.plan.sourceHash,connectedSourcePin);
+  const localRecord={snapshot:local,identity,deviceRevision:'device-43',baseRevision:42,
+    pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['persist-existing']};
+  const localHandoff=CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({...input,actorUid:ownerUid,
+    resolveContext:()=>({authUid:ownerUid,ownerUid}),leaseHeld:()=>true,readLocal:async()=>structuredClone(localRecord)});
+  await assert.rejects(localHandoff.verifyLocalHandoff(),/ADMIN_APPROVAL_REQUIRED/);
+  await setPolicy({...authorized,automaticCutover:true});
+  const cutoverApprovalPath=`businesses/${ownerUid}/storageApprovals/cutover`;
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),cutoverApprovalPath),{
+    ownerUid,sourceHash:approval.sourceHash,buildSha:input.buildSha,businessIds:approval.businessIds}));
+  await setDoc(storageRef,{...savedControl,storageMode:'modular',phase:'MODULAR',
+    recordVersion:savedControl.recordVersion+1,updatedAt:serverTimestamp()});
+  const handoffVerified=await localHandoff.verifyLocalHandoff();
+  assert.equal(handoffVerified.status,'LOCAL_HANDOFF_VERIFIED');await handoffVerified.assertStable();
+  assert.equal(handoffVerified.sourceHash,result.equality.sourceHash);
+  assert.deepEqual(handoffVerified.businessIds,approval.businessIds);
+  assert.deepEqual(pins.get(approval.sourceHash),connectedSourcePin);
+  for(const row of commerceBefore)assert.deepEqual((await getDocFromServer(doc(client,row.path))).data(),row.content);
+  const changedProduct=commerceBefore.find(row=>row.content.module==='products');
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),changedProduct.path),{
+    ...changedProduct.content,data:{...changedProduct.content.data,stock:0,qty:0}}));
+  await assert.rejects(localHandoff.verifyLocalHandoff(),/SERVER_RECORD_DRIFT_STOP/,'New remote operations require a later reconciliation unit, never overwrite');
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),changedProduct.path),changedProduct.content));
+  currentUser={uid:'revoked-owner'};await assert.rejects(handoffVerified.assertStable(),/CONTEXT_CHANGED/);currentUser={uid:ownerUid};
+  assert.deepEqual(localRecord.pendingOperations,['persist-existing']);
+  assert.deepEqual((await getDocFromServer(doc(client,`businesses/${ownerUid}/state/main`))).data(),rootState);
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),savedControl));
+  await setPolicy(authorized);
   console.log(JSON.stringify({status:'PASS',clientRules:true,sourceHash:result.equality.sourceHash,reconstructedHash:result.equality.reconstructedHash,
     records:result.manifest.recordCount,interruptedResume:true,idempotent:true,pendingLocalSalePreserved:true,sameRevisionRemoteDriftStops:true,
     runtimePreparation:true,runtimeInterruptedResume:true,runtimeBusinessCoverage:2,approvedDerivedRuntimeOnly:true,
+    localPostCutoverHandoff:true,localHandoffServerDriftRejected:true,
     commercialRecordsUnchanged:true,legacyUnchanged:true,cutover:false,productionWrites:0}));
 }finally{await env.cleanup();}

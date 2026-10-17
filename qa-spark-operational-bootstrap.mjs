@@ -68,18 +68,20 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
   assert.equal(JSON.parse(JSON.stringify(scope.state)).legalAcceptances[0].id,'legal-qa');
   assert.equal(JSON.parse(JSON.stringify(scope.state)).settings.workers[0].name,'Trabajador');
 }
-function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false,moduleNames=['products','sales'],prepareMigration}={}){
+function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false,moduleNames=['products','sales'],prepareMigration,verifyLocalHandoff,controlSourceHash='source'}={}){
   const events=new Map(),phases=[],writes=[],observed={restored:0,installed:0,created:0,replayed:0,closed:0};
   let actor='owner',business='business',projections=0,releaseRead=null,queryBarrier=null,moduleBarrier=null,busy=false;
   const root={navigator:{onLine:true,locks:{request:async(_name,_options,callback)=>callback({name:'fixture-lock'})}},document:{visibilityState:'visible',addEventListener(){},removeEventListener(){}},
     addEventListener:(name,fn)=>events.set(name,fn),removeEventListener:name=>events.delete(name),
-    CLICK360_SPARK_MIGRATION:{arrays:Object.fromEntries(moduleNames.map(name=>[name,name])),hash:async()=>''},
+    CLICK360_SPARK_MIGRATION:{arrays:Object.fromEntries(moduleNames.map(name=>[name,name])),
+      hash:value=>globalThis.CLICK360_SPARK_MIGRATION.hash(JSON.parse(JSON.stringify(value))),
+      canonicalJson:value=>globalThis.CLICK360_SPARK_MIGRATION.canonicalJson(JSON.parse(JSON.stringify(value)))},
     CLICK360_SPARK_RECORD_CODEC:{unpack:async record=>record},
     CLICK360_MODULAR_PERSISTENCE:{identity:(ownerUid,businessId)=>({ownerUid,businessId})},
     firebase:{firestore:{FieldValue:{serverTimestamp(){throw Error('Bootstrap must not issue writes');}}}}};
   const snap=data=>({exists:!!data,data:()=>data,metadata:{fromCache:cache,hasPendingWrites:false}});
   const control={ownerUid:'owner',schemaVersion:2,storageMode:mode,phase:'MODULAR',semanticEquality:'PASS',
-    sourceHash:'source',reconstructedHash:'source',businessIds:['business']};
+    sourceHash:controlSourceHash,reconstructedHash:controlSourceHash,businessIds:['business']};
   const db={app:{options:{projectId:'demo-click360-spark-modular'}},
     doc:path=>({get:async options=>{
       assert.equal(options.source,'server');if(releaseRead)await releaseRead;
@@ -115,7 +117,7 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
   const coordinator=root.CLICK360_SPARK_BOOTSTRAP.create({projectId:db.app.options.projectId,db,ownerUid:'owner',actorUid:'owner',deviceId:'device',
     resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid:'owner'}),resolveBusiness:()=>business,
     restoreLocal:async()=>{observed.restored++;},readLocal:async()=>local,
-    prepareMigration,installBusiness:async value=>{business=value.businessId;},installView:async()=>{observed.installed++;},
+    prepareMigration,verifyLocalHandoff,installBusiness:async value=>{business=value.businessId;},installView:async()=>{observed.installed++;},
     onPhase:detail=>phases.push(detail)});
   root.click360SparkCoordinator=coordinator;
   return {coordinator,observed,phases,writes,events,changeActor:value=>actor=value,
@@ -189,6 +191,25 @@ for(const mode of ['legacy','migrating']){
 {
   const f=fixture({mode:'legacy',prepareMigration:async()=>({prepared:false})});
   assert.equal((await f.coordinator.recover()).handled,false);f.coordinator.close();
+}
+{
+  const api=globalThis.CLICK360_SPARK_MIGRATION;
+  const local={snapshot:{businesses:[{id:'business'}]},source:'indexeddb_cache',deviceRevision:'durable-revision',
+    uiWorkingDates:{business:'2026-09-03'}};
+  const sourceHash=await api.hash(local.snapshot),metadataHash=await api.hash(Object.fromEntries(Object.entries(local).filter(([k])=>k!=='snapshot')));
+  let verified=0,final=0;
+  const make=overrides=>fixture({local,controlSourceHash:sourceHash,verifyLocalHandoff:async({leaseHeld})=>{
+    assert.equal(leaseHeld(),true);verified++;
+    return {verified:true,status:'LOCAL_HANDOFF_VERIFIED',sourceHash,deviceRevision:local.deviceRevision,
+      businessIds:['business'],deviceMetadataHash:metadataHash,assertStable:async()=>{final++;},...overrides};
+  }});
+  const before=structuredClone(local),f=make();await f.coordinator.recover();
+  assert.equal(verified,1);assert.equal(final,1);assert.equal(f.observed.installed,1);assert.deepEqual(local,before);f.coordinator.close();
+  for(const delta of [{verified:false},{businessIds:[]},{sourceHash:'wrong'},{deviceMetadataHash:'wrong'},
+    {assertStable:async()=>{local.uiWorkingDates.business='2026-10-17';}}]){
+    const f=make(delta);await assert.rejects(f.coordinator.recover());assert.equal(f.observed.installed,0);
+    assert.equal(f.observed.created,0);f.coordinator.close();local.uiWorkingDates.business='2026-09-03';
+  }
 }
 console.log(JSON.stringify({status:'PASS',automaticBootstrap:true,fullDrainCounts:[99,100,101,250,1000],
   cacheNotAuthoritative:true,unknownAndLegacyPendingPreserved:true,actorIsolation:true,singleFlight:true,

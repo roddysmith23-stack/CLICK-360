@@ -14,6 +14,9 @@ const args=Object.fromEntries(process.argv.slice(2).map(s=>s.split('=')));
 const recoveryOnly=args['--recovery-only']==='true';
 assert(args['--runtime-preparation']===undefined||['true','false'].includes(args['--runtime-preparation']));
 const runtimePreparation=!recoveryOnly&&args['--runtime-preparation']!=='false';
+assert(args['--local-handoff']===undefined||['true','false'].includes(args['--local-handoff']));
+const localHandoff=args['--local-handoff']==='true';
+assert(!localHandoff||runtimePreparation,'LOCAL_HANDOFF_REQUIRES_RUNTIME_PREPARATION');
 assert.equal(args['--project'],PROJECT);assert.match(args['--sha']||'',/^[a-f0-9]{40}$/);
 for(const key of ['FIRESTORE_EMULATOR_HOST','FIREBASE_AUTH_EMULATOR_HOST'])assert(!process.env[key]);
 const digest=value=>createHash('sha256').update(value).digest('hex');
@@ -149,7 +152,7 @@ try{
       };
       const first=await verify();await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});const resumed=await verify();
       if(recoveryOnly)assert.equal(first.captureHash,resumed.captureHash,'No new recovery copy on cold restart');
-      let runtimeEvidence=null;
+      let runtimeEvidence=null,handoffEvidence=null;
       if(runtimePreparation){
         assert.equal(first.captureHash,resumed.captureHash,'Unchanged handoff must survive the original browser partition restart');
         const approval=await CLICK360_SPARK_HANDOFF.runtimeApproval(resumed.plan,release.buildSha);
@@ -186,12 +189,93 @@ try{
         runtimeEvidence={status:'RUNTIME_PREPARED',planHash:approval.planHash,captureHash:approval.captureHash,
           runtimeCount:2,runtimeHashes:Object.values(runtimeHashes).sort(),repeatedRestart:true,
           approvedDerivedRuntimeResume:true,operationalCloudConfirmed:false,cutover:false};
+        if(localHandoff){
+          assert(uid.startsWith('qa-spark-staging-'),'LOCAL_HANDOFF_SYNTHETIC_OWNER_REQUIRED');
+          const cutoverBusinessIds=(await admin.doc(`businesses/${uid}/metadata/storage`).get()).data().businessIds;
+          assert.deepEqual([...cutoverBusinessIds].sort(),[...approval.businessIds].sort());
+          await admin.doc(`businesses/${uid}/storageApprovals/cutover`).create({ownerUid:uid,
+            sourceHash,buildSha:release.buildSha,businessIds:cutoverBusinessIds});
+          await admin.runTransaction(async tx=>{
+            const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),policy=snap.data();
+            assert(policy?.pilotOwnerUids?.every(id=>id.startsWith('qa-spark-staging-')));
+            tx.update(ref,{automaticCutover:true,automaticMigration:false});
+          });
+          // The authenticated owner SDK, with deployed Rules, performs this
+          // explicitly approved synthetic transition. Admin never bypasses it.
+          await page.evaluate(async uid=>{
+            const ref=click360Db.doc(`businesses/${uid}/metadata/storage`);
+            await click360Db.runTransaction(async tx=>{
+              const snap=await tx.get(ref),control=snap.data();
+              if(snap.metadata.fromCache||control.storageMode!=='migrating'
+                ||control.phase!=='READY_TO_CUTOVER')throw Error('SYNTHETIC_CUTOVER_SOURCE_REQUIRED');
+              tx.update(ref,{storageMode:'modular',phase:'MODULAR',recordVersion:control.recordVersion+1,
+                updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+            });
+          },uid);
+          await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});
+          await page.waitForFunction(()=>{
+            const c=window.click360SparkBootstrapState;
+            if(c?.phase==='BLOCKED')throw Error(c.reason);
+            return c?.phase==='READY'&&!!window.click360SparkOperationalSession;
+          });
+          const installed=await page.evaluate(async({uid,tenant,sourceHash,captureHash})=>{
+            const recovery=await CLICK360_SPARK_RECOVERY.open({ownerUid:uid,resolveUser:()=>click360Auth.currentUser});
+            try{
+              const pin=await recovery.read(sourceHash),handoff=await recovery.readHandoff(captureHash);
+              if(!pin?.durable||!handoff?.durable||await CLICK360_SPARK_MIGRATION.hash(pin.snapshot)!==sourceHash)
+                throw Error('LOCAL_HANDOFF_ORIGINAL_PIN_LOST');
+              const local=await CLICK360_V16_STORAGE.getSnapshot(tenant);
+              if(local.source!=='spark_operational_candidate')throw Error('LOCAL_HANDOFF_NOT_INSTALLED');
+              const state=click360GetTenantState(),health=await click360SparkOperationalSession.health();
+              if(health.pendingCount||health.unknownCount||health.projectionPendingCount)throw Error('LOCAL_HANDOFF_UNRESOLVED_JOURNAL');
+              return {snapshot:pin.snapshot,businesses:state.businesses.map(b=>b.id).sort(),sales:state.sales,
+                products:state.products,health};
+            }finally{recovery.close();}
+          },{uid,tenant,sourceHash,captureHash:resumed.captureHash});
+          assert.deepEqual(installed.snapshot,local);
+          assert.deepEqual(installed.businesses,[uid,second].sort());
+          assert.equal(installed.sales.filter(s=>s.id==='local-sale').length,1);
+          assert.equal(installed.products.find(p=>p.id===local.products[0].id).stock,local.products[0].stock);
+          page.on('dialog',d=>d.accept());
+          await page.evaluate(()=>{location.hash='#cash';});
+          await page.locator('#workingDateInput').fill('2026-09-03');
+          await page.locator('#workingDateInput').dispatchEvent('change');
+          await page.locator('#closeDayBtn').click();await page.locator('#efectivoFisico').fill('0');
+          await page.evaluate(()=>{
+            window.QA_HANDOFF_CLOSE=null;
+            window.addEventListener('click360-spark-operation-status',e=>{window.QA_HANDOFF_CLOSE=e.detail;});
+          });
+          await page.locator('#closeDaySubmitBtn').click();
+          await page.waitForFunction(()=>window.QA_HANDOFF_CLOSE?.status==='CONFIRMED');
+          const session=(await admin.doc(`businesses/${uid}/businessUnits/${uid}/storage/v2/cashSessions/historical-session`).get()).data();
+          const report=(await admin.doc(`businesses/${uid}/businessUnits/${uid}/storage/v2/dailyReports/${session.data.reportId}`).get()).data();
+          assert.equal(session.data.status,'closed');assert.equal(report.data.cashSessionId,'historical-session');
+          assert.equal(report.data.total,30);assert.equal(report.data.saleCount,1);
+          const operationId=await page.evaluate(()=>window.QA_HANDOFF_CLOSE.operationId);
+          const ledger=(await admin.doc(`businesses/${uid}/businessUnits/${uid}/storage/v2/operationLedger/${operationId}`).get()).data();
+          assert.equal(ledger.kind,'cash_close');assert.equal(ledger.status,'committed');
+          assert.equal(ledger.result.cashSessionId,'historical-session');
+          assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),envelope);
+          await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});
+          await page.waitForFunction(()=>{
+            const c=window.click360SparkBootstrapState;if(c?.phase==='BLOCKED')throw Error(c.reason);
+            return c?.phase==='READY'&&!!window.click360SparkOperationalSession;
+          });
+          assert.equal(await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.id==='historical-session')?.status),'closed');
+          assert.equal(await page.evaluate(()=>click360GetTenantState().sales.filter(s=>s.id==='local-sale').length),1);
+          assert.equal(await page.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id)?.stock,local.products[0].id),local.products[0].stock);
+          handoffEvidence={status:'LOCAL_HANDOFF_VERIFIED',syntheticApprovedTransition:true,
+            originalSourcePinUnchanged:true,ownerWideBusinesses:2,importedSaleOnce:true,stockPreserved:true,
+            importedSessionClosed:true,reportTotal:30,reportSaleCount:1,closeLedgerConfirmed:true,
+            postCloseRestart:true,productionWrites:0};
+        }
       }
       results.push({browser:name,sourceHash,reconstructedHash:sourceHash,bytes:CLICK360_SPARK_MIGRATION.byteLength(local),
         ...(recoveryOnly?{captureHash:resumed.captureHash,journalHash:resumed.journalHash,partCount:resumed.partCount,
           status:resumed.status,pending:100,unknown:1,operationalCloudConfirmed:false}:{}),
         ...(runtimeEvidence?{runtimePreparation:runtimeEvidence}:{}),
-        localSnapshotUnchanged:true,legacyUnchanged:true,coldRestartResume:true,localStorageDeviceIdFailureRecovered:true,businesses:2,cutover:false});
+        ...(handoffEvidence?{localHandoff:handoffEvidence}:{}),
+        localSnapshotUnchanged:!localHandoff,originalSourcePreserved:true,legacyUnchanged:true,coldRestartResume:true,localStorageDeviceIdFailureRecovered:true,businesses:2,cutover:localHandoff});
       console.log(JSON.stringify({stage:'REAL_SHADOW_PREPARATION_PASS',...results.at(-1)}));
     }catch(error){
       const diagnostics=[];
@@ -215,12 +299,12 @@ try{
       if(runtimePreparation)await admin.runTransaction(async tx=>{
         const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),policy=snap.data();
         assert(policy?.pilotOwnerUids?.every(id=>id.startsWith('qa-spark-staging-')),'RUNTIME_POLICY_NON_SYNTHETIC_STOP');
-        tx.update(ref,{automaticRuntimePreparation:false});
+        tx.update(ref,{automaticRuntimePreparation:false,automaticCutover:false});
       });
     }
   }
-  const result={status:'PASS',scope:recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':runtimePreparation
+  const result={status:'PASS',scope:localHandoff?'REAL_STAGING_SYNTHETIC_APPROVED_LOCAL_HANDOFF':recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':runtimePreparation
     ?'REAL_STAGING_SHADOW_AND_RUNTIME_PREPARATION_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,
-    rulesHash,results,productionWrites:0,operationalCutover:false};
+    rulesHash,results,productionWrites:0,operationalCutover:localHandoff,realCustomerCutover:false};
   await writeFile(directory+'/result.json',JSON.stringify(result),{mode:0o600,flag:'wx'});console.log(JSON.stringify(result));
 }finally{await browser?.close();await admin.terminate();}

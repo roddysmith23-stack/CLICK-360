@@ -28,7 +28,7 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 | Product create | `app.js productForm`, `productMutationCommand` | Product + opening movement + ledger atomically | Served Chromium/WebKit, client Rules |
 | Product edit + stock | Same form / `inventory_adjust` | Product metadata + stock delta + movement + ledger atomically | Served Chromium/WebKit; no split commits |
 | Product logical delete | `deleteProduct`, `productDeleteCommand` | Revision-checked tombstone + ledger; retains stock/history, no financial expense | Baseline CI and served Chromium/WebKit; retained through automatic restart |
-| Bulk product/import inventory | Existing import/editor paths / `save` | Legacy full-state mutation | Blocked; bounded typed import not integrated |
+| Inventory entry/import scope | `inventoryView`, `bindInventory`, `openProductModal`, `productForm` | The existing UI creates/edits individual products and stock with the typed product/inventory commands | Connected Chromium/WebKit journeys. No CSV/XLSX bulk inventory importer exists in the current UI; backup restore is a different destructive support action and must not be treated as an inventory importer or enabled as a modular fallback |
 | Current/manual/historical sale | `bindSell`, explicit live/manual adapters | Exact session + sale + stock + movement + ledger | Served Chromium/WebKit and real-client Rules; bounded 12-line worst case |
 | Initial apartado | Same checkout / `layawayCommand` | Reservation plus actual initial deposit, not full price receipt | Served Chromium/WebKit |
 | Pending payment sale | Same checkout / `pendingPaymentCommand` | Unpaid sale with zero actual receipt, not fictitious cash | Served Chromium/WebKit |

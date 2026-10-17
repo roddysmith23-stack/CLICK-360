@@ -21,6 +21,121 @@
         throw Error('SPARK_MIGRATION_BOOTSTRAP_SERVER_REQUIRED');
       return s;
     }
+    async function verifyLocalHandoff(){
+      context();
+      if(productionRecoveryOnly)throw Error('SPARK_LOCAL_HANDOFF_NONPRODUCTION_ONLY');
+      if(root.document&&['app.js','firebase-service.js','v16-storage.js','modular-operation-journal.js',
+        'spark-modular-migration.js','spark-modular-reconciliation.js','spark-modular-recovery.js',
+        'spark-modular-importer.js','spark-modular-record-codec.js','spark-modular-handoff.js','spark-migration-bootstrap.js']
+        .some(file=>root.CLICK360_RELEASE_ASSETS?.[file]!==buildSha))throw Error('SPARK_MIGRATION_MIXED_BUILD_STOP');
+      const same=(a,b)=>api.canonicalJson(a)===api.canonicalJson(b);
+      const sameBusinesses=(a,b)=>Array.isArray(a)&&Array.isArray(b)
+        &&new Set(a).size===a.length&&new Set(b).size===b.length&&same([...a].sort(),[...b].sort());
+      // SDK Timestamp values in administrative/control documents are not
+      // plain JSON. Compare their complete SDK JSON representation too; do
+      // not omit updatedAt/createdAt and accidentally accept changed control.
+      const sameServer=(a,b)=>same(JSON.parse(JSON.stringify(a)),JSON.parse(JSON.stringify(b)));
+      const metadataOf=record=>Object.fromEntries(Object.entries(record).filter(([key])=>key!=='snapshot'));
+      const controlRef=db.doc(`businesses/${ownerUid}/metadata/storage`);
+      const runtimeRef=db.doc(`businesses/${ownerUid}/storageApprovals/runtimePreparation`);
+      const cutoverRef=db.doc(`businesses/${ownerUid}/storageApprovals/cutover`);
+      const policyRef=db.doc('storageRollout/sparkV1');
+      let journal,recovery;
+      try{
+        const policy=(await server(policyRef)).data(),control=(await server(controlRef)).data();
+        if(policy?.enabled!==true||policy.automaticCutover!==true||!Array.isArray(policy.pilotOwnerUids)||!policy.pilotOwnerUids.includes(ownerUid))
+          throw Error('SPARK_LOCAL_HANDOFF_ADMIN_APPROVAL_REQUIRED');
+        if(control?.ownerUid!==ownerUid||control.schemaVersion!==2||control.storageMode!=='modular'
+          ||control.phase!=='MODULAR'||control.semanticEquality!=='PASS'||control.sourceHash!==control.reconstructedHash
+          ||control.buildSha!==buildSha)throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
+        const authorization=(await server(runtimeRef)).data(),cutover=(await server(cutoverRef)).data();
+        recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});context();
+        const preserved=await recovery.readHandoff(authorization?.captureHash);context();
+        if(preserved?.durable!==true||!preserved.plan)throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
+        const plan=preserved.plan,pin=await recovery.read(plan.sourceHash);context();
+        if(pin?.durable!==true||pin.buildSha!==buildSha||!pin.deviceRecordMetadata
+          ||pin.deviceRevision!==control.deviceRevision||pin.sourceDeviceId!==control.sourceDeviceId
+          ||pin.remoteSourceHash!==control.remoteHash||pin.remoteRevision!==control.remoteRevision)
+          throw Error('SPARK_LOCAL_HANDOFF_SOURCE_PIN_REQUIRED');
+        const approval=await root.CLICK360_SPARK_HANDOFF.runtimeApproval(plan,buildSha);context();
+        if(!same(authorization,approval)||approval.captureHash!==preserved.captureHash
+          ||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha,businessIds:control.businessIds})
+          ||!sameBusinesses(control.businessIds,plan.businessIds)||!sameBusinesses(pin.businessIds,plan.businessIds)
+          ||control.sourceHash!==plan.sourceHash)throw Error('SPARK_LOCAL_HANDOFF_APPROVAL_MISMATCH');
+        const metadataHash=await api.hash(pin.deviceRecordMetadata);
+        if(metadataHash!==plan.deviceMetadataHash)throw Error('SPARK_LOCAL_HANDOFF_METADATA_MISMATCH');
+        async function localStable(activeJournal){
+          context();const current=await readLocal();context();
+          if(!current||current.source==='spark_operational_candidate'||current.deviceRevision!==pin.deviceRevision
+            ||await api.hash(current.snapshot)!==plan.sourceHash||await api.hash(metadataOf(current))!==metadataHash)
+            throw Error('SPARK_LOCAL_HANDOFF_DEVICE_DRIFT_STOP');
+          await activeJournal.assertOwnerCoverage(ownerUid,plan.businessIds);context();
+          const capture=await activeJournal.captureOwner(ownerUid);context();
+          if(capture?.ownerUid!==ownerUid||capture.enumerationComplete!==true||capture.recordCount!==0
+            ||!Array.isArray(capture.rows)||capture.rows.length!==0||await api.hash(capture)!==plan.journalHash)
+            throw Error('SPARK_LOCAL_HANDOFF_OUTBOX_DRIFT_STOP');
+          return current;
+        }
+        journal=await root.CLICK360_MODULAR_JOURNAL.open();context();
+        const local=await localStable(journal),legacy=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
+        const selected=await api.selectSource({ownerUid,remote:{source:'server',revision:legacy?.revision,
+          identity:legacy?.payload?.identity,snapshot:legacy?.payload?.data},local:{durable:true,snapshot:local.snapshot,
+          identity:local.identity||local.snapshot.identity,deviceRevision:local.deviceRevision,baseRevision:local.baseRevision,
+          pendingRemoteSync:local.pendingRemoteSync,cloudCapacityBlocked:local.cloudCapacityBlocked,
+          pendingOperations:local.pendingOperations||[]},unknownOperations:0});context();
+        if(selected.sourceHash!==plan.sourceHash||selected.remoteHash!==control.remoteHash
+          ||selected.remoteRevision!==control.remoteRevision||!sameBusinesses(selected.businessIds,plan.businessIds))
+          throw Error('SPARK_LOCAL_HANDOFF_REMOTE_DRIFT_STOP');
+        const financialProofs=[];
+        for(const businessId of plan.businessIds){
+          financialProofs.push({businessId,...await api.deriveCashSummaries({snapshot:local.snapshot,businessId,
+            historicalReadOnly:policy.automaticHistoricalReadOnly===true})});context();
+        }
+        const derived=await root.CLICK360_SPARK_HANDOFF.plan({ownerUid,snapshot:local.snapshot,sourceHash:plan.sourceHash,
+          deviceMetadataHash:metadataHash,journalHash:plan.journalHash,journalCapture:await journal.captureOwner(ownerUid),
+          businessIds:selected.businessIds,financialProofs,unknownCount:0,conflictCount:0,
+          historicalReadOnly:policy.automaticHistoricalReadOnly===true});context();
+        if(!same(derived,plan))throw Error('SPARK_LOCAL_HANDOFF_PLAN_DRIFT_STOP');
+        const manifest=await api.plan({ownerUid,snapshot:local.snapshot,identity:selected.identity,
+          remoteRevision:selected.remoteRevision,deviceRevision:selected.deviceRevision});context();
+        for(const row of manifest.records){
+          const c=row.content,proof=financialProofs.find(p=>p.businessId===c.businessId),history=proof?.historyPlan?.historyPolicies[`${c.module}/${c.id}`];
+          if(history)c.historyPolicy=structuredClone(history);
+          else if(c.module==='cashSessions'&&proof?.verified[c.id]){
+            c.operational=structuredClone(proof.verified[c.id].summary);c.operationalHash=proof.verified[c.id].summaryHash;
+          }
+        }
+        const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,buildSha,deviceId:pin.sourceDeviceId,
+          resolveUser,readSource:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},
+          readGuard:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},recovery});
+        const records=await importer.readServerRecords(manifest);context();
+        const expected=new Map(manifest.records.map(row=>[row.path,row.content]));
+        for(const row of plan.runtimes)expected.set(row.path,approval.runtimeRecords[row.content.businessId]);
+        if(records.length!==expected.size||new Set(records.map(r=>r.path)).size!==records.length
+          ||records.some(row=>!expected.has(row.path)||!same(row.content,expected.get(row.path))))
+          throw Error('SPARK_LOCAL_HANDOFF_SERVER_RECORD_DRIFT_STOP');
+        const sourcePaths=new Set(manifest.records.map(row=>row.path));
+        const equality=await api.compare({manifest,source:local.snapshot,remoteRecords:records.filter(r=>sourcePaths.has(r.path))});context();
+        if(equality.status!=='SEMANTIC_EQUALITY_PASS'||equality.reconstructedHash!==plan.sourceHash)
+          throw Error('SPARK_LOCAL_HANDOFF_EQUALITY_REQUIRED');
+        async function authorizationsStable(){
+          if(!sameServer((await server(controlRef)).data(),control)||!sameServer((await server(policyRef)).data(),policy)
+            ||!same((await server(runtimeRef)).data(),authorization)||!same((await server(cutoverRef)).data(),cutover))
+            throw Error('SPARK_LOCAL_HANDOFF_AUTHORIZATION_DRIFT_STOP');
+          const latestLegacy=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
+          if(latestLegacy?.revision!==control.remoteRevision||await api.hash(latestLegacy?.payload?.data)!==control.remoteHash)
+            throw Error('SPARK_LOCAL_HANDOFF_REMOTE_DRIFT_STOP');
+          context();
+        }
+        await localStable(journal);await authorizationsStable();context();
+        return {verified:true,status:'LOCAL_HANDOFF_VERIFIED',sourceHash:plan.sourceHash,deviceRevision:pin.deviceRevision,
+          deviceMetadataHash:metadataHash,businessIds:[...control.businessIds],captureHash:preserved.captureHash,
+          // This final gate runs immediately before the EXISTING IDB CAS.
+          // Pins, journal and legacy remain intact; no write is done here.
+          assertStable:async()=>{const currentJournal=await root.CLICK360_MODULAR_JOURNAL.open();
+            try{await localStable(currentJournal);await authorizationsStable();context();}finally{currentJournal.close();}}};
+      }finally{journal?.close();recovery?.close();}
+    }
     async function prepare(){
       context();
       if(root.document&&['app.js','firebase-service.js','v16-storage.js','modular-operation-journal.js',
@@ -186,7 +301,7 @@
           operationalCloudConfirmed:false};
       }finally{journal?.close();recovery?.close();}
     }
-    return Object.freeze({prepare});
+    return Object.freeze({prepare,verifyLocalHandoff});
   }
   root.CLICK360_SPARK_MIGRATION_BOOTSTRAP=Object.freeze({create});
 })(typeof window==='undefined'?globalThis:window);

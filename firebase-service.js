@@ -4210,6 +4210,14 @@
                   }
                 }).prepare();
               },
+              verifyLocalHandoff:async({leaseHeld})=>{
+                if(user.uid!==context.ownerUid)throw Error('SPARK_LOCAL_HANDOFF_OWNER_REQUIRED');
+                return window.CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                  ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],
+                  resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+                  readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld
+                }).verifyLocalHandoff();
+              },
               installBusiness:window.click360InstallSparkBusiness,installView:window.click360InstallSparkView,
               onProgress:detail=>{window.click360SparkBootstrapProgress=detail;},
               onPhase:detail=>{

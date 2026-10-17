@@ -152,8 +152,17 @@
       // "Clean" legacy metadata is not proof that the device has no newer
       // records. Require an explicit reconciled handoff, never infer it from
       // pending flags before replacing a pre-modular device snapshot.
-      if(local&&local.source!=='spark_operational_candidate')
-        throw Error('SPARK_BOOTSTRAP_LEGACY_LOCAL_RECONCILIATION_REQUIRED');
+      let localHandoff=null;
+      if(local&&local.source!=='spark_operational_candidate'){
+        if(actorUid!==ownerUid||typeof options.verifyLocalHandoff!=='function')
+          throw Error('SPARK_BOOTSTRAP_LEGACY_LOCAL_RECONCILIATION_REQUIRED');
+        await acquireLease();context();
+        localHandoff=await options.verifyLocalHandoff({leaseHeld:()=>!!releaseLease&&!closed});context();
+        if(localHandoff?.verified!==true||localHandoff.status!=='LOCAL_HANDOFF_VERIFIED'
+          ||localHandoff.sourceHash!==control.sourceHash||typeof localHandoff.assertStable!=='function'
+          ||api.canonicalJson(localHandoff.businessIds)!==api.canonicalJson(control.businessIds))
+          throw Error('SPARK_BOOTSTRAP_LOCAL_HANDOFF_NOT_VERIFIED');
+      }
       // Hold one browser-managed lease for the coordinator's complete life,
       // including UI commits and replay. Another tab cannot install a writer.
       await acquireLease();context();
@@ -161,6 +170,16 @@
       if(!control.businessIds.includes(businessId))throw Error('SPARK_BOOTSTRAP_BUSINESS_NOT_VERIFIED');
       if(session&&session.identity.businessId!==businessId){await drain();context();}
       const p=await permissions(businessId),configuration=await configs(control,p);context();
+      if(localHandoff){
+        await localHandoff.assertStable();context();
+        const current=await readLocal();context();
+        const metadata=current&&Object.fromEntries(Object.entries(current).filter(([key])=>key!=='snapshot'));
+        if(!current||current.deviceRevision!==localHandoff.deviceRevision
+          ||await api.hash(current.snapshot)!==localHandoff.sourceHash
+          ||await api.hash(metadata)!==localHandoff.deviceMetadataHash)
+          throw Error('SPARK_BOOTSTRAP_LOCAL_HANDOFF_DEVICE_DRIFT_STOP');
+        context();
+      }
       await installBusiness({businessId,configuration});context();
       if(session){session.close();session=null;root.click360SparkOperationalSession=null;}
       session=await root.CLICK360_SPARK_OPERATIONAL_UI.create({projectId,db,ownerUid,businessId,actorUid,deviceId,

@@ -53,6 +53,36 @@ the preceding staging build; native Rules and manifest are retained privately.
 
 ## Fresh production recovery inspection (read-only)
 
+### Subsequent exact staging certificate: `fef3521`
+
+Exact candidate `fef3521f0a5210d2c1676e5c2613165217b7a280` was deployed only to
+the synthetic staging project. Hosting bytes matched its isolated build and
+Rules SHA-256 was
+`bc0c15deee331adb436de2923f62830039120ea6f55eb9d104d7d0129827c160`.
+Both Chromium and WebKit passed the actual retail journey, followed by the
+shadow **and private-approved runtime preparation** journey. Two businesses,
+903,721 bytes, two restarts, unchanged original IndexedDB and legacy, no writer
+installation and no cutover. Source/reconstructed hash pairs were equal:
+
+- Chromium: `ff29cdaa7fe147954fbf457d36c045d2bb26f23a7ad19a2562c15df02c5a0e1c`.
+- WebKit: `02ceacc87ac341c7061a7416745056757d1b41cd8918707a2cf447829a4fb101`.
+
+Evidence: `output/staging-fef3521-retail-20261017.log` and
+`output/staging-fef3521-runtime-shadow-20261017.log`. This certifies their
+explicit scopes, not an end-to-end automatic operational cutover. Hosting
+channel `pre-fef3521-20261017` and private native Rules backup retain the
+preceding build. Production was independently reread and remained `9090f2105d17`
+with Rules hash
+`1d65fe291deac9664805f5b5425b36dfad30f8e2baae8db44dc72e65489ff4e6`.
+
+The next connected unit verifies a pre-modular local source before the existing
+bootstrap IndexedDB CAS, **only after** an independently approved modular
+control already exists. Private approvals, complete source/journal pins, exact
+metadata/working date, whole-owner coverage, fresh complete server reread and
+semantic equality are mandatory. It never changes storageMode or policy. New
+remote operations or local drift stop this first handoff verifier; they are not
+silently reconciled or overwritten. This unit requires its own exact-HEAD gates.
+
 The received copy reconstructed to snapshot SHA-256
 `f58503079fa2cbd8ca326b726eb4af9a5246ef82209e4b9462577047898afd55`:
 20 parts, 931,078 bytes, 45 sales, 134 movements, 463 products, 36 sessions,

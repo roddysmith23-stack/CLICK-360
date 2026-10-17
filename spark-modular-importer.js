@@ -304,7 +304,25 @@
       return {status:'RUNTIME_PREPARED',planHash:verified.plan.planHash,runtimeHashes:verified.approval.preparedRuntimeHashes,
         storageMode:'migrating',phase:'READY_TO_CUTOVER',operationalCloudConfirmed:false,cutoverPerformed:false};
     }
-    return Object.freeze({prepareShadow,prepareRuntime});
+    return Object.freeze({prepareShadow,prepareRuntime,
+      // Reuse the complete authoritative enumeration for a LOCAL handoff
+      // verifier. This grants no migration transition or write capability.
+      readServerRecords:async manifest=>{
+        context();
+        const allowedModules=new Set([...Object.values(api.arrays),'config','metadata']);
+        const coveredBusinesses=new Set(manifest?.businessIds||[]);
+        if(manifest?.ownerUid!==ownerUid||!Array.isArray(manifest.businessIds)||!manifest.businessIds.length
+          ||new Set(manifest.businessIds).size!==manifest.businessIds.length||!Array.isArray(manifest.records)
+          ||manifest.businessIds.some(id=>typeof id!=='string'||!id||id.includes('/'))
+          ||manifest.records.some(row=>{
+            const c=row.content;
+            if(c?.ownerUid!==ownerUid||typeof c.id!=='string'||!c.id||c.id.includes('/'))return true;
+            if(c.businessId===null)return c.module!=='configEntries'||row.path!==`businesses/${ownerUid}/legacyConfig/${c.id}`;
+            return !coveredBusinesses.has(c.businessId)||!allowedModules.has(c.module)
+              ||row.path!==`businesses/${ownerUid}/businessUnits/${c.businessId}/storage/v2/${c.module}/${c.id}`;
+          }))throw Error('SPARK_IMPORTER_READ_SCOPE_INVALID');
+        const rows=await readShadow(manifest);context();return rows;
+      }});
   }
   root.CLICK360_SPARK_IMPORTER=Object.freeze({create,shadowChunks,SHADOW_CHUNK_RECORDS,SHADOW_CHUNK_BYTES});
 })(typeof window==='undefined'?globalThis:window);
