@@ -275,6 +275,31 @@ for(const method of ['lookupOperation','readOperationProjection']){
   assert.equal(concurrent,3,`${method} must start all exact linked reads before waiting for the first response`);
 }
 // Delivery status is not a payment, stock movement, new sale or cash event.
+{
+  const combined=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,transport,
+    serverTimestamp:()=> 'server-timestamp',deferDerivedAudit:true,confirmationProjection:true});
+  const input={operationId:'combined-confirmation',customerId:'combined-customer',changes:{name:'One server proof',phone:'',notes:''}};
+  const prepared=await combined.prepareOperation('customer_create',input);
+  assert.equal((await combined.lookupOperation(input.operationId,'customer_create',prepared.payloadSha256)).exists,false);
+  await combined.commitOperation('customer_create',input);
+  const before=transactionMetrics.length;
+  const proof=await combined.lookupOperation(input.operationId,'customer_create',prepared.payloadSha256);
+  assert.equal(transactionMetrics.length-before,1,'Confirmation and bounded projection cannot duplicate their server transaction');
+  assert.equal(proof.source,'server');assert.equal(proof.projection.kind,'customer_create');
+  assert.equal(proof.projection.payloadHash,prepared.payloadSha256);
+  assert.deepEqual(proof.result,{customerId:input.customerId},'Combined confirmation preserves the public lost-response recovery result');
+  assert.equal(proof.projection.records.customers[0].name,'One server proof');
+  assert(rows.has(`${base}/auditEvents/audit-${input.operationId}`));
+  await combined.lookupOperation(input.operationId,'customer_create',prepared.payloadSha256);
+  assert.equal((await get('customers',input.customerId)).recordVersion,1);
+  await assert.rejects(combined.lookupOperation(input.operationId,'customer_create','f'.repeat(64)),/LEDGER_CONFLICT/);
+  const lost={...input,operationId:'combined-lost-reply',customerId:'combined-lost-customer'};
+  writeFaults.push({afterCommit:true});
+  const recovered=await combined.commitOperation('customer_create',lost);
+  assert.equal(recovered.status,'already_committed');
+  assert.deepEqual(recovered.result,{customerId:lost.customerId},'Lost core response retains the exact prior result through combined confirmation');
+  assert.equal((await get('customers',lost.customerId)).recordVersion,1);
+}
 const pendingReservation=await get('layaways','layaway-record');
 const pendingSale=await get('sales','layaway-1');
 const deliveryBase={operationId:'reservation-ready',saleId:'layaway-1',layawayId:'layaway-record',

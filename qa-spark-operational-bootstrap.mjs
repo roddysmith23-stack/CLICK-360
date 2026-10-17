@@ -129,16 +129,16 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
   for(let turn=0;turn<20&&f.observed.activeModuleReads!==2;turn++)await new Promise(resolve=>setImmediate(resolve));
   const started=f.observed.activeModuleReads;release();await flight;
   assert.equal(started,2,'Independent server views must not serialize all network round trips');
-  assert(f.observed.maxModuleReads<=3,'Keep Firestore request concurrency bounded');
+  assert(f.observed.maxModuleReads<=8,'Keep Firestore request concurrency bounded');
   assert.equal(f.phases.at(-1).phase,'READY');f.coordinator.close();
 }
 {
-  const f=fixture({moduleNames:['products','sales','movements','cashSessions','dailyReports']});
+  const f=fixture({moduleNames:['products','sales','movements','cashSessions','dailyReports','auditLogs','customers','layaways','labelTemplates','deletedProducts']});
   let release;f.blockModuleReads(new Promise(resolve=>release=resolve));const flight=f.coordinator.recover();
-  for(let turn=0;turn<20&&f.observed.activeModuleReads!==3;turn++)await new Promise(resolve=>setImmediate(resolve));
+  for(let turn=0;turn<20&&f.observed.activeModuleReads!==8;turn++)await new Promise(resolve=>setImmediate(resolve));
   const started=f.observed.activeModuleReads;f.changeActor('another-user');release();
   await assert.rejects(flight,/CONTEXT_CHANGED/);
-  assert.equal(started,3);assert.equal(f.observed.maxModuleReads,3);
+  assert.equal(started,8);assert.equal(f.observed.maxModuleReads,8);
   assert.equal(f.observed.installed,0,'Parallel reads cannot publish a preceding user view');f.coordinator.close();
 }
 {

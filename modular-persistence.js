@@ -813,6 +813,14 @@
     }
     async function lookupOperation(operationId,kind,payloadHash){
       safeId(operationId,'operationId');
+      if(options.confirmationProjection===true){
+        // Same-attempt server proof and bounded operational view are one
+        // transaction, not two consecutive copies of the same record reads.
+        const projection=await readOperationProjection(operationId,kind,payloadHash,{ensureAudit:true,allowAbsent:true});
+        if(!projection)return {source:'server',exists:false};
+        return {source:'server',exists:true,record:{ownerUid:expected.ownerUid,businessId:expected.businessId,
+          operationId,payloadHash,status:'committed'},result:projection.result,projection};
+      }
       return transport.run(async tx=>{const record=await tx.get('operationLedger',operationId);
         if(!record)return {source:'server',exists:false};
         if(record.kind!==kind||record.payloadHash!==payloadHash||record.status!=='committed')throw Error('IDEMPOTENCY_KEY_CONFLICT');
@@ -831,11 +839,12 @@
         }
         return {source:'server',exists:true,record:{ownerUid:expected.ownerUid,businessId:expected.businessId,operationId,payloadHash,status:'committed'},result:record.result};});
     }
-    async function readOperationProjection(operationId,kind,payloadHash,{ensureAudit=false}={}){
+    async function readOperationProjection(operationId,kind,payloadHash,{ensureAudit=false,allowAbsent=false}={}){
       // Read a bounded, consistent view after confirmation. Never reconstruct
       // a tenant or scan historical collections to project one operation.
       return transport.run(async tx=>{
         const ledger=await tx.get('operationLedger',safeId(operationId,'operationId'));
+        if(!ledger&&allowAbsent)return null;
         if(!ledger||ledger.status!=='committed'||ledger.kind!==kind||ledger.payloadHash!==payloadHash)throw Error('SPARK_PROJECTION_LEDGER_CONFLICT');
         const records={},r=ledger.result||{};
         if(kind==='scoped_settings'){
@@ -848,6 +857,10 @@
           .filter(([key])=>r[key]).map(async([key,moduleName])=>({moduleName,value:await tx.get(moduleName,r[key])})));
         for(const {moduleName,value}of linkedRecords){
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
+          if(((moduleName==='movements'||(moduleName==='sales'&&kind==='sale'))&&value.operationId!==operationId)
+            ||(kind==='receivable_payment'&&['sales','layaways'].includes(moduleName)&&!value.payments?.some(payment=>payment.operationId===operationId))
+            ||(moduleName==='dailyReports'&&kind==='cash_close'&&(value.operationId!==operationId||value.cashSessionId!==r.cashSessionId)))
+            throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
           (records[moduleName]??=[]).push(value);
         }
         const stockRecords=await Promise.all(((kind==='sale'?records.sales?.[0]?.stockOrder:[])||[])
@@ -867,7 +880,7 @@
               {operationId,action:kind,actorUid:ledger.createdBy,payloadHash,lastOperationId:operationId}));
           }
         }
-        return {source:'server',operationId,identity:{...expected},records};
+        return {source:'server',operationId,kind,payloadHash,identity:{...expected},result:r,records};
       });
     }
     async function readCurrentCashSession({onProgress=()=>{}}={}){

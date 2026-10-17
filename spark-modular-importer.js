@@ -117,8 +117,10 @@
       const rows=[],collections=[...scopes];let next=0,completedScopes=0,failed=false;
       // Independent collection reads need not serialize all network round
       // trips. Keep the exact same scopes and 100-row pages, cap concurrency
-      // at three, and compare only after ALL workers finish successfully.
-      await Promise.all(Array.from({length:Math.min(3,collections.length)},async()=>{
+      // at eight, and compare only after ALL workers finish successfully.
+      // The measured temporary-query transport also pays latency for empty
+      // modules. Keep those mandatory orphan checks, not serialized delays.
+      const settled=await Promise.allSettled(Array.from({length:Math.min(8,collections.length)},async()=>{
         try{
           while(!failed&&next<collections.length){
             const scope=collections[next++];let cursor=null;
@@ -130,10 +132,12 @@
               for(const doc of page.docs)rows.push({path:doc.ref.path,content:doc.data()});
               cursor=page.size===100?page.docs.at(-1).id:null;
             }while(cursor&&!failed);
-            onProgress({phase:'SHADOW_VERIFYING',stage:'server_read',completedScopes:++completedScopes,totalScopes:collections.length,recordsRead:rows.length});
+            if(!failed)onProgress({phase:'SHADOW_VERIFYING',stage:'server_read',completedScopes:++completedScopes,totalScopes:collections.length,recordsRead:rows.length});
           }
         }catch(error){failed=true;throw error;}
       }));
+      const rejected=settled.find(result=>result.status==='rejected');
+      if(rejected)throw rejected.reason;
       return rows;
     }
     async function prepareShadow(){

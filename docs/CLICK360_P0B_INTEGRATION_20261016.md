@@ -151,3 +151,26 @@ Logs: `output/staging-10b-retail-20261016.log` and
 Production stays `9090f2105d17`. No commercial source, policy, storage mode,
 production Rules/Hosting or real migration was changed. New source requires
 its own committed CI and served-build certification; do not inherit `10b33b5`.
+
+## Follow-up latency failures — retain as failures
+
+Real `244e57c` retail passed Chromium but WebKit's two-sale restart again reached
+the unchanged 30-second deadline at RECOVERING: financial pending=0, UNKNOWN=0,
+projection pending=2. Its shadow suite was not run after that failure. Do not
+certify this release from the preceding successful `10b33b5` run.
+
+The large local reread recorded 75 mandatory scopes and 134–1143 ms per query.
+Even empty-module checks paid transport latency. Import verification and startup
+views now use at most eight independent reads, keeping identical 100-row pages
+and every empty-module orphan check. All in-flight workers settle before a
+failure returns, without publishing a view. A client regression interrupts a
+query, asserts zero outstanding reads and resumes with identical semantic hash.
+
+For the actual UI only, immutable ledger confirmation, bounded projection and
+reconstructible audit are one authoritative transaction. Same-attempt proof is
+not persisted as a cache shortcut. Restarted rows still perform a fresh server
+transaction; pending financial overlays still prevent local projection. Default
+repository clients retain their preceding behavior. Linked-record validation is
+shared, public lost-response results are preserved, and financial core writes
+remain unchanged and atomic. Pure transaction metrics and real client Rules
+passed; new full served/staging repetition is still required for this change.

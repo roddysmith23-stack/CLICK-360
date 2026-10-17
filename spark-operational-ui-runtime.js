@@ -18,7 +18,7 @@
     // Server-enforced mode proof before installing any UI writer.
     await transport.run(async()=>true);
     const repository=root.CLICK360_MODULAR_PERSISTENCE.createSparkRepository({ownerUid,businessId,actorUid,transport,
-      deferDerivedAudit:true,serverTimestamp:options.serverTimestamp});
+      deferDerivedAudit:true,confirmationProjection:true,serverTimestamp:options.serverTimestamp});
     const journal=await root.CLICK360_MODULAR_JOURNAL.open({actorUid});
     const identity=repository.identity;
     const context=()=>{
@@ -34,7 +34,7 @@
     };
     const adapter=root.CLICK360_MODULAR_UI_ADAPTER.create({repository,journal,deviceId,resolveIdentity,
       isOnline:options.isOnline,onStatus:publish,
-      onConfirmed:async({operationId,kind})=>{
+      onConfirmed:async({operationId,kind,evidence})=>{
         assertActive();
         const row=await journal.get(identity,operationId);
         const counts=await journal.countPending(identity);
@@ -43,7 +43,11 @@
         if(counts.pendingCount+counts.unknownCount>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
         // A lost financial response can leave its reconstructible audit view
         // absent. Materialize by ledger identity, never by replaying commerce.
-        const projection=await repository.readOperationProjection(operationId,kind,row.payloadHash,{ensureAudit:true});
+        const projection=evidence?.projection
+          ||await repository.readOperationProjection(operationId,kind,row.payloadHash,{ensureAudit:true});
+        if(projection.source!=='server'||projection.operationId!==operationId||projection.kind!==kind
+          ||projection.payloadHash!==row.payloadHash||projection.identity?.ownerUid!==ownerUid||projection.identity.businessId!==businessId)
+          throw Error('SPARK_UI_PROJECTION_PROOF_REQUIRED');
         assertActive();await projectConfirmed(projection);assertActive();
       }});
     async function commit({reason,command,candidate}){

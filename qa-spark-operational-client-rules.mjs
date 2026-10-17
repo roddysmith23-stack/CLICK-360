@@ -136,15 +136,18 @@ try{
   await assertFails(forgedSettings.commitOperation('scoped_settings',{...businessSettings,operationId:'settings-forged',expectedRecordVersion:2}));
   assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/settings-forged`))).exists(),false);
   const deferredRepo=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
-    transport:transportFor(client),serverTimestamp,deferDerivedAudit:true});
+    transport:transportFor(client),serverTimestamp,deferDerivedAudit:true,confirmationProjection:true});
   const deferredCustomer={operationId:'deferred-projection-customer',customerId:'deferred-projection-customer',
     changes:{name:'Atomic audit projection',phone:'',notes:''}};
   const deferredPrepared=await deferredRepo.prepareOperation('customer_create',deferredCustomer);
   await deferredRepo.commitOperation('customer_create',deferredCustomer);
   assert.equal((await getDocFromServer(doc(client,`${base}/auditEvents/audit-deferred-projection-customer`))).exists(),false);
-  const deferredProjection=await deferredRepo.readOperationProjection(deferredCustomer.operationId,
-    'customer_create',deferredPrepared.payloadSha256,{ensureAudit:true});
+  const confirmedProjection=await deferredRepo.lookupOperation(deferredCustomer.operationId,
+    'customer_create',deferredPrepared.payloadSha256);
+  assert.equal(confirmedProjection.exists,true);
+  const deferredProjection=confirmedProjection.projection;
   assert.equal(deferredProjection.source,'server');
+  assert.equal(deferredProjection.payloadHash,deferredPrepared.payloadSha256);
   assert.equal(deferredProjection.records.customers[0].recordVersion,1);
   assert.equal((await getDocFromServer(doc(client,`${base}/auditEvents/audit-deferred-projection-customer`))).data().data.operationId,deferredCustomer.operationId);
   // Exercise server Rules directly, not merely the repository's owner guard.

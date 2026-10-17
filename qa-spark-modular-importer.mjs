@@ -63,7 +63,7 @@ try{
   const importer=globalThis.CLICK360_SPARK_IMPORTER.create(input);
   await assert.rejects(importer.prepareShadow(),/SIMULATED_INTERRUPTED_UPLOAD/);
   const result=await importer.prepareShadow();
-  assert.equal(maxActivePageReads,3,'Independent shadow rereads must use bounded concurrency, not serialized round trips');
+  assert.equal(maxActivePageReads,8,'All scopes, including empty modules, use a bounded eight-query verification pool');
   assert.equal(activePageReads,0,'All rereads finish before semantic comparison');
   assert.equal(result.cutoverPerformed,false);assert.equal(result.equality.status,'SEMANTIC_EQUALITY_PASS');
   assert.equal(result.equality.sourceHash,await api.hash(local));
@@ -80,6 +80,12 @@ try{
   assert.equal((await getDocFromServer(doc(client,`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/products/p-0`))).data().data.stock,1);
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),storageRef.path),savedControl));
   const retry=await importer.prepareShadow();assert.deepEqual(retry.equality,result.equality);
+  // A failed verification query must settle the bounded in-flight read pool
+  // before closing its recovery resources or returning an error to bootstrap.
+  beforePageRead=async()=>{beforePageRead=null;throw Error('SYNTHETIC_QUERY_INTERRUPTED');};
+  await assert.rejects(importer.prepareShadow(),/SYNTHETIC_QUERY_INTERRUPTED/);
+  assert.equal(activePageReads,0,'Failed verification cannot leave authoritative queries running after cleanup');
+  assert.deepEqual((await importer.prepareShadow()).equality,result.equality,'Interrupted reread resumes without rewriting source or duplicating records');
   // Exercise the bootstrap connection with the AUTHENTICATED Web SDK and
   // real Rules. This still uses an explicit synthetic recovery/journal adapter;
   // physical IndexedDB is independently tested by the browser suite.

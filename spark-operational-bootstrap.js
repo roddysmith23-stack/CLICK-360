@@ -180,7 +180,7 @@
       let nextModule=0,completedModules=0,failed=false;const activeModules=new Set();
       const progress=()=>{context();onProgress({phase:'LOADING_SERVER_VIEW',completedModules,totalModules:modules.length,
         activeModules:[...activeModules]});};
-      await Promise.all(Array.from({length:Math.min(3,modules.length)},async()=>{
+      const views=await Promise.allSettled(Array.from({length:Math.min(8,modules.length)},async()=>{
         try{
           while(!failed&&nextModule<modules.length){
             context();const [source,module]=modules[nextModule++];let next=null;
@@ -189,10 +189,12 @@
               const result=await page(businessId,module,{after:next});context();records[source].push(...result.records);next=result.next;
             }while(module==='products'&&next);
             context();cursors.set(source,{module,businessId,next});
-            activeModules.delete(module);completedModules++;progress();
+            activeModules.delete(module);completedModules++;if(!failed)progress();
           }
         }catch(error){failed=true;throw error;}
       }));
+      const viewFailure=views.find(result=>result.status==='rejected');
+      if(viewFailure)throw viewFailure.reason;
       context();
       if(readable('cashSessions',p)){
         onProgress({phase:'VERIFYING_CURRENT_CASH',completedModules,totalModules:modules.length,activeModules:[]});
