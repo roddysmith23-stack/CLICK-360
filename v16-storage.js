@@ -5,6 +5,9 @@
   const DB_VERSION = 1;
   const SNAPSHOT_STORE = 'tenantSnapshots';
   const HEALTH_STORE = 'health';
+  // Private, single-call receipts. Ordinary metadata cannot bypass the
+  // capacity-pending CAS, including callers that invent an approval flag.
+  const modularPromotions = new WeakMap();
 
   function contextId(context) {
     if (!context?.authUid || !context?.tenantKey) throw new Error('Contexto de almacenamiento incompleto.');
@@ -87,8 +90,13 @@
         request.onsuccess = () => {
           const current = request.result;
           record.uiWorkingDates = current?.uiWorkingDates || {};
+          const promotion=modularPromotions.get(metadata.modularPromotion);
+          const verifiedPromotion=promotion&&current
+            && JSON.stringify(current)===promotion.originalRecord
+            && record.source==='spark_operational_candidate'
+            && String(current.deviceRevision||'')===String(metadata.expectedDeviceRevision||'');
           const protectedModular=current?.source==='spark_operational_candidate';
-          if ((current?.cloudCapacityBlocked && (!record.cloudCapacityBlocked
+          if ((promotion&&!verifiedPromotion)||(current?.cloudCapacityBlocked && !verifiedPromotion && (!record.cloudCapacityBlocked
             || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || '')))
             || (protectedModular && (record.source!=='spark_operational_candidate'
               || String(current.deviceRevision || '')!==String(metadata.expectedDeviceRevision||'')))) {
@@ -140,6 +148,40 @@
     return record;
   }
 
+  async function promoteVerifiedSnapshot(context,snapshot,metadata){
+    const proof=metadata?.verifiedLocalHandoff,api=root.CLICK360_SPARK_MIGRATION;
+    const projectId=root.CLICK360_FIREBASE_CONFIG?.projectId;
+    const user=()=>root.click360Auth?.currentUser;
+    if(!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
+      ||!api||!root.CLICK360_SPARK_RECOVERY||context.authUid!==context.ownerId
+      ||user()?.uid!==context.ownerId||proof?.verified!==true||proof.status!=='LOCAL_HANDOFF_VERIFIED'
+      ||typeof proof.assertStable!=='function'||metadata.source!=='spark_operational_candidate'
+      ||proof.buildSha!==root.CLICK360_RELEASE_ASSETS?.['app.js'])throw Error('INDEXEDDB_VERIFIED_HANDOFF_REQUIRED');
+    if(snapshot?.identity?.tenantKey!==context.tenantKey||snapshot.identity.businessId!==context.businessId
+      ||(snapshot.identity.ownerUid||snapshot.identity.ownerId)!==context.ownerId)throw Error('INDEXEDDB_HANDOFF_TARGET_IDENTITY');
+    const current=await getSnapshot(context);
+    if(!current||current.source==='spark_operational_candidate'
+      ||current.deviceRevision!==proof.deviceRevision||metadata.expectedDeviceRevision!==current.deviceRevision
+      ||await api.hash(current.snapshot)!==proof.sourceHash
+      ||await api.hash(Object.fromEntries(Object.entries(current).filter(([key])=>key!=='snapshot')))!==proof.deviceMetadataHash
+      ||api.byteLength(snapshot)>8*1024*1024)throw Error('INDEXEDDB_HANDOFF_SOURCE_CHANGED');
+    const recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid:context.ownerId,resolveUser:user});
+    try{
+      const handoff=await recovery.readHandoff(proof.captureHash),source=await recovery.read(proof.sourceHash);
+      if(!handoff?.durable||!source?.durable||handoff.plan.sourceHash!==proof.sourceHash
+        ||handoff.plan.deviceMetadataHash!==proof.deviceMetadataHash
+        ||source.buildSha!==proof.buildSha||source.deviceRevision!==proof.deviceRevision
+        ||await api.hash(source.snapshot)!==proof.sourceHash
+        ||await api.hash(source.deviceRecordMetadata)!==proof.deviceMetadataHash)
+        throw Error('INDEXEDDB_HANDOFF_ORIGINAL_PIN_REQUIRED');
+    }finally{recovery.close();}
+    await proof.assertStable();
+    if(user()?.uid!==context.ownerId)throw Error('INDEXEDDB_HANDOFF_ACTOR_CHANGED');
+    const receipt={};modularPromotions.set(receipt,{originalRecord:JSON.stringify(current)});
+    try{return await putSnapshot(context,snapshot,{...metadata,modularPromotion:receipt});}
+    finally{modularPromotions.delete(receipt);}
+  }
+
   async function deleteSnapshot(context) {
     await transact(SNAPSHOT_STORE, 'readwrite', (store) => store.delete(contextId(context)));
     return true;
@@ -151,5 +193,5 @@
     return { usage: Number(value.usage || 0), quota: Number(value.quota || 0) };
   }
 
-  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, putWorkingDate, getSnapshot, deleteSnapshot, estimate, contextId });
+  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, promoteVerifiedSnapshot, putWorkingDate, getSnapshot, deleteSnapshot, estimate, contextId });
 })(typeof window !== 'undefined' ? window : globalThis);

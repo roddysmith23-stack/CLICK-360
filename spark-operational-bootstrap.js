@@ -180,7 +180,7 @@
           throw Error('SPARK_BOOTSTRAP_LOCAL_HANDOFF_DEVICE_DRIFT_STOP');
         context();
       }
-      await installBusiness({businessId,configuration});context();
+      await installBusiness({businessId,configuration,...(localHandoff?{verifiedLocalHandoff:localHandoff}:{})});context();
       if(session){session.close();session=null;root.click360SparkOperationalSession=null;}
       session=await root.CLICK360_SPARK_OPERATIONAL_UI.create({projectId,db,ownerUid,businessId,actorUid,deviceId,
         onReadProgress:detail=>{context();onProgress({phase:'VERIFYING_CURRENT_CASH',transaction:detail});},

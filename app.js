@@ -883,7 +883,9 @@ function parseMoney(value) {
   function queueIndexedSnapshot(snapshot, metadata = {}) {
     if (!activeTenantContext || !window.CLICK360_V16_STORAGE) return Promise.resolve(false);
     const context = activeTenantContext;
-    return window.CLICK360_V16_STORAGE.putSnapshot(context, cloneState(snapshot), metadata).then((saved) => {
+    const write=metadata.verifiedLocalHandoff
+      ?window.CLICK360_V16_STORAGE.promoteVerifiedSnapshot:window.CLICK360_V16_STORAGE.putSnapshot;
+    return write(context, cloneState(snapshot), metadata).then((saved) => {
       if (activeTenantContext !== context) return false;
       indexedTenantCacheMeta = {
         uiWorkingDates:saved?.uiWorkingDates||{},
@@ -1814,7 +1816,7 @@ function parseMoney(value) {
     if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
     renderApp(route,{preserveActiveModal:true});
   });
-  window.click360InstallSparkBusiness=async function({businessId,configuration}){
+  window.click360InstallSparkBusiness=async function({businessId,configuration,verifiedLocalHandoff=null}){
     if(!activeTenantContext||!configuration.businesses.some(b=>b.id===businessId))throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_INVALID');
     const next=cloneState(state);next.businesses=cloneState(configuration.businesses);next.activeBusinessId=businessId;
     next.identity=tenantIdentity();
@@ -1837,6 +1839,7 @@ function parseMoney(value) {
     const saved=await queueIndexedSnapshot(candidate,{
       source:'spark_operational_candidate',deviceRevision:uid('spark-business'),
       expectedDeviceRevision:indexedTenantCacheMeta?.deviceRevision||'',
+      ...(verifiedLocalHandoff?{verifiedLocalHandoff}:{}),
       pendingRemoteSync:indexedTenantCacheMeta?.pendingRemoteSync===true,cloudCapacityBlocked:false
     });
     if(!saved)throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_DURABILITY_FAILED');

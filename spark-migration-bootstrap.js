@@ -128,7 +128,7 @@
           context();
         }
         await localStable(journal);await authorizationsStable();context();
-        return {verified:true,status:'LOCAL_HANDOFF_VERIFIED',sourceHash:plan.sourceHash,deviceRevision:pin.deviceRevision,
+        return {verified:true,status:'LOCAL_HANDOFF_VERIFIED',buildSha,sourceHash:plan.sourceHash,deviceRevision:pin.deviceRevision,
           deviceMetadataHash:metadataHash,businessIds:[...control.businessIds],captureHash:preserved.captureHash,
           // This final gate runs immediately before the EXISTING IDB CAS.
           // Pins, journal and legacy remain intact; no write is done here.
