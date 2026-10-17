@@ -252,7 +252,10 @@ try{
           assert.equal(session.data.status,'closed');assert.equal(report.data.cashSessionId,'historical-session');
           assert.equal(report.data.total,30);assert.equal(report.data.saleCount,1);
           const operationId=await page.evaluate(()=>window.QA_HANDOFF_CLOSE.operationId);
-          const ledger=(await admin.doc(`businesses/${uid}/businessUnits/${uid}/storage/v2/operationLedger/${operationId}`).get()).data();
+          const ledgerRecord=(await admin.doc(`businesses/${uid}/businessUnits/${uid}/storage/v2/operationLedger/${operationId}`).get()).data();
+          assert.equal(ledgerRecord.ownerUid,uid);assert.equal(ledgerRecord.businessId,uid);
+          assert.equal(ledgerRecord.id,operationId);assert.equal(ledgerRecord.module,'operationLedger');
+          const ledger=ledgerRecord.data;
           assert.equal(ledger.kind,'cash_close');assert.equal(ledger.status,'committed');
           assert.equal(ledger.result.cashSessionId,'historical-session');
           assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),envelope);
