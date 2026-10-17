@@ -786,6 +786,10 @@
       const candidate=root.CLICK360_MODULAR_JOURNAL.validatePayload(structuredClone(input));
       const prepared=await prepareOperation(kind,candidate);
       const result=await commitFinancialOperation(kind,candidate);
+      // The connected UI materializes the reconstructible audit in its
+      // authoritative projection transaction. The financial ledger is already
+      // atomic; audit failure can never authorize a second commercial commit.
+      if(options.deferDerivedAudit===true)return {...result,auditPending:true};
       // Financial truth and immutable actor/hash receipt are already atomic.
       // This derived view cannot change stock/cash or justify a second sale.
       // If its response fails, the stable audit ID can be repaired from ledger.
@@ -812,7 +816,7 @@
         }
         return {source:'server',exists:true,record:{ownerUid:expected.ownerUid,businessId:expected.businessId,operationId,payloadHash,status:'committed'},result:record.result};});
     }
-    async function readOperationProjection(operationId,kind,payloadHash){
+    async function readOperationProjection(operationId,kind,payloadHash,{ensureAudit=false}={}){
       // Read a bounded, consistent view after confirmation. Never reconstruct
       // a tenant or scan historical collections to project one operation.
       return transport.run(async tx=>{
@@ -836,6 +840,17 @@
         for(const value of stockRecords){
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
           (records.products??=[]).push(value);
+        }
+        if(ensureAudit){
+          const auditId=safeId(`audit-${operationId}`,'auditId'),old=await tx.get('auditEvents',auditId);
+          if(old){
+            if(old.operationId!==operationId||old.action!==kind||old.actorUid!==ledger.createdBy||old.payloadHash!==payloadHash)
+              throw Error('AUDIT_LEDGER_CONFLICT');
+          }else{
+            const timestamp=options.serverTimestamp();
+            tx.create('auditEvents',auditId,base('auditEvents',auditId,timestamp,
+              {operationId,action:kind,actorUid:ledger.createdBy,payloadHash,lastOperationId:operationId}));
+          }
         }
         return {source:'server',operationId,identity:{...expected},records};
       });

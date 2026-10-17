@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
 import {chromium,webkit,firefox} from 'playwright';
 import './qa-spark-live-command-adapters.mjs';
 const harness=await readFile('qa-modular-persistence-v2-harness.cjs','utf8');
 const fakeDb=harness.slice(harness.indexOf('function clone('),harness.indexOf('function baseRecord('));
-const sources=await Promise.all(['modular-persistence.js','modular-operation-journal.js','modular-operation-coordinator.js','modular-ui-adapter.js','spark-modular-reconciliation.js'].map(file=>readFile(file,'utf8')));
+const costBaseline=process.env.CLICK360_CONFIRMATION_COST_BASELINE;
+if(costBaseline&&(process.env.CI==='true'||process.env.GITHUB_ACTIONS==='true'
+  ||costBaseline!=='cd48d16da0b40c4c1a3df76b161c2008c0855eb8'))throw Error('CONFIRMATION_DIAGNOSTIC_BASELINE_FORBIDDEN');
+const sources=await Promise.all(['modular-persistence.js','modular-operation-journal.js','modular-operation-coordinator.js','modular-ui-adapter.js','spark-modular-reconciliation.js']
+  .map(file=>costBaseline&&['modular-operation-coordinator.js','modular-ui-adapter.js'].includes(file)
+    ?execFileSync('git',['show',`${costBaseline}:${file}`],{encoding:'utf8'}):readFile(file,'utf8')));
 for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
   const browser=await engine.launch();
   try{
@@ -45,6 +51,7 @@ for(const [name,engine] of Object.entries({chromium,webkit,firefox})){
       const double=await Promise.all(clicks);
       const once=db.store.get(paths.record('products','p')).stock;
       const confirmedLookups=lookups;
+      if(confirmedLookups!==2)throw Error('DUPLICATE_AUTHORITATIVE_CONFIRMATION_LOOKUP');
       await adapter.submit('sale',input('sale-ui-1',10,1));
       const rechecked=lookups>confirmedLookups;
       online=false;

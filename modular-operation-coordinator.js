@@ -33,8 +33,9 @@
           // Never re-send an uncertain operation before a fresh server lookup.
           // An active writer may still finish: replay remains protected by the
           // server's same-ID, same-payload atomic ledger contract.
-          row = await journal.reconcile(identity, operationId, row.revision, await lookup());
-          if (row.state === 'confirmed') return { status:'confirmed', operationId };
+          const evidence=await lookup();
+          row = await journal.reconcile(identity, operationId, row.revision, evidence);
+          if (row.state === 'confirmed') return { status:'confirmed', operationId,serverEvidence:evidence };
         }
         row = await journal.claim(identity, operationId, deviceId);
         if (row.state !== 'inflight') return { status:'unknown', operationId };
@@ -42,7 +43,7 @@
         const before = await lookup();
         if (before.exists) {
           await journal.reconcile(identity, operationId, row.revision, before);
-          return { status:'confirmed', operationId };
+          return { status:'confirmed', operationId,serverEvidence:before };
         }
         if (repository.commitOperation) await repository.commitOperation(kind,row.payload.payload);
         else if (kind === 'sale') await repository.commitSale(row.payload.payload);
@@ -50,7 +51,7 @@
         const after = await lookup();
         if (!after.exists) throw Error('MODULAR_COMMIT_NOT_CONFIRMED');
         await journal.reconcile(identity, operationId, row.revision, after);
-        return { status:'confirmed', operationId };
+        return { status:'confirmed', operationId,serverEvidence:after };
       } catch (error) {
         const latest = await journal.get(identity, operationId);
         if (latest?.state === 'confirmed') return { status:'confirmed', operationId };
@@ -68,7 +69,7 @@
           const evidence = await lookup();
           if (evidence.exists && ['unknown', 'inflight'].includes(pending?.state)) {
             await journal.reconcile(identity, operationId, pending.revision, evidence);
-            return { status:'confirmed', operationId };
+            return { status:'confirmed', operationId,serverEvidence:evidence };
           }
         } catch {} // Unavailable/conflicting server evidence is never a retry grant.
         // No rollback of a sale/stock candidate and no delete of its request.

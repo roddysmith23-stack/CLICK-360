@@ -159,11 +159,18 @@
         ...(causeCode?{causeCode}: {})};
       onStatus(detail);return detail;
     };
-    async function confirm(row){
+    async function confirm(row,freshEvidence=null){
       assertContext();
-      const evidence=await repository.lookupOperation(row.operationId,row.payload.kind,row.payloadHash);
+      // Reuse ONLY the coordinator's authoritative lookup from this same
+      // attempt. A persisted confirmed row or a restart supplies no hint and
+      // still requires a fresh server read. Never cache this evidence in IDB.
+      const evidence=freshEvidence||await repository.lookupOperation(row.operationId,row.payload.kind,row.payloadHash);
       assertContext();
       if(evidence.source!=='server'||!evidence.exists)throw Error('MODULAR_UI_SERVER_CONFIRMATION_REQUIRED');
+      if(freshEvidence&&(evidence.record?.ownerUid!==identity.ownerUid||evidence.record.businessId!==identity.businessId
+        ||evidence.record.operationId!==row.operationId||evidence.record.payloadHash!==row.payloadHash
+        ||(evidence.record.status!==undefined&&evidence.record.status!=='committed')))
+        throw Error('MODULAR_UI_SERVER_CONFIRMATION_REQUIRED');
       // A locally confirmed journal row is not by itself cloud evidence.
       // Projection must be idempotent by operation ID and resolve only after
       // local durable persistence. A crash/failure leaves recovery indexed.
@@ -184,7 +191,7 @@
       try{
         const result=await coordinator.process(row.operationId);
         assertContext();
-        if(result.status==='confirmed')return await confirm(await journal.get(identity,row.operationId));
+        if(result.status==='confirmed')return await confirm(await journal.get(identity,row.operationId),result.serverEvidence);
         const causeCode=/^[a-zA-Z][a-zA-Z0-9_/-]{0,80}$/.test(result.reason||'')?result.reason:'server_confirmation_unknown';
         return emit(row.operationId,'UNKNOWN','server_reconciliation_required',causeCode);
       }catch(error){

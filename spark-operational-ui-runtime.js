@@ -17,7 +17,8 @@
     const transport=root.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,actorUid,resolveUser});
     // Server-enforced mode proof before installing any UI writer.
     await transport.run(async()=>true);
-    const repository=root.CLICK360_MODULAR_PERSISTENCE.createSparkRepository({ownerUid,businessId,actorUid,transport,serverTimestamp:options.serverTimestamp});
+    const repository=root.CLICK360_MODULAR_PERSISTENCE.createSparkRepository({ownerUid,businessId,actorUid,transport,
+      deferDerivedAudit:true,serverTimestamp:options.serverTimestamp});
     const journal=await root.CLICK360_MODULAR_JOURNAL.open({actorUid});
     const identity=repository.identity;
     const context=()=>{
@@ -42,8 +43,7 @@
         if(counts.pendingCount+counts.unknownCount>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
         // A lost financial response can leave its reconstructible audit view
         // absent. Materialize by ledger identity, never by replaying commerce.
-        await repository.ensureDerivedAudit(operationId,kind,row.payloadHash);
-        const projection=await repository.readOperationProjection(operationId,kind,row.payloadHash);
+        const projection=await repository.readOperationProjection(operationId,kind,row.payloadHash,{ensureAudit:true});
         assertActive();await projectConfirmed(projection);assertActive();
       }});
     async function commit({reason,command,candidate}){
@@ -144,8 +144,7 @@
         }else{
           const counts=await journal.countPending(identity),projections=await journal.countProjectionPending(identity);
           if(counts.pendingCount+counts.unknownCount+projections>0)throw Error('SPARK_UI_PENDING_OVERLAY_REQUIRED');
-          await repository.ensureDerivedAudit(result.operationId,'cash_close',result.payloadHash);
-          const projection=await repository.readOperationProjection(result.operationId,'cash_close',result.payloadHash);
+          const projection=await repository.readOperationProjection(result.operationId,'cash_close',result.payloadHash,{ensureAudit:true});
           assertActive();await projectConfirmed(projection);assertActive();
         }
       }

@@ -125,6 +125,18 @@ try{
     transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/config/main')?{...data,data:{...data.data,settings:{...data.data.settings,workerPermissions:{all:true}}}}:data),serverTimestamp});
   await assertFails(forgedSettings.commitOperation('scoped_settings',{...businessSettings,operationId:'settings-forged',expectedRecordVersion:2}));
   assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/settings-forged`))).exists(),false);
+  const deferredRepo=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client),serverTimestamp,deferDerivedAudit:true});
+  const deferredCustomer={operationId:'deferred-projection-customer',customerId:'deferred-projection-customer',
+    changes:{name:'Atomic audit projection',phone:'',notes:''}};
+  const deferredPrepared=await deferredRepo.prepareOperation('customer_create',deferredCustomer);
+  await deferredRepo.commitOperation('customer_create',deferredCustomer);
+  assert.equal((await getDocFromServer(doc(client,`${base}/auditEvents/audit-deferred-projection-customer`))).exists(),false);
+  const deferredProjection=await deferredRepo.readOperationProjection(deferredCustomer.operationId,
+    'customer_create',deferredPrepared.payloadSha256,{ensureAudit:true});
+  assert.equal(deferredProjection.source,'server');
+  assert.equal(deferredProjection.records.customers[0].recordVersion,1);
+  assert.equal((await getDocFromServer(doc(client,`${base}/auditEvents/audit-deferred-projection-customer`))).data().data.operationId,deferredCustomer.operationId);
   // Exercise server Rules directly, not merely the repository's owner guard.
   const settingsRaw=(await getDocFromServer(doc(client,`${base}/labelTemplates/print-template`))).data();
   await assertFails(setDoc(doc(worker,`${base}/labelTemplates/print-template`),{...settingsRaw,recordVersion:3,

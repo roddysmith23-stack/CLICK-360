@@ -239,6 +239,23 @@ const preparedReceipt=await repo.prepareOperation('receivable_payment',paymentOn
 assert.equal((await repo.lookupOperation('receipt-one','receivable_payment',preparedReceipt.payloadSha256)).exists,true,'Earlier confirmed receipt remains confirmable after a later payment');
 const receiptView=await repo.readOperationProjection('receipt-two','receivable_payment',(await repo.prepareOperation('receivable_payment',paymentTwo)).payloadSha256);
 assert(!receiptView.records.products,'Receipt projection does not scan original sale stock');
+{
+  const deferred=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,transport,
+    deferDerivedAudit:true,serverTimestamp:()=> 'SERVER_TIMESTAMP'});
+  const input={operationId:'deferred-customer',customerId:'deferred-customer',changes:{name:'Recoverable audit',phone:'',notes:''}};
+  const prepared=await deferred.prepareOperation('customer_create',input);
+  const committed=await deferred.commitOperation('customer_create',input);
+  assert.equal(committed.auditPending,true);
+  assert(!rows.has(`${base}/auditEvents/audit-deferred-customer`));
+  assert(rows.has(`${base}/operationLedger/deferred-customer`));
+  const before=transactionMetrics.length;
+  const projected=await deferred.readOperationProjection(input.operationId,'customer_create',prepared.payloadSha256,{ensureAudit:true});
+  assert.equal(transactionMetrics.length-before,1,'Audit materialization and authoritative projection share ONE transaction');
+  assert.equal(projected.records.customers[0].name,'Recoverable audit');
+  assert(rows.has(`${base}/auditEvents/audit-deferred-customer`));
+  await deferred.readOperationProjection(input.operationId,'customer_create',prepared.payloadSha256,{ensureAudit:true});
+  assert.equal((await get('customers','deferred-customer')).recordVersion,1,'Audit/projection retry cannot repeat a commercial mutation');
+}
 // Independent linked reads remain in ONE server transaction, but need not
 // serialize one network round trip per receipt/session. Deterministic barrier,
 // not an increased browser timeout or latency-based sleep.

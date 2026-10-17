@@ -77,3 +77,27 @@ operational compatibility or SHARY recovery from these component results.
 Finish the complete served staging journey and remaining required adapters,
 then present exact release/rollback evidence for owner approval. Never ask the
 client to repeat transactions or erase her original PWA storage.
+
+## Served `cd48d16` repetition and confirmation cost
+
+The committed candidate passed the served owner/worker emulator journey in
+Chromium and WebKit, including shadow equality and preserved UNKNOWN recovery
+copies. Real staging's restart still failed the unchanged 30-second assertion:
+financial pending=0, UNKNOWN=0, projection pending=2. This remains a failed
+staging gate, not a quota/billing diagnosis or permission to retry sales.
+
+The confirmation path redundantly queried an immutable ledger a third time in
+the same attempt, and rechecked/materialized the derived audit in separate
+transactions. The permanent native-IndexedDB test fails against `cd48d16` with
+`DUPLICATE_AUTHORITATIVE_CONFIRMATION_LOOKUP` and passes after using the already
+authoritative same-attempt receipt. A restart/confirmed IDB row still performs a
+fresh lookup; the receipt is never persisted as a cache shortcut.
+
+Only the certification UI defers its secondary audit until the bounded
+authoritative projection transaction. Ledger/sale/movement/stock/cash remain
+atomic. Audit and local projection must complete before UI confirmation; a
+failure stays durably projection-pending, without repeating commerce. Other
+repository callers retain their original immediate-audit behavior. Synthetic
+transaction and real client-Rules regressions verify materialization, retry and
+unchanged commercial revision. The new served candidate must repeat staging;
+these component proofs do not replace that gate.
