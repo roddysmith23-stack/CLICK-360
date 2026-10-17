@@ -27,6 +27,17 @@
     if(raw.data.businessId!==undefined&&raw.data.businessId!==identity.businessId)throw Error('SPARK_CODEC_PAYLOAD_BUSINESS_MISMATCH');
     if(raw.data.id!==undefined&&raw.data.id!==domainId(identity,moduleName,recordId))throw Error('SPARK_CODEC_PAYLOAD_ID_MISMATCH');
     const flat=structuredClone(raw.data);
+    if(Object.hasOwn(raw,'historyPolicy')){
+      const p=raw.historyPolicy;
+      if(!['cashSessions','sales','movements','dailyReports','layaways'].includes(moduleName)
+        ||!p||Object.keys(p).sort().join(',')!=='mode,reason,recordHash,sourceHash,version'
+        ||p.version!==1||p.mode!=='CLOSED_READ_ONLY'||p.sourceHash!==raw.sourceHash
+        ||p.recordHash!==raw.dataHash||!/^[a-f0-9]{64}$/.test(p.sourceHash||'')
+        ||p.reason!=='MIGRATION_CASH_HISTORICAL_COMPONENT_UNVERIFIED'||Object.hasOwn(raw,'operational'))
+        throw Error('SPARK_CODEC_HISTORY_POLICY_INVALID');
+      // Diagnostic/UI state, never part of the preserved business JSON.
+      flat.storageHistoryReadOnly=true;
+    }
     if(Object.hasOwn(raw,'operational')){
       if(moduleName!=='cashSessions'||raw.operationalHash!==await api.hash(raw.operational)
         ||Object.keys(raw.operational).some(k=>!sessionOperational.includes(k)))throw Error('SPARK_CODEC_OPERATIONAL_INTEGRITY_MISMATCH');
@@ -48,6 +59,7 @@
     if(!Number.isSafeInteger(flat.recordVersion)||flat.recordVersion<1)throw Error('SPARK_CODEC_RECORD_VERSION_INVALID');
     if(previous){
       await unpack(previous,{identity,moduleName,recordId});
+      if(Object.hasOwn(previous,'historyPolicy'))throw Error('SPARK_CODEC_HISTORY_READ_ONLY');
       if(flat.recordVersion!==(previous.recordVersion??1)+1)throw Error('SPARK_CODEC_REVISION_CONFLICT');
     }else if(flat.recordVersion!==1)throw Error('SPARK_CODEC_INITIAL_VERSION_INVALID');
     const data=previous?structuredClone(previous.data):{};

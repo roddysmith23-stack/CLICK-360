@@ -11,6 +11,39 @@ const source={businesses:[{id:businessId}],cashSessions:[{id:'exact-session',ope
     {id:'current-report',businessId,cashSessionId:'exact-session',date:'2026-09-03',status:'closed',saleIds:['sale-30'],total:30,saleCount:1,theoreticalCash:0}]};
 const unchanged=structuredClone(source),result=await api.deriveCashSummaries({snapshot:source,businessId});
 assert.equal(result.canProceed,true);assert.deepEqual(source,unchanged);
+for(const module of ['sales','movements','dailyReports']){
+  const altered=structuredClone(source),row=structuredClone(altered[module].at(-1));
+  row.id='orphan-record';row.date='2026-08-01';delete row.cashSessionId;
+  if(module==='movements'){row.operationId='unmatched-operation';row.kind='ingreso';}
+  altered[module].push(row);
+  assert.equal((await api.deriveCashSummaries({snapshot:altered,businessId})).canProceed,false,
+    'Unattached financial rows cannot disappear from the operational proof just because their date differs');
+}
+{
+  const legacy=structuredClone(source);
+  legacy.movements.push({id:'zero-note',businessId,kind:'egreso',amount:0,cashSessionId:'',date:'2026-08-01'});
+  assert.equal((await api.deriveCashSummaries({snapshot:legacy,businessId})).canProceed,false);
+  const proof=await api.deriveCashSummaries({snapshot:legacy,businessId,historicalReadOnly:true});
+  assert.equal(proof.canProceed,true);
+  assert(proof.historyPlan.historyPolicies['movements/zero-note']);
+  assert.deepEqual(proof.verified,result.verified,'A zero historical note cannot change any session counter');
+  for(const delta of [{amount:1},{cashSessionId:'missing'},{saleId:'sale-30'},{operationId:'unknown-command'}]){
+    const bad=structuredClone(legacy);Object.assign(bad.movements.at(-1),delta);
+    assert.equal((await api.deriveCashSummaries({snapshot:bad,businessId,historicalReadOnly:true})).canProceed,false);
+  }
+}
+{
+  const unscoped=structuredClone(source);
+  for(const module of ['cashSessions','sales','movements','dailyReports'])for(const row of unscoped[module])delete row.businessId;
+  const proof=await api.deriveCashSummaries({snapshot:unscoped,businessId});
+  assert.equal(proof.canProceed,true);
+  assert.equal(Object.keys(proof.verified).length,1,'Financial proof must cover the same records as the planner, not ignore unscoped legacy history');
+  unscoped.businesses.push({id:'another-business'});
+  await assert.rejects(api.deriveCashSummaries({snapshot:unscoped,businessId}),/AMBIGUOUS_BUSINESS_STOP/);
+  unscoped.settings={legacyDataBusinessId:businessId};
+  assert.equal((await api.deriveCashSummaries({snapshot:unscoped,businessId})).canProceed,true);
+  assert.equal(Object.keys((await api.deriveCashSummaries({snapshot:unscoped,businessId:'another-business'})).verified).length,0);
+}
 const summary=result.verified['exact-session'].summary;
 assert.equal(summary.salesTotal,30);assert.equal(summary.saleCount,1);assert.equal(summary.paymentTotals.transfer,30);
 assert.equal(summary.cashBalance,0);assert.equal(summary.closeCycle,2);assert.equal(summary.itemCount,1);
@@ -75,4 +108,55 @@ assert.equal(laterSummary.canProceed,true,JSON.stringify(laterSummary.failures))
 assert.equal(laterSummary.verified['exact-session'].summary.paymentTotals.receivablePayments,5);
 assert.equal(laterSummary.verified['later-session'].summary.paymentTotals.receivablePayments,7);
 assert.equal(laterSummary.verified['later-session'].summary.saleCount,0);
+// A preservation proof is NOT a financial summary or permission to cut over.
+// These shapes are historical compatibility cases, not customer fixtures.
+const historicalCases=[
+  s=>{s.sales[0].payments=[{id:'legacy-payment',amount:30,method:{0:{},1:{},2:{}}}];
+    s.movements[1].paymentMethod={0:{},1:{},2:{}};},
+  s=>{s.sales=[];s.movements=s.movements.slice(0,1);s.dailyReports=[];
+    s.cashSessions[0].reconciliationReason='closed-empty-orphan';},
+  s=>{s.dailyReports=s.dailyReports.slice(0,1);},
+  s=>{s.movements[1].operationId='different-operation';s.movements[1].amount=0;},
+  s=>{s.sales=[];s.movements=s.movements.slice(0,1);
+    s.dailyReports[1].saleIds=['sale-in-another-exact-session'];}
+];
+for(const change of historicalCases){
+  const original=structuredClone(source);original.cashSessions[0].closedAt='2026-09-04T01:00:00Z';change(original);
+  const before=structuredClone(original),proof=await api.deriveCashSummaries({snapshot:original,businessId});
+  assert.equal(proof.canProceed,false,'Unproven history must not bypass migration gates');
+  assert.equal(proof.historicalPreservationReady,true);
+  assert.equal(proof.requiresHistoricalReadOnlyFence,true);
+  assert.equal(Object.keys(proof.verified).length,0);
+  const history=proof.unverifiedHistory['exact-session'];
+  assert.equal(history.financiallyVerified,false);assert.equal(history.operational,false);assert.equal(history.reopenAllowed,false);
+  assert.equal(Object.hasOwn(history,'summary'),false,'Do not manufacture zero counters');
+  const optIn=await api.deriveCashSummaries({snapshot:original,businessId,historicalReadOnly:true});
+  assert.equal(optIn.canProceed,!original.dailyReports.some(row=>row.saleIds?.includes('sale-in-another-exact-session')));
+  assert.deepEqual(optIn.verified,proof.verified,'An explicit immutable-history contract must not fabricate counters');
+  assert.deepEqual(optIn.unverifiedHistory,proof.unverifiedHistory);
+  assert.equal(history.sessionHash,await api.hash(original.cashSessions[0]));
+  assert.match(history.sourceHash,/^[a-f0-9]{64}$/);
+  assert.deepEqual(original,before,'Original payment corruption, report references and history are immutable');
+  const same=await api.deriveCashSummaries({snapshot:structuredClone(original),businessId});
+  assert.deepEqual(same.unverifiedHistory,proof.unverifiedHistory);
+  const changed=structuredClone(original);changed.movements[0].notes='different source';
+  const different=await api.deriveCashSummaries({snapshot:changed,businessId});
+  assert.notEqual(different.unverifiedHistory['exact-session'].sourceHash,history.sourceHash);
+  const open=structuredClone(original);open.cashSessions[0].status='open';open.movements[0].amount=1;
+  const denied=await api.deriveCashSummaries({snapshot:open,businessId});
+  assert.equal(denied.canProceed,false);assert.equal(denied.historicalPreservationReady,false);
+  assert.deepEqual(denied.unverifiedHistory,{},'An open financial conflict can never be archived away');
+  assert.equal((await api.deriveCashSummaries({snapshot:open,businessId,historicalReadOnly:true})).canProceed,false);
+  const missingClosure=structuredClone(original);delete missingClosure.cashSessions[0].closedAt;
+  assert.equal((await api.deriveCashSummaries({snapshot:missingClosure,businessId})).historicalPreservationReady,false);
+}
 console.log('PASS imported cash summary derivation: exact IDs, verified opening/payment/report, reused sale references counted once, no default zero, same-date isolation, ambiguous source stops. Pure source validation; no remote initialization/cutover.');
+console.log('PASS historical preservation classification: source-bound immutable evidence, no inferred payment method/counters, no operational authorization, no open-session bypass.');
+{
+  const original=structuredClone(source);original.cashSessions[0].closedAt='2026-09-04T01:00:00Z';
+  original.sales=[];original.dailyReports=[];original.movements=original.movements.slice(0,1);
+  delete original.movements[0].cashSessionId;
+  const history=await api.historicalReadOnlyPlan({snapshot:original,businessId,sourceHash:await api.hash(original)});
+  assert.equal(history.canProceed,true);
+  assert(history.historyPolicies['movements/opening'],'Exact legacy opening must be fenced even without cashSessionId');
+}

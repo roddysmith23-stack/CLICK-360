@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment']);
+    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','customer_create','customer_edit','customer_delete','receivable_payment','scoped_settings']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -517,7 +517,26 @@
         const rows=[],timestamp=options.serverTimestamp();
         const stage=(moduleName,id,before,data)=>rows.push({moduleName,id,before,data});
         let result={};
-        if(kind==='customer_delete'){
+        if(kind==='scoped_settings'){
+          if(actorUid!==expected.ownerUid)throw Error('SETTINGS_OWNER_REQUIRED');
+          const moduleName=p.moduleName,id=safeId(p.recordId,'recordId');
+          if(!['config','labelTemplates','labelProfiles'].includes(moduleName)||(moduleName==='config'&&id!=='main'))throw Error('SETTINGS_SCOPE_INVALID');
+          if(Object.keys(p).some(key=>!['operationId','moduleName','recordId','expectedRecordVersion','changes'].includes(key)))throw Error('SETTINGS_FIELDS_INVALID');
+          const old=await tx.get(moduleName,id),changes=p.changes;
+          if((old?.recordVersion??0)!==p.expectedRecordVersion)throw Error('SETTINGS_REVISION_CONFLICT');
+          if(!changes||Array.isArray(changes)||typeof changes!=='object')throw Error('SETTINGS_CHANGES_INVALID');
+          if(moduleName==='config'){
+            if(!old||Object.keys(changes).some(key=>!['name','type','settings'].includes(key))
+              ||typeof changes.name!=='string'||!changes.name.trim()||typeof changes.type!=='string'
+              ||!changes.settings||Object.keys(changes.settings).some(key=>!['iva','tax','policies','ruc','phone','address','logoUrl'].includes(key)))throw Error('BUSINESS_SETTINGS_INVALID');
+            stage(moduleName,id,old,{...old,...changes,settings:{...old.settings,...changes.settings},lastOperationId:op});
+          }else{
+            if(changes.id!==id||changes.businessId!==expected.businessId||typeof changes.name!=='string'||!changes.name.trim()
+              ||Object.keys(changes).some(key=>['ownerUid','tenantKey','module','recordVersion','storageSchemaVersion','storageMetadataKeys','lastOperationId','createdBy','updatedBy'].includes(key)))throw Error('PRINT_SETTINGS_INVALID');
+            stage(moduleName,id,old,{...(old||{}),...changes,lastOperationId:op});
+          }
+          result={settingsModule:moduleName,settingsId:id};
+        }else if(kind==='customer_delete'){
           if(Object.keys(p).some(key=>!['operationId','customerId','expectedRecordVersion'].includes(key)))throw Error('CUSTOMER_DELETE_FIELDS_INVALID');
           const id=safeId(p.customerId,'customerId'),old=await tx.get('customers',id);
           if(!old||old.deleted===true)throw Error('CUSTOMER_EXISTENCE_CONFLICT');
@@ -779,8 +798,14 @@
         if(!record)return {source:'server',exists:false};
         if(record.kind!==kind||record.payloadHash!==payloadHash||record.status!=='committed')throw Error('IDEMPOTENCY_KEY_CONFLICT');
         const r=record.result||{};
-        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
-          if(!r[key])continue;const linked=await tx.get(moduleName,r[key]);
+        if(kind==='scoped_settings'){
+          if(!['config','labelTemplates','labelProfiles'].includes(r.settingsModule)||!r.settingsId)throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
+          const linked=await tx.get(r.settingsModule,r.settingsId);
+          if(!linked)throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
+        }
+        const linkedRecords=await Promise.all([['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]
+          .filter(([key])=>r[key]).map(async([key,moduleName])=>({moduleName,linked:await tx.get(moduleName,r[key])})));
+        for(const {moduleName,linked}of linkedRecords){
           if(!linked||((moduleName==='movements'||(moduleName==='sales'&&kind==='sale'))&&linked.operationId!==operationId)
             ||(kind==='receivable_payment'&&['sales','layaways'].includes(moduleName)&&!linked.payments?.some(payment=>payment.operationId===operationId))
             ||(moduleName==='dailyReports'&&kind==='cash_close'&&(linked.operationId!==operationId||linked.cashSessionId!==r.cashSessionId)))throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
@@ -794,14 +819,21 @@
         const ledger=await tx.get('operationLedger',safeId(operationId,'operationId'));
         if(!ledger||ledger.status!=='committed'||ledger.kind!==kind||ledger.payloadHash!==payloadHash)throw Error('SPARK_PROJECTION_LEDGER_CONFLICT');
         const records={},r=ledger.result||{};
-        for(const [key,moduleName]of [['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]){
-          if(!r[key])continue;
-          const value=await tx.get(moduleName,r[key]);
+        if(kind==='scoped_settings'){
+          if(!['config','labelTemplates','labelProfiles'].includes(r.settingsModule)||!r.settingsId)throw Error('SPARK_PROJECTION_RECORD_MISSING');
+          const linked=await tx.get(r.settingsModule,r.settingsId);
+          if(!linked)throw Error('SPARK_PROJECTION_RECORD_MISSING');
+          records[r.settingsModule]=[linked];
+        }
+        const linkedRecords=await Promise.all([['saleId','sales'],['movementId','movements'],['reportId','dailyReports'],['previousReportId','dailyReports'],['cashSessionId','cashSessions'],['productId','products'],['layawayId','layaways'],['customerId','customers']]
+          .filter(([key])=>r[key]).map(async([key,moduleName])=>({moduleName,value:await tx.get(moduleName,r[key])})));
+        for(const {moduleName,value}of linkedRecords){
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
           (records[moduleName]??=[]).push(value);
         }
-        for(const productId of (kind==='sale'?records.sales?.[0]?.stockOrder:[])||[]){
-          const value=await tx.get('products',productId);
+        const stockRecords=await Promise.all(((kind==='sale'?records.sales?.[0]?.stockOrder:[])||[])
+          .map(productId=>tx.get('products',productId)));
+        for(const value of stockRecords){
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');
           (records.products??=[]).push(value);
         }

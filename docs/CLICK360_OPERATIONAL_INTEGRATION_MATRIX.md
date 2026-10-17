@@ -46,8 +46,8 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 | Other histories / aggregates | Current array views; repository bounded queries | Local projection is not server-paginated full history | Sales/report paging control connected; partial summaries labeled, complete aggregate/date integration remains missing |
 | Historical working date | `setWorkingDate`, native `putWorkingDate` | Device-only per-business preference; does not change financial revision/snapshot | Native four profiles plus served Chromium/WebKit restart and two-business isolation |
 | Cash report/receipt | Existing modal / `cashReportView` | Derived view of server-confirmed compact report | Served exact reports; no duplicated sale totals |
-| Labels/printing | Existing print engine + product view | Read-only printing; saved profiles/templates use `save` | Real Spark staging Chromium/WebKit quantity 1 produces exactly one label; print handoff automated, physical printer not tested. Saved profiles/templates still blocked |
-| Business/profile/config | Existing `profile_updated`, `business_profile_updated`, `save` | Legacy settings | Blocked; scoped configuration adapters missing |
+| Labels/printing | Existing print engine + product view; universal editor `scopedSettingsCommand` | Read-only printing; owner template/profile saves use revisioned individual records + ledger; logical template delete | Existing real staging quantity 1 proof retained. New owner universal-editor persistence has kernel/client Rules coverage; full new served-build and physical-printer certification are separate. Other legacy print-editor paths are not silently supported |
+| Business/profile/config | Existing `business_profile_updated` → `scopedSettingsCommand` | Owner business config/main, exact revision + ledger; no owner-wide legacy write | Connected real profile form; client Rules checks owner/worker denial, stale revision, forbidden fields and idempotency. Wider account/profile settings remain outside this adapter |
 | Supplier invoices / finance | Existing guarded handlers | Legacy operational records | Blocked; must not activate a tenant needing unsupported writes |
 | Tables/logistics | Existing flows / older V1 gateway | Not Spark V1 operational repository | Distinct architecture must not be mislabeled Spark-certified |
 | Offline / reconnect | Native journal + coordinator + runtime | UNKNOWN lookup before replay; preserve the complete optimistic candidate until financial drain; then durable bounded projections | Actual worker PWA: two offline sales, document close, online restart, complete replay, exact stock/cash/movements in Chromium/WebKit. Revision-bearing dependent edits and cold offline bootstrap are still gated |
@@ -69,3 +69,26 @@ capacity-save proof (not just a zero-row modular journal), and requires verified
 cash summaries in every covered business before starting shadow writes.
 Real cutover still needs reconciled device evidence, operational certification
 and final owner authorization; a local codec roundtrip supplies none of these.
+
+## 2026-10-16 continuation
+
+Production remains the separately published P0A release `9090f2105d17`; #96
+does not inherit permission to activate operational migration. Staging baseline
+`669b6465b4d0ebaf6fb24afd3e144c94672c141d` was actually served with Spark Rules,
+but its real retail and shadow timeout failures remain failures, not certificates.
+
+Financial migration proof now distinguishes verified cash summaries from closed
+history that cannot safely be operated. An explicitly opted-in staging plan can
+preserve a closed financial connected component with source/record hashes and
+server-enforced immutable metadata. Open sessions, active receivables, ambiguous
+relationships and missing records still stop the plan. No amounts, payment
+methods, reports or original records are repaired by inference. The importer
+checks both original semantic equality and added financial metadata after server
+reread. This policy does not enable cutover or make an unverified session reopenable.
+
+Source stability now pins the complete durable device metadata, including the
+remote base and snapshot-save references, not just commercial JSON/revision.
+Receipt/projection reads and the unchanged 25-record shadow chunks can read known
+independent IDs concurrently inside their existing transactions. Record budgets
+are reserved before awaiting; concurrent duplicates share the same read. Atomic
+writes, Rules checks, ledger checks, source checks and timeouts are unchanged.

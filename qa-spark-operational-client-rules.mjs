@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile,mkdir,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
+import {failureReason} from './qa-spark-emulator-health.mjs';
 import {initializeTestEnvironment,assertFails} from '@firebase/rules-unit-testing';
 import {doc,setDoc,updateDoc,getDocFromServer,runTransaction,serverTimestamp,collection,query,orderBy,documentId,limit,startAfter,getDocsFromServer} from 'firebase/firestore';
 import './spark-modular-migration.js';
@@ -92,6 +93,8 @@ try{
       await codec.pack({id:'isolated',...api.identity(ownerUid,secondBusinessId),module:'products',recordVersion:1,stock:9,qty:9},
         {identity:{ownerUid,businessId:secondBusinessId},moduleName:'products',recordId:'isolated'}));
     await setDoc(doc(db,`${base}/metadata/runtime`),await codec.pack({id:'runtime',...identity,module:'metadata',recordVersion:1,summaryVersion:1,openCashSessionId:''},{identity,moduleName:'metadata',recordId:'runtime'}));
+    await setDoc(doc(db,`${base}/config/main`),await codec.pack({id:businessId,...identity,module:'config',recordVersion:1,
+      name:'Synthetic business',type:'ropa',settings:{ruc:'',immutablePreference:'retain'}},{identity,moduleName:'config',recordId:'main'}));
   });
   const scopedControl=await codec.pack({id:'storage',...identity,module:'metadata',recordVersion:1,
     storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:'a'.repeat(64),reconstructedHash:'a'.repeat(64),
@@ -102,6 +105,30 @@ try{
   await assertFails(setDoc(doc(worker,`${base}/metadata/storage`),scopedControl));
   const forgedContract={...scopedControl,data:{...scopedControl.data,accountPlan:'enterprise'}};
   await assertFails(setDoc(doc(client,`${base}/metadata/storage`),forgedContract));
+  const businessSettings={operationId:'business-settings',moduleName:'config',recordId:'main',expectedRecordVersion:1,
+    changes:{name:'Synthetic updated',type:'ropa',settings:{ruc:'000',iva:15}}};
+  await repo.commitOperation('scoped_settings',businessSettings);
+  assert.equal((await repo.commitOperation('scoped_settings',businessSettings)).status,'already_committed');
+  assert.equal((await get('config','main')).settings.immutablePreference,'retain');
+  assert.equal((await get('config','main')).name,'Synthetic updated');
+  await assert.rejects(repo.commitOperation('scoped_settings',{...businessSettings,operationId:'stale-business-settings'}),/SETTINGS_REVISION_CONFLICT/);
+  const printSetting={operationId:'print-settings-create',moduleName:'labelTemplates',recordId:'print-template',expectedRecordVersion:0,
+    changes:{id:'print-template',businessId,name:'Synthetic label',universalDocument:{paper:{widthMm:40,heightMm:30},elements:[]}}};
+  await repo.commitOperation('scoped_settings',printSetting);
+  assert.equal((await repo.commitOperation('scoped_settings',printSetting)).status,'already_committed');
+  await repo.commitOperation('scoped_settings',{...printSetting,operationId:'print-settings-delete',expectedRecordVersion:1,changes:{...printSetting.changes,deleted:true}});
+  assert.equal((await get('labelTemplates','print-template')).deleted,true);
+  const settingsProjection=await repo.readOperationProjection('print-settings-delete','scoped_settings',(await repo.prepareOperation('scoped_settings',{
+    ...printSetting,operationId:'print-settings-delete',expectedRecordVersion:1,changes:{...printSetting.changes,deleted:true}})).payloadSha256);
+  assert.equal(settingsProjection.records.labelTemplates[0].recordVersion,2);
+  const forgedSettings=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,data)=>ref.path.endsWith('/config/main')?{...data,data:{...data.data,settings:{...data.data.settings,workerPermissions:{all:true}}}}:data),serverTimestamp});
+  await assertFails(forgedSettings.commitOperation('scoped_settings',{...businessSettings,operationId:'settings-forged',expectedRecordVersion:2}));
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/settings-forged`))).exists(),false);
+  // Exercise server Rules directly, not merely the repository's owner guard.
+  const settingsRaw=(await getDocFromServer(doc(client,`${base}/labelTemplates/print-template`))).data();
+  await assertFails(setDoc(doc(worker,`${base}/labelTemplates/print-template`),{...settingsRaw,recordVersion:3,
+    lastOperationId:'worker-settings-forged',updatedBy:workerUid,updatedAt:serverTimestamp()}));
   const open={operationId:'open-1',cashSessionId:'session-03',date:'2026-09-03',openingAmount:0};
   const customerCreate={operationId:'customer-create',customerId:'synthetic-customer',changes:{name:'Synthetic',phone:'',notes:''}};
   await repo.commitOperation('customer_create',customerCreate);
@@ -660,12 +687,20 @@ try{
   await assertFails(workerRepo.lookupOperation('worker-sale','sale',workerPrepared.payloadSha256));
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),`accountAccess/${ownerUid}`),{uid:ownerUid,businessId:ownerUid,status:'expired',plan:'pro'}));
   await assertFails(repo.commitOperation('product_edit',{operationId:'expired-owner-edit',productId:'p1',changes:{name:'Must not persist'}}));
+  await assertFails(repo.commitOperation('scoped_settings',{...businessSettings,
+    operationId:'expired-owner-settings',expectedRecordVersion:2}));
+  assert.equal((await getDocFromServer(doc(client,`${base}/operationLedger/expired-owner-settings`))).exists(),false,
+    'The owner settings fast path must not bypass the writable account contract');
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/featureFlags/workers`),{enabled:true}));
   await assertFails(workerRepo.commitOperation('product_edit',{operationId:'expired-owner-worker-edit',productId:'p1',changes:{name:'Must not persist'}}));
   assert.equal((await getDocFromServer(doc(worker,`${base}/operationLedger/expired-owner-worker-edit`))).exists(),false,
     'Active staff cannot bypass the expired business contract; no ledger or stock mutation survives');
   assert.equal((await get('products','p1')).name,'Edited');
   await budgetObservation('final');
+  // A direct diagnostic invocation must not emit a PASS artifact when a
+  // negative permission test happened to fail by exhausting the evaluator.
+  const evaluatorFailure=failureReason(await readFile('firestore-debug.log','utf8'));
+  if(evaluatorFailure)throw Error(evaluatorFailure);
   const diagnosticOnly=process.env.SPARK_RULES_DIAGNOSTIC_ONLY==='true';
   const proof={status:diagnosticOnly?'DIAGNOSTIC_ONLY':'PASS',clientRules:true,historicalSale:true,idempotency:true,stockRace:true,exactSession:true,reopen:true,
     successorNewSession:true,successorPrecedingSessionUnchanged:true,successorOldFinancialTotalsImmutable:true,workerSuccessorDenied:true,

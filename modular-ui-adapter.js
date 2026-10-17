@@ -2,6 +2,23 @@
 (function(root){
   'use strict';
   const paidMethods=new Set(['Efectivo','Tarjeta','Transferencia']);
+  function scopedSettingsCommand({identity,actorUid,operationId,moduleName,record,previous}){
+    if(actorUid!==identity?.ownerUid||!operationId||!record||record.businessId!==identity.businessId
+      ||!['config','labelTemplates','labelProfiles'].includes(moduleName))throw Error('MODULAR_SETTINGS_CONTEXT_INVALID');
+    if(previous&&(!Number.isSafeInteger(previous.recordVersion)||previous.recordVersion<1))throw Error('MODULAR_SETTINGS_REVISION_REQUIRED');
+    let changes;
+    if(moduleName==='config'){
+      if(record.id!==identity.businessId||!previous||previous.id!==record.id)throw Error('MODULAR_SETTINGS_BUSINESS_INVALID');
+      changes={name:record.name,type:record.type,settings:Object.fromEntries(['iva','tax','policies','ruc','phone','address','logoUrl']
+        .filter(key=>Object.hasOwn(record.settings||{},key)).map(key=>[key,structuredClone(record.settings[key])]))};
+    }else{
+      changes=structuredClone(record);
+      for(const key of ['ownerUid','tenantKey','module','recordVersion','storageSchemaVersion','storageMetadataKeys','lastOperationId','createdAt','updatedAt','createdBy','updatedBy'])delete changes[key];
+      if(!changes.id||typeof changes.name!=='string'||!changes.name.trim())throw Error('MODULAR_SETTINGS_PRINT_INVALID');
+    }
+    return {kind:'scoped_settings',input:{operationId,moduleName,recordId:moduleName==='config'?'main':record.id,
+      expectedRecordVersion:previous?.recordVersion??0,changes}};
+  }
   function saleCommand({sale,cartLines,identity,cashSessionId,workingDate}){
     if(!identity?.ownerUid||!identity.businessId||sale?.businessId!==identity.businessId
       ||!sale.operationId||!cashSessionId||sale.cashSessionId!==cashSessionId
@@ -239,5 +256,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,cashReportView,cashSuccessorCommand});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,cashReportView,cashSuccessorCommand,scopedSettingsCommand});
 })(typeof window==='undefined'?globalThis:window);

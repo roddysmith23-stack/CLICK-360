@@ -88,6 +88,12 @@ try{
       await page.waitForFunction(()=>window.SPARK_UI_STATUS?.status==='CONFIRMED'||window.SPARK_UI_COMMIT);
       assert(await page.evaluate(()=>window.SPARK_UI_STATUS?.status==='CONFIRMED'),JSON.stringify(await page.evaluate(()=>window.SPARK_UI_COMMIT)));
     };
+    await page.evaluate(()=>{location.hash='#settings';});
+    await page.locator('#bizName').fill('Negocio modular configurado');
+    await page.locator('#bizRuc').fill('0000000000');await resetStatus();await page.locator('#saveBiz').click();await confirmed();
+    assert((await record('config','main')).name==='Negocio modular configurado','Actual business profile saves config/main, not legacy');
+    assert((await record('config','main')).settings.ruc==='0000000000','Actual fiscal profile survives authoritative projection');
+    assert((await readCloud(env,uid)).revision===legacyBefore.revision,'Business settings do not write legacy');
     await page.evaluate(()=>{location.hash='#crm';});await page.locator('#newCustomerBtn').click();
     await page.locator('#customerName').fill('Cliente modular sintético');await page.locator('#customerPhoneCrm').fill('000');
     await page.locator('#customerNotes').fill('Solo fixture');await resetStatus();await page.locator('#customerForm button[type="submit"]').click();await confirmed();

@@ -36,13 +36,17 @@ const api=globalThis.CLICK360_SPARK_MIGRATION;
 const identity={ownerUid,ownerId:ownerUid,businessId:ownerUid,tenantKey:`owner:${ownerUid}:business:${ownerUid}`,schemaVersion:10};
 const remote={identity,businesses:[{id:businessId,name:'Synthetic import'}],products:Array.from({length:30},(_,i)=>({id:`p-${i}`,businessId,stock:2,qty:2})),sales:[],movements:[],cashSessions:[],dailyReports:[],invoices:[],auditLogs:[],deletedProducts:[],settings:{workers:[],labelTemplates:[]}};
 const local=structuredClone(remote);local.products[0].stock=1;local.products[0].qty=1;
-local.sales.push({id:'historical-sale',operationId:'historical-sale',businessId,total:30,businessDate:'2026-09-03',items:[{id:'p-0',qty:1}]});
-local.movements.push({id:'historical-movement',businessId,saleId:'historical-sale',amount:30});
+local.cashSessions.push({id:'historical-session',operationId:'historical-opening',businessId,date:'2026-09-03',status:'open',openingAmount:0});
+local.sales.push({id:'historical-sale',operationId:'historical-sale',businessId,cashSessionId:'historical-session',
+  date:'2026-09-03',total:30,received:30,iva:0,method:'Transferencia',businessDate:'2026-09-03',items:[{id:'p-0',qty:1}]});
+local.movements.push({id:'historical-opening',operationId:'historical-opening',businessId,cashSessionId:'historical-session',date:'2026-09-03',kind:'apertura',amount:0},
+  {id:'historical-movement',operationId:'historical-sale',businessId,cashSessionId:'historical-session',date:'2026-09-03',
+    kind:'ingreso',paymentType:'sale',paymentMethod:'Transferencia',saleId:'historical-sale',amount:30});
 // Match the real published envelope: identity is outside the commercial body.
 delete remote.identity;delete local.identity;
 const rootState={...identity,revision:42,payload:{schemaVersion:10,identity,data:remote}};
 const pins=new Map();let interrupt=true,currentUser={uid:ownerUid};
-const input={db,firebase,projectId,ownerUid,buildSha:'21409a1d2dc710315ab8c3c27e5da566f004cc8e',deviceId:'synthetic-device',resolveUser:()=>currentUser,
+const input={db,firebase,projectId,ownerUid,buildSha:'21409a1d2dc710315ab8c3c27e5da566f004cc8e',deviceId:'synthetic-device',resolveUser:()=>currentUser,requireCashProof:true,
   readGuard:async()=>({ownerUid,deviceRevision:'device-43',unknownOperations:0,mutationLockHeld:true}),
   readSource:async()=>{const snap=await getDocFromServer(doc(client,`businesses/${ownerUid}/state/main`));return {remote:{source:'server',identity:snap.data().payload.identity,revision:snap.data().revision,snapshot:snap.data().payload.data},
     local:{identity,durable:true,snapshot:local,deviceRevision:'device-43',baseRevision:42,pendingRemoteSync:true,pendingOperations:[{operationId:'persist-existing'}]},unknownOperations:0};},

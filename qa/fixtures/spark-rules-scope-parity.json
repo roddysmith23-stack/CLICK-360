@@ -1,11 +1,11 @@
 {
   "baseline": "5ac546a9c4a85c4fe7e0ef2faec338ea19e38fff",
-  "authorizationChange": "Retain scoped revoked membership read; add explicitly piloted owner-only immutable recoveryCopies, CLIENT_VERIFIED only, no operational or legacy authorization changes",
+  "authorizationChange": "Retain revoked membership and P0A recovery permissions; add source-bound immutable historical financial records and verified cash summary shadow metadata; owner-only revisioned config/label commands require atomic ledger. Legacy commercial permissions unchanged.",
   "originalPermissionsHash": "347596035d8c026af71db1cdcc4a0ab19038bf49832208244dadfff1f0b68fb5",
   "fingerprints": {
-    "functionsHash": "3711e4c10431f157807c95d70b02795e7ed3552819e349939035cb9dccc99cb7",
-    "permissionsHash": "94c2c3ba96510608736a1ac61572ef77d87f1da66f6089c7ff33f51129c52f52",
-    "functions": 134,
-    "permissions": 179
+    "functionsHash": "3a533150e5a0aecea4e5065c9ed9622f7ebfbb029a1f09349d95e6c45701fcdf",
+    "permissionsHash": "e5bc1d770cb3d7284db4a1c57f7f536f12f92d1e5b4cad3c8c9339fa7c814b4a",
+    "functions": 136,
+    "permissions": 184
   }
 }

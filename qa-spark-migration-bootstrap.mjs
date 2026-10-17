@@ -7,7 +7,13 @@ const ownerUid='migration-owner',businessIds=['business-a','business-b'];
 const identity={ownerUid,ownerId:ownerUid,businessId:ownerUid,tenantKey:`owner:${ownerUid}:business:${ownerUid}`,schemaVersion:10};
 const remote={businesses:businessIds.map(id=>({id})),products:[],sales:[],movements:[],cashSessions:[],dailyReports:[]};
 const local={...structuredClone(remote),identity};
-local.sales.push({id:'local-sale',businessId:businessIds[0],total:30});
+local.cashSessions.push({id:'local-session',operationId:'local-opening',businessId:businessIds[0],date:'2026-09-03',status:'open',openingAmount:0});
+local.sales.push({id:'local-sale',operationId:'local-sale',cashSessionId:'local-session',businessId:businessIds[0],
+  date:'2026-09-03',total:30,received:30,iva:0,method:'Transferencia',items:[{id:'product',qty:1}]});
+local.movements.push({id:'local-opening',operationId:'local-opening',cashSessionId:'local-session',businessId:businessIds[0],
+  date:'2026-09-03',kind:'apertura',amount:0},
+  {id:'local-receipt',operationId:'local-sale',saleId:'local-sale',cashSessionId:'local-session',businessId:businessIds[0],
+    date:'2026-09-03',kind:'ingreso',amount:30,paymentType:'sale',paymentMethod:'Transferencia'});
 function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,rows=[],cache=false}={}){
   let actor=ownerUid,lease=true,revision='device-2',closed=0,imports=0;
   const calls=[],pins=new Map(),captures=new Map();
@@ -136,6 +142,16 @@ for(const change of [f=>f.actor('worker'),f=>f.lease(false)]){
   const f=fixture();let reads=0;
   f.options.readLocal=async()=>({...f.record,deviceRevision:++reads>1?'changed-device-revision':'device-2'});
   await assert.rejects(f.run(),/DEVICE_DRIFT_STOP/);assert.equal(f.counts().imports,0);assert.equal(f.pins.size,0);
+}
+// A snapshot hash/revision alone cannot pin its queue or remote base. A
+// background save may change those fields without changing commercial JSON.
+for(const delta of [{baseRevision:2},{pendingOperations:['new-save-reference']},
+  {pendingRemoteSync:false},{cloudCapacityBlocked:false},{source:'spark_operational_candidate'}]){
+  const f=fixture();let reads=0;
+  f.options.readLocal=async()=>({...f.record,...(++reads>1?delta:{})});
+  await assert.rejects(f.run(),/DEVICE_METADATA_DRIFT_STOP/);
+  assert.equal(f.counts().imports,0);
+  assert.deepEqual(f.record.pendingOperations,['snapshot-save-id']);
 }
 {
   const f=fixture();globalThis.document={};

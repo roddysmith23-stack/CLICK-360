@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import './spark-modular-migration.js';
 import './spark-modular-record-codec.js';
+import './qa-spark-importer-financial-contract.mjs';
 const api=globalThis.CLICK360_SPARK_MIGRATION,codec=globalThis.CLICK360_SPARK_RECORD_CODEC;
 const identity={ownerUid:'synthetic-owner',businessId:'business-alpha'};
 const scope={identity,moduleName:'products',recordId:'p-1'};
@@ -34,4 +35,21 @@ const configScope={identity,moduleName:'config',recordId:'main'};
 const projected=await codec.unpack(config,configScope);assert.equal(projected.id,identity.businessId);
 const configEdit=await codec.pack({...projected,name:'Edited business',recordVersion:2},{...configScope,previous:config});
 assert.equal(configEdit.id,'main');assert.equal(configEdit.data.id,identity.businessId);assert.equal(configEdit.data.name,'Edited business');
+for(const moduleName of ['cashSessions','sales','movements','dailyReports','layaways']){
+  const historyData={id:'historical',businessId:identity.businessId,status:'closed',legacyField:{unchanged:true}};
+  const historyScope={identity,moduleName,recordId:'historical'};
+  const raw={id:'historical',...identity,schemaVersion:2,module:moduleName,sourceHash:'b'.repeat(64),
+    data:historyData,dataHash:await api.hash(historyData)};
+  raw.historyPolicy={version:1,mode:'CLOSED_READ_ONLY',sourceHash:raw.sourceHash,recordHash:raw.dataHash,
+    reason:'MIGRATION_CASH_HISTORICAL_COMPONENT_UNVERIFIED'};
+  const original=structuredClone(raw),view=await codec.unpack(raw,historyScope);
+  assert.equal(view.storageHistoryReadOnly,true);
+  await assert.rejects(codec.pack({...view,recordVersion:2},{...historyScope,previous:raw}),/HISTORY_READ_ONLY/);
+  for(const change of [p=>p.recordHash='c'.repeat(64),p=>p.sourceHash='c'.repeat(64),p=>p.mode='editable',p=>p.extra=true]){
+    const bad=structuredClone(raw);change(bad.historyPolicy);
+    await assert.rejects(codec.unpack(bad,historyScope),/HISTORY_POLICY_INVALID/);
+  }
+  await assert.rejects(codec.unpack({...raw,operational:{}},historyScope),/HISTORY_POLICY_INVALID/);
+  assert.deepEqual(raw,original,'History fence must not rewrite original financial bytes');
+}
 console.log('PASS Spark record codec: imported shape to transaction shape, exact stock mirror, native metadata, preserved origin/custom fields, strict hash/identity/revision checks, no source mutation');

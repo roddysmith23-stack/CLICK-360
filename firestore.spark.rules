@@ -521,12 +521,37 @@ service cloud.firestore {
 
     function sparkValidShadow(ownerUid, businessId, moduleName, recordId) {
       let data = request.resource.data;
-      return data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash"])
+      return data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash", "historyPolicy", "operational", "operationalHash"])
         && data.ownerUid == ownerUid && data.businessId == businessId
         && data.schemaVersion == 2 && data.module == moduleName && data.id == recordId
         && data.sourceHash == get(sparkControlPath(ownerUid)).data.sourceHash
         && data.sourcePath is list && data.sourcePath.size() > 0
-        && data.dataHash is string && data.dataHash.size() == 64;
+        && data.dataHash is string && data.dataHash.size() == 64
+        && (!data.keys().hasAny(["operational", "operationalHash"]) || (
+          moduleName == "cashSessions" && !data.keys().hasAny(["historyPolicy"])
+          && data.operationalHash is string && data.operationalHash.matches("^[a-f0-9]{64}$")
+          && data.operational.keys().hasOnly(["summaryVersion", "saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "openingAmount", "incomeCash", "expenseCash", "paymentTotals", "closeCycle"])
+          && data.operational.summaryVersion == 1 && data.operational.saleCount is int && data.operational.saleCount >= 0
+          && data.operational.salesTotal is number && data.operational.salesTotal >= 0
+          && data.operational.itemCount is int && data.operational.itemCount >= 0
+          && data.operational.taxTotal is number && data.operational.taxTotal >= 0
+          && data.operational.cashBalance is number && data.operational.openingAmount == data.data.openingAmount
+          && data.operational.incomeCash is number && data.operational.incomeCash >= 0
+          && data.operational.expenseCash is number && data.operational.expenseCash >= 0
+          && data.operational.closeCycle is int && data.operational.closeCycle >= 1
+          && data.operational.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+          && data.operational.paymentTotals.cash is number && data.operational.paymentTotals.cash >= 0
+          && data.operational.paymentTotals.card is number && data.operational.paymentTotals.card >= 0
+          && data.operational.paymentTotals.transfer is number && data.operational.paymentTotals.transfer >= 0
+          && data.operational.paymentTotals.receivablePayments is number && data.operational.paymentTotals.receivablePayments >= 0))
+        && (!data.keys().hasAny(["historyPolicy"]) || (
+          moduleName in ["cashSessions", "sales", "movements", "dailyReports", "layaways"]
+          && data.historyPolicy.keys().hasOnly(["version", "mode", "sourceHash", "recordHash", "reason"])
+          && data.historyPolicy.version == 1 && data.historyPolicy.mode == "CLOSED_READ_ONLY"
+          && data.historyPolicy.sourceHash == data.sourceHash && data.historyPolicy.recordHash == data.dataHash
+          && data.historyPolicy.reason == "MIGRATION_CASH_HISTORICAL_COMPONENT_UNVERIFIED"
+          && (moduleName != "cashSessions" || (data.data.status == "closed"
+            && data.data.closedAt is string && data.data.closedAt.size() > 0))));
     }
 
     function sparkShadowModule(moduleName) {
@@ -1775,22 +1800,30 @@ service cloud.firestore {
 
     function sparkOperationalUpdate(ownerUid, businessId, moduleName, recordId) {
       let d = request.resource.data;
+      let r = resource.data;
+      let previousVersion = r.get("recordVersion", 1);
+      // History-capable financial modules enforce their fence on their
+      // literal update paths. Products/config/runtime cannot acquire this
+      // metadata at creation, so do not charge them a redundant predicate.
       return sparkValidOperationalRecord(ownerUid, businessId, moduleName, recordId)
-        && resource.data.get("recordVersion", 1) >= 1
-        && d.recordVersion == resource.data.get("recordVersion", 1) + 1
-        && d.createdAt == resource.data.get("createdAt", request.time)
-        && d.createdBy == resource.data.get("createdBy", request.auth.uid)
-        && d.get("sourceHash", "") == resource.data.get("sourceHash", "")
-        && d.get("sourcePath", []) == resource.data.get("sourcePath", []);
+        && previousVersion >= 1
+        && d.recordVersion == previousVersion + 1
+        && d.createdAt == r.get("createdAt", request.time)
+        && d.createdBy == r.get("createdBy", request.auth.uid)
+        && d.get("sourceHash", "") == r.get("sourceHash", "")
+        && d.get("sourcePath", []) == r.get("sourcePath", []);
     }
 
     function sparkKindPermission(ownerUid, businessId, kind) {
-      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment"]
-        && sparkPermission(ownerUid, businessId,
+      // Auth/path establishes the owner without calculating a worker module
+      // and action first. The writable account contract is STILL enforced.
+      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "scoped_settings"]
+        && (request.auth.uid == ownerUid ? sparkOwner(ownerUid)
+          : (kind != "scoped_settings" && sparkWorkerPermission(ownerUid, businessId,
           kind == "receivable_payment" ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
             (kind == "cash_movement" ? "movements" : "cashSessions")))),
           kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
-            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"))));
+            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit"] ? "update" : "close"))))));
     }
 
     function sparkBoundOperation(ownerUid, businessId) {
@@ -1809,7 +1842,11 @@ service cloud.firestore {
         && d.keys().hasOnly(["id", "businessId", "operationId", "kind", "status", "payloadHash", "result"])
         && d.operationId == operationId && d.status == "committed" && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
         && sparkKindPermission(ownerUid, businessId, kind)
-        && (kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
+        && (kind == "scoped_settings" ? (r.keys().hasOnly(["settingsModule", "settingsId"])
+            && r.settingsModule in ["config", "labelTemplates", "labelProfiles"]
+            && (r.settingsModule != "config" || r.settingsId == "main")
+            && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/$(r.settingsModule)/$(r.settingsId)).data.lastOperationId == operationId)
+          : kind == "sale" ? sparkSaleLedgerProof(ownerUid, businessId, operationId, r)
           : kind in ["customer_create", "customer_edit", "customer_delete"] ? (r.keys().hasOnly(["customerId"])
             && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/customers/$(r.customerId)).data.lastOperationId == operationId)
           : kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ?
@@ -2362,14 +2399,49 @@ service cloud.firestore {
           && request.resource.data.data.action == sparkLedger(ownerUid, businessId, request.resource.data.data.operationId).kind);
     }
 
+    function sparkSettingsMutation(ownerUid, businessId, moduleName, recordId, creating) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
+      return request.auth.uid == ownerUid && ledger.kind == "scoped_settings"
+        && ledger.result.settingsModule == moduleName && ledger.result.settingsId == recordId
+        && (moduleName == "config" ? (!creating && recordId == "main"
+            && d.name is string && d.name.size() > 0 && d.type is string
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["name", "type", "settings", "id", "businessId"])
+            && d.settings.diff(resource.data.data.get("settings", {})).affectedKeys().hasOnly(["iva", "tax", "policies", "ruc", "phone", "address", "logoUrl"]))
+          : moduleName in ["labelTemplates", "labelProfiles"] && d.name is string && d.name.size() > 0
+            && d.keys().hasOnly(["id", "businessId", "name", "deleted", "universalDocument", "widthMm", "heightMm", "columns", "rows", "paperType", "dpi", "renderer", "universalProfileId", "schemaVersion", "priceFormat", "isDefault", "status", "universalPaper",
+              "layout", "mediaType", "receiptWidthMm", "receiptHeightMm", "mediaWidthMm", "mediaHeightMm", "marginTopMm", "marginRightMm", "marginBottomMm", "marginLeftMm", "gapXmm", "gapYmm", "contentRotation", "measurementsConfirmed", "showUrl", "showBarcode", "shape", "yOffsetAdj", "nameScale", "priceScale", "createdAt", "updatedAt", "printer", "paper", "design"]));
+    }
+
+    function sparkBusinessConfigUpdate(ownerUid, businessId) {
+      let d = request.resource.data;
+      // Imported business config keeps its ORIGINAL embedded business ID,
+      // unlike operational record IDs. This exception belongs on config's
+      // literal path, not in every financial record's hot validator.
+      return d.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash",
+          "recordVersion", "createdAt", "updatedAt", "createdBy", "updatedBy", "lastOperationId"])
+        && [d.id, d.ownerUid, d.businessId, d.schemaVersion, d.module] == ["main", ownerUid, businessId, 2, "config"]
+        && [d.data.id, d.data.businessId] == [businessId, businessId]
+        && d.data is map && d.dataHash is string && d.dataHash.matches("^[a-f0-9]{64}$")
+        && (d.recordVersion is int) && resource.data.get("recordVersion", 1) >= 1
+        && d.recordVersion == resource.data.get("recordVersion", 1) + 1
+        && d.updatedBy == request.auth.uid && d.updatedAt == request.time
+        && d.createdAt == resource.data.get("createdAt", request.time)
+        && d.createdBy == resource.data.get("createdBy", request.auth.uid)
+        && d.get("sourceHash", "") == resource.data.get("sourceHash", "")
+        && d.get("sourcePath", []) == resource.data.get("sourcePath", []);
+    }
+
     // Shadow records remain immutable until the verified control reaches
     // MODULAR. Operational writes then require an atomic, new ledger entry.
     match /{moduleName}/{recordId} {
       allow read: if (sparkShadowModule(moduleName) || moduleName in ["metadata", "operationLedger"])
         && sparkModuleReadable(ownerUid, businessId, moduleName, recordId);
+      // Mutually exclusive shadow/operational branches. The denial evaluator
+      // must not traverse the full import metadata proof for a modular write.
       allow create: if request.resource.data.keys().hasAll(["sourceHash", "sourcePath"])
-        && sparkShadowModule(moduleName) && sparkShadowOwner(ownerUid, businessId)
-        && sparkValidShadow(ownerUid, businessId, moduleName, recordId);
+        ? (sparkShadowModule(moduleName) && sparkShadowOwner(ownerUid, businessId)
+          ? sparkValidShadow(ownerUid, businessId, moduleName, recordId) : false) : false;
     }
 
     match /customers/{recordId} {
@@ -2383,6 +2455,38 @@ service cloud.firestore {
         && sparkBoundOperation(ownerUid, businessId)
         && sparkOperationalUpdate(ownerUid, businessId, "customers", recordId);
       allow delete: if false;
+    }
+
+    // Literal module paths keep these new owner-only settings predicates OUT
+    // of every sale/product/movement write's evaluation budget.
+    match /config/{settingsId} {
+      allow update: if signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkSettingsMutation(ownerUid, businessId, "config", settingsId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && settingsId == "main" && sparkBusinessConfigUpdate(ownerUid, businessId);
+    }
+    match /labelTemplates/{settingsId} {
+      allow create: if signedIn()
+        && sparkSettingsMutation(ownerUid, businessId, "labelTemplates", settingsId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "labelTemplates", settingsId);
+      allow update: if signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkSettingsMutation(ownerUid, businessId, "labelTemplates", settingsId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "labelTemplates", settingsId);
+    }
+    match /labelProfiles/{settingsId} {
+      allow create: if signedIn()
+        && sparkSettingsMutation(ownerUid, businessId, "labelProfiles", settingsId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "labelProfiles", settingsId);
+      allow update: if signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkSettingsMutation(ownerUid, businessId, "labelProfiles", settingsId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "labelProfiles", settingsId);
     }
 
     match /products/{recordId} {
@@ -2409,6 +2513,7 @@ service cloud.firestore {
       // Cheap reject only, NOT authorization: the immutable path/identity
       // tuple is still mandatory in sparkOperationalUpdate below.
       allow update: if request.resource.data.module == "sales" && signedIn() && resource.data is map
+        && !resource.data.keys().hasAny(["historyPolicy"])
         && sparkBoundOperation(ownerUid, businessId)
         && sparkPaymentSaleMutation(ownerUid, businessId, recordId)
         && sparkOperationalUpdate(ownerUid, businessId, "sales", recordId);
@@ -2429,6 +2534,7 @@ service cloud.firestore {
         && sparkOperationalCreate(ownerUid, businessId, "layaways", recordId)
         && sparkLayawayMutation(ownerUid, businessId, recordId);
       allow update: if request.resource.data.module == "layaways" && signedIn() && resource.data is map
+        && !resource.data.keys().hasAny(["historyPolicy"])
         && sparkBoundOperation(ownerUid, businessId)
         && sparkPaymentLayawayMutation(ownerUid, businessId, recordId)
         && sparkOperationalUpdate(ownerUid, businessId, "layaways", recordId);
@@ -2441,6 +2547,7 @@ service cloud.firestore {
         && sparkBoundOperation(ownerUid, businessId)
         && sparkOperationalCreate(ownerUid, businessId, "cashSessions", recordId);
       allow update: if request.resource.data.get("module", "") == "cashSessions" && signedIn()
+        && !resource.data.keys().hasAny(["historyPolicy"])
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
         && sparkCashMutation(ownerUid, businessId, recordId, false)
         && sparkBoundOperation(ownerUid, businessId)
@@ -2454,6 +2561,7 @@ service cloud.firestore {
         && sparkBoundOperation(ownerUid, businessId)
         && sparkOperationalCreate(ownerUid, businessId, "dailyReports", recordId);
       allow update: if request.resource.data.get("module", "") == "dailyReports" && signedIn()
+        && !resource.data.keys().hasAny(["historyPolicy"])
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
         && sparkReportMutation(ownerUid, businessId, recordId, false)
         && sparkBoundOperation(ownerUid, businessId)

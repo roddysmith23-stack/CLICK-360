@@ -40,11 +40,21 @@
         // Require an existing durable snapshot; never seed a business from an
         // empty initial UI or infer freshness from a clock or a clean label.
         if(!local?.snapshot||!local.deviceRevision)throw Error('SPARK_MIGRATION_DURABLE_SOURCE_REQUIRED');
+        // Preserve the queue/base/source contract too. Equal commercial JSON
+        // is not evidence that a background save left the migration source
+        // unchanged, nor permission to omit new snapshot-save references.
+        const metadataOf=record=>Object.fromEntries(Object.entries(record).filter(([key])=>key!=='snapshot'));
+        const pinnedMetadataHash=await api.hash(metadataOf(local));
+        const assertMetadata=async now=>{
+          if(!now||await api.hash(metadataOf(now))!==pinnedMetadataHash)
+            throw Error('SPARK_MIGRATION_DEVICE_METADATA_DRIFT_STOP');
+        };
         const pinnedHash=await api.hash(local.snapshot),deviceRevision=local.deviceRevision;
         const assertStable=async()=>{
           context();const now=await readLocal();context();
           if(now?.deviceRevision!==deviceRevision||await api.hash(now.snapshot)!==pinnedHash)
             throw Error('SPARK_MIGRATION_DEVICE_DRIFT_STOP');
+          await assertMetadata(now);context();
         };
         const readSource=async()=>{
           await assertStable();const remote=await server(db.doc(`businesses/${ownerUid}/state/main`));
@@ -118,8 +128,11 @@
         // financial proof for EVERY covered business before any shadow write.
         // Never manufacture zero counters or infer session identity from dates.
         const cashProofs=[];
+        // Administrative staging opt-in only. Production recovery-only entry
+        // returns above and cannot acquire this preservation/operational gate.
+        const historicalReadOnly=policy.automaticHistoricalReadOnly===true;
         for(const businessId of selected.businessIds){
-          const proof=await api.deriveCashSummaries({snapshot:selected.snapshot,businessId});
+          const proof=await api.deriveCashSummaries({snapshot:selected.snapshot,businessId,historicalReadOnly});
           context();await assertStable();
           if(!proof.canProceed)throw Error('SPARK_MIGRATION_CASH_PROOF_REQUIRED');
           cashProofs.push({businessId,...proof});
@@ -129,9 +142,11 @@
           remoteSourceHash:selected.remoteHash,businessIds:selected.businessIds,sourceDeviceId:device.deviceId,
           deviceRecordMetadata,reconciliations,capacityProof,cashProofs})};
         const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,deviceId:device.deviceId,buildSha,resolveUser,
+          requireCashProof:true,historicalReadOnly,
           readSource,recovery:preservedRecovery,onProgress,readGuard:async()=>{
             context();const current=await readLocal();context();
             if(current?.deviceRevision!==deviceRevision)throw Error('SPARK_MIGRATION_DEVICE_DRIFT_STOP');
+            await assertMetadata(current);context();
             await journal.assertOwnerCoverage(ownerUid,selected.businessIds);context();
             for(const businessId of selected.businessIds){
               const identity={ownerUid,businessId},counts=await journal.countPending(identity);

@@ -223,6 +223,8 @@
     if(legalMutationGateActive())return {allowed:false,reason:'legal_acceptance_required'};
     const access=window.click360SparkAccessGate?.();
     if(access?.allowed!==true)return access||{allowed:false,reason:'auth_not_ready'};
+    if(command?.kind==='scoped_settings'&&window.click360Auth?.currentUser?.uid!==window.click360SparkOperationalSession?.identity.ownerUid)
+      return {allowed:false,reason:'permission_required'};
     if(authUser().role==='owner')return access;
     const permission={sale:['sales','create'],product_create:['products','create'],product_edit:['products','update'],inventory_adjust:['products','update'],
       product_delete:['products','delete'],customer_create:['customers','create'],customer_edit:['customers','update'],customer_delete:['customers','delete'],
@@ -1250,6 +1252,19 @@ function parseMoney(value) {
       actionLock.release();
     }
   }
+  async function commitScopedPrintSetting(previousState,moduleName,record){
+    if(!window.click360SparkOperationalSession)return {ok:save()};
+    const previous=(previousState.settings?.[moduleName]||[]).find(item=>item.id===record.id&&item.businessId===record.businessId);
+    return commitCriticalMutation(previousState,'print_settings_updated',()=>false,{sparkCommand:()=>
+      window.CLICK360_MODULAR_UI_ADAPTER.scopedSettingsCommand({identity:window.click360SparkOperationalSession.identity,
+        actorUid:window.click360Auth?.currentUser?.uid,operationId:uid('print-settings'),moduleName,record,previous})});
+  }
+  function scopedBusinessSettingsCommand(previousState,record){
+    return window.CLICK360_MODULAR_UI_ADAPTER.scopedSettingsCommand({
+      identity:window.click360SparkOperationalSession.identity,actorUid:window.click360Auth?.currentUser?.uid,
+      operationId:uid('business-settings'),moduleName:'config',record:{...record,businessId:record.id},
+      previous:previousState.businesses.find(item=>item.id===record.id)});
+  }
   // Action Guardian: wraps a critical-mutation trigger button so a second
   // tap/click while the first is still in flight is ignored outright (no
   // redundant network call, no confusing second toast) instead of relying
@@ -1880,8 +1895,8 @@ function parseMoney(value) {
       ||currentBusiness()?.id!==projection.identity.businessId)throw Error('SPARK_UI_PROJECTION_SCOPE_INVALID');
     const next=cloneState(state),businessId=projection.identity.businessId;
     for(const [moduleName,records]of Object.entries(projection.records)){
-      if(!['products','sales','movements','cashSessions','dailyReports','layaways','customers'].includes(moduleName))throw Error('SPARK_UI_PROJECTION_MODULE_INVALID');
-      const target=moduleName==='customers'?(next.settings.customers||=[]):(next[moduleName]||=[]);
+      if(!['products','sales','movements','cashSessions','dailyReports','layaways','customers','config','labelTemplates','labelProfiles'].includes(moduleName))throw Error('SPARK_UI_PROJECTION_MODULE_INVALID');
+      const target=moduleName==='config'?next.businesses:['customers','labelTemplates','labelProfiles'].includes(moduleName)?(next.settings[moduleName]||=[]):(next[moduleName]||=[]);
       for(const record of records){
         if(record.businessId!==businessId)throw Error('SPARK_UI_PROJECTION_BUSINESS_INVALID');
         if(moduleName==='products'&&record.deleted===true){
@@ -1898,7 +1913,7 @@ function parseMoney(value) {
         if(moduleName==='sales')value.storageRecordId=record.id;
         // Preserve receipt/layaway relationships used by the existing UI.
         if(value.saleId){const sale=projection.records.sales?.find(s=>s.id===value.saleId)||next.sales?.find(s=>s.operationId===value.saleId);value.saleId=sale?.legacyId||sale?.id||value.saleId;}
-        const index=target.findIndex(item=>item.businessId===businessId&&(item.id===id
+        const index=target.findIndex(item=>(moduleName==='config'?item.id===businessId:item.businessId===businessId)&&(item.id===id
           ||(moduleName==='movements'&&item.operationId===value.operationId)));
         if(index<0)target.push(value);else {
           target[index]={...target[index],...value};
@@ -2515,13 +2530,13 @@ function parseMoney(value) {
   }
   function labelTemplatesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
-    return (state.settings?.labelTemplates || []).filter((template) => template.businessId === bid
-      || (!template.businessId && legacyBusinessId === bid));
+    return (state.settings?.labelTemplates || []).filter((template) => template.deleted!==true && (template.businessId === bid
+      || (!template.businessId && legacyBusinessId === bid)));
   }
   function labelProfilesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
-    return (state.settings?.labelProfiles || []).filter((profile) => profile.businessId === bid
-      || (!profile.businessId && legacyBusinessId === bid));
+    return (state.settings?.labelProfiles || []).filter((profile) => profile.deleted!==true && (profile.businessId === bid
+      || (!profile.businessId && legacyBusinessId === bid)));
   }
   const printDeviceMemory = new Map();
   function printDeviceStorageKey(businessId=currentBusiness()?.id) {
@@ -9745,7 +9760,7 @@ function parseMoney(value) {
 		       const committed = await commitCriticalMutation(previousState, 'business_profile_updated', (next) =>
 		         next.businesses.some((business) => business.id === businessId
 		           && business.name === expectedName
-		           && business.settings?.ruc === expectedRuc));
+		           && business.settings?.ruc === expectedRuc),{sparkCommand:()=>scopedBusinessSettingsCommand(previousState,b)});
 		       renderApp('settings');
 		       if (committed.ok) toast(committed.pending ? 'Perfil del negocio guardado; sincronización pendiente.' : 'Perfil del negocio guardado');
 		       } finally {
@@ -12675,7 +12690,8 @@ function parseMoney(value) {
       saveTemplate:async (name, universalDocument, templateId = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo para guardar con seguridad.', 'err');
         state.settings ||= {}; state.settings.labelTemplates ||= [];
-        const previous = [...state.settings.labelTemplates];
+        const activeProfileId=loadPrintDeviceState(businessId).universalProfileId || '';
+        const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
         const existing = state.settings.labelTemplates.find((template) => template.id === templateId && template.businessId === businessId);
         const template = {
           ...(existing || {}), id:existing?.id || uid('tpl'), name, businessId,
@@ -12689,24 +12705,26 @@ function parseMoney(value) {
         const index = state.settings.labelTemplates.findIndex((item) => item.id === template.id && item.businessId === businessId);
         if (index >= 0) state.settings.labelTemplates[index] = template; else state.settings.labelTemplates.push(template);
         addAudit('universal_label_template_saved', { templateId:template.id, businessId, renderer:'universal-mm-v2' });
-        if (!save()) { state.settings.labelTemplates = previous; toast('No se pudo guardar la plantilla en este dispositivo.', 'err'); return null; }
+        if (!(await commitScopedPrintSetting(previousState,'labelTemplates',template)).ok) { toast('No se pudo guardar la plantilla en este dispositivo.', 'err'); return null; }
         refreshInventoryTemplateSection(); toast('Plantilla del lienzo guardada.', 'ok'); return template;
       },
       deleteTemplate:async (templateId) => {
         if (!editorBusinessIsActive()) { toast('El negocio activo cambió. Reabre el lienzo.', 'err'); return false; }
         state.settings ||= {}; state.settings.labelTemplates ||= [];
-        const previous = [...state.settings.labelTemplates];
+        const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
         const beforeCount = previous.length;
-        state.settings.labelTemplates = previous.filter((template) => !(template.id === templateId && template.businessId === businessId));
-        if (state.settings.labelTemplates.length === beforeCount) { toast('Plantilla no encontrada.', 'err'); return false; }
+        const existing=previous.find(template=>template.id===templateId&&template.businessId===businessId);
+        if(window.click360SparkOperationalSession&&existing)state.settings.labelTemplates=previous.map(template=>template===existing?{...template,deleted:true}:template);
+        else state.settings.labelTemplates = previous.filter((template) => !(template.id === templateId && template.businessId === businessId));
+        if (!existing) { toast('Plantilla no encontrada.', 'err'); return false; }
         addAudit('universal_label_template_deleted', { templateId, businessId, renderer:'universal-mm-v2' });
-        if (!save()) { state.settings.labelTemplates = previous; toast('No se pudo eliminar la plantilla.', 'err'); return false; }
+        if (!(await commitScopedPrintSetting(previousState,'labelTemplates',{...existing,deleted:true})).ok) { toast('No se pudo eliminar la plantilla.', 'err'); return false; }
         refreshInventoryTemplateSection(); toast('Plantilla eliminada.', 'ok'); return true;
       },
       saveProfile:async (universalDocument, profileId = '', profileName = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');
         state.settings ||= {}; state.settings.labelProfiles ||= [];
-        const previous = [...state.settings.labelProfiles];
+        const previousState=cloneState(state),previous = [...state.settings.labelProfiles];
         const existing = state.settings.labelProfiles.find((profile) => profile.id === profileId && profile.businessId === businessId);
         const name = String(profileName || existing?.name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`).trim().slice(0, 80);
         const normalizedPaper = canvasApi.normalizeDocument(universalDocument).paper;
@@ -12715,7 +12733,7 @@ function parseMoney(value) {
         const index = state.settings.labelProfiles.findIndex((item) => item.id === profile.id && item.businessId === businessId);
         if (index >= 0) state.settings.labelProfiles[index] = profile; else state.settings.labelProfiles.push(profile);
         addAudit('universal_label_profile_saved', { profileId:profile.id, businessId, status:'provisional' });
-        if (!save()) { state.settings.labelProfiles = previous; toast('No se pudo guardar el perfil.', 'err'); return null; }
+        if (!(await commitScopedPrintSetting(previousState,'labelProfiles',profile)).ok) { toast('No se pudo guardar el perfil.', 'err'); return null; }
         const localState = loadPrintDeviceState(businessId);
         const calibrationKey = window.CLICK360_SMART_PRINT?.universalCalibrationKey(profile.id);
         const geometryFingerprint = window.CLICK360_SMART_PRINT?.universalPaperGeometryFingerprint(sharedPaper) || '';

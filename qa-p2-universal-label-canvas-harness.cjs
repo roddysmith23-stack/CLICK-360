@@ -111,6 +111,8 @@ assert.match(app, /universal-mm-v2/);
 assert.match(app, /renderer:'universal-mm-v2'/);
 assert.match(app, /schemaVersion:2/);
 assert.match(app, /universalProfileId:activeProfileId/);
+assert.match(app, /const activeProfileId=loadPrintDeviceState\(businessId\)\.universalProfileId/,
+  'Universal template callback must resolve its own profile instead of a detached editor variable');
 assert.match(app, /handoffPrint\(/);
 assert.match(editor, /Guardar PDF limpio/);
 assert.match(editor, /ulcSystemPrint/);

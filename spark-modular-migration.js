@@ -91,6 +91,12 @@
     throw Error('MIGRATION_CLEAN_HASH_CONTRADICTION_STOP');
   }
   function at(object,path){return path.reduce((v,k)=>v?.[k],object);}
+  function recordBusiness(snapshot,row){
+    const businessIds=snapshot.businesses.map(b=>b.id);
+    const businessId=row.businessId||snapshot.settings?.legacyDataBusinessId||(businessIds.length===1?businessIds[0]:'');
+    if(!businessIds.includes(businessId))throw Error('MIGRATION_AMBIGUOUS_BUSINESS_STOP');
+    return businessId;
+  }
   function assign(object,path,value){
     let current=object;
     for(let i=0;i<path.length-1;i++){
@@ -123,9 +129,7 @@
     if(!Number.isSafeInteger(remoteRevision)||remoteRevision<0)throw Error('MIGRATION_INVALID_REVISION');
     const sourceHash=await hash(snapshot),records=[],seen=new Set();
     function partition(row){
-      const businessId=row.businessId||snapshot.settings?.legacyDataBusinessId||(businessIds.length===1?businessIds[0]:'');
-      if(!businessIds.includes(businessId))throw Error('MIGRATION_AMBIGUOUS_BUSINESS_STOP');
-      return businessId;
+      return recordBusiness(snapshot,row);
     }
     async function record(module,businessId,recordId,data,sourcePath){
       const key=`${businessId}/${module}/${recordId}`;
@@ -197,15 +201,97 @@
     if(json(moduleHashes)!==json(manifest.moduleHashes)||json(stats(rebuilt,manifest.businessIds))!==json(manifest.counts))throw Error('MIGRATION_REMOTE_MODULE_MISMATCH');
     return {status:'SEMANTIC_EQUALITY_PASS',sourceHash,reconstructedHash,counts:stats(rebuilt,manifest.businessIds),moduleHashes,recordCount:remoteRecords.length};
   }
-  async function deriveCashSummaries({snapshot,businessId}){
+  async function historicalPlan(snapshot,businessId,sourceHash,proof){
+    if(sourceHash!==await hash(snapshot))throw Error('MIGRATION_HISTORY_SOURCE_HASH_MISMATCH');
+    const modules=['cashSessions','sales','movements','dailyReports','layaways'];
+    const rows=new Map(),links=new Map(),failures=[];
+    for(const module of modules)for(const row of snapshot[module]||[])if(recordBusiness(snapshot,row)===businessId){
+      const key=`${module}/${id(row.id)}`;
+      if(rows.has(key))throw Error('MIGRATION_HISTORY_DUPLICATE_ID');
+      rows.set(key,{module,row});links.set(key,new Set());
+    }
+    const connect=(from,module,target)=>{
+      if(target===undefined||target===null||target==='')return;
+      const key=`${module}/${target}`;
+      if(!rows.has(key)){links.get(from).add(`missing:${key}`);return;}
+      links.get(from).add(key);links.get(key).add(from);
+    };
+    for(const [key,{module,row}]of rows){
+      connect(key,'cashSessions',row.cashSessionId);connect(key,'sales',row.saleId);
+      connect(key,'dailyReports',row.reportId);connect(key,'layaways',row.layawayId);
+      if(module==='dailyReports'&&Array.isArray(row.saleIds))for(const saleId of row.saleIds)connect(key,'sales',saleId);
+    }
+    // Legacy opening movements can omit cashSessionId. The financial proof
+    // associates only their exact stable opening operation, never their date.
+    // Keep those proven relationships in the immutable-history closure too.
+    for(const [sessionId,history]of Object.entries(proof.unverifiedHistory)){
+      const key=`cashSessions/${sessionId}`;
+      for(const [module,ids]of [['sales',history.saleIds],['movements',history.movementIds],['dailyReports',history.reportIds]])
+        for(const target of ids)connect(key,module,target);
+    }
+    const selected=new Set(),queue=[...Object.keys(proof.unverifiedHistory).map(sessionId=>`cashSessions/${sessionId}`),
+      ...Object.keys(proof.unverifiedStandaloneHistory||{})];
+    while(queue.length){const key=queue.pop();if(selected.has(key))continue;selected.add(key);
+      if(!rows.has(key)){failures.push({reason:'MIGRATION_HISTORY_RELATIONSHIP_UNKNOWN'});continue;}
+      for(const linked of links.get(key))queue.push(linked);
+    }
+    const historyPolicies={};
+    for(const key of selected){
+      const entry=rows.get(key);if(!entry)continue;
+      const {module,row}=entry;
+      if(module==='cashSessions'&&(row.status!=='closed'||typeof row.closedAt!=='string'||!row.closedAt))
+        failures.push({record:key,reason:'MIGRATION_HISTORY_OPEN_SESSION_STOP'});
+      if(module==='sales'&&(!Number.isFinite(row.total)||!Number.isFinite(row.received)||row.total<0||row.received<row.total
+        ||(row.balance!==undefined&&row.balance!==0)||['layaway','pending_payment'].includes(row.status)))
+        failures.push({record:key,reason:'MIGRATION_HISTORY_ACTIVE_RECEIVABLE_STOP'});
+      if(module==='layaways'&&(!['picked_up','cancelled','refunded'].includes(row.status)||row.balance!==0))
+        failures.push({record:key,reason:'MIGRATION_HISTORY_ACTIVE_LAYAWAY_STOP'});
+      historyPolicies[key]={version:1,mode:'CLOSED_READ_ONLY',sourceHash,recordHash:await hash(row),
+        reason:'MIGRATION_CASH_HISTORICAL_COMPONENT_UNVERIFIED'};
+    }
+    return {canProceed:proof.historicalPreservationReady&&failures.length===0,sourceHash,historyPolicies,failures};
+  }
+  async function historicalReadOnlyPlan({snapshot,businessId,sourceHash}){
+    return historicalPlan(snapshot,businessId,sourceHash,await deriveCashSummaries({snapshot,businessId}));
+  }
+  async function deriveCashSummaries({snapshot,businessId,historicalReadOnly=false}){
     if(!snapshot?.businesses?.some(b=>b.id===businessId))throw Error('MIGRATION_CASH_BUSINESS_REQUIRED');
-    const scoped=name=>(snapshot[name]||[]).filter(row=>row.businessId===businessId);
+    const scoped=name=>(snapshot[name]||[]).filter(row=>recordBusiness(snapshot,row)===businessId);
     const sessions=scoped('cashSessions'),sales=scoped('sales'),movements=scoped('movements'),reports=scoped('dailyReports');
     const unique=rows=>{const ids=new Set();for(const row of rows){if(!row.id||ids.has(row.id))throw Error('MIGRATION_CASH_DUPLICATE_ID');ids.add(row.id);}return ids;};
     const sessionIds=unique(sessions);unique(sales);unique(movements);unique(reports);
     const cents=value=>{if(typeof value!=='number'||!Number.isFinite(value)||value<0
       ||Math.abs(value*100-Math.round(value*100))>0.00001)throw Error('MIGRATION_CASH_AMOUNT_UNVERIFIED');return Math.round(value*100);};
-    const saleById=new Map(sales.map(row=>[row.id,row])),verified={},failures=[];
+    const saleById=new Map(sales.map(row=>[row.id,row])),verified={},failures=[],unverifiedHistory={},unverifiedStandaloneHistory={};
+    // Enumerating sessions is insufficient if an orphan financial record has
+    // a different date. Preserve that record, but do not certify counters that
+    // silently omit it or attach it to another session by date.
+    for(const row of sales)if(!sessionIds.has(row.cashSessionId))
+      failures.push({cashSessionId:null,recordId:row.id,reason:'MIGRATION_CASH_ORPHAN_SALE_STOP'});
+    for(const row of reports)if(!sessionIds.has(row.cashSessionId))
+      failures.push({cashSessionId:null,recordId:row.id,reason:'MIGRATION_CASH_ORPHAN_REPORT_STOP'});
+    for(const row of movements)if(['apertura','ingreso','egreso','retiro','compra'].includes(row.kind)&&!sessionIds.has(row.cashSessionId)){
+      const exactOpening=row.kind==='apertura'&&row.operationId
+        &&sessions.filter(session=>session.operationId===row.operationId).length===1;
+      if(!exactOpening){
+        // Some published legacy versions retained zero-valued expense/withdraw
+        // notes with no session. They affect no balance and cannot be attached
+        // by date. Preserve them ONLY as explicit immutable history; a receipt,
+        // nonzero amount or dangling session reference never gets this path.
+        const zeroHistory=['egreso','retiro'].includes(row.kind)&&row.amount===0&&!row.cashSessionId
+          &&!row.saleId&&!row.productId&&!row.operationId&&/^\d{4}-\d{2}-\d{2}$/.test(row.date||'');
+        if(zeroHistory)unverifiedStandaloneHistory[`movements/${row.id}`]={recordHash:await hash(row),
+          operational:false,reason:'MIGRATION_CASH_ZERO_UNASSIGNED_HISTORY'};
+        failures.push({cashSessionId:null,recordId:row.id,
+          reason:zeroHistory?'MIGRATION_CASH_ZERO_UNASSIGNED_HISTORY':'MIGRATION_CASH_ORPHAN_MOVEMENT_STOP'});
+      }
+    }
+    // Preservation and financial verification are deliberately different
+    // contracts. Legacy records may contain corrupted payment-method objects,
+    // reconciliation-only closures, or old reports reused by another session.
+    // Preserve those original bytes/relationships, but never invent counters
+    // or grant permission to reopen, receive money or close them again.
+    const historySourceHash=await hash({businessId,cashSessions:sessions,sales,movements,dailyReports:reports});
     for(const session of sessions){
       try{
         if(!['open','closed'].includes(session.status)||!session.date)throw Error('MIGRATION_CASH_STATE_UNVERIFIED');
@@ -324,9 +410,31 @@
           closeCycle:1+linkedReports.filter(row=>row.status==='reopened').length};
         verified[session.id]={summary,summaryHash:await hash(summary),saleIds:linkedSales.map(row=>row.id),
           movementIds:linkedMoves.map(row=>row.id),reportIds:linkedReports.map(row=>row.id)};
-      }catch(error){failures.push({cashSessionId:session.id,reason:error.message});}
+      }catch(error){
+        failures.push({cashSessionId:session.id,reason:error.message});
+        if(session.status==='closed'&&typeof session.closedAt==='string'&&session.closedAt){
+          unverifiedHistory[session.id]={
+            status:'HISTORICAL_CLOSED_UNVERIFIED',businessId,cashSessionId:session.id,
+            sourceHash:historySourceHash,sessionHash:await hash(session),reason:error.message,
+            financiallyVerified:false,operational:false,reopenAllowed:false,
+            saleIds:sales.filter(row=>row.cashSessionId===session.id).map(row=>row.id),
+            movementIds:movements.filter(row=>row.cashSessionId===session.id
+              ||(!row.cashSessionId&&row.kind==='apertura'&&row.operationId&&row.operationId===session.operationId)).map(row=>row.id),
+            reportIds:reports.filter(row=>row.cashSessionId===session.id).map(row=>row.id)
+          };
+        }
+      }
     }
-    return {canProceed:failures.length===0,verified,failures};
+    // Opt-in is only for a coordinator that installs the source-bound immutable
+    // history policy enforced by Rules. No operational summary is granted.
+    const historicalPreservationReady=failures.every(row=>Object.hasOwn(unverifiedHistory,row.cashSessionId)
+      ||(row.reason==='MIGRATION_CASH_ZERO_UNASSIGNED_HISTORY'&&Object.hasOwn(unverifiedStandaloneHistory,`movements/${row.recordId}`)));
+    const proof={verified,failures,unverifiedHistory,unverifiedStandaloneHistory,historicalPreservationReady};
+    const historyPlan=historicalReadOnly===true?await historicalPlan(snapshot,businessId,await hash(snapshot),proof):null;
+    return {canProceed:failures.length===0||(historicalReadOnly===true&&historyPlan.canProceed),verified,failures,unverifiedHistory,unverifiedStandaloneHistory,
+      historyPlan,
+      historicalPreservationReady,
+      requiresHistoricalReadOnlyFence:Object.keys(unverifiedHistory).length>0||Object.keys(unverifiedStandaloneHistory).length>0};
   }
-  root.CLICK360_SPARK_MIGRATION=Object.freeze({SCHEMA_VERSION,MAX_RECORD_BYTES,arrays,canonicalJson:json,byteLength:bytes,hash,selectSource,plan,compare,deriveCashSummaries});
+  root.CLICK360_SPARK_MIGRATION=Object.freeze({SCHEMA_VERSION,MAX_RECORD_BYTES,arrays,canonicalJson:json,byteLength:bytes,hash,selectSource,plan,compare,deriveCashSummaries,historicalReadOnlyPlan});
 })(typeof window==='undefined'?globalThis:window);

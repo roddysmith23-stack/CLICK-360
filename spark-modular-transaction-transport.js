@@ -2,7 +2,7 @@
   'use strict';
   // Transport only. Not loaded by the public app and never enables cutover.
   // Operational Rules and domain adapters must certify each business mutation.
-  const modules=new Set(['products','sales','movements','cashSessions','dailyReports','auditEvents','customers','operationLedger','config','metadata','layaways']);
+  const modules=new Set(['products','sales','movements','cashSessions','dailyReports','auditEvents','customers','operationLedger','config','metadata','layaways','labelTemplates','labelProfiles']);
   function copyProjection(value){
     const data={...value},native={};
     for(const field of ['createdAt','updatedAt','closedAt'])if(Object.hasOwn(data,field)){native[field]=data[field];delete data[field];}
@@ -39,21 +39,32 @@
         // Staff cannot read owner-wide migration metadata for other units.
         // Their scoped reads and immutable-ledger CREATE are authorized by
         // client Rules, which enforce modular mode and membership at commit.
-        const reads=new Map(),writes=new Map();let writing=false,active=true;
+        const reads=new Map(),pendingReads=new Map(),writes=new Map();let writing=false,active=true;
         function live(){context();if(!active)throw Error('SPARK_TRANSACTION_SCOPE_EXPIRED');}
         async function get(moduleName,recordId){
           live();if(writing)throw Error('SPARK_TRANSACTION_READ_AFTER_WRITE');
           const s=scope(moduleName,recordId),key=`${moduleName}/${recordId}`;
           if(!reads.has(key)){
-            if(reads.size>=maxRecords)throw Error('SPARK_TRANSACTION_RECORD_BUDGET');
-            progress({stage:'READING_RECORD',moduleName});
-            const ref=db.doc(`${unit}/${key}`),snap=await tx.get(ref);live();
-            const raw=snap.exists?snap.data():null;
-            progress({stage:'VERIFYING_RECORD',moduleName});
-            const value=raw?await codec.unpack(raw,s):null;live();
-            reads.set(key,{ref,raw,value,scope:s});
-            progress({stage:'RECORD_VERIFIED',moduleName});
+            if(pendingReads.has(key))await pendingReads.get(key);
+            else{
+              // Reserve the budget BEFORE awaiting the network. Bounded
+              // parallel receipt/projection reads must not bypass this guard
+              // or issue duplicate requests for the same record.
+              if(reads.size+pendingReads.size>=maxRecords)throw Error('SPARK_TRANSACTION_RECORD_BUDGET');
+              const pending=(async()=>{
+                progress({stage:'READING_RECORD',moduleName});
+                const ref=db.doc(`${unit}/${key}`),snap=await tx.get(ref);live();
+                const raw=snap.exists?snap.data():null;
+                progress({stage:'VERIFYING_RECORD',moduleName});
+                const value=raw?await codec.unpack(raw,s):null;live();
+                reads.set(key,{ref,raw,value,scope:s});
+                progress({stage:'RECORD_VERIFIED',moduleName});
+              })();
+              pendingReads.set(key,pending);
+              try{await pending;}finally{pendingReads.delete(key);}
+            }
           }
+          live();
           return reads.get(key).value?copyProjection(reads.get(key).value):null;
         }
         function stage(moduleName,recordId,value,kind){

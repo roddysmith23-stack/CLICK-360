@@ -2,7 +2,8 @@
   'use strict';
   // Explicit transport, not loaded/started by production. Uses only the client
   // Firestore SDK. Recovery must independently read back an IndexedDB pin.
-  function create({db,firebase,projectId,ownerUid,buildSha,deviceId,resolveUser,readSource,readGuard,recovery,onProgress=()=>{}}){
+  function create({db,firebase,projectId,ownerUid,buildSha,deviceId,resolveUser,readSource,readGuard,recovery,
+    requireCashProof=false,historicalReadOnly=false,onProgress=()=>{}}){
     const api=root.CLICK360_SPARK_MIGRATION;
     if(!api||!db?.runTransaction||!db?.collection||!firebase?.firestore?.FieldValue
       ||typeof resolveUser!=='function'||typeof readSource!=='function'||typeof readGuard!=='function'||!recovery?.pin||!recovery?.read)throw Error('SPARK_IMPORTER_INCOMPLETE');
@@ -72,8 +73,10 @@
         await db.runTransaction(async tx=>{
           context();const control=await tx.get(controlRef);
           if(control.data()?.phase!=='SHADOW_WRITING'||control.data()?.sourceHash!==manifest.sourceHash)throw Error('SPARK_SHADOW_PHASE_CONFLICT');
-          const existing=[];
-          for(const row of rows)existing.push(await tx.get(db.doc(row.path)));
+          // All IDs are known and independent. Keep the same bounded 25-row
+          // atomic chunk, but do not pay one network round trip per record.
+          // Nothing is staged until EVERY authoritative read has completed.
+          const existing=await Promise.all(rows.map(row=>tx.get(db.doc(row.path))));
           for(let i=0;i<rows.length;i++){
             if(existing[i].exists){
               if(api.canonicalJson(existing[i].data())!==api.canonicalJson(rows[i].content))throw Error('SPARK_SHADOW_EXISTING_RECORD_CONFLICT');
@@ -119,6 +122,27 @@
       const selected=await source();
       const manifest={...await api.plan({ownerUid,snapshot:selected.snapshot,identity:selected.identity,remoteRevision:selected.remoteRevision,deviceRevision:selected.deviceRevision||''}),
         remoteHash:selected.remoteHash};
+      // Preserve original financial JSON exactly. Verified operational counters
+      // and explicit immutable-history fences live outside that original data.
+      // This is opt-in for the connected coordinator; a preservation-only
+      // importer cannot silently turn a codec roundtrip into financial proof.
+      const cashProofs=[];
+      if(requireCashProof){
+        for(const businessId of selected.businessIds){
+          const proof=await api.deriveCashSummaries({snapshot:selected.snapshot,businessId,historicalReadOnly});
+          if(!proof.canProceed)throw Error('SPARK_MIGRATION_CASH_PROOF_REQUIRED');
+          cashProofs.push({businessId,...proof});
+          for(const row of manifest.records.filter(row=>row.content.businessId===businessId)){
+            const c=row.content,policy=proof.historyPlan?.historyPolicies[`${c.module}/${c.id}`];
+            if(policy)c.historyPolicy=structuredClone(policy);
+            else if(c.module==='cashSessions'&&proof.verified[c.id]){
+              c.operational=structuredClone(proof.verified[c.id].summary);
+              c.operationalHash=proof.verified[c.id].summaryHash;
+            }
+            if(api.byteLength(c)>api.MAX_RECORD_BYTES)throw Error('MIGRATION_RECORD_TOO_LARGE_STOP');
+          }
+        }
+      }
       await assertGuard(manifest);
       await recovery.pin({sourceHash:manifest.sourceHash,snapshot:selected.snapshot,identity:selected.identity,deviceRevision:manifest.deviceRevision,
         remoteRevision:selected.remoteRevision,pendingOperations:selected.pendingOperations,buildSha});
@@ -128,6 +152,16 @@
       if(phase==='SHADOW_WRITING'){await writeShadow(manifest);await transition('SHADOW_VERIFYING',manifest);phase='SHADOW_VERIFYING';}
       if(!['SHADOW_VERIFYING','READY_TO_CUTOVER'].includes(phase))throw Error('SPARK_IMPORT_PHASE_UNSUPPORTED');
       const remoteRecords=await readShadow(manifest);
+      // Semantic comparison proves original data; independently verify the
+      // added operational/fence metadata from SERVER records as well. A
+      // missing fence or a fabricated summary must never inherit equality.
+      const expectedRecords=new Map(manifest.records.map(row=>[row.path,row.content]));
+      for(const row of remoteRecords){
+        const expected=expectedRecords.get(row.path);
+        for(const key of ['historyPolicy','operational','operationalHash'])
+          if(api.canonicalJson(row.content[key]??null)!==api.canonicalJson(expected?.[key]??null))
+            throw Error('SPARK_SHADOW_FINANCIAL_METADATA_MISMATCH');
+      }
       onProgress({phase:'SHADOW_VERIFYING',stage:'semantic_compare',recordCount:remoteRecords.length});
       const equality=await api.compare({manifest,remoteRecords,source:selected.snapshot});
       onProgress({phase:'SHADOW_VERIFYING',stage:'semantic_verified',recordCount:remoteRecords.length});
@@ -135,7 +169,7 @@
       if(phase==='SHADOW_VERIFYING')await transition('READY_TO_CUTOVER',manifest,equality);
       // No implicit cutover: operational adapters, role Rules and real PWA
       // must be certified first. This module only prepares verified shadow.
-      return {phase:'READY_TO_CUTOVER',manifest,equality,cutoverPerformed:false};
+      return {phase:'READY_TO_CUTOVER',manifest,equality,cashProofs,cutoverPerformed:false};
     }
     return Object.freeze({prepareShadow});
   }

@@ -239,6 +239,24 @@ const preparedReceipt=await repo.prepareOperation('receivable_payment',paymentOn
 assert.equal((await repo.lookupOperation('receipt-one','receivable_payment',preparedReceipt.payloadSha256)).exists,true,'Earlier confirmed receipt remains confirmable after a later payment');
 const receiptView=await repo.readOperationProjection('receipt-two','receivable_payment',(await repo.prepareOperation('receivable_payment',paymentTwo)).payloadSha256);
 assert(!receiptView.records.products,'Receipt projection does not scan original sale stock');
+// Independent linked reads remain in ONE server transaction, but need not
+// serialize one network round trip per receipt/session. Deterministic barrier,
+// not an increased browser timeout or latency-based sleep.
+for(const method of ['lookupOperation','readOperationProjection']){
+  let started=0,release;
+  const barrier=new Promise(resolve=>release=resolve),hash='d'.repeat(64);
+  const proofRepo=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,serverTimestamp:()=>0,
+    transport:{run:callback=>callback({get:async(module,id)=>{
+      if(module==='operationLedger')return {kind:'sale',status:'committed',payloadHash:hash,
+        result:{saleId:'sale-proof',movementId:'sale-proof',cashSessionId:'session-proof'}};
+      if(module!=='products'){started++;await barrier;}
+      return {id,operationId:'sale-proof',stockOrder:[]};
+    }})}});
+  const flight=proofRepo[method]('sale-proof','sale',hash);
+  for(let turn=0;turn<20&&started<3;turn++)await Promise.resolve();
+  const concurrent=started;release();await flight;
+  assert.equal(concurrent,3,`${method} must start all exact linked reads before waiting for the first response`);
+}
 console.log(JSON.stringify({status:'PASS',transport:'synthetic_atomic',historicalDate:true,manualSale:true,partialPayment:true,zeroPayment:true,subsequentReceipts:true,
   actorBoundReplay:true,productLogicalDelete:true,productDeleteStockPreserved:true,
   idempotent:true,sameProductRace:true,exactCashSession:true,reopenSeparateReport:true,historyIndependentCoreReads:saleReads,

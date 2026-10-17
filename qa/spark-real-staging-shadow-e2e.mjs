@@ -29,6 +29,7 @@ assert.equal(admin.projectId,PROJECT);
 let browser;const results=[];
 try{
   for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']]){
+    console.log(JSON.stringify({stage:'REAL_SHADOW_START',engine:name,recoveryOnly,projectId:PROJECT}));
     const uid='qa-spark-staging-'+randomUUID(),email=uid+'@click360-qa.invalid',password=randomBytes(32).toString('base64url');
     assert(uid.startsWith('qa-spark-staging-'));await auth.createUser({uid,email,password,emailVerified:true});
     await writeFile(directory+'/'+name+'.private.json',JSON.stringify({projectId:PROJECT,uid,email,password}),{mode:0o600,flag:'wx'});
@@ -40,10 +41,17 @@ try{
     const envelope=stateDocument(uid,41,data),local=structuredClone(data);
     for(const p of local.products)if(p.businessId===uid)p.notes='x'.repeat(300000);
     local.identity=identity(uid);local.products[0].stock--;local.products[0].qty--;
-    local.cashSessions.push({id:'historical-session',businessId:uid,businessDate:'2026-09-03',status:'open'});
+    local.cashSessions.push({id:'historical-session',operationId:'local-opening',businessId:uid,
+      date:'2026-09-03',businessDate:'2026-09-03',status:'open',openingAmount:0});
     local.sales.push({id:'local-sale',operationId:'local-sale',businessId:uid,cashSessionId:'historical-session',
-      businessDate:'2026-09-03',total:30,items:[{id:local.products[0].id,qty:1,price:30}]});
-    local.movements.push({id:'local-payment',businessId:uid,cashSessionId:'historical-session',saleId:'local-sale',amount:30});
+      date:'2026-09-03',businessDate:'2026-09-03',total:30,received:30,iva:0,method:'Transferencia',
+      items:[{id:local.products[0].id,qty:1,price:30}]});
+    local.movements.push({id:'local-opening',operationId:'local-opening',businessId:uid,
+      cashSessionId:'historical-session',date:'2026-09-03',kind:'apertura',amount:0},
+      {id:'local-payment',operationId:'local-sale',businessId:uid,cashSessionId:'historical-session',
+        saleId:'local-sale',date:'2026-09-03',kind:'ingreso',paymentType:'sale',paymentMethod:'Transferencia',amount:30});
+    const cashProof=await CLICK360_SPARK_MIGRATION.deriveCashSummaries({snapshot:local,businessId:uid});
+    assert(cashProof.canProceed,'Staging shadow source must contain a financially provable historical session');
     const sourceHash=await CLICK360_SPARK_MIGRATION.hash(local);assert(CLICK360_SPARK_MIGRATION.byteLength(local)>850000);
     // Admin is used ONLY to create private synthetic fixtures/policy. Every
     // migration write and comparison below is performed by the actual PWA SDK.
@@ -56,6 +64,7 @@ try{
       tx.set(ref,{...(p||{}),enabled:true,automaticShadow:!recoveryOnly,automaticRecoveryCopy:recoveryOnly,
         pilotOwnerUids:[...new Set([...(p?.pilotOwnerUids||[]),uid])]});
     });
+    console.log(JSON.stringify({stage:'REAL_SHADOW_FIXTURE_READY',engine:name,recoveryOnly}));
     browser=await engine.launch();const context=await browser.newContext({viewport:{width:390,height:844}});
     await context.addInitScript(()=>{
       const original=Storage.prototype.setItem;
@@ -82,6 +91,7 @@ try{
         return CLICK360_V16_STORAGE.getSnapshot(tenant);
       },{tenant,local,recoveryOnly,second});
       await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email,password});
+      console.log(JSON.stringify({stage:'REAL_SHADOW_AUTHENTICATED',engine:name,recoveryOnly}));
       const verify=async()=>{
         if(recoveryOnly){
           await page.waitForFunction(()=>{
@@ -127,6 +137,23 @@ try{
           status:resumed.status,pending:100,unknown:1,operationalCloudConfirmed:false}:{}),
         localSnapshotUnchanged:true,legacyUnchanged:true,coldRestartResume:true,localStorageDeviceIdFailureRecovered:true,businesses:2,cutover:false});
       console.log(JSON.stringify({stage:'REAL_SHADOW_PREPARATION_PASS',...results.at(-1)}));
+    }catch(error){
+      const diagnostics=[];
+      for(const page of context.pages()){
+        diagnostics.push(await page.evaluate(()=>({
+          phase:window.click360SparkBootstrapState?.phase,
+          reason:window.click360SparkBootstrapState?.reason,
+          progress:window.click360SparkBootstrapProgress,
+          recoveryStatus:window.click360SparkRecoveryCopy?.status,
+          recoveryReason:window.click360SparkRecoveryCopy?.reason,
+          migrationPhase:window.click360SparkMigrationState?.phase,
+          online:navigator.onLine,
+          authenticated:!!window.click360Auth?.currentUser
+        })).catch(()=>({pageUnavailable:true})));
+      }
+      await writeFile(`${directory}/${name}-failure.private.json`,JSON.stringify({diagnostics,error:String(error)}),{mode:0o600,flag:'wx'});
+      console.error(JSON.stringify({stage:'REAL_SHADOW_FAILED',engine:name,recoveryOnly,diagnostics}));
+      throw error;
     }finally{await context.close();await browser.close();browser=null;}
   }
   const result={status:'PASS',scope:recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,

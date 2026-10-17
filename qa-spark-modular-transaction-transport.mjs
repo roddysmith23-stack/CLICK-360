@@ -38,6 +38,10 @@ await assert.rejects(()=>transport.run(async tx=>{await tx.get('products','p.1')
 rows.get(controlPath).storageMode='migrating';await assert.rejects(()=>transport.run(()=>{}),/CUTOVER_NOT_VERIFIED/);rows.get(controlPath).storageMode='modular';
 assert.throws(()=>globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({...input,projectId:'click-360'}),/NONPRODUCTION_ONLY/);
 reads=[];await transport.run(async tx=>{await tx.get('products','p.1');await tx.get('products','p.1');});assert.equal(reads.length,2);
+reads=[];await transport.run(async tx=>Promise.all([tx.get('products','p.1'),tx.get('products','p.1')]));
+assert.equal(reads.length,2,'Concurrent same-record reads share one authoritative load');
+const bounded=globalThis.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({...input,maxRecords:2});
+await assert.rejects(bounded.run(tx=>Promise.all(['one','two','three'].map(id=>tx.get('products',id)))),/RECORD_BUDGET/);
 let leaked;await transport.run(tx=>{leaked=tx;});await assert.rejects(()=>leaked.get('products','p.1'),/SCOPE_EXPIRED/);
 assert.equal(commits,2);
 let pageFault=null,requestedPageSize=0;

@@ -10,6 +10,18 @@ assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingP
 assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,businessId:'foreign'}}),/CONTEXT_INVALID/);
 assert.throws(()=>api.productDeleteCommand({...deleteInput,product:{...deletingProduct,deleted:true}}),/CONTEXT_INVALID/);
 const identity={ownerUid:'synthetic-owner',businessId:'alpha'};
+const settingsInput={identity,actorUid:identity.ownerUid,operationId:'settings-op',moduleName:'config',
+  record:{id:'alpha',businessId:'alpha',name:'Synthetic',type:'ropa',settings:{ruc:'000',workers:['must-not-send']}},
+  previous:{id:'alpha',businessId:'alpha',recordVersion:3}};
+const settingsBefore=structuredClone(settingsInput),settings=api.scopedSettingsCommand(settingsInput);
+assert.deepEqual(settings.input,{operationId:'settings-op',moduleName:'config',recordId:'main',expectedRecordVersion:3,
+  changes:{name:'Synthetic',type:'ropa',settings:{ruc:'000'}}});
+assert.deepEqual(settingsInput,settingsBefore);
+for(const delta of [{actorUid:'worker'},{moduleName:'operationLedger'},{identity:{...identity,businessId:'foreign'}},
+  {previous:{id:'alpha'}}])assert.throws(()=>api.scopedSettingsCommand({...settingsInput,...delta}),/MODULAR_SETTINGS_/);
+const printCommand=api.scopedSettingsCommand({...settingsInput,moduleName:'labelTemplates',previous:undefined,
+  record:{id:'template',businessId:'alpha',name:'Label',recordVersion:10,ownerUid:'fake',createdAt:'old'}});
+assert.deepEqual(printCommand.input.changes,{id:'template',businessId:'alpha',name:'Label'});
 const previousClose={id:'previous-report',cashSessionId:'previous-session',businessId:'alpha',date:'2026-09-03',status:'closed',recordVersion:2,
   openingAmount:0,declaredCash:5,closeCash:5,theoreticalCash:5,difference:0,saleCount:1,total:30,totalItems:1,totalIva:0,incomeCash:0,expenseCash:0,
   paymentTotals:{cash:5,card:0,transfer:25,receivablePayments:0}};
