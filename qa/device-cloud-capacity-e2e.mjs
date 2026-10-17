@@ -66,7 +66,35 @@ try {
         },result.ctx);
         assert.deepEqual(restart,{fenced:true,raced:true,stock:2,pending:1});
       }
-      console.log(`PASS ${name}: actual save + native IDB 900KB/1.2MB/3MB/7MB, cold restart, stale-tab CAS, cloud-mirror fence`);
+      const modular=await page.evaluate(async()=>{
+        const api=CLICK360_V16_STORAGE,ctx={authUid:'synthetic-modular',ownerId:'synthetic-modular',
+          businessId:'synthetic-modular',tenantKey:'owner:synthetic-modular:business:synthetic-modular'};
+        await api.putSnapshot(ctx,{products:[{id:'p',stock:2}]},{source:'spark_operational_candidate',deviceRevision:'one'});
+        let legacy=false,stale=false;
+        try{await api.putSnapshot(ctx,{products:[]},{source:'cloud_confirmed',expectedDeviceRevision:'one'});}catch(e){legacy=e.code==='indexeddb-revision-conflict';}
+        try{await api.putSnapshot(ctx,{products:[]},{source:'spark_operational_candidate',expectedDeviceRevision:'stale'});}catch(e){stale=e.code==='indexeddb-revision-conflict';}
+        const protectedRecord=await api.getSnapshot(ctx);
+        await api.putSnapshot(ctx,protectedRecord.snapshot,{source:'spark_operational_candidate',expectedDeviceRevision:'one',deviceRevision:'two'});
+        const after=await api.getSnapshot(ctx);
+        return {legacy,stale,stock:after.snapshot.products[0].stock,revision:after.deviceRevision};
+      });
+      assert.deepEqual(modular,{legacy:true,stale:true,stock:2,revision:'two'});
+      const preferences=await page.evaluate(async()=>{
+        const api=CLICK360_V16_STORAGE,ctx={authUid:'synthetic-preferences',ownerId:'synthetic-preferences',
+          businessId:'synthetic-preferences',tenantKey:'owner:synthetic-preferences:business:synthetic-preferences'};
+        const snapshot={businesses:[{id:'first'},{id:'second'}],products:[{id:'p',stock:2}],sales:[{id:'sale',total:30}]};
+        await api.putSnapshot(ctx,snapshot,{source:'spark_operational_candidate',deviceRevision:'financial-one'});
+        await api.putWorkingDate(ctx,'first','2026-09-04');await api.putWorkingDate(ctx,'second','2026-09-05');
+        let denied=false;try{await api.putWorkingDate(ctx,'foreign','2026-09-06');}catch{denied=true;}
+        const saved=await api.getSnapshot(ctx);
+        await api.putSnapshot(ctx,saved.snapshot,{source:'spark_operational_candidate',expectedDeviceRevision:'financial-one',deviceRevision:'financial-two'});
+        const after=await api.getSnapshot(ctx),other=await api.getSnapshot({...ctx,authUid:'different-user'});
+        return {denied,snapshotUnchanged:JSON.stringify(after.snapshot)===JSON.stringify(snapshot),
+          dates:after.uiWorkingDates,revision:after.deviceRevision,otherUser:other};
+      });
+      assert.deepEqual(preferences,{denied:true,snapshotUnchanged:true,dates:{first:'2026-09-04',second:'2026-09-05'},
+        revision:'financial-two',otherUser:null});
+      console.log(`PASS ${name}: actual save + native IDB 900KB/1.2MB/3MB/7MB, cold restart, stale-tab CAS, cloud-mirror fence, modular CAS`);
     } finally { await browser.close(); }
   }
 } finally { await new Promise(resolve=>server.close(resolve)); }

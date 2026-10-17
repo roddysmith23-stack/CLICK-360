@@ -16,4 +16,3 @@
   }
 root.CLICK360_P0A_CANONICAL=Object.freeze({canonicalJson:json,byteLength:bytes,hash});
 })(typeof window==='undefined'?globalThis:window);
-

@@ -40,7 +40,8 @@ assert.match(app, /addAudit\('receipt_issued'/, 'successful receipt handoffs are
 assert.match(app, /id="activityAction"/, 'activity can be filtered by action');
 assert.match(app, /function collectedInRange\(/, 'reports attribute collections by payment date');
 assert.match(app, /WORKER_TENANT_ACCESS_ENABLED = window\.CLICK360_WORKER_DATA_BOUNDARY\?\.enabledForProject/, 'worker operations are gated to the modular staging boundary');
-assert.match(firebase, /STATE_DOC = null;[\s\S]*MODULAR_GATEWAY = gateway;[\s\S]*MODULAR_MODE = true;/, 'workers never receive the monolithic state document');
+assert.match(firebase, /STATE_DOC = null;[\s\S]*MODULAR_GATEWAY = gateway;[\s\S]*MODULAR_MODE = !sparkWorker;[\s\S]*SPARK_WORKER_CONTEXT = sparkWorker \? ACTIVE_CONTEXT : null;/, 'both native and V1 workers never receive the monolithic state document');
+assert.match(firebase, /if \(!sparkWorker\) \{[\s\S]*modularState\.identity[\s\S]*click360ApplyTenantState/, 'native worker does not install the V1 snapshot');
 assert.match(firebase, /const FIRESTORE_SCHEMA_VERSION = '16\.2\.0'/, 'Rules-gated writes use the Firestore contract version');
 assert.match(firebase, /collection\('auditEvents'\)/, 'client emits separate audit events');
 assert.match(rules, /match \/businesses\/\{businessId\}\/auditEvents\/\{eventId\}/, 'audit event path is explicit');

@@ -7,7 +7,9 @@ const {
 } = require('@firebase/rules-unit-testing');
 const { Timestamp, collection, deleteDoc, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, updateDoc, where, writeBatch } = require('firebase/firestore');
 
-const RULES = fs.readFileSync('firestore.rules', 'utf8');
+const rulesFile = process.env.CLICK360_EMULATOR_RULES || 'firestore.rules';
+if (!['firestore.rules', 'firestore.spark.rules'].includes(rulesFile)) throw Error('UNREVIEWED_EMULATOR_RULES_FILE');
+const RULES = fs.readFileSync(rulesFile, 'utf8');
 const PROJECT_ID = 'demo-click360-p0-rules';
 
 function ownerProfile(uid, email, approved = true) {

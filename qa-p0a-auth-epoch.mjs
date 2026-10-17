@@ -39,3 +39,14 @@ for(const readyState of ['loading','interactive','complete']){
   if(readyState==='loading'){assert.equal(typeof ready,'function');ready();assert.equal(calls,1);}
 }
 console.log('PASS production startup waits for the real UI parser boundary; no timer, polling or early Auth identity activation');
+
+// Loading the modular DEV components must not replace the deployed P0A
+// preservation implementation (or vice versa). No database is opened here.
+for(const order of [['p0a-recovery-store.js','spark-modular-recovery.js'],['spark-modular-recovery.js','p0a-recovery-store.js']]){
+  const scope=vm.createContext({});
+  for(const file of order)vm.runInContext(await readFile(file,'utf8'),scope);
+  assert.equal(typeof scope.CLICK360_P0A_RECOVERY?.open,'function');
+  assert.equal(typeof scope.CLICK360_SPARK_RECOVERY?.open,'function');
+  assert.notEqual(scope.CLICK360_P0A_RECOVERY,scope.CLICK360_SPARK_RECOVERY);
+}
+console.log('PASS P0A preservation and operational recovery namespaces remain isolated in either script load order');

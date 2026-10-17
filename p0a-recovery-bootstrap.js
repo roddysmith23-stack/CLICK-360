@@ -54,7 +54,7 @@
         // source selection or UNKNOWN reconciliation can reject migration.
         // This copy grants no retry, ledger confirmation or cutover authority.
         journal=await root.CLICK360_P0A_JOURNAL.open();
-        recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});
+        recovery=await root.CLICK360_P0A_RECOVERY.open({ownerUid,resolveUser});
         const device=await recovery.deviceIdentity(deviceId);context();
         if(device?.durable!==true||device.ownerUid!==ownerUid||!device.deviceId)throw Error('SPARK_MIGRATION_DURABLE_DEVICE_ID_REQUIRED');
         const journalCapture=await journal.captureOwner(ownerUid);await assertStable();
@@ -87,4 +87,3 @@
   }
   root.CLICK360_P0A_BOOTSTRAP=Object.freeze({create});
 })(typeof window==='undefined'?globalThis:window);
-

@@ -6,14 +6,19 @@ import process from 'node:process';
 import { chromium, webkit } from 'playwright';
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { doc, getDocFromServer } from 'firebase/firestore';
+import { createEmulatorIsolation } from './emulator-network-isolation.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const outputDir = path.join(root, 'output', 'playwright', 'r38-commercial-core');
 const port = Number(process.env.CLICK360_R38_CORE_HTTP_PORT || 4798);
-const firestorePort = Number(process.env.CLICK360_R38_CORE_FIRESTORE_PORT || 48098);
-const authPort = Number(process.env.CLICK360_R38_CORE_AUTH_PORT || 49108);
 const projectId = process.env.CLICK360_R38_CORE_PROJECT || 'demo-click360-r38-core';
-if(!/^demo-click360-r38-(core|restaurant)$/.test(projectId))throw new Error('Dedicated emulator project required');
+// Linux runners allocate outbound SDK sockets in 32768..60999 by default.
+// Spark follows several SDK suites in the same job: listening on 48098/49108
+// can collide even on the FIRST UI start. Dedicated Spark listeners stay out
+// of that range; existing R38 suites retain their historical defaults.
+const firestorePort = Number(process.env.CLICK360_R38_CORE_FIRESTORE_PORT || (projectId==='demo-click360-spark-modular'?18098:48098));
+const authPort = Number(process.env.CLICK360_R38_CORE_AUTH_PORT || (projectId==='demo-click360-spark-modular'?19108:49108));
+if(!/^demo-click360-(r38-(core|restaurant)|spark-modular)$/.test(projectId))throw new Error('Dedicated emulator project required');
 const apiKey = 'fake-api-key';
 const hostedUrl = process.env.CLICK360_R38_CORE_HTTP_URL || '';
 if (hostedUrl && !/^https:\/\/click360-staging-7620168025(?:--[a-z0-9-]+)?\.web\.app\//.test(hostedUrl)) throw new Error('Only isolated CLICK360 staging is allowed for hosted synthetic QA');
@@ -144,10 +149,10 @@ function accountAccess(uid) {
   };
 }
 
-async function createEmulatorUser() {
+async function createEmulatorUser(testEmail = email) {
   const response = await fetch(
     `http://127.0.0.1:${authPort}/identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, returnSecureToken: true }) }
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email:testEmail, password, returnSecureToken: true }) }
   );
   const body = await response.json();
   if (!response.ok || !body.localId) throw new Error(`Auth emulator sign-up failed: ${JSON.stringify(body)}`);
@@ -171,7 +176,21 @@ async function readCloud(testEnv, uid) {
 async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
   const emulatorOrigin = process.env.CLICK360_R38_EMULATOR_ORIGIN || '';
   if (emulatorOrigin && !/^https:\/\/127\.0\.0\.1:\d+$/.test(emulatorOrigin)) throw new Error('Only loopback HTTPS emulator origin allowed');
-  const context = await browser.newContext({ viewport, ...(hostedUrl ? {serviceWorkers:'block',ignoreHTTPSErrors:!!emulatorOrigin} : {}) });
+  const origins=[`http://127.0.0.1:${port}`,`http://127.0.0.1:${firestorePort}`,`http://127.0.0.1:${authPort}`];
+  if(hostedUrl)origins.push(new URL(hostedUrl).origin);
+  if(emulatorOrigin)origins.push(emulatorOrigin);
+  const networkEvents=[];
+  const isolation=await createEmulatorIsolation(origins,{onEvent:event=>{
+    if(event.origin!==`http://127.0.0.1:${firestorePort}`&&event.origin!==`http://127.0.0.1:${authPort}`)return;
+    networkEvents.push(event);if(networkEvents.length>100)networkEvents.shift();
+  }});
+  let context;
+  try { context = await browser.newContext({ viewport, proxy:{server:isolation.server}, ...(hostedUrl ? {serviceWorkers:'block',ignoreHTTPSErrors:!!emulatorOrigin} : {}) }); }
+  catch(error) { await isolation.close(); throw error; }
+  const closeContext=context.close.bind(context);
+  context.close=async options=>{try {await closeContext(options);} finally {await isolation.close();}};
+  context.once('close',()=>{void isolation.close();});
+  context.emulatorNetworkEvents=networkEvents;
   if (emulatorOrigin && context.browser()?.browserType()?.name() === 'chromium') {
     await context.grantPermissions(['local-network-access'], { origin:new URL(hostedUrl).origin });
   }
@@ -198,7 +217,7 @@ async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
   return context;
 }
 
-async function openSignedIn(browser, viewport) {
+async function openSignedIn(browser, viewport, testEmail = email) {
   const context = await newAppContext(browser, viewport);
   const page = await context.newPage();
   // Belt-and-suspenders on top of each call's own explicit timeout: this
@@ -209,6 +228,23 @@ async function openSignedIn(browser, viewport) {
   // can time out.
   page.setDefaultTimeout(60000);
   const pageErrors = [];
+  const transportTrace = [], pendingRequests = new Map();
+  const endpoint = request => {
+    const parsed = new URL(request.url());
+    if (![String(firestorePort), String(authPort)].includes(parsed.port)) return null;
+    // Never record headers, tokens, bodies, document identities or query data.
+    return {service:parsed.port===String(authPort)?'auth':'firestore',
+      endpoint:parsed.pathname.includes('/Listen/')?'listen':parsed.pathname.includes('/Write/')?'write':
+        parsed.pathname.includes('batchGet')?'batchGet':parsed.pathname.includes('signIn')?'signIn':'rpc',method:request.method()};
+  };
+  const trace = entry => {transportTrace.push({at:Date.now(),...entry});if(transportTrace.length>80)transportTrace.shift();};
+  let offlineRequested=false;
+  const setOffline=context.setOffline.bind(context);
+  context.setOffline=async value=>{offlineRequested=value;trace({event:'test-network-mode',offline:value});return setOffline(value);};
+  page.on('request', request => {const info=endpoint(request);if(info){pendingRequests.set(request,info);trace({event:'request',...info});}});
+  page.on('response', response => {const info=endpoint(response.request());if(info)trace({event:'response',status:response.status(),...info});});
+  page.on('requestfinished', request => {const info=pendingRequests.get(request);if(info)trace({event:'finished',...info});pendingRequests.delete(request);});
+  page.on('requestfailed', request => {const info=pendingRequests.get(request);if(info)trace({event:'failed',error:request.failure()?.errorText,...info});pendingRequests.delete(request);});
   await context.addInitScript(()=>{
     window.R38_SYNC_TRACE=[];
     window.addEventListener('click360-sync-status',event=>{
@@ -217,17 +253,18 @@ async function openSignedIn(browser, viewport) {
       if(window.R38_SYNC_TRACE.length>100)window.R38_SYNC_TRACE.shift();
     });
   });
-  page.on('pageerror', (error) => pageErrors.push(error.message));
-  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
-  await page.route('**/*', (route) => {
-    const requestUrl = route.request().url();
-    const local = requestUrl.startsWith(`http://127.0.0.1:${port}/`)
-      || (hostedUrl && new URL(requestUrl).origin === new URL(hostedUrl).origin)
-      || (process.env.CLICK360_R38_EMULATOR_ORIGIN && requestUrl.startsWith(process.env.CLICK360_R38_EMULATOR_ORIGIN + '/'))
-      || requestUrl.startsWith(`http://127.0.0.1:${firestorePort}/`)
-      || requestUrl.startsWith(`http://127.0.0.1:${authPort}/`);
-    return local ? route.continue() : route.abort();
+  page.on('pageerror', (error) => {
+    pageErrors.push(error.message);
+    // Diagnostic only: do not waive any error. Remove request query strings
+    // from logs; retain stack/location and the intentional network phase.
+    const sanitize=value=>String(value||'').replace(/\?[^\s"']+/g,'?[redacted]');
+    console.error('R38 synthetic browser exception '+JSON.stringify({name:error.name,message:sanitize(error.message),
+      stack:sanitize(error.stack),offlineRequested,transportTrace:transportTrace.map(entry=>({...entry,...(entry.error?{error:sanitize(entry.error)}:{})})),
+      proxyEvents:context.emulatorNetworkEvents,pendingRequests:[...pendingRequests.values()]}));
   });
+  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
+  // Isolation is enforced by the exact-origin proxy, not page.route(): even
+  // unmatched routes enable browser interception and can stall WebChannel.
   const step = async (label, fn) => {
     try { return await fn(); } catch (error) {
       // A new page can fail before the caller assigns activeDevice. Capture
@@ -243,19 +280,32 @@ async function openSignedIn(browser, viewport) {
         counts: { products: window.click360GetTenantState?.()?.products?.length,
           sales: window.click360GetTenantState?.()?.sales?.length },
         toast: document.querySelector('#toast')?.textContent
+        ,sparkBootstrap:window.click360SparkBootstrapState
       })).catch(() => null);
-      console.error('R38 emulator-only new-device failure evidence '+JSON.stringify({ label, viewport, diagnostic, pageErrors }));
+      console.error('R38 emulator-only new-device failure evidence '+JSON.stringify({ label, viewport, diagnostic, pageErrors,
+        transportTrace,pendingRequests:[...pendingRequests.values()] }));
+      // The caller never receives this context when bootstrap fails. Close it
+      // here so failed startup cannot leave WebChannel/browser handles alive.
+      await context.close();
       throw new Error(`openSignedIn step "${label}" failed: ${error.message}`);
     }
   };
   await step('goto', () => page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }));
   await step('auth-fn-available', () => page.waitForFunction(() => typeof window.click360Auth?.signInWithEmailAndPassword === 'function', { timeout: 60000 }));
-  await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail: email, testPassword: password }));
-  await step('hydrated-and-synced', () => page.waitForFunction(hosted => window.click360IsTenantDataHydrated?.() === true
+  // Certify the installed PWA, not a race where Firestore sometimes starts
+  // before clients.claim(). Hosted emulator QA explicitly blocks SW separately.
+  if(!hostedUrl)await step('service-worker-controlled',()=>page.waitForFunction(()=>!!navigator.serviceWorker?.controller
+    && window.click360ServiceWorkerRelease?.buildSha===window.CLICK360_RELEASE_ASSETS?.['app.js'], null, {timeout:60000}));
+  await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail, testPassword: password }));
+  await step('hydrated-and-synced', () => page.waitForFunction(hosted => {
+    if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason||'SPARK_BOOTSTRAP_BLOCKED');
+    return window.click360IsTenantDataHydrated?.() === true
     && (window.click360SyncStatus?.status === 'synced'
+      ||(window.click360SyncStatus?.status==='modular_confirmed'&&window.click360SparkBootstrapState?.phase==='READY'
+        &&!!window.click360SparkOperationalSession)
       || (hosted && window.click360GetCapacityStatus?.().cloudCapacityBlocked === true
         && window.click360GetSyncState?.().blocking === false
-        && window.click360GetStorageState?.().indexedDbReady === true)), !!hostedUrl || process.env.CLICK360_R38_ALLOW_CAPACITY_PENDING === '1', { timeout: 60000 }));
+        && window.click360GetStorageState?.().indexedDbReady === true));}, !!hostedUrl || process.env.CLICK360_R38_ALLOW_CAPACITY_PENDING === '1', { timeout: 60000 }));
   await step('route-inventory', () => page.evaluate(() => window.click360Route('inventory')));
   await step('new-product-visible', () => page.waitForSelector('#newProduct', { timeout: 45000 }));
   return { context, page, pageErrors };
@@ -361,4 +411,4 @@ function writeEmulatorConfig() {
 }
 
 
-export {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,identity,assert,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig};
+export {root,outputDir,port,firestorePort,authPort,projectId,javaDirs,url,rules,identity,assert,stopProcessTree,waitForUrl,createEmulatorUser,seed,readCloud,newAppContext,openSignedIn,submitProduct,assertProduct,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig,email as emulatorOwnerEmail,password as emulatorPassword};

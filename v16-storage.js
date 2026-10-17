@@ -5,6 +5,9 @@
   const DB_VERSION = 1;
   const SNAPSHOT_STORE = 'tenantSnapshots';
   const HEALTH_STORE = 'health';
+  // Private, single-call receipts. Ordinary metadata cannot bypass the
+  // capacity-pending CAS, including callers that invent an approval flag.
+  const modularPromotions = new WeakMap();
 
   function contextId(context) {
     if (!context?.authUid || !context?.tenantKey) throw new Error('Contexto de almacenamiento incompleto.');
@@ -86,8 +89,17 @@
         const request = store.get(id);
         request.onsuccess = () => {
           const current = request.result;
-          if (current?.cloudCapacityBlocked && (!record.cloudCapacityBlocked
-            || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || ''))) {
+          record.uiWorkingDates = current?.uiWorkingDates || {};
+          const promotion=modularPromotions.get(metadata.modularPromotion);
+          const verifiedPromotion=promotion&&current
+            && JSON.stringify(current)===promotion.originalRecord
+            && record.source==='spark_operational_candidate'
+            && String(current.deviceRevision||'')===String(metadata.expectedDeviceRevision||'');
+          const protectedModular=current?.source==='spark_operational_candidate';
+          if ((promotion&&!verifiedPromotion)||(current?.cloudCapacityBlocked && !verifiedPromotion && (!record.cloudCapacityBlocked
+            || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || '')))
+            || (protectedModular && (record.source!=='spark_operational_candidate'
+              || String(current.deviceRevision || '')!==String(metadata.expectedDeviceRevision||'')))) {
             failure = Object.assign(new Error('La copia local cambió en otra pestaña. Ningún dato pendiente fue reemplazado.'), { code:'indexeddb-revision-conflict' });
             transaction.abort();
             return;
@@ -99,7 +111,32 @@
         transaction.onerror = () => reject(transaction.error || new Error('Fallo de IndexedDB.'));
       });
     } finally { db.close(); }
-    return { id, savedAtMs: record.savedAtMs };
+    return { id, savedAtMs: record.savedAtMs, uiWorkingDates:record.uiWorkingDates };
+  }
+
+  async function putWorkingDate(context,businessId,date){
+    if(typeof businessId!=='string'||!businessId||businessId.includes('/')
+      ||(date!==null&&(typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date)
+        ||new Date(`${date}T00:00:00Z`).toISOString().slice(0,10)!==date)))
+      throw Error('Fecha de trabajo inválida.');
+    const id=contextId(context),db=await openDatabase();
+    try{
+      return await new Promise((resolve,reject)=>{
+        const tx=db.transaction(SNAPSHOT_STORE,'readwrite'),store=tx.objectStore(SNAPSHOT_STORE);let failure,dates;
+        store.get(id).onsuccess=e=>{
+          const record=e.target.result;
+          if(!record||record.schemaVersion!==10||record.authUid!==context.authUid||record.ownerId!==context.ownerId
+            ||record.businessId!==context.businessId||record.tenantKey!==context.tenantKey
+            ||!record.snapshot?.businesses?.some(b=>b.id===businessId)){
+            failure=Error('No se pudo verificar el negocio para conservar la fecha.');tx.abort();return;
+          }
+          dates={...(record.uiWorkingDates||{})};
+          Object.defineProperty(dates,businessId,{value:date,enumerable:true,writable:true,configurable:true});
+          store.put({...record,uiWorkingDates:dates});
+        };
+        tx.oncomplete=()=>resolve(dates);tx.onabort=()=>reject(failure||tx.error||Error('No se pudo conservar la fecha.'));
+      });
+    }finally{db.close();}
   }
 
   async function getSnapshot(context) {
@@ -109,6 +146,40 @@
       || record.businessId !== context.businessId || record.tenantKey !== context.tenantKey
       || record.schemaVersion !== 10) return null;
     return record;
+  }
+
+  async function promoteVerifiedSnapshot(context,snapshot,metadata){
+    const proof=metadata?.verifiedLocalHandoff,api=root.CLICK360_SPARK_MIGRATION;
+    const projectId=root.CLICK360_FIREBASE_CONFIG?.projectId;
+    const user=()=>root.click360Auth?.currentUser;
+    if(!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
+      ||!api||!root.CLICK360_SPARK_RECOVERY||context.authUid!==context.ownerId
+      ||user()?.uid!==context.ownerId||proof?.verified!==true||proof.status!=='LOCAL_HANDOFF_VERIFIED'
+      ||typeof proof.assertStable!=='function'||metadata.source!=='spark_operational_candidate'
+      ||proof.buildSha!==root.CLICK360_RELEASE_ASSETS?.['app.js'])throw Error('INDEXEDDB_VERIFIED_HANDOFF_REQUIRED');
+    if(snapshot?.identity?.tenantKey!==context.tenantKey||snapshot.identity.businessId!==context.businessId
+      ||(snapshot.identity.ownerUid||snapshot.identity.ownerId)!==context.ownerId)throw Error('INDEXEDDB_HANDOFF_TARGET_IDENTITY');
+    const current=await getSnapshot(context);
+    if(!current||current.source==='spark_operational_candidate'
+      ||current.deviceRevision!==proof.deviceRevision||metadata.expectedDeviceRevision!==current.deviceRevision
+      ||await api.hash(current.snapshot)!==proof.sourceHash
+      ||await api.hash(Object.fromEntries(Object.entries(current).filter(([key])=>key!=='snapshot')))!==proof.deviceMetadataHash
+      ||api.byteLength(snapshot)>8*1024*1024)throw Error('INDEXEDDB_HANDOFF_SOURCE_CHANGED');
+    const recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid:context.ownerId,resolveUser:user});
+    try{
+      const handoff=await recovery.readHandoff(proof.captureHash),source=await recovery.read(proof.sourceHash);
+      if(!handoff?.durable||!source?.durable||handoff.plan.sourceHash!==proof.sourceHash
+        ||handoff.plan.deviceMetadataHash!==proof.deviceMetadataHash
+        ||source.buildSha!==proof.buildSha||source.deviceRevision!==proof.deviceRevision
+        ||await api.hash(source.snapshot)!==proof.sourceHash
+        ||await api.hash(source.deviceRecordMetadata)!==proof.deviceMetadataHash)
+        throw Error('INDEXEDDB_HANDOFF_ORIGINAL_PIN_REQUIRED');
+    }finally{recovery.close();}
+    await proof.assertStable();
+    if(user()?.uid!==context.ownerId)throw Error('INDEXEDDB_HANDOFF_ACTOR_CHANGED');
+    const receipt={};modularPromotions.set(receipt,{originalRecord:JSON.stringify(current)});
+    try{return await putSnapshot(context,snapshot,{...metadata,modularPromotion:receipt});}
+    finally{modularPromotions.delete(receipt);}
   }
 
   async function deleteSnapshot(context) {
@@ -122,5 +193,5 @@
     return { usage: Number(value.usage || 0), quota: Number(value.quota || 0) };
   }
 
-  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, getSnapshot, deleteSnapshot, estimate, contextId });
+  root.CLICK360_V16_STORAGE = Object.freeze({ probe, putSnapshot, promoteVerifiedSnapshot, putWorkingDate, getSnapshot, deleteSnapshot, estimate, contextId });
 })(typeof window !== 'undefined' ? window : globalThis);

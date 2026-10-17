@@ -267,6 +267,7 @@
       // and only reload once it's genuinely idle (or give up quietly and
       // fall back to the passive "apply on next open" toast).
       const isSyncBusy = () => window.click360SyncStatus?.status === 'syncing'
+        || window.click360SparkOperationalSession?.isBusy?.() === true
         || window.click360GetCapacityStatus?.().deviceSavePending === true;
       const stillSafeToReload = () => !isSyncBusy()
         && !document.body.classList.contains('has-modal')
@@ -320,6 +321,20 @@
 <script src="./universal-label-editor.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
 <script src="./printing-service.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
 <!-- Logic -->
+<script src="spark-modular-migration.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-modular-reconciliation.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-modular-recovery.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-modular-importer.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-modular-handoff.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-migration-bootstrap.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-modular-record-codec.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-modular-transaction-transport.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="modular-operation-journal.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="modular-persistence.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="modular-operation-coordinator.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="modular-ui-adapter.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-operational-ui-runtime.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
+<script src="spark-operational-bootstrap.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
 <script src="app.js?v=commercial-1-0-5-r38-mvp-candidate"></script>
 </body>
 </html>

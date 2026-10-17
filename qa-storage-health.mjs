@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {storageHealth} from './scripts/lib/storage-health.mjs';
+const ownerUid='private-uid',data={businesses:[],products:[],sales:[],movements:[],cashSessions:[],dailyReports:[],auditLogs:[],notes:'x'.repeat(900000)};
+const input={ownerUid,state:{revision:42,payload:{data}},access:{planId:'founder_legacy',email:'secret@example.test',manualLimitOverrides:{productsActive:600}}};
+const red=storageHealth(input);assert.equal(red.risk,'RED');assert.equal(red.pendingOperations,null);assert.equal(red.unknownOperations,null);
+assert.equal(red.plan,'founder_legacy');assert.equal(red.sourceRevision,42);assert.equal(red.counts.products,0);
+assert(!JSON.stringify(red).includes(ownerUid));assert(!JSON.stringify(red).includes('secret@example.test'));assert(!JSON.stringify(red).includes('600'));
+assert.equal(storageHealth({...input,state:{payload:{data:{...data,notes:'x'.repeat(700000)}}}}).risk,'YELLOW');
+assert.equal(storageHealth({...input,state:{payload:{data:{...data,notes:''}}}}).risk,'GREEN');
+assert.equal(storageHealth({...input,control:{storageMode:'modular'}}).risk,'GREEN');
+assert.equal(storageHealth({...input,control:{storageMode:'frozen'}}).risk,'RED');
+assert.equal(storageHealth({...input,state:{payload:{data:null}}}).risk,'RED');
+assert.equal(storageHealth({...input,state:{payload:{data:{...data,notes:''}}},local:{unknownCount:1}}).risk,'RED');
+assert.equal(storageHealth({...input,access:{planId:'unexpected arbitrary name'}}).plan,'unverified');
+console.log('PASS sanitized storage risk: remote capacity classes, no PII, no guessed device pending status, no commercial entitlement mutation.');

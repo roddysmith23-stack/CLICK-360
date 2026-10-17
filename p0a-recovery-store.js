@@ -204,6 +204,7 @@
     }
     return Object.freeze({pin,read,deviceIdentity,captureDevice,readCapture,preserveCloud,close:()=>db.close()});
   }
-  root.CLICK360_SPARK_RECOVERY=Object.freeze({open});
+  // Coexist with the independently gated operational candidate. Neither
+  // script load order nor Auth may substitute one implementation for another.
+  root.CLICK360_P0A_RECOVERY=Object.freeze({open});
 })(typeof window==='undefined'?globalThis:window);
-

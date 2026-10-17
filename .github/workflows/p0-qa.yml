@@ -112,6 +112,18 @@ jobs:
         run: brew install poppler
       - run: npx --no-install playwright install chromium webkit firefox
       - run: npm run qa:integration
+      - name: Repeat WebKit cash gesture recovery with zero opening
+        env:
+          R38_BROWSER_FILTER: webkit
+          R38_ZERO_OPENING: '1'
+        run: node qa/r38-commerce-core-e2e.mjs
+      - name: Preserve synthetic commercial core evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: commercial-core-browser-evidence
+          path: output/playwright/r38-commercial-core/
+          if-no-files-found: warn
 
   admin-jobs:
     needs: changes

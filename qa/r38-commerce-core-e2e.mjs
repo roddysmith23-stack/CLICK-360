@@ -12,12 +12,13 @@ mkdirSync(outputDir,{recursive:true});
 const results=[];
 let testEnv,uid,activeDevice;
 const cloud=()=>readCloud(testEnv,uid);
-const {cloudUntil,sync,route,searchAndEdit,editStock,commerce}=commerceFlows({cloud,submitProduct,assertProduct,results,writePattern:`http://127.0.0.1:${firestorePort}/**`});
+const {cloudUntil,sync,route,searchAndEdit,editStock,commerce}=commerceFlows({cloud,submitProduct,assertProduct,results,
+  openingAmount:process.env.R38_ZERO_OPENING==='1'?0:50,writePattern:`http://127.0.0.1:${firestorePort}/**`});
 const emulatorConfig=writeEmulatorConfig();
 const emulatorLog=createWriteStream(path.join(outputDir,'emulators-'+Date.now()+'.log'),{flags:'wx'});
 const emulators=spawn(path.join(root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',projectId,'--config',emulatorConfig],{cwd:path.dirname(emulatorConfig),detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,PATH:`${javaDirs.join(':')}:${process.env.PATH}`}});
 emulators.stdout.pipe(emulatorLog);emulators.stderr.pipe(emulatorLog);
-const server=spawn(process.execPath,[path.join(root,'node_modules/http-server/bin/http-server'),'.','-p',String(port),'-c-1'],{cwd:root,detached:true,stdio:'ignore'});
+const server=spawn(process.execPath,[path.join(root,'node_modules/http-server/bin/http-server'),'dist','-p',String(port),'-c-1'],{cwd:root,detached:true,stdio:'ignore'});
 let browsers=[];
 try{
   await Promise.race([
@@ -27,8 +28,9 @@ try{
   testEnv=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:firestorePort,rules}});uid=await createEmulatorUser();
   browsers=[await chromium.launch(),await webkit.launch()];
   for(const [browserIndex,browser]of browsers.entries())for(const viewport of [{width:1280,height:900},{width:390,height:844}]){
-    const label=`${browserIndex?'webkit':'chromium'}-${viewport.width}`;console.log('START '+label);
+    const label=`${browserIndex?'webkit':'chromium'}-${viewport.width}`;
     if(process.env.R38_BROWSER_FILTER&&!label.includes(process.env.R38_BROWSER_FILTER))continue;
+    console.log('START '+label);
     const data=largeTenantData(uid);data.sales=[];data.movements=[];data.auditLogs=[];data.notifications=[];
     await seed(testEnv,async db=>{await setDoc(doc(db,'accountAccess',uid),accountAccess(uid));await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,Date.now(),data));});
     let device=await openSignedIn(browser,viewport);activeDevice=device;
@@ -50,6 +52,7 @@ try{
     await cloudUntil(data=>data.products.some(p=>p.id===created.id&&p.stock===31&&p.qty===31),'offline inventory converges online');
     await sync(device.page);
     console.log('PASS '+label+' decrease + offline→online');
+    assert(device.pageErrors.length===0,'Offline/reconnect browser errors '+JSON.stringify(device.pageErrors));
     await device.context.close();device=await openSignedIn(browser,viewport);activeDevice=device;
     await device.page.waitForFunction(id=>window.click360GetTenantState().products.some(p=>p.id===id&&p.stock===31&&p.qty===31),created.id);
     const deviceB=await openSignedIn(browsers[1-browserIndex],viewport);
@@ -60,14 +63,22 @@ try{
     assert(device.pageErrors.length===0,'Unexpected browser errors '+JSON.stringify(device.pageErrors));await device.context.close();
     console.log('PASS '+label);
   }
-  writeFileSync(path.join(outputDir,'results.json'),JSON.stringify({status:'PASS',source:'real app + Auth/Firestore emulators',results},null,2));
+  const report=JSON.stringify({status:'PASS',source:'real app + Auth/Firestore emulators',
+    openingAmount:process.env.R38_ZERO_OPENING==='1'?0:50,results},null,2);
+  writeFileSync(path.join(outputDir,'results-'+Date.now()+'.json'),report);
+  writeFileSync(path.join(outputDir,'results.json'),report);
   console.log('R38 commercial core browser matrix PASS '+JSON.stringify(results));
 }catch(error){
   if(activeDevice?.page&&!activeDevice.page.isClosed()){
     const diagnostic=await activeDevice.page.evaluate(()=>({search:document.querySelector('#productSearch')?.value,cards:document.querySelectorAll('#productList [data-pid]').length,searchTrace:window.R38_SEARCH_TRACE,toast:document.querySelector('#toast')?.textContent,sync:window.click360SyncStatus,gate:window.click360WriteGate?.(),confirmation:window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS,product:window.click360GetTenantState?.()?.products?.find(p=>p.code==='R38-CORE'),modal:document.querySelector('#modalRoot')?.innerText})).catch(()=>null);
     const syncTrace=await activeDevice.page.evaluate(()=>window.R38_SYNC_TRACE).catch(()=>null);
-    const authoritative=await cloud().then(d=>({revision:d.revision,products:d.payload.data.products.length,product:d.payload.data.products.find(p=>p.code==='R38-CORE')})).catch(()=>null);
-    writeFileSync(path.join(outputDir,'failure-'+Date.now()+'.json'),JSON.stringify({error:error.message,diagnostic,syncTrace,authoritative},null,2));
+    const cash=await activeDevice.page.evaluate(()=>({gesture:window.R38_CASH_OPEN_TRACE,payment:window.R38_PAYMENT_TRACE,
+      localSessions:window.click360GetTenantState?.()?.cashSessions,
+      localOpenings:window.click360GetTenantState?.()?.movements?.filter(row=>row.kind==='apertura'),
+      criticalGate:window.click360DebugCriticalActionGate?.(),capacity:window.click360GetCapacityStatus?.()})).catch(()=>null);
+    const authoritative=await cloud().then(d=>({revision:d.revision,products:d.payload.data.products.length,product:d.payload.data.products.find(p=>p.code==='R38-CORE'),
+      sessions:d.payload.data.cashSessions,openings:d.payload.data.movements.filter(row=>row.kind==='apertura')})).catch(()=>null);
+    writeFileSync(path.join(outputDir,'failure-'+Date.now()+'.json'),JSON.stringify({error:error.message,diagnostic,syncTrace,cash,authoritative},null,2));
   }
   throw error;
 }finally{for(const browser of browsers)await browser.close().catch(()=>{});await testEnv?.cleanup().catch(()=>{});stopProcessTree(server);stopProcessTree(emulators);}

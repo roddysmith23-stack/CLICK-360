@@ -1,0 +1,11 @@
+{
+  "baseline": "5ac546a9c4a85c4fe7e0ef2faec338ea19e38fff",
+  "authorizationChange": "Retain all commercial legacy and P0A permissions. Modular owner-only manual corrections require immutable original amounts, atomic compensation/replacement, exact session counters and new ledger; workers cannot correct. Runtime preparation is create-only in migrating READY_TO_CUTOVER and requires exact administrative source/build/plan/device/journal/business/record/summary approval; never activates a writer. Runtime and cutover approvals are private per-owner records, never globally readable policy payloads; only platform administrators write them. Operational cutover still requires its separate administrative approval.",
+  "originalPermissionsHash": "347596035d8c026af71db1cdcc4a0ab19038bf49832208244dadfff1f0b68fb5",
+  "fingerprints": {
+    "functionsHash": "3a41214a175cb0b39714b5df349d73a527271540136b39f5cf9dcc3c2003cec7",
+    "permissionsHash": "7edf656f28de47dbb4e0ad629b1ed440807bc81b299e9a38c9e3cfabec4d3d1c",
+    "functions": 145,
+    "permissions": 189
+  }
+}
