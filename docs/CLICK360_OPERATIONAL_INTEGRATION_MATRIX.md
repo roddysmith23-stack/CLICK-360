@@ -58,6 +58,14 @@ Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI che
 
 ## Release gates
 
+The shadow-to-operational transition also requires a server-enforced
+administrative approval. `storageRollout/sparkV1.automaticCutover` defaults to
+false; its administrative `cutoverApprovals[ownerUid]` must match that owner's
+immutable source hash, build SHA and complete ordered business coverage.
+Client owners/workers cannot create that policy. Semantic equality alone does
+not grant authority to activate commercial writers. This gate does not create
+runtime documents or complete the operational handoff.
+
 Do not remove nonproduction activation guards, enable automatic migrations, merge or deploy production based on partial rows. A whole served business journey, automatic mode routing, all required operational commands, complete durable replay/overlay, real Spark staging, PWA upgrade and forward-safe recovery must pass first.
 
 Remote historical records cannot certify the client's newer local operations.

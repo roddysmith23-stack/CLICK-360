@@ -467,6 +467,22 @@ service cloud.firestore {
       return policy.enabled == true && ownerUid in policy.pilotOwnerUids;
     }
 
+    // Shadow equality is not permission to activate commercial writers.
+    // This policy is administrative-only, default-deny and bound to exactly
+    // one owner's immutable source/build/whole-owner business coverage.
+    function sparkCutoverApproved(ownerUid) {
+      let policy = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
+      let approvals = policy.get("cutoverApprovals", {});
+      let approval = approvals.get(ownerUid, {});
+      return policy.enabled == true && policy.get("automaticCutover", false) == true
+        && policy.pilotOwnerUids is list && ownerUid in policy.pilotOwnerUids
+        && approval.keys().hasOnly(["ownerUid", "sourceHash", "buildSha", "businessIds"])
+        && approval.ownerUid == ownerUid
+        && approval.sourceHash == resource.data.sourceHash
+        && approval.buildSha == resource.data.buildSha
+        && approval.businessIds == resource.data.businessIds;
+    }
+
     function sparkPhaseStep(before, after) {
       return before == after
         || (before == "LEGACY" && after == "MIGRATION_PREPARING")
@@ -1676,7 +1692,9 @@ service cloud.firestore {
         && request.resource.data.recordCount == resource.data.recordCount
         && request.resource.data.payloadBytes == resource.data.payloadBytes
         && request.resource.data.buildSha == resource.data.buildSha
-        && sparkPhaseStep(resource.data.phase, request.resource.data.phase);
+        && sparkPhaseStep(resource.data.phase, request.resource.data.phase)
+        && (!(resource.data.phase == "READY_TO_CUTOVER" && request.resource.data.phase == "MODULAR")
+          || sparkCutoverApproved(ownerUid));
       allow delete: if false;
     }
 

@@ -156,6 +156,14 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
     // successful migration. No query, source, Rules or timeout is substituted.
     await page.evaluate(()=>{
       window.QA_SHADOW_QUERY_TIMINGS=[];
+      window.QA_SHADOW_PHASE_TIMINGS=[];
+      const startedAt=performance.now();
+      let current=window.click360SparkMigrationState;
+      Object.defineProperty(window,'click360SparkMigrationState',{configurable:true,
+        get:()=>current,set:value=>{
+          current=value;
+          window.QA_SHADOW_PHASE_TIMINGS.push({elapsedMs:Math.round(performance.now()-startedAt),...value});
+        }});
       const original=firebase.firestore.Query.prototype.get;
       firebase.firestore.Query.prototype.get=async function(...args){
         const started=performance.now();
@@ -178,6 +186,7 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
       console.log(JSON.stringify({stage:'SHADOW_PREPARATION_DIAGNOSTIC',browser:label,
         state:await page.evaluate(()=>({bootstrap:window.click360SparkBootstrapState,progress:window.click360SparkMigrationState,
           queryTimings:window.QA_SHADOW_QUERY_TIMINGS,
+          phaseTimings:window.QA_SHADOW_PHASE_TIMINGS,
           gate:document.querySelector('#click360-auth-gate')?.textContent?.slice(0,300)}))}));
       throw error;
     }

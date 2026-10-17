@@ -66,10 +66,45 @@ try{
   await assertSucceeds(updateDoc(doc(ownerDb,controlPath),{phase:'SHADOW_VERIFYING',recordVersion:3,updatedAt:serverTimestamp()}));
   await assertSucceeds(updateDoc(doc(ownerDb,controlPath),{phase:'READY_TO_CUTOVER',recordVersion:4,semanticEquality:'PASS',reconstructedHash:manifest.sourceHash,updatedAt:serverTimestamp()}));
   await assertFails(updateDoc(doc(ownerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,reconstructedHash:'f'.repeat(64),updatedAt:serverTimestamp()}));
+  const approved={ownerUid:owner,sourceHash:manifest.sourceHash,buildSha:newControl().buildSha,businessIds:[business]};
+  const authorizedPolicy={enabled:true,pilotOwnerUids:[owner],automaticCutover:true,cutoverApprovals:{[owner]:approved}};
+  const cutover=()=>updateDoc(doc(ownerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()});
+  // A client cannot authorize its own cutover, including an approved owner.
+  await assertFails(setDoc(doc(ownerDb,'storageRollout/sparkV1'),authorizedPolicy));
+  await assertFails(setDoc(doc(workerDb,'storageRollout/sparkV1'),authorizedPolicy));
+  await assertFails(cutover()); // Existing shadow policy lacks cutover authority.
+  const rejectedPolicies=[
+    null,
+    {...authorizedPolicy,enabled:false},
+    {...authorizedPolicy,automaticCutover:false},
+    {...authorizedPolicy,automaticCutover:undefined},
+    {...authorizedPolicy,pilotOwnerUids:[other]},
+    {...authorizedPolicy,cutoverApprovals:{}},
+    {...authorizedPolicy,cutoverApprovals:{[other]:approved}},
+    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,ownerUid:other}}},
+    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,sourceHash:'f'.repeat(64)}}},
+    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,buildSha:'fedcba987654'}}},
+    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,businessIds:[]}}},
+    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,businessIds:[business,'omitted-business']}}},
+    {...authorizedPolicy,cutoverApprovals:{[owner]:{...approved,businessIds:[business,business]}}}
+  ];
+  for(const policy of rejectedPolicies){
+    await env.withSecurityRulesDisabled(async c=>{
+      const ref=doc(c.firestore(),'storageRollout/sparkV1');
+      if(policy===null)await deleteDoc(ref);
+      else{const value={...policy};if(value.automaticCutover===undefined)delete value.automaticCutover;await setDoc(ref,value);}
+    });
+    await assertFails(cutover());
+    const denied=(await getDoc(doc(ownerDb,controlPath))).data();
+    assert.equal(denied.phase,'READY_TO_CUTOVER');assert.equal(denied.storageMode,'migrating');assert.equal(denied.recordVersion,4);
+  }
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),'storageRollout/sparkV1'),authorizedPolicy));
+  await assertFails(updateDoc(doc(workerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()}));
+  await assertFails(updateDoc(doc(otherDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()}));
   await assertSucceeds(updateDoc(doc(ownerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:5,updatedAt:serverTimestamp()}));
   await assertFails(updateDoc(doc(ownerDb,`businesses/${owner}/state/main`),{revision:13}));
   await assertFails(updateDoc(doc(ownerDb,controlPath),{phase:'LEGACY',storageMode:'legacy',recordVersion:6,updatedAt:serverTimestamp()}));
   await assertFails(deleteDoc(doc(ownerDb,controlPath)));
   assert.deepEqual((await getDoc(doc(ownerDb,`businesses/${owner}/state/main`))).data(),rootState);
-  console.log(JSON.stringify({status:'PASS',projectId,clientRules:true,synthetic:true,semanticEquality:verified.status,sourceHash:verified.sourceHash,reconstructedHash:verified.reconstructedHash,scenarios:['owner-only shadow','cross-owner denied','worker denied','unauth denied','strict revision','phase ordering','immutable shadow','field allowlist','fresh remote reread','hash mismatch','old PWA legacy fence','no old snapshot rollback'],productionWrites:0}));
+  console.log(JSON.stringify({status:'PASS',projectId,clientRules:true,synthetic:true,semanticEquality:verified.status,sourceHash:verified.sourceHash,reconstructedHash:verified.reconstructedHash,scenarios:['owner-only shadow','cross-owner denied','worker denied','unauth denied','strict revision','phase ordering','immutable shadow','field allowlist','fresh remote reread','hash mismatch','administrative exact-source/build/business cutover gate','client self-authorization denied','old PWA legacy fence','no old snapshot rollback'],productionWrites:0}));
 }finally{await env.cleanup();}

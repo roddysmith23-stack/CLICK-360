@@ -87,6 +87,18 @@ Derived audit is a separate bounded transaction: committed ledger read, audit ex
 
 ## Bounded operational reads
 
+### Administrative cutover guard — 2026-10-17
+
+The owner control's `READY_TO_CUTOVER → MODULAR` transition additionally reads
+the existing `storageRollout/sparkV1` policy. The same policy path is already
+used by rollout authorization; no cache-dependent numerical saving is assumed.
+Approval is default-deny and source/build/whole-owner-business bound. No sale,
+stock, payment, cash, product or ledger predicate calls this new guard, and no
+financial transaction adds an external reference. The client cannot write the
+approval policy. Shadow preparation and operational activation remain distinct.
+Actual client Rules and the strict budget probe must pass before deployment;
+the structural bound alone does not certify evaluator headroom.
+
 The same Spark transaction transport now exposes server-only `readPage`: fixed scoped collection, document-ID ordering, maximum 100 records, strict cursor/order/scope/codec validation and auth checks after each asynchronous boundary. Cache/pending snapshots cannot be used as authoritative pages. Synthetic tests verify these failures cause no writes. Real client queries and a separate authenticated owner device are included in the operational Rules suite; this does not certify the full public UI or a physical second device.
 
 Reference: [Firebase atomic-operation access limits and caching](https://firebase.google.com/docs/firestore/security/rules-conditions#access_call_limits). The documented 20-per-atomic-operation and 10-per-single-operation limits are separate from the 1000-expression guard; cached access is not a guarantee of expression headroom.
