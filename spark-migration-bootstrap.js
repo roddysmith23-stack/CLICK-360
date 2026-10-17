@@ -1,8 +1,9 @@
 (function(root){
   'use strict';
   // Existing importer connection: shadow remains staging-only. Explicitly
-  // piloted production entry permits recovery preservation ONLY. Never
-  // activates writers, confirms journal rows or performs operational cutover.
+  // piloted production entry permits recovery preservation ONLY. The separate
+  // staging path activates only an independently admin-approved exact source;
+  // it never confirms/replays journal rows or publishes its own authorization.
   function create({db,firebase,projectId,ownerUid,actorUid,deviceId,buildSha,
     resolveUser,resolveContext,readLocal,leaseHeld,onProgress=()=>{},productionRecoveryOnly=false}){
     if((!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
@@ -21,7 +22,7 @@
         throw Error('SPARK_MIGRATION_BOOTSTRAP_SERVER_REQUIRED');
       return s;
     }
-    async function verifyLocalHandoff(){
+    async function verifyLocalHandoff({preCutover=false}={}){
       context();
       if(productionRecoveryOnly)throw Error('SPARK_LOCAL_HANDOFF_NONPRODUCTION_ONLY');
       if(root.document&&['app.js','firebase-service.js','v16-storage.js','modular-operation-journal.js',
@@ -45,8 +46,9 @@
         const policy=(await server(policyRef)).data(),control=(await server(controlRef)).data();
         if(policy?.enabled!==true||policy.automaticCutover!==true||!Array.isArray(policy.pilotOwnerUids)||!policy.pilotOwnerUids.includes(ownerUid))
           throw Error('SPARK_LOCAL_HANDOFF_ADMIN_APPROVAL_REQUIRED');
-        if(control?.ownerUid!==ownerUid||control.schemaVersion!==2||control.storageMode!=='modular'
-          ||control.phase!=='MODULAR'||control.semanticEquality!=='PASS'||control.sourceHash!==control.reconstructedHash
+        if(preCutover&&policy.automaticMigration!==true)throw Error('SPARK_AUTOMATIC_ACTIVATION_DISABLED');
+        if(control?.ownerUid!==ownerUid||control.schemaVersion!==2||control.storageMode!==(preCutover?'migrating':'modular')
+          ||control.phase!==(preCutover?'READY_TO_CUTOVER':'MODULAR')||control.semanticEquality!=='PASS'||control.sourceHash!==control.reconstructedHash
           ||control.buildSha!==buildSha)throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
         const authorization=(await server(runtimeRef)).data(),cutover=(await server(cutoverRef)).data();
         recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});context();
@@ -128,13 +130,67 @@
           context();
         }
         await localStable(journal);await authorizationsStable();context();
-        return {verified:true,status:'LOCAL_HANDOFF_VERIFIED',buildSha,sourceHash:plan.sourceHash,deviceRevision:pin.deviceRevision,
+        return {verified:true,status:preCutover?'PRE_CUTOVER_VERIFIED':'LOCAL_HANDOFF_VERIFIED',buildSha,
+          controlVersion:control.recordVersion,remoteHash:control.remoteHash,remoteRevision:control.remoteRevision,
+          sourceDeviceId:control.sourceDeviceId,runtimeApprovalHash:await api.hash(authorization),
+          runtimeHashes:structuredClone(approval.preparedRuntimeHashes),
+          sourceHash:plan.sourceHash,deviceRevision:pin.deviceRevision,
           deviceMetadataHash:metadataHash,businessIds:[...control.businessIds],captureHash:preserved.captureHash,
           // This final gate runs immediately before the EXISTING IDB CAS.
           // Pins, journal and legacy remain intact; no write is done here.
           assertStable:async()=>{const currentJournal=await root.CLICK360_MODULAR_JOURNAL.open();
             try{await localStable(currentJournal);await authorizationsStable();context();}finally{currentJournal.close();}}};
       }finally{journal?.close();recovery?.close();}
+    }
+    async function activateApproved(){
+      // PRE_CUTOVER proof cannot authorize native cache promotion, which
+      // separately requires a fresh proof of the confirmed MODULAR mode.
+      const verified=await verifyLocalHandoff({preCutover:true});context();
+      if(!Number.isSafeInteger(verified.controlVersion)||verified.controlVersion<1)
+        throw Error('SPARK_ACTIVATION_CONTROL_VERSION_REQUIRED');
+      const controlRef=db.doc(`businesses/${ownerUid}/metadata/storage`);
+      await db.runTransaction(async tx=>{
+        context();
+        const [control,policy,approval,runtimeApproval,legacy]=await Promise.all([
+          tx.get(controlRef),tx.get(db.doc('storageRollout/sparkV1')),
+          tx.get(db.doc(`businesses/${ownerUid}/storageApprovals/cutover`)),
+          tx.get(db.doc(`businesses/${ownerUid}/storageApprovals/runtimePreparation`)),
+          tx.get(db.doc(`businesses/${ownerUid}/state/main`))]);context();
+        const c=control.data(),p=policy.data(),r=legacy.data();
+        if(c?.ownerUid!==ownerUid||c.schemaVersion!==2||c.storageMode!=='migrating'||c.phase!=='READY_TO_CUTOVER'
+          ||c.recordVersion!==verified.controlVersion||c.sourceHash!==verified.sourceHash
+          ||c.reconstructedHash!==verified.sourceHash||c.semanticEquality!=='PASS'||c.buildSha!==buildSha
+          ||c.remoteHash!==verified.remoteHash||c.remoteRevision!==verified.remoteRevision
+          ||c.deviceRevision!==verified.deviceRevision||c.sourceDeviceId!==verified.sourceDeviceId
+          ||api.canonicalJson(c.businessIds)!==api.canonicalJson(verified.businessIds))
+          throw Error('SPARK_ACTIVATION_CONTROL_CHANGED');
+        if(p?.enabled!==true||p.automaticMigration!==true||p.automaticCutover!==true
+          ||p.automaticRuntimePreparation!==true||!Array.isArray(p.pilotOwnerUids)||!p.pilotOwnerUids.includes(ownerUid)
+          ||api.canonicalJson(approval.data()??null)!==api.canonicalJson({ownerUid,
+            sourceHash:verified.sourceHash,buildSha,businessIds:verified.businessIds})
+          ||!runtimeApproval.exists||await api.hash(runtimeApproval.data())!==verified.runtimeApprovalHash)
+          throw Error('SPARK_ACTIVATION_ADMIN_APPROVAL_CHANGED');
+        if(!r||r.revision!==verified.remoteRevision||await api.hash(r.payload?.data)!==verified.remoteHash)
+          throw Error('SPARK_ACTIVATION_REMOTE_DRIFT_STOP');
+        for(const businessId of verified.businessIds){
+          const runtime=await tx.get(db.doc(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/runtime`));context();
+          if(!runtime.exists||await api.hash(runtime.data())!==verified.runtimeHashes[businessId])
+            throw Error('SPARK_ACTIVATION_RUNTIME_CHANGED');
+        }
+        // The transaction retains exact remote versions while the native
+        // source/journal/context is checked again. Only storage control changes;
+        // no commerce, shadow data, source pin or legacy record is rewritten.
+        await verified.assertStable();context();
+        tx.update(controlRef,{storageMode:'modular',phase:'MODULAR',recordVersion:c.recordVersion+1,
+          updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+      });
+      context();const confirmed=(await server(controlRef)).data();
+      if(confirmed?.storageMode!=='modular'||confirmed.phase!=='MODULAR'
+        ||confirmed.sourceHash!==verified.sourceHash||confirmed.reconstructedHash!==verified.sourceHash
+        ||confirmed.buildSha!==buildSha||confirmed.recordVersion!==verified.controlVersion+1)
+        throw Error('SPARK_ACTIVATION_SERVER_CONFIRMATION_REQUIRED');
+      return {phase:'MODULAR',storageMode:'modular',sourceHash:verified.sourceHash,
+        cutoverPerformed:true,operationalCloudConfirmed:false};
     }
     async function prepare(){
       context();
@@ -296,12 +352,17 @@
         if(runtimePreparation)onProgress({phase:'RUNTIME_PREPARED',planHash:handoff.planHash,
           captureHash:preserved.captureHash,runtimeHashes:runtimePreparation.runtimeHashes,
           operationalCloudConfirmed:false,cutoverPerformed:false});
-        return {...shadow,prepared:true,reconciliations,handoffPrepared:true,handoff:preserved,
+        let activation=null;
+        if(policy.automaticMigration===true&&policy.automaticCutover===true){
+          if(runtimePreparation?.status!=='RUNTIME_PREPARED')throw Error('SPARK_ACTIVATION_RUNTIME_PREPARATION_REQUIRED');
+          activation=await activateApproved();context();onProgress({...activation,phase:'CUTOVER_COMMITTED'});
+        }
+        return {...shadow,...(activation||{}),prepared:true,reconciliations,handoffPrepared:true,handoff:preserved,
           runtimePreparation,
           operationalCloudConfirmed:false};
       }finally{journal?.close();recovery?.close();}
     }
-    return Object.freeze({prepare,verifyLocalHandoff});
+    return Object.freeze({prepare,verifyLocalHandoff,activateApproved});
   }
   root.CLICK360_SPARK_MIGRATION_BOOTSTRAP=Object.freeze({create});
 })(typeof window==='undefined'?globalThis:window);

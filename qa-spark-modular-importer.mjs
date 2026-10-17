@@ -13,7 +13,7 @@ if(process.env.FIRESTORE_EMULATOR_HOST!=='127.0.0.1:48944')throw Error('EXACT_SP
 const projectId='demo-click360-spark-modular',ownerUid='spark-import-owner',businessId='import-business';
 const env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:48944,rules:await readFile('firestore.spark.rules','utf8')}});
 const client=env.authenticatedContext(ownerUid).firestore();
-let beforePageRead=null,activePageReads=0,maxActivePageReads=0;
+let beforePageRead=null,beforeActivationTransaction=null,activePageReads=0,maxActivePageReads=0;
 const wrap=snap=>({exists:snap.exists(),data:()=>snap.data()});
 // SDK-shape compatibility only: all reads, transactions and Rules are executed
 // by the real authenticated Web client, never an Admin transport.
@@ -31,7 +31,10 @@ const db={app:{options:{projectId}},doc:path=>{
         finally{activePageReads--;}
       }};
     return page;}}),
-  runTransaction:callback=>runTransaction(client,tx=>callback({get:async ref=>wrap(await tx.get(ref)),set:(ref,data)=>tx.set(ref,data),update:(ref,data)=>tx.update(ref,data)}))};
+  runTransaction:async callback=>{
+    if(beforeActivationTransaction){const hook=beforeActivationTransaction;beforeActivationTransaction=null;await hook();}
+    return runTransaction(client,tx=>callback({get:async ref=>wrap(await tx.get(ref)),set:(ref,data)=>tx.set(ref,data),update:(ref,data)=>tx.update(ref,data)}));
+  }};
 const firebase={firestore:{FieldValue:{serverTimestamp},FieldPath:{documentId}}};
 const api=globalThis.CLICK360_SPARK_MIGRATION;
 const identity={ownerUid,ownerId:ownerUid,businessId:ownerUid,tenantKey:`owner:${ownerUid}:business:${ownerUid}`,schemaVersion:10};
@@ -262,8 +265,30 @@ try{
   const cutoverApprovalPath=`businesses/${ownerUid}/storageApprovals/cutover`;
   await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),cutoverApprovalPath),{
     ownerUid,sourceHash:approval.sourceHash,buildSha:input.buildSha,businessIds:approval.businessIds}));
-  await setDoc(storageRef,{...savedControl,storageMode:'modular',phase:'MODULAR',
-    recordVersion:savedControl.recordVersion+1,updatedAt:serverTimestamp()});
+  await assert.rejects(localHandoff.activateApproved(),/AUTOMATIC_ACTIVATION_DISABLED/);
+  assert.deepEqual((await getDocFromServer(storageRef)).data(),savedControl);
+  await setPolicy({...authorized,automaticCutover:true,automaticMigration:true});
+  const cutoverApproval={ownerUid,sourceHash:approval.sourceHash,buildSha:input.buildSha,businessIds:approval.businessIds};
+  const firstRuntime=connected.handoff.plan.runtimes[0],originalRuntime=approval.runtimeRecords[firstRuntime.content.businessId];
+  for(const [path,value,restore,reason]of [
+    [storageRef.path,{...savedControl,recordVersion:savedControl.recordVersion+1},savedControl,/ACTIVATION_CONTROL_CHANGED/],
+    [cutoverApprovalPath,{...cutoverApproval,sourceHash:'f'.repeat(64)},cutoverApproval,/ACTIVATION_ADMIN_APPROVAL_CHANGED/],
+    [`businesses/${ownerUid}/storageApprovals/runtimePreparation`,null,approval,/ACTIVATION_ADMIN_APPROVAL_CHANGED/],
+    [`businesses/${ownerUid}/state/main`,{...rootState,payload:{...rootState.payload,data:{...rootState.payload.data,interruptedMaintenance:true}}},rootState,/ACTIVATION_REMOTE_DRIFT_STOP/],
+    [firstRuntime.path,{...originalRuntime,recordVersion:2},originalRuntime,/ACTIVATION_RUNTIME_CHANGED/]
+  ]){
+    // Authorized synthetic maintenance between the full preflight and commit
+    // must not be hidden by a matching old approval/source revision.
+    beforeActivationTransaction=()=>env.withSecurityRulesDisabled(c=>value===null
+      ?deleteDoc(doc(c.firestore(),path)):setDoc(doc(c.firestore(),path),value));
+    await assert.rejects(localHandoff.activateApproved(),reason);
+    assert.equal((await getDocFromServer(storageRef)).data().storageMode,'migrating');
+    await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),path),restore));
+  }
+  const activation=await localHandoff.activateApproved();
+  assert.equal(activation.phase,'MODULAR');assert.equal(activation.cutoverPerformed,true);
+  assert.equal(activation.operationalCloudConfirmed,false);
+  assert.equal((await getDocFromServer(storageRef)).data().recordVersion,savedControl.recordVersion+1);
   const handoffVerified=await localHandoff.verifyLocalHandoff();
   assert.equal(handoffVerified.status,'LOCAL_HANDOFF_VERIFIED');await handoffVerified.assertStable();
   assert.equal(handoffVerified.sourceHash,result.equality.sourceHash);
@@ -283,6 +308,6 @@ try{
   console.log(JSON.stringify({status:'PASS',clientRules:true,sourceHash:result.equality.sourceHash,reconstructedHash:result.equality.reconstructedHash,
     records:result.manifest.recordCount,interruptedResume:true,idempotent:true,pendingLocalSalePreserved:true,sameRevisionRemoteDriftStops:true,
     runtimePreparation:true,runtimeInterruptedResume:true,runtimeBusinessCoverage:2,approvedDerivedRuntimeOnly:true,
-    localPostCutoverHandoff:true,localHandoffServerDriftRejected:true,
-    commercialRecordsUnchanged:true,legacyUnchanged:true,cutover:false,productionWrites:0}));
+    localPostCutoverHandoff:true,localHandoffServerDriftRejected:true,approvedAutomaticActivation:true,
+    commercialRecordsUnchanged:true,legacyUnchanged:true,syntheticCutover:true,productionCutover:false,productionWrites:0}));
 }finally{await env.cleanup();}

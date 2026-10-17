@@ -17,6 +17,9 @@ const runtimePreparation=!recoveryOnly&&args['--runtime-preparation']!=='false';
 assert(args['--local-handoff']===undefined||['true','false'].includes(args['--local-handoff']));
 const localHandoff=args['--local-handoff']==='true';
 assert(!localHandoff||runtimePreparation,'LOCAL_HANDOFF_REQUIRES_RUNTIME_PREPARATION');
+assert(args['--automatic-cutover']===undefined||['true','false'].includes(args['--automatic-cutover']));
+const automaticCutover=args['--automatic-cutover']==='true';
+assert(!automaticCutover||localHandoff,'AUTOMATIC_CUTOVER_REQUIRES_VERIFIED_HANDOFF');
 assert.equal(args['--project'],PROJECT);assert.match(args['--sha']||'',/^[a-f0-9]{40}$/);
 for(const key of ['FIRESTORE_EMULATOR_HOST','FIREBASE_AUTH_EMULATOR_HOST'])assert(!process.env[key]);
 const digest=value=>createHash('sha256').update(value).digest('hex');
@@ -198,11 +201,11 @@ try{
           await admin.runTransaction(async tx=>{
             const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),policy=snap.data();
             assert(policy?.pilotOwnerUids?.every(id=>id.startsWith('qa-spark-staging-')));
-            tx.update(ref,{automaticCutover:true,automaticMigration:false});
+            tx.update(ref,{automaticCutover:true,automaticMigration:automaticCutover});
           });
           // The authenticated owner SDK, with deployed Rules, performs this
           // explicitly approved synthetic transition. Admin never bypasses it.
-          await page.evaluate(async uid=>{
+          if(!automaticCutover)await page.evaluate(async uid=>{
             const ref=click360Db.doc(`businesses/${uid}/metadata/storage`);
             await click360Db.runTransaction(async tx=>{
               const snap=await tx.get(ref),control=snap.data();
@@ -213,6 +216,13 @@ try{
             });
           },uid);
           await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});
+          if(automaticCutover)await page.waitForFunction(()=>{
+            const c=window.click360SparkBootstrapState;if(c?.phase==='BLOCKED')throw Error(c.reason);
+            // Distinct bounded stages, not a larger catch-all timeout. This
+            // marker is emitted only after authoritative control confirmation;
+            // the following READY gate separately proves native/view recovery.
+            return window.click360SparkMigrationState?.phase==='CUTOVER_COMMITTED';
+          });
           await page.waitForFunction(()=>{
             const c=window.click360SparkBootstrapState;
             if(c?.phase==='BLOCKED')throw Error(c.reason);
@@ -268,6 +278,7 @@ try{
           assert.equal(await page.evaluate(()=>click360GetTenantState().sales.filter(s=>s.id==='local-sale').length),1);
           assert.equal(await page.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id)?.stock,local.products[0].id),local.products[0].stock);
           handoffEvidence={status:'LOCAL_HANDOFF_VERIFIED',syntheticApprovedTransition:true,
+            automaticCoordinator:automaticCutover,
             originalSourcePinUnchanged:true,ownerWideBusinesses:2,importedSaleOnce:true,stockPreserved:true,
             importedSessionClosed:true,reportTotal:30,reportSaleCount:1,closeLedgerConfirmed:true,
             postCloseRestart:true,productionWrites:0};
@@ -302,12 +313,12 @@ try{
       if(runtimePreparation)await admin.runTransaction(async tx=>{
         const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),policy=snap.data();
         assert(policy?.pilotOwnerUids?.every(id=>id.startsWith('qa-spark-staging-')),'RUNTIME_POLICY_NON_SYNTHETIC_STOP');
-        tx.update(ref,{automaticRuntimePreparation:false,automaticCutover:false});
+        tx.update(ref,{automaticRuntimePreparation:false,automaticCutover:false,automaticMigration:false});
       });
     }
   }
-  const result={status:'PASS',scope:localHandoff?'REAL_STAGING_SYNTHETIC_APPROVED_LOCAL_HANDOFF':recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':runtimePreparation
+  const result={status:'PASS',scope:automaticCutover?'REAL_STAGING_SYNTHETIC_AUTOMATIC_APPROVED_MIGRATION':localHandoff?'REAL_STAGING_SYNTHETIC_APPROVED_LOCAL_HANDOFF':recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':runtimePreparation
     ?'REAL_STAGING_SHADOW_AND_RUNTIME_PREPARATION_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,
-    rulesHash,results,productionWrites:0,operationalCutover:localHandoff,realCustomerCutover:false};
+    rulesHash,results,productionWrites:0,operationalCutover:localHandoff,automaticCoordinatorCutover:automaticCutover,realCustomerCutover:false};
   await writeFile(directory+'/result.json',JSON.stringify(result),{mode:0o600,flag:'wx'});console.log(JSON.stringify(result));
 }finally{await browser?.close();await admin.terminate();}

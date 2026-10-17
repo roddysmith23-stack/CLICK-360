@@ -100,6 +100,31 @@ immutable evidence; no payment method or zero counter is invented.
 
 ## Gates still required before real activation
 
+### Further connected candidate: independently approved automatic activation
+
+The exact `c8a7fe6` baseline has all three workflows SUCCESS and both real
+staging matrices PASS in Chromium/WebKit. Its native handoff preserves the
+original immutable pin while an exact full-record IndexedDB CAS safely changes
+the working cache. A forged flag, concurrent working-date change, wrong tenant,
+pre-cutover proof and production entry cannot clear capacity protection.
+
+The subsequent coordinator candidate reuses that full verifier in a distinct
+`PRE_CUTOVER_VERIFIED` phase. Explicit administrative `automaticMigration` AND
+`automaticCutover` are required in addition to the exact private source/build/
+whole-owner approval and prepared runtime authorization. A transaction rechecks
+control revision, legacy revision/hash, private approvals, every runtime and the
+native source/journal before changing ONLY owner-wide storage control. A fresh
+server confirmation precedes the separate MODULAR handoff/cache/view bootstrap;
+the metadata transition itself never claims operational cloud confirmation.
+The owner must not publish its own approval and production remains fail-closed.
+
+Actual Web SDK emulator tests include authorized activation and maintenance
+between preflight/commit (control revision, private approval, same-revision
+legacy content and runtime) without altering commercial records. Full exact-
+HEAD CI, strict Rules budget and real served automatic-flow staging are still
+separate mandatory gates. The staging harness has an explicit synthetic-only
+automatic option; the earlier manual fixture is not relabeled automatic.
+
 Runtime preparation is not the owner-wide operational cutover/local installation
 handoff or worker-proof publication. Nonempty executable migration journals,
 sale cancellation, broader unsupported financial modules, complete historical

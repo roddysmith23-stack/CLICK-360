@@ -68,6 +68,7 @@ for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']]){
           deviceRevision:'modular-43',expectedDeviceRevision:'source-42',verifiedLocalHandoff:proof};
         const denied=async action=>{let rejected=false;try{await action();}catch{rejected=true;}if(!rejected)throw Error('PROMOTION_SHOULD_REJECT');};
         await denied(()=>CLICK360_V16_STORAGE.putSnapshot(context,snapshot,{...metadata,modularPromotion:{},allowVerifiedModularPromotion:true}));
+        await denied(()=>CLICK360_V16_STORAGE.promoteVerifiedSnapshot(context,snapshot,{...metadata,verifiedLocalHandoff:{...proof,status:'PRE_CUTOVER_VERIFIED'}}));
         await denied(()=>CLICK360_V16_STORAGE.promoteVerifiedSnapshot(context,snapshot,{...metadata,verifiedLocalHandoff:{...proof,captureHash:'f'.repeat(64)}}));
         await denied(()=>CLICK360_V16_STORAGE.promoteVerifiedSnapshot(context,{...snapshot,identity:{...context,ownerId:'other',ownerUid:'other'}},metadata));
         CLICK360_FIREBASE_CONFIG.projectId='click-360';

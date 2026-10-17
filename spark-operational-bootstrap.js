@@ -1,6 +1,7 @@
 (function(root){
   'use strict';
-  // One lifecycle owner for the existing UI. Never enables migration/cutover.
+  // One lifecycle owner for the existing UI. Staging migration/activation is
+  // delegated to the independently approved coordinator, never self-authorized.
   const projects=new Set(['demo-click360-spark-modular','click360-staging-7620168025']);
   function create(options){
     const {projectId,db,ownerUid,actorUid,deviceId,resolveUser,resolveContext,resolveBusiness,
@@ -132,13 +133,17 @@
       }
     }
     async function run(preferredBusiness){
-      context();publish('CHECKING');const control=await mode();
+      context();publish('CHECKING');let control=await mode();
       await restoreLocal();context();
       const local=await readLocal();context();
       if(actorUid===ownerUid&&['legacy','migrating'].includes(control.storageMode)&&typeof options.prepareMigration==='function'){
         await acquireLease();context();publish('MIGRATION_PREPARING');
         const shadow=await options.prepareMigration({leaseHeld:()=>!!releaseLease&&!closed});context();
-        if(shadow?.prepared){
+        if(shadow?.cutoverPerformed===true){
+          control=await mode();context();
+          if(control.storageMode!=='modular'||control.sourceHash!==shadow.sourceHash)
+            throw Error('SPARK_BOOTSTRAP_ACTIVATION_NOT_CONFIRMED');
+        }else if(shadow?.prepared){
           // Shadow equality is not operational activation. Never fall through
           // to a legacy writer or present a verified backup as sync completion.
           throw Error('SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED');

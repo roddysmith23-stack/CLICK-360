@@ -121,6 +121,7 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
     onPhase:detail=>phases.push(detail)});
   root.click360SparkCoordinator=coordinator;
   return {coordinator,observed,phases,writes,events,changeActor:value=>actor=value,
+    activateMode:()=>{control.storageMode='modular';control.phase='MODULAR';},
     blockReads:promise=>releaseRead=promise,blockQueries:promise=>queryBarrier=promise,
     blockModuleReads:promise=>moduleBarrier=promise,setBusy:value=>busy=value};
 }
@@ -191,6 +192,22 @@ for(const mode of ['legacy','migrating']){
 {
   const f=fixture({mode:'legacy',prepareMigration:async()=>({prepared:false})});
   assert.equal((await f.coordinator.recover()).handled,false);f.coordinator.close();
+}
+{
+  let f;
+  f=fixture({mode:'migrating',prepareMigration:async()=>{
+    f.activateMode();return {prepared:true,cutoverPerformed:true,sourceHash:'source'};
+  }});
+  assert.equal((await f.coordinator.recover()).handled,true);
+  assert.equal(f.phases.at(-1).phase,'READY');assert.equal(f.observed.created,1);f.coordinator.close();
+  for(const wrongSource of [false,true]){
+    let f;
+    f=fixture({mode:'migrating',prepareMigration:async()=>{
+      if(wrongSource)f.activateMode();return {prepared:true,cutoverPerformed:true,sourceHash:'wrong'};
+    }});
+    await assert.rejects(f.coordinator.recover(),/ACTIVATION_NOT_CONFIRMED/);
+    assert.equal(f.observed.created,0);assert.equal(f.observed.installed,0);f.coordinator.close();
+  }
 }
 {
   const api=globalThis.CLICK360_SPARK_MIGRATION;
