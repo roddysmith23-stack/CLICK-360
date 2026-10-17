@@ -1,6 +1,7 @@
 // Existing CLICK360 UI and built assets; real Auth/Web SDK/Rules emulators.
 // This is partial operational integration, NOT full migration certification.
 import {spawn} from 'node:child_process';
+import strictAssert from 'node:assert/strict';
 import {readFileSync,mkdirSync,writeFileSync,createWriteStream} from 'node:fs';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
@@ -195,7 +196,7 @@ try{
       assert((await record('layaways',reservation.layawayId)).status===nextStatus,'Actual delivery action persists exact reservation status');
       assert((await record('operationLedger',operationId)).kind==='layaway_status');
       assert(await record('movements',operationId)===null,'Delivery cannot manufacture a payment movement');
-      assert.deepEqual({sale:await record('sales',reservation.storageRecordId),
+      strictAssert.deepEqual({sale:await record('sales',reservation.storageRecordId),
         session:await record('cashSessions',session.id),product:await record('products',created.id)},deliveryFinancial,
       'Delivery cannot mutate sales, stock or session counters');
     }
