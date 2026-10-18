@@ -1,12 +1,17 @@
 (function(root){
   'use strict';
-  // Connected to the existing PWA, but activation is deliberately restricted
-  // to synthetic staging certification until every commercial flow is ready.
+  // Connected to the existing PWA. Production requires the bootstrap's
+  // server-verified opaque authority; syntheticCertification never grants it.
   // Loading this file never opens a database, writes, migrates or activates.
   async function create(options){
     const {projectId,db,ownerUid,businessId,actorUid,resolveUser,resolveIdentity,
       persistCandidate,projectConfirmed,deviceId,onStatus=()=>{}}=options||{};
-    if(!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
+    const production=projectId==='click-360';
+    const authorityScope={projectId,ownerUid,businessId,actorUid};
+    if(production){
+      if(!root.CLICK360_SPARK_BOOTSTRAP?.assertAuthority)throw Error('SPARK_OPERATIONAL_AUTHORITY_REQUIRED');
+      root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(options.operationalAuthority,authorityScope);
+    }else if(!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
       ||options.syntheticCertification!==true)throw Error('SPARK_UI_CERTIFICATION_ONLY');
     const assets=root.CLICK360_RELEASE_ASSETS,build=assets?.['app.js'];
     if(!build||['firebase-service.js','v16-storage.js','spark-modular-migration.js','spark-modular-record-codec.js',
@@ -14,7 +19,8 @@
       'modular-operation-coordinator.js','modular-ui-adapter.js','spark-operational-ui-runtime.js','spark-operational-bootstrap.js'].some(file=>assets[file]!==build))
       throw Error('SPARK_UI_MIXED_RELEASE_BLOCKED');
     if(typeof persistCandidate!=='function'||typeof projectConfirmed!=='function')throw Error('SPARK_UI_DURABILITY_REQUIRED');
-    const transport=root.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,actorUid,resolveUser});
+    const transport=root.CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId,ownerUid,businessId,actorUid,resolveUser,
+      operationalAuthority:options.operationalAuthority});
     // Server-enforced mode proof before installing any UI writer.
     await transport.run(async()=>true);
     const repository=root.CLICK360_MODULAR_PERSISTENCE.createSparkRepository({ownerUid,businessId,actorUid,transport,
@@ -22,6 +28,7 @@
     const journal=await root.CLICK360_MODULAR_JOURNAL.open({actorUid});
     const identity=repository.identity;
     const context=()=>{
+      if(production)root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(options.operationalAuthority,authorityScope);
       const active=resolveIdentity?.();
       if(active?.tenantKey!==identity.tenantKey||active.ownerUid!==ownerUid||active.businessId!==businessId
         ||resolveUser?.()?.uid!==actorUid)throw Error('SPARK_UI_CONTEXT_CHANGED');
@@ -54,7 +61,7 @@
       assertActive();
       if(busy)throw Error('SPARK_UI_OPERATION_IN_PROGRESS');
       if(durabilityBlocked)return {ok:false,pending:true,reason:'spark_ui_device_recovery_required',notQueued:true};
-      if(!command||!['cash_open','cash_close','sale','product_create','product_edit','product_delete','inventory_adjust','cash_movement','manual_movement_correct','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings'].includes(command.kind)
+      if(!command||!['cash_open','cash_close','sale','sale_cancel','product_create','product_edit','product_delete','inventory_adjust','cash_movement','manual_movement_correct','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings'].includes(command.kind)
         ||!((['cash_opened','cash_reopened'].includes(reason)&&command.kind==='cash_open')||(reason==='sale_created'&&command.kind==='sale')
           ||(reason==='product_saved'&&['product_create','product_edit','inventory_adjust'].includes(command.kind))
           ||(reason==='product_deleted'&&command.kind==='product_delete')
@@ -62,6 +69,7 @@
           ||(reason==='customer_saved'&&['customer_create','customer_edit'].includes(command.kind))
           ||(reason==='customer_deleted'&&command.kind==='customer_delete')
           ||(reason==='sale_payment_received'&&command.kind==='receivable_payment')
+          ||(reason==='sale_cancelled'&&command.kind==='sale_cancel')
           ||(reason==='layaway_status_updated'&&command.kind==='layaway_status')
           ||(['cash_movement_updated','cash_movement_cancelled'].includes(reason)&&command.kind==='manual_movement_correct')
           ||(['business_profile_updated','print_settings_updated'].includes(reason)&&command.kind==='scoped_settings')))
@@ -80,7 +88,7 @@
         // require their preceding projection instead of inventing revisions.
         if(counts.unknownCount>0||(!offline&&(counts.pendingCount+projections>0))
           ||(offline&&projections>0&&counts.pendingCount===0)
-          ||(counts.pendingCount>0&&['product_edit','product_delete','inventory_adjust','manual_movement_correct','customer_edit','customer_delete','receivable_payment','layaway_status','cash_close','scoped_settings'].includes(command.kind)))
+          ||(counts.pendingCount>0&&['product_edit','product_delete','inventory_adjust','manual_movement_correct','sale_cancel','customer_edit','customer_delete','receivable_payment','layaway_status','cash_close','scoped_settings'].includes(command.kind)))
           return {ok:false,pending:true,reason:'spark_ui_recovery_required',notQueued:true};
         const prepared=await repository.prepareOperation(command.kind,input);
         assertActive();

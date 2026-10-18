@@ -915,7 +915,16 @@
       let sparkWorker = false;
       let sparkWorkerEntitlements = null;
 	    try {
-        if (['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)) {
+        let sparkWorkerScopeEligible=['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId);
+        if(projectId==='click-360'){
+          const rollout=await db.doc('storageRollout/sparkV1').get({source:'server'}),p=rollout.data();
+          if(rollout.metadata.fromCache||rollout.metadata.hasPendingWrites)throw Error('SPARK_WORKER_SERVER_REQUIRED');
+          // Existing modular businesses keep their scoped mode after new
+          // migration flags turn off. Non-pilots retain the legacy gateway.
+          sparkWorkerScopeEligible=p?.enabled===true&&p.operationalAccess===true
+            &&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(ownerId);
+        }
+        if (sparkWorkerScopeEligible) {
           // Resolve from the server before ANY V1 pull or local installation.
           const scoped = await db.doc(`businesses/${ownerId}/businessUnits/${businessUnitId}/storage/v2/metadata/storage`).get({source:'server'});
           if (scoped.metadata.fromCache || scoped.metadata.hasPendingWrites) throw Error('SPARK_WORKER_SERVER_REQUIRED');
@@ -3963,6 +3972,7 @@
 	    localUpdatedAtMs: localPayloadUpdatedAtMs()
 	  });
 	  function deactivateActiveAccount() {
+        SPARK_APPROVAL_SUPERVISOR?.close();SPARK_APPROVAL_SUPERVISOR=null;
 	    window.click360SparkRecoveryCopy = null;
 	    window.click360SparkMigrationState = null;
 	    AUTH_EPOCH += 1;
@@ -4115,6 +4125,7 @@
     }, (error) => console.warn('No se pudo escuchar el acceso de cuenta:', error.message));
   }
 
+  let SPARK_APPROVAL_SUPERVISOR=null;
   let P0A_RECOVERY_RUN = null;
   let P0A_RECOVERY_EPOCH = null;
   async function runP0ARecovery(user, expectedEpoch) {
@@ -4140,7 +4151,8 @@
           try{
             const policy=await db.doc('storageRollout/sparkV1').get({source:'server'}),p=policy.data();
             if(policy.metadata.fromCache===false&&policy.metadata.hasPendingWrites===false&&p?.enabled===true
-              &&p.automaticRecoveryCopy===true&&p.automaticShadow===false&&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
+              &&p.automaticRecoveryCopy===true&&p.automaticShadow===false&&p.operationalAccess!==true
+              &&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
               recoveryOnly=true;
               await window.click360PrepareTenantStorage?.(context);
               const source=await window.CLICK360_V16_STORAGE.getSnapshot(context);
@@ -4155,7 +4167,10 @@
                     readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld:()=>!!lock,
                     onProgress:detail=>{if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context)return;
                       window.click360SparkMigrationState=detail;
-                      if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED')window.click360SparkRecoveryCopy={...detail};}
+                      if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED'){
+                        window.click360SparkRecoveryCopy={...detail};
+                        window.dispatchEvent(new CustomEvent('click360-sync-status'));
+                      }}
                   }).prepare();
                 });
               }
@@ -4179,11 +4194,12 @@
     if(AUTH_APPROVED&&auth.currentUser)runP0ARecovery(auth.currentUser,AUTH_EPOCH).catch(()=>{});
   });
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
+        SPARK_APPROVAL_SUPERVISOR?.close();SPARK_APPROVAL_SUPERVISOR=null;
 		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
         const p0aRecoveryOnly=await runP0ARecovery(user,expectedEpoch);
         if (!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user)) return false;
         const sparkProjectId=db.app.options.projectId;
-        if(!p0aRecoveryOnly&&['demo-click360-spark-modular','click360-staging-7620168025'].includes(sparkProjectId)
+        if(!p0aRecoveryOnly&&['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(sparkProjectId)
           && window.CLICK360_SPARK_BOOTSTRAP && (window.click360User?.ownerId===user.uid || SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT)){
           let sparkCoordinator=null;
           try{
@@ -4206,7 +4222,10 @@
                   readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld,
                   onProgress:detail=>{
                     window.click360SparkMigrationState=detail;
-                    if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED')window.click360SparkRecoveryCopy={...detail};
+                    if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED'){
+                      window.click360SparkRecoveryCopy={...detail};
+                      window.dispatchEvent(new CustomEvent('click360-sync-status'));
+                    }
                   }
                 }).prepare();
               },
@@ -4276,6 +4295,25 @@
             setSyncStatus('modular_pending','No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.');
             showGate('No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.',ACCESS_UI_STATES.RECOVERABLE_ERROR,
               {reason:String(error.code||error.message||'spark_bootstrap_failed')});
+            const waiting=new Set(['SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED','SPARK_RUNTIME_ADMIN_APPROVAL_REQUIRED',
+              'SPARK_LOCAL_HANDOFF_APPROVAL_MISMATCH','SPARK_ACTIVATION_ADMIN_APPROVAL_CHANGED']);
+            if(user.uid===ACTIVE_CONTEXT?.ownerUid&&waiting.has(String(error.code||error.message))
+              &&window.click360SparkMigrationState?.captureHash&&window.CLICK360_SPARK_BOOTSTRAP?.watchApprovalWake){
+              const preservedContext=ACTIVE_CONTEXT;
+              let recovery;
+              try{
+                recovery=await window.CLICK360_SPARK_RECOVERY.open({ownerUid:preservedContext.ownerUid,resolveUser:()=>auth.currentUser});
+                const pinned=await recovery.readHandoff(window.click360SparkMigrationState.captureHash);
+                if(pinned?.durable&&isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===preservedContext)
+                  SPARK_APPROVAL_SUPERVISOR=await window.CLICK360_SPARK_BOOTSTRAP.watchApprovalWake({db,projectId:sparkProjectId,
+                    ownerUid:preservedContext.ownerUid,actorUid:user.uid,expected:{...pinned.plan,captureHash:pinned.captureHash,
+                      buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js']},resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
+                    isBusy:()=>!!window.click360SparkOperationalSession||window.click360SparkCoordinator?.isBusy?.()===true,
+                    recover:()=>{if(isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===preservedContext)
+                      return enterApprovedApp(user,expectedEpoch);}});
+              }catch(_preservationError){/* Keep BLOCKED and original local data; never replay on an unknown source. */}
+              finally{recovery?.close();}
+            }
             return false;
           }
         }

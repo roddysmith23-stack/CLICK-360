@@ -1,23 +1,29 @@
 (function(root){
   'use strict';
-  // Transport only. Not loaded by the public app and never enables cutover.
-  // Operational Rules and domain adapters must certify each business mutation.
+  // Transport only; never enables cutover. Production requires the bootstrap's
+  // opaque server-verified authority. Rules still enforce each business write.
   const modules=new Set(['products','sales','movements','cashSessions','dailyReports','auditEvents','customers','operationLedger','config','metadata','layaways','labelTemplates','labelProfiles']);
   function copyProjection(value){
     const data={...value},native={};
     for(const field of ['createdAt','updatedAt','closedAt'])if(Object.hasOwn(data,field)){native[field]=data[field];delete data[field];}
     return {...structuredClone(data),...native};
   }
-  function create({db,projectId,ownerUid,businessId,actorUid=ownerUid,resolveUser,maxRecords=40}){
+  function create({db,projectId,ownerUid,businessId,actorUid=ownerUid,resolveUser,maxRecords=40,operationalAuthority}){
     const codec=root.CLICK360_SPARK_RECORD_CODEC;
     if(!codec||!db?.doc||!db?.runTransaction||typeof resolveUser!=='function')throw Error('SPARK_TRANSACTION_TRANSPORT_INCOMPLETE');
-    if(!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
+    if(!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId)
       ||db.app?.options?.projectId!==projectId)throw Error('SPARK_TRANSACTION_NONPRODUCTION_ONLY');
+    const production=projectId==='click-360',authorityScope={projectId,ownerUid,businessId,actorUid};
+    function authority(){if(production){
+      if(!root.CLICK360_SPARK_BOOTSTRAP?.assertAuthority)throw Error('SPARK_OPERATIONAL_AUTHORITY_REQUIRED');
+      root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(operationalAuthority,authorityScope);
+    }}
+    authority();
     if(![ownerUid,businessId,actorUid].every(v=>typeof v==='string'&&v.length&&v!=='..'&&v!=='.'&&!v.includes('/'))
       ||!Number.isSafeInteger(maxRecords)||maxRecords<1||maxRecords>40)throw Error('SPARK_TRANSACTION_SCOPE_INVALID');
     const identity={ownerUid,businessId},unit=`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2`;
     const control=db.doc(`businesses/${ownerUid}/metadata/storage`);
-    function context(){if(resolveUser()?.uid!==actorUid)throw Error('SPARK_TRANSACTION_AUTH_CHANGED');}
+    function context(){authority();if(resolveUser()?.uid!==actorUid)throw Error('SPARK_TRANSACTION_AUTH_CHANGED');}
     function scope(moduleName,recordId){
       if(!modules.has(moduleName)||typeof recordId!=='string'||!recordId||recordId.includes('/')||['.','..'].includes(recordId))throw Error('SPARK_TRANSACTION_RECORD_SCOPE_INVALID');
       return {identity,moduleName,recordId};

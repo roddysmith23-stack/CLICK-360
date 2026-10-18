@@ -4,13 +4,13 @@ import vm from 'node:vm';
 import './spark-modular-migration.js';
 import './modular-ui-adapter.js';
 const source=await readFile('app.js','utf8');
-const start=source.indexOf('function movementEffectiveAmount(m) {'),end=source.indexOf('function isDayStarted()',start);
+const start=source.indexOf('function movementEffectiveAmount(m,sales=state.sales,movements=state.movements) {'),end=source.indexOf('function isDayStarted()',start);
 assert(start>0&&end>start);
 const original={id:'original',businessId:'alpha',cashSessionId:'exact-session',date:'2026-09-03',
   kind:'egreso',amount:3,compensatedByOperationId:'correction',reversalMovementId:'correction-rev'};
 const reversal={...original,id:'correction-rev',operationId:'correction',compensationSign:-1,compensatesMovementId:'original'};
 delete reversal.compensatedByOperationId;delete reversal.reversalMovementId;
-const context={state:{movements:[original]}};
+const context={state:{sales:[],movements:[original]}};
 const effective=vm.runInNewContext(`(${source.slice(start,end).trim()})`,context);
 assert.equal(effective(original),3);assert.equal(effective(reversal),-3);
 assert.equal([original,reversal].reduce((sum,row)=>sum+effective(row),0),0);

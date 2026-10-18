@@ -1,13 +1,23 @@
 (function(root){
   'use strict';
-  // Existing importer connection: shadow remains staging-only. Explicitly
-  // piloted production entry permits recovery preservation ONLY. The separate
-  // staging path activates only an independently admin-approved exact source;
-  // it never confirms/replays journal rows or publishes its own authorization.
+  // Existing importer connection. P0A-only enrollment remains preservation
+  // only; operational production enrollment is administrative/default-off and
+  // still requires the same exact private source/build approvals. No path
+  // confirms/replays journal rows or publishes its own authorization.
+  const preparationAuthorities=new WeakMap();
+  function assertPreparationAuthority(token,scope,{write=false}={}){
+    const proof=token&&preparationAuthorities.get(token);
+    if(!proof||!/^[a-f0-9]{12,40}$/.test(proof.buildSha||'')||Object.entries(scope).some(([key,value])=>proof[key]!==value)||(write&&!proof.writable))
+      throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
+    proof.assertCurrent();return true;
+  }
+  async function verifyPreparationAuthority(token,scope,options){
+    assertPreparationAuthority(token,scope,options);
+    await preparationAuthorities.get(token).verify(options);assertPreparationAuthority(token,scope,options);
+  }
   function create({db,firebase,projectId,ownerUid,actorUid,deviceId,buildSha,
     resolveUser,resolveContext,readLocal,leaseHeld,onProgress=()=>{},productionRecoveryOnly=false}){
-    if((!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
-        &&!(projectId==='click-360'&&productionRecoveryOnly===true))
+    if((!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId))
       ||db.app?.options?.projectId!==projectId)throw Error('SPARK_MIGRATION_BOOTSTRAP_NONPRODUCTION_ONLY');
     const api=root.CLICK360_SPARK_MIGRATION;
     function context(){
@@ -21,6 +31,20 @@
       if(s.metadata?.fromCache!==false||s.metadata?.hasPendingWrites!==false)
         throw Error('SPARK_MIGRATION_BOOTSTRAP_SERVER_REQUIRED');
       return s;
+    }
+    function issuePreparationAuthority(sourceDeviceId,{writable=false}={}){
+      context();if(productionRecoveryOnly)throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
+      if(!/^[a-f0-9]{12,40}$/.test(buildSha||'')||typeof sourceDeviceId!=='string'||!sourceDeviceId)
+        throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
+      const token=Object.freeze({});
+      preparationAuthorities.set(token,{projectId,ownerUid,buildSha,deviceId:sourceDeviceId,writable,assertCurrent:context,
+        verify:async({write=false}={})=>{
+          const p=(await server(db.doc('storageRollout/sparkV1'))).data();
+          if(p?.enabled!==true||p.operationalAccess!==true||!Array.isArray(p.pilotOwnerUids)||!p.pilotOwnerUids.includes(ownerUid)
+            ||(write&&(p.automaticShadow!==true||p.automaticMigration!==true)))
+            throw Error('SPARK_PREPARATION_ADMIN_POLICY_REQUIRED');
+        }});
+      return token;
     }
     async function scopedContract(read){
       // Same single authoritative choice as sparkScopedEntitlements: an
@@ -137,6 +161,7 @@
           }
         }
         const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,buildSha,deviceId:pin.sourceDeviceId,
+          preparationAuthority:issuePreparationAuthority(pin.sourceDeviceId),
           resolveUser,readSource:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},
           readGuard:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},recovery});
         const records=await importer.readServerRecords(manifest);context();
@@ -257,6 +282,8 @@
       if(!rollout.exists||policy.enabled!==true||(policy.automaticShadow!==true&&policy.automaticRecoveryCopy!==true)
         ||!Array.isArray(policy.pilotOwnerUids)||!policy.pilotOwnerUids.includes(ownerUid))return {prepared:false};
       if(productionRecoveryOnly&&policy.automaticRecoveryCopy!==true)return {prepared:false};
+      if(projectId==='click-360'&&!productionRecoveryOnly
+        &&(policy.operationalAccess!==true||policy.automaticShadow!==true||policy.automaticMigration!==true))return {prepared:false};
       let journal,recovery;
       try{
         const local=await readLocal();context();
@@ -296,6 +323,7 @@
         recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});
         const device=await recovery.deviceIdentity(deviceId);context();
         if(device?.durable!==true||device.ownerUid!==ownerUid||!device.deviceId)throw Error('SPARK_MIGRATION_DURABLE_DEVICE_ID_REQUIRED');
+        const preparationAuthority=productionRecoveryOnly?null:issuePreparationAuthority(device.deviceId,{writable:true});
         const journalCapture=await journal.captureOwner(ownerUid);await assertStable();
         let deviceCapture=await recovery.captureDevice({record:local,journalCapture,deviceId:device.deviceId,buildSha});
         context();
@@ -307,7 +335,8 @@
           deviceCapture=await recovery.captureDevice({record:local,journalCapture,deviceId:device.deviceId,buildSha,
             remoteReference:{source:'server',revision:remote.remoteRevision,hash:remote.remoteHash}});
           onProgress({phase:'RECOVERY_COPY_UPLOADING',captureHash:deviceCapture.captureHash,operationalCloudConfirmed:false});
-          const copy=await recovery.preserveCloud({captureHash:deviceCapture.captureHash,db,firebase,projectId,productionRecoveryOnly,assertStable:async()=>{
+          const copy=await recovery.preserveCloud({captureHash:deviceCapture.captureHash,db,firebase,projectId,productionRecoveryOnly,
+            preparationAuthority,assertStable:async()=>{
             await assertStable();
             if(await api.hash(await journal.captureOwner(ownerUid))!==await api.hash(journalCapture))
               throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
@@ -366,6 +395,7 @@
           remoteSourceHash:selected.remoteHash,businessIds:selected.businessIds,sourceDeviceId:device.deviceId,
           deviceRecordMetadata,reconciliations,capacityProof,cashProofs})};
         const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,deviceId:device.deviceId,buildSha,resolveUser,
+          preparationAuthority,
           requireCashProof:true,historicalReadOnly,
           readSource,recovery:preservedRecovery,onProgress,readGuard:async()=>{
             context();const current=await readLocal();context();
@@ -417,5 +447,5 @@
     }
     return Object.freeze({prepare,verifyLocalHandoff,activateApproved});
   }
-  root.CLICK360_SPARK_MIGRATION_BOOTSTRAP=Object.freeze({create});
+  root.CLICK360_SPARK_MIGRATION_BOOTSTRAP=Object.freeze({create,assertPreparationAuthority,verifyPreparationAuthority});
 })(typeof window==='undefined'?globalThis:window);

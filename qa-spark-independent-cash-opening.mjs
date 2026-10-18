@@ -66,7 +66,8 @@ for(const modular of [false,true])for(const protectedHistory of [false,true])for
   const h=harness({modular});h.state.cashSessions[0].storageHistoryReadOnly=protectedHistory;h.state.dailyReports[0].storageHistoryReadOnly=protectedHistory;
   Object.assign(h.scope,{tenantDataHydrated:true,movementsForBiz:()=>[],isCashIncomeMovement:()=>false,staleOpenCashSession:()=>null,
     isDayStarted:()=>false,isDayClosed:()=>closedFlag,icon:()=>'',fmt:String,actionId:String,sparkHistoryPageControl:()=>''});
-  vm.runInContext(source.slice(cashStart,cashEnd),h.scope);const html=h.scope.cashView();
+  const counterStart=source.indexOf('  function sparkCashCounterView('),counterEnd=source.indexOf('  function isCashIncomeMovement(',counterStart);
+  vm.runInContext(source.slice(counterStart,counterEnd)+source.slice(cashStart,cashEnd),h.scope);const html=h.scope.cashView();
   assert.equal(html.includes('id="independentCashOpenBtn"'),modular&&protectedHistory);
   assert.equal(html.includes('id="reopenCashBtn"'),closedFlag&&!(modular&&protectedHistory));
   assert.equal(html.includes('id="startDayBtnCash"'),!closedFlag&&!(modular&&protectedHistory),

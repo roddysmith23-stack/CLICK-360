@@ -480,7 +480,7 @@
   function createSparkRepository(options={}) {
     const expected=identity(options.ownerUid,options.businessId),transport=options.transport;
     if(!transport?.run||typeof options.serverTimestamp!=='function'||!options.actorUid)throw Error('SPARK_REPOSITORY_INCOMPLETE');
-    const kinds=Object.freeze(['sale','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','manual_movement_correct','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings']);
+    const kinds=Object.freeze(['sale','sale_cancel','cash_open','cash_close','cash_reopen','product_create','product_edit','product_delete','inventory_adjust','cash_movement','manual_movement_correct','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings']);
     const actorUid=safeId(options.actorUid,'actorUid');
     const number=(value,label)=>{if(typeof value!=='number'||!Number.isFinite(value))throw Error(`${label}_INVALID`);return value;};
     const money=(value,label)=>{const n=number(value,label);if(n<0||Math.abs(n*100-Math.round(n*100))>0.000001)throw Error(`${label}_INVALID`);return Math.round(n*100)/100;};
@@ -662,6 +662,9 @@
             itemCount:session.itemCount+itemCount,taxTotal:Math.round((session.taxTotal+money(sale.iva??0,'SALE_TAX'))*100)/100,
             cashBalance:Math.round((session.cashBalance+cashReceived)*100)/100,paymentTotals,lastOperationId:op});
           stage('sales',op,null,{...sale,operationId:op,legacyId:sale.id||'',received,iva:money(sale.iva??0,'SALE_TAX'),itemCount,itemOrder,
+            receiptSummary:{version:1,cashSessionId:sessionId,uniformSession:true,
+              cash:paymentMethod==='Efectivo'?received:0,card:paymentMethod==='Tarjeta'?received:0,
+              transfer:paymentMethod==='Transferencia'?received:0,receivablePayments:sale.method==='Apartado'?received:0},
             status:saleStatus,balance:Math.round((total-received)*100)/100,
             customOrder:itemOrder.filter((id,index)=>sale.items[index].isCustom===true),
             items:normalizedItems,stockItemIndices:Object.fromEntries(normalizedItems.flatMap((line,index)=>line.isCustom?[]:[[line.productId,index]])),
@@ -675,6 +678,53 @@
           // never a new history snapshot or a separate stock/cash commit.
           stage('metadata','runtime',runtime,{...runtime,lastOperationId:op});
           result={saleId:op,movementId:op,cashSessionId:sessionId,...(layawayId?{layawayId}:{})};
+        }else if(kind==='sale_cancel'){
+          if(actorUid!==expected.ownerUid)throw Error('SALE_CANCEL_OWNER_REQUIRED');
+          if(Object.keys(p).some(key=>!['operationId','saleId','expectedRecordVersion','cashSessionId','reason'].includes(key)))throw Error('SALE_CANCEL_FIELDS_INVALID');
+          const saleId=safeId(p.saleId,'saleId'),sale=await tx.get('sales',saleId);
+          if(!sale||sale.storageHistoryReadOnly||!['paid','layaway','pending_payment'].includes(sale.status)||sale.cancelOperationId)throw Error('SALE_CANCEL_SOURCE_INVALID');
+          if(sale.recordVersion!==p.expectedRecordVersion)throw Error('SALE_CANCEL_REVISION_CONFLICT');
+          const origin=await tx.get('operationLedger',safeId(sale.operationId,'saleOperationId'));
+          if(!origin||origin.kind!=='sale'||origin.status!=='committed'||origin.result.saleId!==saleId)throw Error('SALE_CANCEL_OPERATIONAL_PROVENANCE_REQUIRED');
+          const receipts=sale.receiptSummary,sessionId=safeId(p.cashSessionId,'cashSessionId');
+          if(receipts?.version!==1||receipts.uniformSession!==true||receipts.cashSessionId!==sessionId||sale.cashSessionId!==sessionId)
+            throw Error('SALE_CANCEL_RECEIPTS_PROOF_REQUIRED');
+          for(const key of ['cash','card','transfer','receivablePayments'])money(receipts[key],'CANCEL_RECEIPTS');
+          if(Math.round((receipts.cash+receipts.card+receipts.transfer)*100)!==Math.round(money(sale.received,'SALE_RECEIVED')*100))throw Error('SALE_CANCEL_RECEIPTS_CONFLICT');
+          const session=await tx.get('cashSessions',sessionId),runtime=await tx.get('metadata','runtime');
+          if(!session||session.storageHistoryReadOnly||session.status!=='open'||session.date!==sale.date||runtime?.summaryVersion!==1||runtime.openCashSessionId!==sessionId)
+            throw Error('SALE_CANCEL_SESSION_PROTECTED');
+          const totals=summary(session);
+          if(typeof p.reason!=='string'||!p.reason.trim())throw Error('SALE_CANCEL_REASON_REQUIRED');
+          if(!Array.isArray(sale.stockOrder)||sale.stockOrder.length>12||new Set(sale.stockOrder).size!==sale.stockOrder.length
+            ||!sale.stockDeltas||Object.keys(sale.stockDeltas).length!==sale.stockOrder.length)throw Error('SALE_CANCEL_STOCK_PROOF_REQUIRED');
+          const stockRows=[];
+          for(const id of sale.stockOrder){
+            safeId(id,'productId');const product=await tx.get('products',id),delta=number(sale.stockDeltas[id],'STOCK_DELTA');
+            if(!product||product.deleted===true||!Number.isSafeInteger(delta)||delta<=0)throw Error('SALE_CANCEL_STOCK_CONFLICT');
+            stockRows.push({id,product,stock:number(Number(product.stock??product.qty),'STOCK')+delta});
+          }
+          let layawayId;
+          if(sale.method==='Apartado'){
+            layawayId=safeId(sale.layawayId,'layawayId');const layaway=await tx.get('layaways',layawayId);
+            if(!layaway||layaway.saleId!==saleId||layaway.status==='picked_up'||layaway.pickedUpAt||layaway.status==='cancelled'
+              ||layaway.paid!==sale.received||layaway.balance!==sale.balance)throw Error('SALE_CANCEL_LAYAWAY_PROTECTED');
+            stage('layaways',layawayId,layaway,{...layaway,status:'cancelled',cancelOperationId:op,cancelReason:p.reason.trim(),lastOperationId:op});
+          }
+          for(const key of ['cash','card','transfer','receivablePayments']){totals[key]=Math.round((totals[key]-receipts[key])*100)/100;if(totals[key]<0)throw Error('SALE_CANCEL_COUNTER_CONFLICT');}
+          const saleCount=session.saleCount-1,salesTotal=Math.round((session.salesTotal-sale.total)*100)/100,
+            itemCount=session.itemCount-sale.itemCount,taxTotal=Math.round((session.taxTotal-sale.iva)*100)/100;
+          if(saleCount<0||salesTotal<0||itemCount<0||taxTotal<0)throw Error('SALE_CANCEL_COUNTER_CONFLICT');
+          const reversalId=safeId(`${op}-rev`,'reversalId');if(await tx.get('movements',reversalId))throw Error('SALE_CANCEL_RECORD_WITHOUT_LEDGER');
+          // Preserve every original receipt and amount. This one exact,
+          // immutable compensating record reverses their verified aggregate.
+          stage('movements',reversalId,null,{operationId:op,saleId,cashSessionId:sessionId,date:sale.date,kind:'sale_cancellation',
+            amount:sale.received,compensationSign:-1,paymentTotals:structuredClone(receipts),note:p.reason.trim(),lastOperationId:op});
+          stage('sales',saleId,sale,{...sale,status:'cancelled',cancelOperationId:op,cancelReason:p.reason.trim(),lastOperationId:op});
+          stage('cashSessions',sessionId,session,{...session,saleCount,salesTotal,itemCount,taxTotal,
+            cashBalance:Math.round((session.cashBalance-receipts.cash)*100)/100,paymentTotals:totals,lastOperationId:op});
+          stockRows.forEach((row,index)=>stage('products',row.id,row.product,{...row.product,stock:row.stock,qty:row.stock,lastOperationId:op,saleStockIndex:index}));
+          result={saleId,movementId:reversalId,cashSessionId:sessionId,...(layawayId?{layawayId}:{})};
         }else if(kind==='manual_movement_correct'){
           if(actorUid!==expected.ownerUid)throw Error('MANUAL_CORRECTION_OWNER_REQUIRED');
           if(Object.keys(p).some(key=>!['operationId','movementId','expectedRecordVersion','cashSessionId','date','reason','replacement'].includes(key)))throw Error('MANUAL_CORRECTION_FIELDS_INVALID');
@@ -751,7 +801,17 @@
           }else if(p.layawayId)throw Error('PAYMENT_LAYAWAY_CONFLICT');
           const key={Efectivo:'cash',Tarjeta:'card',Transferencia:'transfer'}[p.method];
           totals[key]=Math.round((totals[key]+amount)*100)/100;totals.receivablePayments=Math.round((totals.receivablePayments+amount)*100)/100;
+          let receiptSummary;
+          if(sale.receiptSummary){
+            receiptSummary=structuredClone(sale.receiptSummary);
+            if(receiptSummary.version!==1||typeof receiptSummary.uniformSession!=='boolean')throw Error('PAYMENT_RECEIPT_SUMMARY_INVALID');
+            for(const k of ['cash','card','transfer','receivablePayments'])money(receiptSummary[k],'PAYMENT_RECEIPT_SUMMARY');
+            receiptSummary[key]=Math.round((receiptSummary[key]+amount)*100)/100;
+            receiptSummary.receivablePayments=Math.round((receiptSummary.receivablePayments+amount)*100)/100;
+            receiptSummary.uniformSession=receiptSummary.uniformSession&&receiptSummary.cashSessionId===sessionId;
+          }
           stage('sales',saleId,sale,{...sale,received:nextReceived,balance:nextBalance,payments,
+            ...(receiptSummary?{receiptSummary}:{}),
             status:nextBalance===0?'paid':sale.status,lastOperationId:op});
           stage('cashSessions',sessionId,session,{...session,paymentTotals:totals,
             cashBalance:Math.round((session.cashBalance+(p.method==='Efectivo'?amount:0))*100)/100,lastOperationId:op});
@@ -899,7 +959,7 @@
             throw Error('SPARK_OPERATION_CONFIRMATION_INCOMPLETE');
           (records[moduleName]??=[]).push(value);
         }
-        const stockRecords=await Promise.all(((kind==='sale'?records.sales?.[0]?.stockOrder:[])||[])
+        const stockRecords=await Promise.all(((['sale','sale_cancel'].includes(kind)?records.sales?.[0]?.stockOrder:[])||[])
           .map(productId=>tx.get('products',productId)));
         for(const value of stockRecords){
           if(!value)throw Error('SPARK_PROJECTION_RECORD_MISSING');

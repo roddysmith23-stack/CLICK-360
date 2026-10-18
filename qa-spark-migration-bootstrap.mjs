@@ -19,7 +19,7 @@ local.movements.push({id:'local-opening',operationId:'local-opening',cashSession
 function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,rows=[],cache=false}={}){
   let actor=ownerUid,lease=true,revision='device-2',closed=0,imports=0;
   const calls=[],pins=new Map(),captures=new Map(),handoffs=new Map(),serverDocs=new Map();
-  let afterShadow=()=>{},readHandoffCorrupt=false,serverRecords=[],afterServerRecords=()=>{};
+  let afterShadow=()=>{},readHandoffCorrupt=false,serverRecords=[],afterServerRecords=()=>{},importerAuthority=null;
   const record={snapshot:local,deviceRevision:revision,baseRevision:1,pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['snapshot-save-id']};
   const transport={cache,pendingWrites:false};
   const db={app:{options:{projectId:'demo-click360-spark-modular'}},doc:path=>({get:async options=>{
@@ -45,7 +45,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
     close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true}),
     pinHandoff:async plan=>{const captureHash=await api.hash({kind:'READ_ONLY_HANDOFF_PLAN',ownerUid,plan});handoffs.set(captureHash,structuredClone(plan));return {captureHash,durable:true};},
     readHandoff:async captureHash=>({captureHash,durable:true,plan:readHandoffCorrupt?{invalid:true}:structuredClone(handoffs.get(captureHash))})})};
-  globalThis.CLICK360_SPARK_IMPORTER={create:options=>({readServerRecords:async()=>{afterServerRecords();return structuredClone(serverRecords);},prepareShadow:async()=>{
+  globalThis.CLICK360_SPARK_IMPORTER={create:options=>{importerAuthority=options.preparationAuthority;return {readServerRecords:async()=>{afterServerRecords();return structuredClone(serverRecords);},prepareShadow:async()=>{
     imports++;const source=await options.readSource(),selected=await api.selectSource({ownerUid,...source});
     const guard=await options.readGuard();assert.equal(guard.mutationLockHeld,true);
     await options.recovery.pin({sourceHash:selected.sourceHash,snapshot:selected.snapshot,deviceRevision:selected.deviceRevision,
@@ -54,12 +54,12 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
     const shadow={phase:'READY_TO_CUTOVER',cutoverPerformed:false,
       equality:{status:'SEMANTIC_EQUALITY_PASS',sourceHash:selected.sourceHash,reconstructedHash:selected.sourceHash}};
     afterShadow(shadow);return shadow;
-  }})};
+  }};}};
   const options={db,projectId:db.app.options.projectId,firebase:{},ownerUid,actorUid:ownerUid,deviceId:'device',buildSha:'21409a1d2dc7',
     resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid}),leaseHeld:()=>lease,
     readLocal:async()=>({...record,deviceRevision:revision})};
   return {options,record,calls,pins,captures,handoffs,serverDocs,transport,setServerRecords:rows=>serverRecords=rows,
-    afterServerRecords:callback=>afterServerRecords=callback,verify:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).verifyLocalHandoff(),
+    afterServerRecords:callback=>afterServerRecords=callback,authority:()=>importerAuthority,verify:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).verifyLocalHandoff(),
     afterShadow:callback=>afterShadow=callback,
     corruptHandoffRead:()=>readHandoffCorrupt=true,run:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).prepare(),
     actor:value=>actor=value,lease:value=>lease=value,revision:value=>revision=value,counts:()=>({closed,imports})};
@@ -290,6 +290,25 @@ for(const mutation of [
 ]){
   const f=await localHandoffFixture();mutation(f);const before=structuredClone(f.record);
   await assert.rejects(f.verify());assert.deepEqual(f.record,before,'Failed handoff must never replace the local source');
+}
+for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:false},{automaticMigration:false},{pilotOwnerUids:['other']}]){
+  const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
+  f.serverDocs.set('storageRollout/sparkV1',{enabled:true,operationalAccess:true,automaticShadow:true,automaticMigration:true,pilotOwnerUids:[ownerUid],...delta});
+  const before=structuredClone(f.record);assert.equal((await f.run()).prepared,false);
+  assert.deepEqual(f.record,before);assert.equal(f.counts().imports,0);assert.equal(f.captures.size,0);
+}
+{
+  const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
+  const policy={enabled:true,operationalAccess:true,automaticShadow:true,automaticMigration:true,pilotOwnerUids:[ownerUid]};
+  f.serverDocs.set('storageRollout/sparkV1',policy);await f.run();const token=f.authority();
+  const scope={projectId:'click-360',ownerUid,buildSha:f.options.buildSha,deviceId:'durable-device'};
+  assert.equal(CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority(token,scope,{write:true}),true);
+  assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority({verified:true},scope),/AUTHORITY_REQUIRED/);
+  assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority(token,{...scope,ownerUid:'other'}),/AUTHORITY_REQUIRED/);
+  await CLICK360_SPARK_MIGRATION_BOOTSTRAP.verifyPreparationAuthority(token,scope,{write:true});
+  f.serverDocs.set('storageRollout/sparkV1',{...policy,operationalAccess:false});
+  await assert.rejects(CLICK360_SPARK_MIGRATION_BOOTSTRAP.verifyPreparationAuthority(token,scope,{write:true}),/ADMIN_POLICY_REQUIRED/);
+  f.actor('revoked');assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority(token,scope),/CONTEXT_CHANGED/);
 }
 console.log(JSON.stringify({status:'PASS',scope:'migration_bootstrap_callback_contract',ownerWideCensus:true,
   localSourcePreserved:true,foreignActorBlocked:true,productionActivation:false,cutover:false}));

@@ -98,6 +98,7 @@ function closingCase() {
     paymentType: method === 'Apartado' ? 'receivable_payment' : 'sale'
   }));
   const fixture = {
+    window: {}, // Real legacy browser context: modular runtime is not installed.
     state: { sales: methods.map((method, index) => ({ id: `sale-${index}`, businessId: 'synthetic-business', date: '2026-08-30', status: 'paid', method, total: totals[index], items: [{ qty: 1 }] })) },
     updateCashCloseDiagnostic: () => {}, saleItems: (sale) => sale.items,
     escapeHtml: String, safeImageSrc: () => '', nowLabel: () => '2026-08-30',

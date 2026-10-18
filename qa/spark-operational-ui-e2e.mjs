@@ -14,6 +14,7 @@ import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
 import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
 import {certifyShadowPreparation,certifyRecoveryCopy} from './spark-migration-shadow-pwa.mjs';
+import {certifyRetailReport} from './spark-retail-report-pwa.mjs';
 import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,createEmulatorUser,
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
@@ -205,6 +206,42 @@ try{
         session:await record('cashSessions',session.id),product:await record('products',created.id)},deliveryFinancial,
       'Delivery cannot mutate sales, stock or session counters');
     }
+    // Real cancellation UI: preserve both the initial receipt and a later
+    // abono; append compensation once and restore the exact stock/session.
+    const cancellationBefore=await record('cashSessions',session.id);
+    await page.evaluate(()=>{location.hash='#inventory';});await page.locator('#newProduct').click();
+    await page.locator('#pCode').fill('SPARK-CANCEL');await page.locator('#pName').fill('Producto compensación');
+    await page.locator('#pQty').fill('5');await page.locator('#pCost').fill('2');await page.locator('#pPrice').fill('10');await page.locator('#pCardPrice').fill('10');
+    await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
+    const cancellationProduct=await page.evaluate(()=>click360GetTenantState().products.find(p=>p.code==='SPARK-CANCEL'));
+    await page.evaluate(()=>{location.hash='#sell';});await page.locator('#manualCode').fill('SPARK-CANCEL');await page.locator('#addCode').click();
+    await page.locator('#payMethod').selectOption('Apartado');await page.locator('#customer').fill('Cliente compensación');
+    await page.locator('#customerPhone').fill('0000000000');await page.locator('#customerCedula').fill('SYNTHETIC-ONLY');
+    await page.locator('#layawayDueDate').fill('2026-12-31');await page.locator('#layawayTermsAccepted').check();
+    await page.locator('#layawayInitialMethod').selectOption('Transferencia');await page.locator('#cashReceived').fill('2');
+    await resetStatus();await page.locator('#chargeBtn').click();await confirmed();
+    const cancellationSale=await page.evaluate(()=>click360GetTenantState().sales.at(-1));
+    await page.locator('#doneSaleBtn').click();await page.evaluate(()=>{location.hash='#debtors';});
+    await page.locator(`button[onclick*="payLayaway('${cancellationSale.id}')"]`).click();
+    await page.locator('#layawayPaymentAmount').fill('3');await page.locator('#layawayPaymentMethod').selectOption('Efectivo');
+    await resetStatus();await page.locator('#confirmLayawayPayment').click();await confirmed();
+    const cancellationSource=await record('sales',cancellationSale.storageRecordId),receiptId=cancellationSource.payments.at(-1).operationId;
+    const receiptBefore={initial:await record('movements',cancellationSale.operationId),later:await record('movements',receiptId)};
+    page.removeAllListeners('dialog');page.on('dialog',dialog=>dialog.accept(dialog.type()==='prompt'?'Corrección sintética sin pérdida':undefined).catch(()=>{}));
+    await resetStatus();await page.locator(`button[onclick*="cancelSale('${cancellationSale.id}')"]`).click();await confirmed();
+    const cancelledSale=await record('sales',cancellationSale.storageRecordId),compensationId=cancelledSale.cancelOperationId;
+    assert(cancelledSale.status==='cancelled'&&(await record('products',cancellationProduct.id)).stock===5,'Actual cancellation restores stock exactly once');
+    strictAssert.deepEqual({initial:await record('movements',cancellationSale.operationId),later:await record('movements',receiptId)},receiptBefore,'Actual cancellation preserves all original receipts and amounts');
+    const cancelledSession=await record('cashSessions',session.id);
+    for(const field of ['saleCount','salesTotal','itemCount','taxTotal','cashBalance','paymentTotals'])strictAssert.deepEqual(cancelledSession[field],cancellationBefore[field]);
+    assert((await record('movements',`${compensationId}-rev`)).amount===5,'Exactly received deposit plus abono is compensated, not full sale total');
+    await page.evaluate(id=>window.cancelSale(id),cancellationSale.id);
+    assert((await record('products',cancellationProduct.id)).stock===5,'Second cancellation UI invocation cannot restore stock twice');
+    const cancellationState=await page.evaluate(()=>click360SparkOperationalSession.health());
+    assert(cancellationState.pendingCount===0&&cancellationState.unknownCount===0,'Actual cancellation leaves no unknown or pending financial operation');
+    await page.waitForFunction(()=>!click360SparkOperationalSession.isBusy()&&!click360SparkCoordinator.isBusy());
+    const cancellationReport=await certifyRetailReport(page,{ownerUid:uid,businessId:uid,from:session.date,to:session.date});
+    assert(cancellationReport.sold===54&&cancellationReport.tickets===3,'Complete server report excludes cancelled sale but retains its history');
     await page.evaluate(()=>{location.hash='#cash';});await page.locator('#newMove').click();
     await page.locator('#mKind').selectOption('ingreso');await page.locator('#mAmount').fill('5');await page.locator('#mNote').fill('Ingreso sintético Spark');
     await resetStatus();await page.locator('#moveForm button[type="submit"]').click();await confirmed();
@@ -437,8 +474,15 @@ try{
     assert(await restarted.locator('#workingDateInput').inputValue()!=='2026-09-04','Working date cannot leak from the other business');
     await restarted.locator('#businessPickerTop').click();await restarted.locator(`[data-business-switch="${uid}"]`).click();
     await restarted.waitForFunction(id=>click360GetActiveBusinessId()===id&&click360SparkCoordinator.phase()==='READY',uid);
-    assert(await restarted.evaluate(id=>click360GetTenantState().sales.filter(s=>s.businessId===id).length===4,uid),
-      'Returning to the original business recovers its four unique financial sales');
+    assert(await restarted.evaluate(({id,cancelledId})=>{
+      const rows=click360GetTenantState().sales.filter(s=>s.businessId===id);
+      return rows.length===5&&new Set(rows.map(s=>s.operationId)).size===5
+        &&rows.filter(s=>s.status==='cancelled').length===1
+        &&rows.some(s=>s.id===cancelledId&&s.status==='cancelled');
+    },{id:uid,cancelledId:cancellationSale.id}),
+      'Returning recovers four live sales and the unique preserved cancelled sale');
+    assert((await record('operationLedger',compensationId)).kind==='sale_cancel',
+      'Business switching preserves the authoritative single cancellation ledger');
     assert(await restarted.locator('#workingDateInput').inputValue()==='2026-09-04','Returning restores this business own historical date');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Both business switches leave the shared legacy document intact');
     results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,productDeletePreservesHistory:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,

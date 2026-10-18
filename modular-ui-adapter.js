@@ -2,6 +2,13 @@
 (function(root){
   'use strict';
   const paidMethods=new Set(['Efectivo','Tarjeta','Transferencia']);
+  function saleCancellationCommand({sale,identity,actorUid,operationId,cashSessionId,reason}){
+    if(actorUid!==identity?.ownerUid||sale?.businessId!==identity.businessId||!operationId||!sale.storageRecordId
+      ||sale.storageHistoryReadOnly||!Number.isSafeInteger(sale.recordVersion)||sale.recordVersion<1||!['paid','layaway','pending_payment'].includes(sale.status)
+      ||sale.cashSessionId!==cashSessionId||sale.receiptSummary?.version!==1||sale.receiptSummary.uniformSession!==true
+      ||sale.receiptSummary.cashSessionId!==cashSessionId||typeof reason!=='string'||!reason.trim())throw Error('MODULAR_SALE_CANCEL_PROOF_REQUIRED');
+    return {kind:'sale_cancel',input:{operationId,saleId:sale.storageRecordId,expectedRecordVersion:sale.recordVersion,cashSessionId,reason:reason.trim()}};
+  }
   function scopedSettingsCommand({identity,actorUid,operationId,moduleName,record,previous}){
     if(actorUid!==identity?.ownerUid||!operationId||!record||record.businessId!==identity.businessId
       ||!['config','labelTemplates','labelProfiles'].includes(moduleName))throw Error('MODULAR_SETTINGS_CONTEXT_INVALID');
@@ -294,5 +301,5 @@
     }
     return Object.freeze({submit,replay,health,reconcileOperation});
   }
-  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,layawayStatusCommand,manualMovementCorrectionCommand,cashReportView,cashSuccessorCommand,scopedSettingsCommand});
+  root.CLICK360_MODULAR_UI_ADAPTER=Object.freeze({create,liveSaleCommand,manualSaleCommand,layawayCommand,pendingPaymentCommand,productMutationCommand,productDeleteCommand,customerMutationCommand,receivablePaymentCommand,layawayStatusCommand,manualMovementCorrectionCommand,cashReportView,cashSuccessorCommand,scopedSettingsCommand,saleCancellationCommand});
 })(typeof window==='undefined'?globalThis:window);

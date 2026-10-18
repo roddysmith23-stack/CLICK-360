@@ -5,12 +5,36 @@ import http from 'node:http';
 import {createEmulatorIsolation} from './qa/emulator-network-isolation.mjs';
 import './spark-operational-ui-runtime.js';
 import './modular-ui-adapter.js';
+import './spark-modular-migration.js';
+import './spark-modular-record-codec.js';
+import './spark-modular-importer.js';
+import './spark-modular-transaction-transport.js';
+import './spark-operational-bootstrap.js';
+import './spark-migration-bootstrap.js';
+import {validateTarget} from './scripts/validate-spark-production-release.mjs';
 const runtime=globalThis.CLICK360_SPARK_OPERATIONAL_UI;
+{
+  const config=JSON.parse(await readFile('firebase.spark-production.json','utf8')),legacy=JSON.parse(await readFile('firebase.json','utf8'));
+  const target={projectId:'click-360',sha:'a'.repeat(40),rulesSha256:'b'.repeat(64),config,legacy};
+  validateTarget(target);
+  for(const delta of [{projectId:'click360-staging-7620168025'},{sha:'HEAD'},{rulesSha256:''},
+    {config:{...config,firestore:{rules:'firestore.rules'}}}])assert.throws(()=>validateTarget({...target,...delta}));
+  let attempts=0;const db={app:{options:{projectId:'click-360'}},doc(){attempts++;},runTransaction(){attempts++;},collection(){attempts++;}};
+  for(const operationalAuthority of [undefined,{verified:true},{syntheticCertification:true}])
+    assert.throws(()=>CLICK360_SPARK_TRANSACTION_TRANSPORT.create({db,projectId:'click-360',ownerUid:'owner',businessId:'business',
+      actorUid:'owner',resolveUser:()=>({uid:'owner'}),operationalAuthority}),/OPERATIONAL_AUTHORITY_REQUIRED/);
+  for(const preparationAuthority of [undefined,{verified:true}])
+    assert.throws(()=>CLICK360_SPARK_IMPORTER.create({db,projectId:'click-360',ownerUid:'owner',deviceId:'device',buildSha:'a'.repeat(12),
+      firebase:{firestore:{FieldValue:{}}},resolveUser:()=>({uid:'owner'}),readSource:async()=>{},readGuard:async()=>{},
+      recovery:{pin(){},read(){}},preparationAuthority}),/PREPARATION_AUTHORITY_REQUIRED/);
+  assert.equal(attempts,0,'Forged production constructors cannot perform any SDK operation');
+}
 for(const file of ['qa/r38-commerce-core-e2e.mjs','qa/r38-restaurant-authoritative-e2e.mjs']){
   assert.match(await readFile(file,'utf8'),/http-server\x27\),\x27dist\x27/,'SW-controlled commerce must serve the stamped build, not unbuilt source');
 }
 assert.match(JSON.parse(await readFile('package.json','utf8')).scripts['qa:r38:e2e'],/npm run build:static && node qa\/r38-commerce-core-e2e/);
-await assert.rejects(()=>runtime.create({projectId:'click-360',syntheticCertification:true}),/CERTIFICATION_ONLY/);
+await assert.rejects(()=>runtime.create({projectId:'click-360',syntheticCertification:true}),/OPERATIONAL_AUTHORITY_REQUIRED/);
+await assert.rejects(()=>runtime.create({projectId:'click-360',syntheticCertification:true,operationalAuthority:{verified:true}}),/OPERATIONAL_AUTHORITY_REQUIRED/);
 await assert.rejects(()=>runtime.create({projectId:'click360-staging-7620168025'}),/CERTIFICATION_ONLY/);
 await assert.rejects(()=>runtime.create({projectId:'click360-staging-7620168025',syntheticCertification:true}),/MIXED_RELEASE/);
 const product={id:'p',businessId:'b',stock:2,qty:2,name:'Perfume',price:30},identity={ownerUid:'a',businessId:'b'};
@@ -38,31 +62,76 @@ const firebaseSource=await readFile('firebase-service.js','utf8');
   const end=firebaseSource.indexOf('async function enterApprovedApp',start);
   assert(start>0&&end>start);
   assert(firebaseSource.includes("if(!p0aRecoveryOnly&&['demo-click360-spark-modular'"),'Recovery-only must not open the operational coordinator/journal');
-  for(const scenario of ['disabled','pilot','not_pilot','worker','no_source','network_failure','locked','shadow_enabled']){
+  for(const scenario of ['disabled','pilot','not_pilot','worker','no_source','network_failure','locked','shadow_enabled','operational_access']){
     const context={ownerUid:'owner',authUid:scenario==='worker'?'worker':'owner'},user={uid:context.authUid};
     const calls=[],record={snapshot:{sales:[{id:'retained'}]},deviceRevision:'device-42'};
-    const window={addEventListener:()=>{},click360User:{ownerId:'owner'},CLICK360_RELEASE_ASSETS:{'app.js':'5c1c657a7f99'},
+    const window={addEventListener:()=>{},dispatchEvent:()=>{},click360User:{ownerId:'owner'},CLICK360_RELEASE_ASSETS:{'app.js':'5c1c657a7f99'},
       CLICK360_V16_STORAGE:{getSnapshot:async()=>scenario==='no_source'?null:structuredClone(record)},
       CLICK360_P0A_BOOTSTRAP:{create:options=>{
         assert.equal(options.productionRecoveryOnly,true);assert.equal(options.projectId,'click-360');assert.equal(options.leaseHeld(),true);
-        return {prepare:async()=>{calls.push('capture');options.onProgress({phase:'RECOVERY_COPY_CLIENT_VERIFIED',operationalCloudConfirmed:false});return {prepared:false};}};
+        return {prepare:async()=>{calls.push('capture');options.onProgress({phase:'RECOVERY_COPY_CLIENT_VERIFIED',status:'RECOVERY_COPY_CLIENT_VERIFIED',operationalCloudConfirmed:false});return {prepared:false};}};
       }}};
-    const scope=vm.createContext({window,user,ACTIVE_CONTEXT:context,expectedEpoch:1,firebase:{},auth:{currentUser:user},
+    const scope=vm.createContext({window,CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},user,ACTIVE_CONTEXT:context,expectedEpoch:1,firebase:{},auth:{currentUser:user},
       getDeviceId:()=> 'device',isCurrentAuthEpoch:()=>true,activeIdentityIsValid:()=>true,
       navigator:{locks:{request:async(_name,_options,fn)=>fn(scenario==='locked'?null:{})}},
       db:{app:{options:{projectId:'click-360'}},doc:path=>({get:async options=>{
         assert.equal(path,'storageRollout/sparkV1');assert.equal(options.source,'server');
         if(scenario==='network_failure')throw Object.assign(Error('offline'),{code:'unavailable'});
-        return {metadata:{fromCache:false,hasPendingWrites:false},data:()=>({enabled:scenario!=='disabled',automaticRecoveryCopy:true,automaticShadow:scenario==='shadow_enabled',
+        return {metadata:{fromCache:false,hasPendingWrites:false},data:()=>({enabled:scenario!=='disabled',operationalAccess:scenario==='operational_access',automaticRecoveryCopy:true,automaticShadow:scenario==='shadow_enabled',
           pilotOwnerUids:scenario==='not_pilot'?[]:['owner']})};
       }})}});
     vm.runInContext(firebaseSource.slice(start,end),scope);
     assert.equal(await scope.runP0ARecovery(user,1),['pilot','no_source','locked'].includes(scenario));
     assert.equal(calls.length,scenario==='pilot'?1:0);
     assert.deepEqual(record.snapshot.sales,[{id:'retained'}]);
-    if(scenario==='pilot')assert.equal(window.click360SparkRecoveryCopy.operationalCloudConfirmed,false);
+    if(scenario==='pilot'){assert.equal(window.click360SparkRecoveryCopy.operationalCloudConfirmed,false);assert.equal(window.click360SparkRecoveryCopy.status,'RECOVERY_COPY_CLIENT_VERIFIED');}
     if(scenario==='locked')assert.equal(window.click360SparkRecoveryCopy.status,'PENDING');
   }
+}
+// Execute the actual production worker discovery gate: operational enrollment
+// survives flags-off; P0A-only/default never acquires a modular worker route.
+{
+  const start=firebaseSource.indexOf('        let sparkWorkerScopeEligible='),end=firebaseSource.indexOf('        if (sparkWorkerScopeEligible)',start);
+  assert(start>0&&end>start);
+  for(const [policy,expected]of [[{},false],[{enabled:true,pilotOwnerUids:['owner'],automaticRecoveryCopy:true},false],
+    [{enabled:true,operationalAccess:true,pilotOwnerUids:['owner'],automaticMigration:false,automaticCutover:false},true],
+    [{enabled:true,operationalAccess:true,pilotOwnerUids:['other']},false]]){
+    const scope=vm.createContext({projectId:'click-360',ownerId:'owner',db:{doc:path=>({get:async options=>{
+      assert.equal(path,'storageRollout/sparkV1');assert.equal(options.source,'server');
+      return {metadata:{fromCache:false,hasPendingWrites:false},data:()=>policy};}})}});
+    await vm.runInContext(`(async()=>{${firebaseSource.slice(start,end)};return sparkWorkerScopeEligible;})()`,scope).then(value=>assert.equal(value,expected));
+  }
+}
+// Three bounded listeners are a wake-up signal, NOT financial replay. They
+// close the initial approval race and disappear on READY/actor change/disable.
+{
+  const expected={ownerUid:'owner',sourceHash:'a'.repeat(64),captureHash:'b'.repeat(64),planHash:'c'.repeat(64),
+    buildSha:'d'.repeat(12),businessIds:['business-a','business-b']};
+  const policy={enabled:true,operationalAccess:true,pilotOwnerUids:['owner'],automaticShadow:true,
+    automaticMigration:true,automaticRuntimePreparation:true,automaticCutover:true};
+  const runtime={...expected},cutover={ownerUid:'owner',sourceHash:expected.sourceHash,buildSha:expected.buildSha,businessIds:expected.businessIds};
+  function fixture({enrolled=true,ready=false,lostWake=false}={}){
+    let actor='owner',wake=0,subscriptions=0,stopped=0,reads=0;
+    const context={authUid:'owner',ownerUid:'owner'},documents=[enrolled?structuredClone(policy):{enabled:true,automaticRecoveryCopy:true,pilotOwnerUids:['owner']},ready?runtime:null,cutover],callbacks=[];
+    const snapshot=(value,cache=false)=>({exists:!!value,data:()=>structuredClone(value),metadata:{fromCache:cache,hasPendingWrites:false}});
+    const paths=['storageRollout/sparkV1','businesses/owner/storageApprovals/runtimePreparation','businesses/owner/storageApprovals/cutover'];
+    const db={app:{options:{projectId:'click-360'}},doc:path=>{const index=paths.indexOf(path);assert(index>=0);return {
+      get:async options=>{assert.equal(options.source,'server');reads++;const result=snapshot(documents[index]);if(index===1&&lostWake)documents[1]=runtime;return result;},
+      onSnapshot:(_options,callback)=>{subscriptions++;callbacks[index]=callback;if(lostWake)callback(snapshot(documents[index]));
+        let ended=false;return()=>{if(!ended){ended=true;stopped++;}};}};}};
+    return {start:()=>CLICK360_SPARK_BOOTSTRAP.watchApprovalWake({db,projectId:'click-360',ownerUid:'owner',actorUid:'owner',expected,
+      resolveUser:()=>({uid:actor}),resolveContext:()=>context,recover:async()=>{wake++;}}),
+      event:(index,value,cache=false)=>{documents[index]=value;callbacks[index]?.(snapshot(value,cache));},actor:value=>actor=value,
+      counts:()=>({wake,subscriptions,stopped,reads})};
+  }
+  const settle=async()=>{await Promise.resolve();await Promise.resolve();};
+  const f=fixture(),observer=await f.start();assert.equal(f.counts().subscriptions,3);
+  f.event(1,runtime,true);await settle();assert.equal(f.counts().wake,0,'Cached approval is not authoritatively ready');
+  f.event(1,runtime);f.event(1,runtime);f.event(2,cutover);await settle();assert.equal(f.counts().wake,1);assert.equal(f.counts().stopped,3);observer.close();assert.equal(f.counts().stopped,3);
+  for(const options of [{ready:true},{lostWake:true}]){const f=fixture(options);await f.start();await settle();assert.equal(f.counts().wake,1);assert.equal(f.counts().stopped,3);}
+  const defaultPilot=fixture({enrolled:false});await defaultPilot.start();assert.deepEqual(defaultPilot.counts(),{wake:0,subscriptions:0,stopped:0,reads:1});
+  for(const revoke of ['actor','disabled']){const f=fixture();await f.start();if(revoke==='actor')f.actor('other');
+    f.event(0,revoke==='disabled'?{...policy,enabled:false}:policy);await settle();assert.equal(f.counts().wake,0);assert.equal(f.counts().stopped,3);}
 }
 // READY cannot escape before the actual lifecycle owner is installed.
 // Otherwise a restart/navigation observes a cursorless UI and a previous

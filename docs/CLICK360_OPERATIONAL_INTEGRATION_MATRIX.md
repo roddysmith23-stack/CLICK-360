@@ -1,5 +1,44 @@
 # Operational integration audit — 2026-10-12
 
+## 2026-10-18 P0B retail closure (supersedes older pending rows below)
+
+Production was read, not changed: Hosting `9090f2105d17`, recovery-only pilot.
+The Oct15 recovery copy independently reconstructs 45 sales, 463 products,
+134 movements, 36 sessions and 34 reports. Its captured executable journal has
+zero rows/UNKNOWN; 76 snapshot-save references remain separately preserved.
+This is evidence for that dated copy, NOT for later iPhone operations.
+
+| Required retail flow | Current integration / certification boundary |
+|---|---|
+| Sale cancellation | Actual sale handler uses owner-only `sale_cancel`: original operational ledger, exact still-open session, verified receipt summary, revision and reason required. Stock restoration, negative compensating movement, session deltas and immutable ledger commit atomically. Original sale/receipts remain. Imported/protected/closed history and receipts spanning sessions are rejected rather than repaired by inference. Real-client Rules include 12 stock lines, decimal 0.10 + 0.20, duplicate/uncertain response and adversarial omissions. |
+| Complete period/history/export | Explicit UI query reads server pages of 100 with a 12,000-record budget, identity and concurrent-financial-write checks. Sales/receipts/compensations determine totals; report references never count as new transactions. Invoices are read only when export requests them. Query timestamp is shown; it is not a live aggregate. Unknown historical counters remain unverified, not zero. Off-page receipt lookup is print-only, not permission to mutate unloaded history. |
+| Cash balances/close | UI and compact close use verified counters of the exact session, never a partially loaded movement page. Pending commands and unverified imported summaries block authoritative balance/close claims. Closed immutable history has a separate new-session opening flow; no reopening or invented opening balances. |
+| Recovery status | A separately labelled, server-reread recovery copy displays its actual capture verification date and explicitly excludes later changes. It never replaces operational sync status. Actor identity, both SHA-256 hashes and persisted verification timestamp are required. |
+| Production entry | Candidate supports administrator-authorized entry with scoped opaque capabilities, current server mode and role checks. New `operationalAccess` discovery permission remains OFF/missing in production. Recovery-only authorization cannot enable P0B. Operational access must remain enabled after migration while migration flags may be disabled. No real policy was changed. |
+| Waiting approval | A known owner pilot may subscribe to three bounded approval/policy documents; no polling or blind financial retry. Identity changes/closure remove listeners. Default clients and P0A-only pilots do not acquire those listeners. |
+
+Exact baseline `3abdb8396fc7` completed the previously missing real WebKit retail
+and automatic-migration scenarios on Oct18 after a single quota read succeeded.
+The automatic source/reconstructed SHA-256 was
+`545e198beafa9bfb313a9ba899ffbf8b52eb6a14a7d6a0f4ab5f23232b77c7c1`.
+These results do not certify subsequent source changes: the final committed
+candidate still needs its own complete CI and exact-build staging runs.
+
+Scope remains clothing retail, not universal feature equivalence. Supplier
+invoice writes, unrelated restaurant/logistics flows, cold-offline first
+bootstrap and migration of unresolved executable commands remain gated.
+Any required unsupported flow, ambiguous multi-business attribution, UNKNOWN,
+source change or semantic difference prevents cutover. Normal history paging
+must load a sale before a financial cancellation can act on it.
+
+Before owner approval: preserve current Hosting/Rules, pin the exact release,
+reconcile the latest original-device source and complete journal, then require
+source-bound server approvals and whole-owner business coverage. No real
+P0B merge, deployment, activation or commercial replay is authorized here.
+Before cutover, flags-off rollback preserves legacy/local. After modular writes,
+retain the fence and perform forward-safe ledger/delta reconciliation, never
+restore an old legacy snapshot or re-enable incompatible writers.
+
 Baseline: PR #96 `9bb3112954c7a9fc365e425d8e385e64b6713dee`, all required CI checks SUCCESS. Connected bootstrap commit `a6df35f27688e0f2822d8ad782de4b2f18821bf2` also has all three required workflows SUCCESS. Public Hosting manifest freshly read: `21409a1d2dc7`. Subsequent work needs its own clean HEAD checks. No production writes, merge, deployment or real migration. Existing certified fixes are retained.
 
 ## Actual lifecycle, not component availability

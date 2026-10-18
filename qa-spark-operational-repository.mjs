@@ -353,7 +353,53 @@ const readyPrepared=await repo.prepareOperation('layaway_status',readyCommand);
 assert.equal((await repo.lookupOperation(readyCommand.operationId,'layaway_status',readyPrepared.payloadSha256)).exists,true);
 const deliveryProjection=await repo.readOperationProjection(readyCommand.operationId,'layaway_status',readyPrepared.payloadSha256);
 assert.deepEqual(Object.keys(deliveryProjection.records).filter(module=>module!=='auditEvents').sort(),['layaways','sales']);
+// A cancellation is a separate financial operation, never deletion/zeroing of
+// the original receipts. Test the maximum stock line shape and mixed abonos.
+const cancelBefore=await get('cashSessions','current-session');
+for(let i=0;i<12;i++)await repo.commitOperation('product_create',{operationId:`cancel-create-${i}`,date:'2026-10-06',product:{id:`cancel-product-${i}`,businessId,name:'Cancellation fixture',stock:5}});
+const cancelSale={operationId:'cancel-fixture-sale',sale:{id:'legacy-cancel-sale',businessId,cashSessionId:'current-session',date:'2026-10-06',
+  total:60,received:20,iva:0,method:'Apartado',items:Array.from({length:12},(_,i)=>({id:`cancel-product-${i}`,qty:1}))},
+  paymentMethod:'Transferencia',layaway:{id:'cancel-reservation',businessId,total:60,paid:20,balance:40,status:'active'}};
+await repo.commitOperation('sale',cancelSale);
+for(const [i,amount,method]of [[0,5,'Efectivo'],[1,10,'Tarjeta'],[2,25,'Transferencia']]){
+  const current=await get('sales','cancel-fixture-sale');
+  await repo.commitOperation('receivable_payment',{operationId:`cancel-fixture-receipt-${i}`,saleId:current.id,layawayId:'cancel-reservation',
+    expectedRecordVersion:current.recordVersion,cashSessionId:'current-session',date:'2026-10-06',amount,method});
+}
+const cancelSource=await get('sales','cancel-fixture-sale');
+assert.deepEqual(cancelSource.receiptSummary,{version:1,cashSessionId:'current-session',uniformSession:true,cash:5,card:10,transfer:45,receivablePayments:60});
+const cancelInput={operationId:'cancel-fixture-operation',saleId:cancelSource.id,expectedRecordVersion:cancelSource.recordVersion,
+  cashSessionId:'current-session',reason:'Synthetic correction'};
+const originals=new Map(['cancel-fixture-sale','cancel-fixture-receipt-0','cancel-fixture-receipt-1','cancel-fixture-receipt-2']
+  .map(id=>[`${base}/movements/${id}`,structuredClone(rows.get(`${base}/movements/${id}`))]));
+await assert.rejects(()=>repo.commitOperation('sale_cancel',{...cancelInput,operationId:'stale-cancellation-intention',
+  expectedRecordVersion:cancelInput.expectedRecordVersion-1}),/REVISION_CONFLICT/);
+assert.equal(rows.has(`${base}/operationLedger/stale-cancellation-intention`),false,'Rejected stale intention never occupies the new intention ledger ID');
+writeFaults=[{afterCommit:true}];
+assert.equal((await repo.commitOperation('sale_cancel',cancelInput)).status,'already_committed');
+assert.equal((await repo.commitOperation('sale_cancel',cancelInput)).status,'already_committed');
+await assert.rejects(()=>repo.commitOperation('sale_cancel',{...cancelInput,reason:'Different payload'}),/IDEMPOTENCY_KEY_CONFLICT/);
+const afterCancel=await get('sales',cancelSource.id),afterSession=await get('cashSessions','current-session');
+assert.equal(afterCancel.status,'cancelled');assert.deepEqual(afterCancel.payments,cancelSource.payments);
+for(const key of ['total','received','balance','items','receiptSummary'])assert.deepEqual(afterCancel[key],cancelSource[key]);
+assert.equal((await get('layaways','cancel-reservation')).status,'cancelled');
+for(let i=0;i<12;i++)assert.equal((await get('products',`cancel-product-${i}`)).stock,5);
+for(const key of ['saleCount','salesTotal','itemCount','taxTotal','cashBalance','paymentTotals'])assert.deepEqual(afterSession[key],cancelBefore[key]);
+for(const [path,data]of originals)assert.deepEqual(rows.get(path),data,'Original receipts and amounts must remain immutable');
+const cancelMovement=await get('movements','cancel-fixture-operation-rev');
+assert.equal(cancelMovement.amount,60);assert.equal(cancelMovement.compensationSign,-1);
+const cancelProjection=await repo.readOperationProjection(cancelInput.operationId,'sale_cancel',(await repo.prepareOperation('sale_cancel',cancelInput)).payloadSha256);
+assert.equal(cancelProjection.records.products.length,12);assert.equal(cancelProjection.records.movements.length,1);
+await assert.rejects(()=>repo.commitOperation('sale_cancel',{...cancelInput,operationId:'cancel-second-op',expectedRecordVersion:afterCancel.recordVersion}),/SOURCE_INVALID/);
+await assert.rejects(()=>nextActorRepo.commitOperation('sale_cancel',{...cancelInput,operationId:'worker-cancel'}),/OWNER_REQUIRED/);
+// An old imported proof cannot be inferred/backfilled merely to enable a
+// cancellation. Closing a session never permits undoing its financial truth.
+const sourceBefore=structuredClone(rows.get(`${base}/sales/sale-1`));
+await assert.rejects(async()=>repo.commitOperation('sale_cancel',{operationId:'closed-sale-cancel',saleId:'sale-1',expectedRecordVersion:(await get('sales','sale-1')).recordVersion,
+  cashSessionId:'session-sep03',reason:'Not allowed'}),/SESSION_PROTECTED|RECEIPTS_PROOF_REQUIRED/);
+assert.deepEqual(rows.get(`${base}/sales/sale-1`),sourceBefore);
 console.log(JSON.stringify({status:'PASS',transport:'synthetic_atomic',historicalDate:true,manualSale:true,partialPayment:true,zeroPayment:true,subsequentReceipts:true,
+  saleCancellation:true,cancellationTwelveStockLines:true,cancellationMixedReceipts:true,cancellationOriginalHistoryIntact:true,cancellationLostResponseOnce:true,
   layawayDeliveryStatus:true,deliveryNoFinancialWrite:true,deliveryLostResponseIdempotent:true,
   actorBoundReplay:true,productLogicalDelete:true,productDeleteStockPreserved:true,
   idempotent:true,sameProductRace:true,exactCashSession:true,reopenSeparateReport:true,historyIndependentCoreReads:saleReads,

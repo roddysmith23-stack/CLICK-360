@@ -2378,6 +2378,18 @@ function parseMoney(value) {
     const [title, detail] = map[effectiveStatus] || map.local;
     return { ...s, status: effectiveStatus, title, detail };
   }
+  function recoveryCopyStatusInfo() {
+    const copy=window.click360SparkRecoveryCopy;
+    const ownerUid=window.click360Auth?.currentUser?.uid;
+    const instant=typeof copy?.verifiedAt==='string'?new Date(copy.verifiedAt):null;
+    if(!ownerUid||copy?.ownerUid!==ownerUid||copy?.status!=='RECOVERY_COPY_CLIENT_VERIFIED'
+      ||copy.serverReadVerified!==true||copy.operationalCloudConfirmed!==false
+      ||!/^[a-f0-9]{64}$/.test(copy.captureHash||'')||!/^[a-f0-9]{64}$/.test(copy.sourceHash||'')
+      ||!instant||!Number.isFinite(instant.getTime()))return null;
+    const date=new Intl.DateTimeFormat('es-EC',{dateStyle:'medium',timeStyle:'short',timeZone:'America/Guayaquil'}).format(instant);
+    return {title:`Copia de recuperación en nube verificada · ${date}`,
+      detail:'Protege el estado capturado en esa fecha. No confirma cambios posteriores ni sustituye la sincronización comercial indicada arriba.'};
+  }
   function syncPillHtml(compact=false) {
     const info = syncStatusInfo();
     const color = info.status === 'synced' ? '#37d57e' : info.status === 'error' ? '#ff5c62' : info.status === 'offline' ? '#d6aa2c' : 'var(--gold)';
@@ -2724,14 +2736,39 @@ function parseMoney(value) {
       && !(state.dailyReports || []).some((report) => report.businessId === businessId && report.date === date
         && report.cashSessionId === session.id && report.status === 'closed')) || null;
   }
+  function sparkCashCounterView(session){
+    if(!window.click360SparkOperationalSession)return null;
+    const status=window.click360GetSyncStatus?.().status;
+    if(status!=='modular_confirmed')return {pending:true};
+    if(!session||session.storageHistoryReadOnly||session.summaryVersion!==1
+      ||['openingAmount','cashBalance','salesTotal','incomeCash','expenseCash'].some(key=>typeof session[key]!=='number'||!Number.isFinite(session[key]))
+      ||typeof session.paymentTotals?.cash!=='number'||!Number.isFinite(session.paymentTotals.cash))return {unverified:true};
+    return {opening:session.openingAmount,income:session.incomeCash+session.paymentTotals.cash,
+      out:session.expenseCash,balance:session.cashBalance,sales:session.salesTotal};
+  }
   function isCashIncomeMovement(m) {
+    if(m?.kind==='sale_cancellation'&&m.status!=='cancelled')return saleCancellationPaymentTotals(m).cash>0;
     if (!m || m.kind !== 'ingreso' || m.status === 'cancelled') return false;
     return !['Tarjeta', 'Transferencia'].includes(m.paymentMethod || '');
   }
-  function movementEffectiveAmount(m) {
+  function saleCancellationPaymentTotals(m,sales=state.sales) {
+    const sale=sales.find(row=>(row.id===m.saleId||row.storageRecordId===m.saleId)&&row.businessId===m.businessId),p=m.paymentTotals,r=sale?.receiptSummary;
+    if(m.compensationSign!==-1||!sale||sale.status!=='cancelled'||sale.cancelOperationId!==m.operationId
+      ||sale.cashSessionId!==m.cashSessionId||sale.date!==m.date||!p||!r||p.version!==1||p.uniformSession!==true||p.cashSessionId!==m.cashSessionId
+      ||['version','uniformSession','cashSessionId','cash','card','transfer','receivablePayments'].some(k=>p[k]!==r[k])
+      ||['cash','card','transfer','receivablePayments'].some(k=>typeof p[k]!=='number'||!Number.isFinite(p[k])||p[k]<0)
+      ||!Number.isFinite(m.amount)||m.amount<0||m.amount!==sale.received
+      ||Math.abs(p.cash+p.card+p.transfer-m.amount)>0.00001)throw Error('CASH_SALE_COMPENSATION_RELATION_INVALID');
+    return p;
+  }
+  function movementCashIncomeAmount(m) {
+    return m.kind==='sale_cancellation'?-saleCancellationPaymentTotals(m).cash:movementEffectiveAmount(m);
+  }
+  function movementEffectiveAmount(m,sales=state.sales,movements=state.movements) {
     const amount=Number(m?.amount||0);
+    if(m?.kind==='sale_cancellation'){saleCancellationPaymentTotals(m,sales);return -amount;}
     if(!Object.hasOwn(m||{},'compensationSign'))return amount;
-    const original=state.movements.find(row=>row.id===m.compensatesMovementId&&row.businessId===m.businessId);
+    const original=movements.find(row=>row.id===m.compensatesMovementId&&row.businessId===m.businessId);
     if(m.compensationSign!==-1||!Number.isFinite(amount)||amount<0||!original
       ||!['ingreso','egreso','retiro','compra'].includes(m.kind)||original.kind!==m.kind
       ||Number(original.amount)!==amount||original.status==='cancelled'
@@ -3157,13 +3194,15 @@ function parseMoney(value) {
       return `<div class="pageHead homeGreeting"><div><h1>Hola, <span>${escapeHtml(authUser().name || 'Usuario')}</span></h1></div></div>${dataNotReadyCardHtml('Cargando tu inventario, ventas y caja desde la nube...')}`;
     }
     const b=currentBusiness(), products=productsForBiz(), sales=salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled'), mov=movementsForBiz().filter(m=>m.date===today() && m.status!=='cancelled');
-    const apertura=mov.find(m=>m.kind==='apertura')?.amount||0;
-    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementEffectiveAmount(m),0);
-    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
-    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
-    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const modularCash=sparkCashCounterView(currentOpenCashSession()||latestCashSession()),modular=!!modularCash;
+    const apertura=modular?modularCash.opening:mov.find(m=>m.kind==='apertura')?.amount||0;
+    const income=modular?modularCash.sales:mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementCashIncomeAmount(m),0);
+    const expenses=modular?null:mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const compras=modular?null:mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const retiros=modular?null:mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
     const out=expenses+compras+retiros;
-    const saldo=apertura+income-out;
+    const saldo=modular?modularCash.balance:apertura+income-out;
+    const cashMoney=value=>modular?(modularCash.pending?'Pendiente de confirmar':value===undefined?'Consultar caja verificada':fmt(value)):fmt(value);
     const low=products.filter(p=>p.qty<=3).length;
     const motivationalPhrases = [
       '"El éxito no es casualidad, es constancia."',
@@ -3180,8 +3219,8 @@ function parseMoney(value) {
 	    return `<div class="pageHead homeGreeting"><div><h1>Hola, <span>${escapeHtml(authUser().name || 'Usuario')}</span></h1><p>${escapeHtml(b.name)}</p></div></div>
       ${accessBannerHtml()}
       <section class="grid kpis">
-        <div class="card kpi gold"><div class="icon">\u2197</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
-        <div class="card kpi"><div class="icon">\u25A3</div><small>Caja</small><strong>${fmt(saldo)}</strong></div>
+        <div class="card kpi gold"><div class="icon">\u2197</div><small>${modular?'Ventas de esta sesión':'Ventas de hoy'}</small><strong class="goldText">${cashMoney(income)}</strong></div>
+        <div class="card kpi"><div class="icon">\u25A3</div><small>Caja</small><strong>${cashMoney(saldo)}</strong></div>
         <div class="card kpi"><div class="icon">\u25A7</div><small>Inventario</small><strong>${products.length}</strong></div>
         <div class="card kpi"><div class="icon">\u26A0</div><small>Stock bajo</small><strong>${low}</strong></div>
       </section>
@@ -3385,13 +3424,15 @@ function parseMoney(value) {
     const mov = hasSessionTaggedMovements
       ? allMov.filter((movement) => movement.cashSessionId === displaySession.id)
       : allMov;
-    const aperture=mov.slice().reverse().find(m=>m.kind==='apertura')?.amount || 0;
-    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementEffectiveAmount(m),0);
-    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
-    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
-    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
-    const out=expenses+compras+retiros;
-    const saldo = aperture + income - out;
+    const modularCash=sparkCashCounterView(displaySession),modular=!!modularCash;
+    const aperture=modular?modularCash.opening:mov.slice().reverse().find(m=>m.kind==='apertura')?.amount || 0;
+    const income=modular?modularCash.income:mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementCashIncomeAmount(m),0);
+    const expenses=modular?null:mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const compras=modular?null:mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const retiros=modular?null:mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const out=modular?modularCash.out:expenses+compras+retiros;
+    const saldo = modular?modularCash.balance:aperture + income - out;
+    const cashMoney=value=>modular?(modularCash.pending?'Pendiente de confirmar':value===null||value===undefined?'No verificado':fmt(value)):fmt(value);
 
     const staleSession = staleOpenCashSession();
     // An immutable closed session remains history even if its legacy report
@@ -3440,13 +3481,11 @@ function parseMoney(value) {
          <button class="btn silver" id="closeDayBtn">Cerrar día</button>
        </div>
        <section class="grid cashGrid">
-         <div class="card kpi"><small>Caja Inicial</small><strong class="goldText">${fmt(aperture)}</strong></div>
-         <div class="card kpi"><small>Ingresos (Ventas)</small><strong class="goldText">${fmt(income)}</strong></div>
-         <div class="card kpi"><small>Egresos</small><strong>${fmt(out)}</strong></div>
-         <div class="card kpi"><small>Saldo Actual</small><strong class="goldText">${fmt(saldo)}</strong></div>
-         <div class="card kpi"><small>Gastos</small><strong>${fmt(expenses)}</strong></div>
-         <div class="card kpi"><small>Compras</small><strong>${fmt(compras)}</strong></div>
-         <div class="card kpi"><small>Retiros</small><strong>${fmt(retiros)}</strong></div>
+         <div class="card kpi"><small>Caja Inicial</small><strong class="goldText">${cashMoney(aperture)}</strong></div>
+         <div class="card kpi"><small>Ingresos en efectivo</small><strong class="goldText">${cashMoney(income)}</strong></div>
+         <div class="card kpi"><small>Egresos</small><strong>${cashMoney(out)}</strong></div>
+         <div class="card kpi"><small>Saldo Actual</small><strong class="goldText">${cashMoney(saldo)}</strong></div>
+         ${modular?'':`<div class="card kpi"><small>Gastos</small><strong>${fmt(expenses)}</strong></div><div class="card kpi"><small>Compras</small><strong>${fmt(compras)}</strong></div><div class="card kpi"><small>Retiros</small><strong>${fmt(retiros)}</strong></div>`}
        </section>
       `;
     }
@@ -3474,14 +3513,15 @@ function parseMoney(value) {
               ` : '';
               const cancelledLabel = isCancelled ? `<br><span style="font-size:11px;color:#ff4d4d;font-weight:bold;">🚫 ANULADO por ${escapeHtml(m.cancelledBy || 'owner')} a las ${escapeHtml(m.cancelledAt || '')}</span>` : '';
               const textStyle = isCancelled ? 'text-decoration: line-through; opacity: 0.5;' : '';
-              const effectivePositive=(m.kind==='ingreso'||m.kind==='apertura')!==(movementEffectiveAmount(m)<0);
+              let effective=null;try{effective=movementEffectiveAmount(m);}catch(error){if(!modular)throw error;}
+              const effectivePositive=(m.kind==='ingreso'||m.kind==='apertura'||m.kind==='sale_cancellation')!==(effective<0);
               const amtDisplay = isCancelled ? `<span style="text-decoration:line-through;color:var(--muted);font-weight:normal;font-size:12px;margin-right:6px;">${fmt(m.originalAmount || 0)}</span><span style="color:#ff4d4d;">$0.00</span>` : `<span class="${effectivePositive?'pos':'neg'}">${effectivePositive?'+':'−'}${fmt(m.amount)}</span>`;
 
               return `<div class="movement" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0; border-bottom:1px solid var(--line); ${textStyle}">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <span><b>${escapeHtml(labelKind(m.kind))}</b><br><small>${escapeHtml(m.note||'')}</small>${cancelledLabel}<br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||m.user||'Sistema')} • 🕒 ${escapeHtml(m.when || m.date || '')}</span></span>
                   <div style="text-align:right; font-weight:bold;">
-                    ${amtDisplay}
+                    ${effective===null?'Relación pendiente de consulta del período':amtDisplay}
                   </div>
                 </div>
                 ${editDeleteButtons}
@@ -3600,6 +3640,22 @@ function parseMoney(value) {
     return s;
   }
 
+  let sparkRetailReport=null,sparkRetailReportVisible=100;
+  function verifiedSparkRetailReport(){
+    const proof=sparkRetailReport,identity=window.click360SparkOperationalSession?.identity;
+    return proof?.source==='server'&&proof.complete===true&&proof.ownerUid===identity?.ownerUid
+      &&proof.actorUid===window.click360Auth?.currentUser?.uid&&proof.businessId===currentBusiness()?.id
+      &&proof.from===state.reportsFrom&&proof.to===state.reportsTo?proof:null;
+  }
+  window.click360LookupRetailReportSale=function(id){
+    const sale=verifiedSparkRetailReport()?.sales.find(row=>row.id===id||row.legacyId===id);
+    return sale?cloneState({...sale,storageRecordId:sale.id,id:sale.legacyId||sale.id}):null;
+  };
+  window.printRetailHistoryReceipt=function(id){
+    const sale=window.click360LookupRetailReportSale(decodeActionId(id));
+    if(!sale)return toast('Vuelve a consultar el período antes de abrir este comprobante.', 'err');
+    window.showSaleCompleteModal(sale.id,sale);
+  };
 	  function reportsView() {
 	    // r37-2 (NO FALSE STATES): salesForBiz() reads straight off `state`,
 	    // still the empty seed before hydration -- without this guard a
@@ -3610,32 +3666,34 @@ function parseMoney(value) {
 	    }
 	    state.reportsFrom = state.reportsFrom || today();
 	    state.reportsTo = state.reportsTo || today();
-	    const allSales = salesForBiz();
+        const modular=!!window.click360SparkOperationalSession,proof=modular?verifiedSparkRetailReport():null;
+	    const allSales = modular?(proof?.sales||[]):salesForBiz();
 	    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
 	    const validSales = sales.filter(s => s.status !== 'cancelled');
-	    const tickets=validSales.length;
-	    const soldTotal=validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal=collectedInRange(allSales, state.reportsFrom, state.reportsTo);
-	    const pendingTotal=validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
+	    const tickets=proof?proof.tickets:validSales.length;
+	    const soldTotal=proof?proof.soldTotal:validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
+	    const collectedTotal=proof?proof.collectedTotal:collectedInRange(allSales, state.reportsFrom, state.reportsTo);
+	    const pendingTotal=proof?proof.pendingTotal:validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
-	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-    return `<div class="pageHead"><div><h1>Reportes</h1><p>${window.click360SparkCoordinator?.hasMore('sales')?'Resumen de los registros cargados; el historial tiene más ventas en la nube.':'Resumen general de tu negocio.'}</p></div>
+	    const top=proof?proof.top:Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+        const displayMoney=value=>modular&&!proof?'—':value===null?'No verificado':fmt(value),historySales=modular?sales.slice(0,sparkRetailReportVisible):sales.slice().reverse();
+    return `<div class="pageHead"><div><h1>Reportes</h1><p>${modular?(proof?`Período completo leído de la nube · consulta ${escapeHtml(proof.confirmedAt)}${proof.protectedHistory?' · Contiene historial protegido; los cobros son importes registrados, no una conciliación financiera de esos registros.':''}`:'Consulta el período para obtener totales completos de la nube. No se muestran cifras parciales como resultados definitivos.'):'Resumen general de tu negocio.'}</p></div>
         <div class="toolbar" style="gap:8px;">
 	          <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
 	          <button class="btn silver" onclick="window.printReports('pdf')">Guardar PDF</button>
 	          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
         </div>
       </div>
-      ${sparkHistoryPageControl('sales')}
+      ${modular?'<button class="btn primary" id="queryRetailReport">Consultar período completo</button>':sparkHistoryPageControl('sales')}
       <div class="card sectionCard reportRangeCard">
         <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${safeDateInputValue(state.reportsFrom)}"></div>
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
       </div>
-	      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText">${fmt(soldTotal)}</strong></div><div class="card kpi"><small>Cobrado</small><strong class="goldText">${fmt(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${fmt(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div></section>
-	      <section class="card sectionCard" style="margin-top:14px"><h3>Cobros por fecha real</h3>${buildChartHtml(allSales)}</section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
+      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText" data-retail-total="sold">${displayMoney(soldTotal)}</strong></div><div class="card kpi"><small>Cobros registrados</small><strong class="goldText" data-retail-total="collected">${displayMoney(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${displayMoney(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong data-retail-total="tickets">${modular&&!proof?'—':tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${displayMoney(collectedTotal===null?null:tickets?collectedTotal/tickets:0)}</strong></div></section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Cobros por fecha real</h3>${modular?(proof?(proof.unknownFields.includes('collectedTotal')?'Hay cobros históricos no verificables; no se presentan totales parciales.':proof.collectionDays.map(([date,total])=>`<div class="movement"><span>${escapeHtml(date)}</span><b>${fmt(total)}</b></div>`).join('')):'Consulta el período para ver los cobros.'):buildChartHtml(allSales)}</section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${proof?.unknownFields.includes('top')?'Hay cantidades históricas no verificadas; se conserva el historial sin inventar unidades.':top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
-        ${sales.slice().reverse().map(s=>`
+        ${historySales.map(s=>`
         <div class="movement" style="flex-direction:column; gap:8px;">
           <div style="display:flex; justify-content:space-between; width:100%;">
              <span>${escapeHtml(s.when)}<br>
@@ -3643,17 +3701,18 @@ function parseMoney(value) {
                <span class="badge ${s.status==='cancelled'?'danger':'gold'}">${s.status==='cancelled'?'Anulada':s.status==='pending_payment'?'Pendiente':s.status==='layaway'?'Apartado':'Pagada'}</span>
                <br><small style="font-size:10px;color:var(--gold);">🧑‍💻 ${escapeHtml(s.createdBy||'Sistema')}</small>
              </span>
-             <b class="${s.status==='cancelled'?'neg':'goldText'}">${fmt(s.total)}</b>
+             <b class="${s.status==='cancelled'?'neg':'goldText'}">${modular&&typeof s.total!=='number'?'No verificado':fmt(s.total)}</b>
           </div>
           <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
-            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
+            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.${modular?'printRetailHistoryReceipt':'printReceipt'}('${actionId(s.id)}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Ticket
             </button>
             ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.click360GuardedAction(this, () => window.cancelSale('${actionId(s.id)}'))">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg> Anular
             </button>` : ''}
           </div>
-        </div>`).join('') || '<p class="empty">Sin ventas.</p>'}
+        </div>`).join('') || `<p class="empty">${modular&&!proof?'Período todavía no consultado.':'Sin ventas en el período consultado.'}</p>`}
+        ${modular&&proof&&sales.length>sparkRetailReportVisible?'<button class="btn silver" id="moreRetailReportRows">Mostrar siguientes 100 ventas del período</button>':''}
       </section>`;
   }
 
@@ -6822,12 +6881,14 @@ function parseMoney(value) {
 	    const firstDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
 	    const lastDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
 	    const cloud = syncStatusInfo();
+        const recoveryCopy = recoveryCopyStatusInfo();
 
 	    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronizaci\u00f3n y reportes contables.</p></div></div>
 	      <section class="card sectionCard">
 	        <h3>Nube CLICK 360</h3>
 	        <p id="cloudStatusDynamic" class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">\u2605 ${escapeHtml(cloud.title)}</p>
 	        <p id="cloudStatusDetail" class="cloudStatus">${escapeHtml(cloud.detail)}</p>
+            <div id="recoveryCopyStatus" ${recoveryCopy?'':'hidden'} role="status"><p id="recoveryCopyTitle" class="cloudStatus">${escapeHtml(recoveryCopy?.title||'')}</p><p id="recoveryCopyDetail" class="fieldHint">${escapeHtml(recoveryCopy?.detail||'')}</p></div>
 		        <div class="split" style="gap:10px;margin-top:12px;"><button type="button" class="btn silver" id="refreshCloudBtn">Actualizar desde nube</button><button type="button" class="btn primary" id="forceSyncCloud">Guardar ahora en nube</button></div>
 		        <div class="syncRecoveryCard">
 		          <button type="button" class="btn block" id="clearLocalAppStateBtn">Reparar sincronización</button>
@@ -8543,29 +8604,35 @@ function parseMoney(value) {
 	      : (state.movements || []).filter((movement) => movement.businessId === businessId && movement.date === date
 	        && (!activeSession?.id || movement.cashSessionId === activeSession.id));
 	    const apertureMov = closeMovements.slice().reverse().find((movement) => movement.kind === 'apertura');
-	    const lastCash = apertureMov ? Number(apertureMov.amount || 0) : Number(business?.lastCashBalance || 0);
+	    const lastCash = window.click360SparkOperationalSession ? activeSession?.openingAmount
+        : apertureMov ? Number(apertureMov.amount || 0) : Number(business?.lastCashBalance || 0);
 	    return { business, businessId, date, activeSession, closeMovements, apertureMov, lastCash, overrideRequested: !!requestedOverride };
 	  }
 	  function buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId }) {
 	    updateCashCloseDiagnostic('cash_close_calculate_totals', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
-    const income = basis.closeMovements.filter(isCashIncomeMovement).reduce((a, m) => a + movementEffectiveAmount(m), 0);
-    const out = basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura').reduce((a, m) => a + movementEffectiveAmount(m), 0);
-	    const balanceCalculado = cInicial + income - out;
+    const modular=!!window.click360SparkOperationalSession,s=basis.activeSession,counters=modular?sparkCashCounterView(s):null;
+    if(modular&&(counters.pending||counters.unverified||s.businessId!==basis.businessId||s.date!==basis.date||s.status!=='open'
+      ||s.openingAmount!==cInicial||['itemCount','taxTotal'].some(k=>typeof s[k]!=='number'||!Number.isFinite(s[k]))
+      ||['cash','card','transfer','receivablePayments'].some(k=>typeof s.paymentTotals[k]!=='number'||!Number.isFinite(s.paymentTotals[k]))))
+      throw Error('SPARK_UI_CASH_COUNTERS_PENDING_OR_UNVERIFIED');
+    const income = modular?counters.income:basis.closeMovements.filter(isCashIncomeMovement).reduce((a, m) => a + movementCashIncomeAmount(m), 0);
+    const out = modular?counters.out:basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura' && m.kind !== 'sale_cancellation').reduce((a, m) => a + movementEffectiveAmount(m), 0);
+	    const balanceCalculado = modular?counters.balance:cInicial + income - out;
 	    const diferencia = eFisico - balanceCalculado;
 	    const recordsForSession = globalThis.CLICK360_CASH_RECONCILIATION?.recordsForCashSession;
-	    const sales = (recordsForSession
+	    const sales = modular?[]:(recordsForSession
 	      ? recordsForSession(state.sales || [], basis.activeSession, basis.businessId, basis.date)
 	      : (state.sales || []).filter((sale) => sale.businessId === basis.businessId && sale.date === basis.date
 	        && (!basis.activeSession?.id || sale.cashSessionId === basis.activeSession.id)))
 	      .filter((sale) => sale.status !== 'cancelled');
-	    const salesEfectivo = sales.filter(s => s.method === 'Efectivo').reduce((a, s) => a + Number(s.total || 0), 0);
-	    const salesTarjeta = sales.filter(s => s.method === 'Tarjeta').reduce((a, s) => a + Number(s.total || 0), 0);
-	    const salesTransf = sales.filter(s => s.method === 'Transferencia').reduce((a, s) => a + Number(s.total || 0), 0);
-	    const abonosApartado = basis.closeMovements.filter((movement) => movement.status !== 'cancelled'
+	    const salesEfectivo = modular?s.paymentTotals.cash:sales.filter(s => s.method === 'Efectivo').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const salesTarjeta = modular?s.paymentTotals.card:sales.filter(s => s.method === 'Tarjeta').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const salesTransf = modular?s.paymentTotals.transfer:sales.filter(s => s.method === 'Transferencia').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const abonosApartado = modular?s.paymentTotals.receivablePayments:basis.closeMovements.filter((movement) => movement.status !== 'cancelled'
 	      && (movement.paymentMethod === 'Apartado' || movement.paymentType === 'receivable_payment'))
 	      .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
-	    const totalIva = sales.reduce((a, s) => a + Number(s.iva || 0), 0);
-	    let totalItems = 0;
+	    const totalIva = modular?s.taxTotal:sales.reduce((a, s) => a + Number(s.iva || 0), 0);
+	    let totalItems = modular?s.itemCount:0;
 	    sales.forEach(s => saleItems(s).forEach(i => { totalItems += Number(i.qty || 0); }));
 	    updateCashCloseDiagnostic('cash_close_build_summary', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
 	    const bizSettings = basis.business?.settings || {};
@@ -9709,6 +9776,21 @@ function parseMoney(value) {
       // trigger cloud writes/sync gates from Safari just for changing a filter.
       $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; renderApp('reports'); };
       $('#repTo').onchange = (e) => { state.reportsTo = e.target.value; renderApp('reports'); };
+      $('#moreRetailReportRows')?.addEventListener('click',()=>{if(verifiedSparkRetailReport()){sparkRetailReportVisible+=100;renderApp('reports');}});
+      $('#queryRetailReport')?.addEventListener('click',async event=>{
+        const button=event.currentTarget;if(button.disabled)return;button.disabled=true;
+        const coordinator=window.click360SparkCoordinator,businessId=currentBusiness()?.id,from=state.reportsFrom,to=state.reportsTo;
+        sparkRetailReport=null;sparkRetailReportVisible=100;
+        try{
+          const proof=await coordinator.readRetailReport({from,to});
+          if(coordinator!==window.click360SparkCoordinator||currentBusiness()?.id!==businessId||state.reportsFrom!==from||state.reportsTo!==to)return;
+          sparkRetailReport=proof;renderApp('reports');
+        }catch(error){
+          sparkRetailReport=null;
+          toast(error.message==='SPARK_REPORT_READ_BUDGET'?'El período contiene demasiados registros para una sola consulta. Elige un período más corto.':'No pudimos completar una consulta estable. Tus datos no cambiaron; vuelve a consultar cuando la sincronización esté al día.', 'err');
+          if(currentBusiness()?.id===businessId)renderApp('reports');
+        }finally{button.disabled=false;}
+      });
   }
 
   function bindSettings(){
@@ -13145,7 +13227,15 @@ function parseMoney(value) {
         r.readAsText(file);
     };
 
-    function generateExcelReport(dateFrom, dateTo) {
+    function assertRetailExportProof(dateFrom,dateTo,proof){
+      if(!window.click360SparkOperationalSession&&!proof)return;
+      const identity=window.click360SparkOperationalSession?.identity;
+      if(!proof||proof.source!=='server'||proof.complete!==true||proof.ownerUid!==identity?.ownerUid
+        ||proof.actorUid!==window.click360Auth?.currentUser?.uid||proof.businessId!==currentBusiness()?.id
+        ||proof.from!==(dateFrom||'0001-01-01')||proof.to!==dateTo)throw Error('SPARK_REPORT_EXPORT_CONTEXT_CHANGED');
+    }
+    function generateExcelReport(dateFrom, dateTo,proof=null) {
+       assertRetailExportProof(dateFrom,dateTo,proof);
        const biz = currentBusiness();
        const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
 
@@ -13157,7 +13247,7 @@ function parseMoney(value) {
        let totalCobrado = 0;
        let totalPendiente = 0;
        let salesCount = 0;
-       state.sales.filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
+       (proof?proof.sales:state.sales).filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
           if (s.status !== 'cancelled') salesCount++;
           if (s.status !== 'cancelled') {
              totalVentas += s.total || 0;
@@ -13202,15 +13292,17 @@ function parseMoney(value) {
        let totalEgresos = 0;
        let totalIngresosEfectivo = 0;
        let movCount = 0;
-       state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
+       (proof?proof.movements:state.movements).filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
           if (m.status !== 'cancelled') movCount++;
-          const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura';
-          const signedAmount = (isOutflow ? -1 : 1)*movementEffectiveAmount(m);
+          const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura' && m.kind !== 'sale_cancellation';
+          const effectiveAmount=movementEffectiveAmount(m,proof?proof.sales:state.sales,proof?proof.movements:state.movements);
+          const signedAmount = (isOutflow ? -1 : 1)*effectiveAmount;
           if (m.status !== 'cancelled') {
-             if (isOutflow) totalEgresos += movementEffectiveAmount(m);
-             else if (m.kind === 'ingreso') {
-                totalIngresos += movementEffectiveAmount(m);
-                if (isCashIncomeMovement(m)) totalIngresosEfectivo += movementEffectiveAmount(m);
+             if (isOutflow) totalEgresos += effectiveAmount;
+             else if (m.kind === 'ingreso'||m.kind==='sale_cancellation') {
+                totalIngresos += effectiveAmount;
+                if(m.kind==='sale_cancellation')totalIngresosEfectivo-=saleCancellationPaymentTotals(m,proof?proof.sales:state.sales).cash;
+                else if (isCashIncomeMovement(m)) totalIngresosEfectivo += effectiveAmount;
              }
           }
           movRows.push([
@@ -13230,7 +13322,7 @@ function parseMoney(value) {
        const invoiceRows = [
           ["FECHA", "ID FACTURA", "PROVEEDOR", "NUMERO", "MONTO", "IVA", "NOTAS", "ATENDIDO POR", "CREADA", "ESTADO"]
        ];
-       state.invoices.filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
+       (proof?proof.invoices:state.invoices).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
           invoiceRows.push([
              i.date,
              i.id,
@@ -13246,16 +13338,18 @@ function parseMoney(value) {
        });
 
        // 3. Compile Summary Sheet
+       if(proof){totalVentas=proof.soldTotal;totalCobrado=proof.collectedTotal;totalPendiente=proof.pendingTotal;salesCount=proof.tickets;}
        const summaryRows = [
           ["REPORTE CONTABLE CLICK 360"],
           ["Negocio:", biz.name],
           ["Periodo:", `${dateFrom} al ${dateTo}`],
           ["Fecha Reporte:", nowLabel()],
+          ...(proof?[["Consulta de nube:",proof.confirmedAt],["Integridad financiera histórica:",proof.financiallyVerified?'Campos verificados':'Hay historia protegida o campos no verificados; no es conciliación financiera']]:[]),
           [],
           ["INDICADOR/METRICA", "VALOR"],
-          ["Total Ventas ($)", totalVentas],
-          ["Total Cobrado ($)", totalCobrado],
-          ["Saldo Pendiente ($)", totalPendiente],
+          ["Total Ventas ($)", totalVentas===null?'No verificado':totalVentas],
+          ["Total Cobrado ($)", totalCobrado===null?'No verificado':totalCobrado],
+          ["Saldo Pendiente ($)", totalPendiente===null?'No verificado':totalPendiente],
           ["Transacciones de Venta", salesCount],
           ["Total Ingresos Caja ($)", totalIngresos],
           ["Ingresos Efectivo Caja ($)", totalIngresosEfectivo],
@@ -13295,7 +13389,8 @@ function parseMoney(value) {
 	      const text = String(spreadsheetCell(value) ?? '').replace(/\r?\n/g, ' ');
 	      return /[",;\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 	    }
-	    function downloadCsvFallback(dateFrom, dateTo) {
+	    function downloadCsvFallback(dateFrom, dateTo,proof=null) {
+	      assertRetailExportProof(dateFrom,dateTo,proof);
 	      const biz = currentBusiness();
 	      const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
 	      const rows = [
@@ -13304,7 +13399,7 @@ function parseMoney(value) {
 	      let totalVentas = 0;
 	      let salesCount = 0;
 	      let movCount = 0;
-	      state.sales.filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
+	      (proof?proof.sales:state.sales).filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
 	        if (s.status !== 'cancelled') { totalVentas += s.total || 0; salesCount++; }
 	        (s.items || []).forEach(item => rows.push([
 	          "VENTA",
@@ -13319,16 +13414,17 @@ function parseMoney(value) {
 	          labelStatus(s.status)
 	        ]));
 	      });
-	      state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
+	      (proof?proof.movements:state.movements).filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
 	        movCount++;
 	        rows.push(["MOVIMIENTO", m.when || m.date, m.id, m.kind || '', m.note || '', '', m.amount || 0, '', m.createdBy || m.user || 'Sistema', m.status || 'OK']);
 	      });
-	      (state.invoices || []).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
+	      (proof?proof.invoices:(state.invoices || [])).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
 	        rows.push(["FACTURA", i.date, i.id, i.provider || '', i.number || '', '', i.amount || 0, '', i.createdBy || 'Sistema', i.status === 'cancelled' ? 'ANULADA' : 'OK']);
 	      });
 	      rows.push([]);
+          if(proof){totalVentas=proof.soldTotal;salesCount=proof.tickets;rows.push(['CONSULTA DE NUBE',proof.confirmedAt,'CAMPOS NO VERIFICADOS',proof.unknownFields.join(', ')]);}
 	      rows.push(["RESUMEN", "NEGOCIO", biz.name, "PERIODO", `${dateFrom} al ${dateTo}`, "", "", "", "", ""]);
-	      rows.push(["RESUMEN", "TOTAL VENTAS", "", "", "", "", totalVentas, "", "", ""]);
+	      rows.push(["RESUMEN", "TOTAL VENTAS", "", "", "", "", totalVentas===null?'No verificado':totalVentas, "", "", ""]);
 	      const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
 	      const a = document.createElement('a');
 	      const objectUrl = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8' }));
@@ -13340,16 +13436,13 @@ function parseMoney(value) {
 	    }
 
     const exp = $('#exportCsvBtn');
-    if(exp) exp.onclick = () => {
+    if(exp) exp.onclick = async () => {
 	      const dateFrom = $('#csvDateFrom')?.value || '';
 	      const dateTo = $('#csvDateTo')?.value || today();
-	      if (!window.XLSX) {
-	         downloadCsvFallback(dateFrom, dateTo);
-	         toast('Sin internet para Excel. Se descargó reporte CSV.', 'ok');
-	         return;
-	      }
       try {
-         const info = generateExcelReport(dateFrom, dateTo);
+         const proof=window.click360SparkOperationalSession?await window.click360SparkCoordinator.readRetailReport({from:dateFrom||'0001-01-01',to:dateTo,includeInvoices:true}):null;
+         if (!window.XLSX) {downloadCsvFallback(dateFrom,dateTo,proof);toast('Reporte CSV generado con la consulta completa.', 'ok');return;}
+         const info = generateExcelReport(dateFrom, dateTo,proof);
          toast(`Reporte Excel generado con éxito`, 'ok');
       } catch (err) {
          console.error(err);
@@ -13358,14 +13451,15 @@ function parseMoney(value) {
     };
 
     const sendBtn = $('#sendReportBtn');
-    if (sendBtn) sendBtn.onclick = () => {
+    if (sendBtn) sendBtn.onclick = async () => {
 	      const dateFrom = $('#csvDateFrom')?.value || today();
 	      const dateTo = $('#csvDateTo')?.value || today();
 	      try {
-	         const info = window.XLSX ? generateExcelReport(dateFrom, dateTo) : downloadCsvFallback(dateFrom, dateTo);
+             const proof=window.click360SparkOperationalSession?await window.click360SparkCoordinator.readRetailReport({from:dateFrom,to:dateTo,includeInvoices:true}):null;
+	         const info = window.XLSX ? generateExcelReport(dateFrom, dateTo,proof) : downloadCsvFallback(dateFrom, dateTo,proof);
 	         const bizName = currentBusiness().name;
 
-         const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: $${info.totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${info.salesCount}\n📋 Movimientos de caja: ${info.movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo EXCEL adjunto para ver los detalles._`;
+         const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: ${info.totalVentas===null?'No verificado':'$'+info.totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${info.salesCount}\n📋 Movimientos de caja: ${info.movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo EXCEL adjunto para ver los detalles._`;
 
 	         toast(`${info.csv ? 'CSV' : 'Excel'} descargado. Abriendo WhatsApp... Adjunta el archivo al chat.`, 'ok', 6000);
          setTimeout(() => {
@@ -13390,6 +13484,51 @@ function parseMoney(value) {
     }
   }
 
+  async function cancelSparkSale(sale){
+    const runtime=window.click360SparkOperationalSession,identity=runtime.identity,context=activeTenantContext;
+    let session=state.cashSessions.find(row=>row.id===sale.cashSessionId&&row.businessId===identity.businessId);
+    let layaway=state.layaways?.find(row=>row.businessId===identity.businessId&&row.saleId===sale.id);
+    if(!session||session.status!=='open'||session.summaryVersion!==1||session.storageHistoryReadOnly
+      ||sale.storageHistoryReadOnly||layaway?.status==='picked_up'||layaway?.pickedUpAt)
+      return toast('Esta venta pertenece a una caja o historial protegido. No se modificó ningún dato.', 'err');
+    if(!sale.receiptSummary||sale.receiptSummary.uniformSession!==true||sale.receiptSummary.cashSessionId!==session.id)
+      return toast('No se puede anular hasta verificar todos los cobros de esta venta. Su información permanece intacta.', 'err');
+    if(!confirm('¿Anular esta venta y registrar su compensación sin borrar el historial?'))return;
+    const reason=prompt('Motivo de anulación:');if(!reason?.trim())return toast('Debes indicar el motivo de anulación','err');
+    const sourceFingerprint=window.CLICK360_SPARK_MIGRATION.canonicalJson(sale),sessionVersion=session.recordVersion;
+    // One new intention gets one ID; durable journal retries keep this exact
+    // command. A rejected old revision must not reserve the entity's ID for
+    // every future, genuinely new cancellation intention.
+    const operationId=uid('sale-cancel'),reversalId=`${operationId}-rev`;
+    const live=state.sales.find(row=>row.id===sale.id&&row.businessId===identity.businessId);
+    session=state.cashSessions.find(row=>row.id===sale.cashSessionId&&row.businessId===identity.businessId);
+    if(activeTenantContext!==context||window.click360SparkOperationalSession!==runtime||currentBusiness()?.id!==identity.businessId
+      ||!live||window.CLICK360_SPARK_MIGRATION.canonicalJson(live)!==sourceFingerprint
+      ||session?.recordVersion!==sessionVersion||session.status!=='open')
+      return toast('La información cambió antes de confirmar. No se modificó ningún dato.', 'err');
+    sale=live;layaway=state.layaways?.find(row=>row.businessId===identity.businessId&&row.saleId===sale.id);
+    let command;
+    try{command=window.CLICK360_MODULAR_UI_ADAPTER.saleCancellationCommand({sale,identity,
+      actorUid:window.click360Auth?.currentUser?.uid,operationId,cashSessionId:session.id,reason});}
+    catch{return toast('La venta requiere conciliación antes de anularse. No se modificó ningún dato.','err');}
+    const previousState=cloneState(state),receipts=sale.receiptSummary;
+    if(!Array.isArray(sale.stockOrder)||sale.stockOrder.some(id=>!state.products.some(row=>row.id===id&&row.businessId===identity.businessId&&row.deleted!==true)))
+      return toast('Falta verificar el inventario de esta venta. No se modificó ningún dato.','err');
+    for(const id of sale.stockOrder){const product=state.products.find(row=>row.id===id&&row.businessId===identity.businessId);
+      product.stock=Number(product.stock??product.qty)+sale.stockDeltas[id];product.qty=product.stock;}
+    sale.status='cancelled';sale.cancelOperationId=operationId;sale.cancelReason=reason.trim();
+    if(layaway){layaway.status='cancelled';layaway.cancelOperationId=operationId;layaway.cancelReason=reason.trim();}
+    session.saleCount-=1;session.salesTotal=Math.round((session.salesTotal-sale.total)*100)/100;
+    session.itemCount-=sale.itemCount;session.taxTotal=Math.round((session.taxTotal-sale.iva)*100)/100;
+    session.cashBalance=Math.round((session.cashBalance-receipts.cash)*100)/100;
+    for(const key of ['cash','card','transfer','receivablePayments'])session.paymentTotals[key]=Math.round((session.paymentTotals[key]-receipts[key])*100)/100;
+    state.movements.push({id:reversalId,businessId:identity.businessId,operationId,saleId:sale.id,cashSessionId:session.id,date:sale.date,
+      kind:'sale_cancellation',amount:sale.received,compensationSign:-1,paymentTotals:cloneState(receipts),note:reason.trim()});
+    addAudit('sale_cancelled',{saleId:sale.id,businessId:identity.businessId,operationId});
+    const committed=await commitCriticalMutation(previousState,'sale_cancelled',()=>false,{sparkCommand:command});
+    renderApp('reports');if(committed.ok)toast(committed.pending?'Anulación guardada; confirmación en nube pendiente.':'Venta anulada y compensación confirmada sin borrar el historial.');
+    return committed;
+  }
   window.cancelSale = async function(saleId) {
 		  saleId = decodeActionId(saleId);
     if (authUser().role !== 'owner') {
@@ -13399,6 +13538,7 @@ function parseMoney(value) {
     const sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(sale.status === 'cancelled') return toast('Esta venta ya fue anulada.', 'err');
+    if(window.click360SparkOperationalSession)return cancelSparkSale(sale);
     if(isBusinessDateClosed(sale.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular la venta.', 'err');
     const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
     if (linkedLayaway && window.CLICK360_V16_DOMAIN?.layawayStatus(linkedLayaway) === 'picked_up') {
@@ -13587,10 +13727,10 @@ function parseMoney(value) {
     }
   };
 
-	  window.showSaleCompleteModal = function(id) {
+	  window.showSaleCompleteModal = function(id,readOnlyHistory=null) {
 		  id = decodeActionId(id);
 	    const business = currentBusiness();
-	    const s = salesForBiz(business?.id).find(x=>x.id===id);
+	    const s = readOnlyHistory || salesForBiz(business?.id).find(x=>x.id===id);
 	    if(!s) return;
 	    if (!business || s.businessId !== business.id) return toast('El comprobante pertenece a otro negocio y fue bloqueado.', 'err');
 	    const receiptTemplate = receiptTemplatePreferences();
@@ -13599,7 +13739,7 @@ function parseMoney(value) {
 
     showModal(`
       <div class="modalHeader"><h2>Venta Completada</h2><button class="closeBtn" data-close>×</button></div>
-      <p style="color:var(--green); text-align:center; font-weight:bold; margin-bottom:12px;">✓ Guardado exitosamente</p>
+      <p style="color:var(--green); text-align:center; font-weight:bold; margin-bottom:12px;">${readOnlyHistory?'Comprobante del historial consultado':'✓ Guardado exitosamente'}</p>
 
       <div style="display:flex; justify-content:center; margin-bottom:16px;">
         <div style="max-height:220px; overflow-y:auto; border:1px solid #444; border-radius:12px; background:#fff; padding:4px;">
@@ -13835,15 +13975,18 @@ function parseMoney(value) {
   window.printReports = function(mode = 'print') {
     state.reportsFrom = state.reportsFrom || today();
     state.reportsTo = state.reportsTo || today();
-	    const allSales = salesForBiz();
+        const proof=window.click360SparkOperationalSession?verifiedSparkRetailReport():null;
+        if(window.click360SparkOperationalSession&&!proof)return toast('Consulta primero el período completo antes de imprimir. No se imprimirán totales parciales.', 'err');
+	    const allSales = proof?proof.sales:salesForBiz();
 	    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
 	    const validSales = sales.filter(s => s.status!=='cancelled');
-	    const soldTotal = validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal = validSales.reduce((a,s)=>a+collectedAmount(s),0);
-	    const pendingTotal = validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
-	    const tickets = validSales.length;
+	    const soldTotal = proof?proof.soldTotal:validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
+	    const collectedTotal = proof?proof.collectedTotal:validSales.reduce((a,s)=>a+collectedAmount(s),0);
+	    const pendingTotal = proof?proof.pendingTotal:validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
+	    const tickets = proof?proof.tickets:validSales.length;
+        const reportMoney=value=>value===null||value===undefined?'No verificado':fmt(value);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
-    const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    const top = proof?proof.top:Object.entries(counts).sort((a,b)=>b[1]-a[1]);
 
     // Anulados
     const cancelled = sales.filter(s => s.status==='cancelled');
@@ -13853,18 +13996,19 @@ function parseMoney(value) {
       <h2 style="font-size:20px; margin:0 0 10px;">${escapeHtml(currentBusiness().name)} - Reporte General</h2>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Periodo:</span><span>${state.reportsFrom} a ${state.reportsTo}</span></div>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Impreso:</span><span>${nowLabel()}</span></div>
+      ${proof?`<p>Consulta completa de nube: ${escapeHtml(proof.confirmedAt)}. ${proof.protectedHistory?'Contiene historial protegido: los importes registrados no equivalen a una conciliación financiera histórica.':''}</p>`:''}
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
 
       <div style="width:100%; max-width:400px; margin:0 auto 20px;">
-        <h3 style="margin-top:10px; text-align:center;">Crecimiento de Ventas (7 días)</h3>
-        ${buildChartHtml(allSales).replace(/var\\(--gold\\)/g, '#D4AF37').replace(/var\\(--line\\)/g, '#ddd').replace(/var\\(--muted\\)/g, '#666')}
+        <h3 style="margin-top:10px; text-align:center;">${proof?'Cobros por fecha real':'Crecimiento de Ventas (7 días)'}</h3>
+        ${proof?(proof.unknownFields.includes('collectedTotal')?'Hay cobros históricos no verificables; no se presentan totales parciales.':proof.collectionDays.map(([date,total])=>`<p>${escapeHtml(date)}: ${fmt(total)}</p>`).join('')):buildChartHtml(allSales).replace(/var\\(--gold\\)/g, '#D4AF37').replace(/var\\(--line\\)/g, '#ddd').replace(/var\\(--muted\\)/g, '#666')}
       </div>
 
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendido:</span><strong>${fmt(soldTotal)}</strong></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cobrado:</span><strong>${fmt(collectedTotal)}</strong></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pendiente:</span><strong>${fmt(pendingTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendido:</span><strong>${reportMoney(soldTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cobrado:</span><strong>${reportMoney(collectedTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pendiente:</span><strong>${reportMoney(pendingTotal)}</strong></div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tickets Exitosos:</span><strong>${tickets}</strong></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio cobrado:</span><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio cobrado:</span><strong>${reportMoney(collectedTotal===null?null:tickets?collectedTotal/tickets:0)}</strong></div>
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
       <h3 style="margin-top:10px;">Productos Más Vendidos</h3>
       <table style="width:100%; border-collapse:collapse; margin-top:10px;">
@@ -13910,6 +14054,12 @@ function parseMoney(value) {
 	    if (title) title.textContent = `★ ${info.title}`;
 	    const detail = $('#cloudStatusDetail');
 	    if (detail) detail.textContent = info.detail;
+        const recoveryCopy=recoveryCopyStatusInfo(),recoveryNode=$('#recoveryCopyStatus');
+        if(recoveryNode){
+          recoveryNode.hidden=!recoveryCopy;
+          $('#recoveryCopyTitle').textContent=recoveryCopy?.title||'';
+          $('#recoveryCopyDetail').textContent=recoveryCopy?.detail||'';
+        }
 	  });
 		  window.addEventListener('click360-access-changed', () => {
 		    if (currentUser()) renderApp(route, {preserveActiveModal:true});

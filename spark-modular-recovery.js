@@ -146,12 +146,17 @@
       });
       return readCapture(captureHash);
     }
-    async function preserveCloud({captureHash,db:cloud,firebase,projectId,assertStable,productionRecoveryOnly=false}){
+    async function preserveCloud({captureHash,db:cloud,firebase,projectId,assertStable,productionRecoveryOnly=false,preparationAuthority}){
       context();
-      if((!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
-          &&!(projectId==='click-360'&&productionRecoveryOnly===true))
+      if((!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId))
         ||cloud?.app?.options?.projectId!==projectId||typeof assertStable!=='function')
         throw Error('SPARK_RECOVERY_COPY_NONPRODUCTION_ONLY');
+      if(projectId==='click-360'&&!productionRecoveryOnly){
+        if(!root.CLICK360_SPARK_MIGRATION_BOOTSTRAP?.verifyPreparationAuthority)throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
+        const source=await readCapture(captureHash);context();
+        await root.CLICK360_SPARK_MIGRATION_BOOTSTRAP.verifyPreparationAuthority(preparationAuthority,
+          {projectId,ownerUid,buildSha:source?.capture?.buildSha,deviceId:source?.capture?.deviceId},{write:true});context();
+      }
       const saved=await readCapture(captureHash);
       if(saved?.durable!==true)throw Error('SPARK_RECOVERY_CAPTURE_REQUIRED');
       const capture=saved.capture,text=api.canonicalJson(capture),parts=[];
@@ -230,7 +235,12 @@
       const final=await ref.get({source:'server'});context();
       if(final.metadata?.fromCache!==false||final.metadata?.hasPendingWrites!==false
         ||!sameManifest(final.data())||final.data().state!=='CLIENT_VERIFIED')throw Error('SPARK_RECOVERY_SERVER_READ_REQUIRED');
+      // The UI may display only the persisted server verification time, never
+      // the device clock or the time of a retry of this immutable capture.
+      const serverDate=final.data().clientVerifiedAt?.toDate?.();
+      const verifiedAt=serverDate instanceof Date&&Number.isFinite(serverDate.getTime())?serverDate.toISOString():null;
       return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,sourceHash:core.sourceHash,journalHash:core.journalHash,
+        ownerUid,verifiedAt,serverReadVerified:true,
         partCount:parts.length,payloadBytes:core.payloadBytes,operationalCloudConfirmed:false,cutoverPerformed:false};
     }
     return Object.freeze({pin,read,deviceIdentity,captureDevice,readCapture,pinHandoff,readHandoff,preserveCloud,close:()=>db.close()});

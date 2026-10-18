@@ -17,22 +17,29 @@
     if(chunk.length)chunks.push(chunk);
     return chunks;
   }
-  // Explicit transport, not loaded/started by production. Uses only the client
-  // Firestore SDK. Recovery must independently read back an IndexedDB pin.
+  // Explicit client SDK transport. Production requires an opaque capability
+  // from the server-policy-verified coordinator, never a caller-made claim.
   function create({db,firebase,projectId,ownerUid,buildSha,deviceId,resolveUser,readSource,readGuard,recovery,
-    requireCashProof=false,historicalReadOnly=false,onProgress=()=>{}}){
+    requireCashProof=false,historicalReadOnly=false,onProgress=()=>{},preparationAuthority}){
     const api=root.CLICK360_SPARK_MIGRATION;
     if(!api||!db?.runTransaction||!db?.collection||!firebase?.firestore?.FieldValue
       ||typeof resolveUser!=='function'||typeof readSource!=='function'||typeof readGuard!=='function'||!recovery?.pin||!recovery?.read)throw Error('SPARK_IMPORTER_INCOMPLETE');
-    // Production activation is deliberately unavailable until the UI/Rules
-    // operational contract is certified; a staging result cannot enable it.
-    if(!['demo-click360-spark-modular','click360-staging-7620168025'].includes(projectId)
+    // Project identity alone grants no production preparation authority.
+    if(!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId)
       ||db.app?.options?.projectId!==projectId)throw Error('SPARK_IMPORTER_NONPRODUCTION_ONLY');
+    const production=projectId==='click-360',authorityScope={projectId,ownerUid,buildSha,deviceId};
+    function authority(){if(production){
+      if(!root.CLICK360_SPARK_MIGRATION_BOOTSTRAP?.assertPreparationAuthority)throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
+      root.CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority(preparationAuthority,authorityScope);
+    }}
+    async function verifyAuthority(write){authority();if(production)
+      await root.CLICK360_SPARK_MIGRATION_BOOTSTRAP.verifyPreparationAuthority(preparationAuthority,authorityScope,{write});}
+    authority();
     if(!/^[a-f0-9]{12,40}$/.test(buildSha)||!deviceId)throw Error('SPARK_IMPORTER_RELEASE_REQUIRED');
     const controlRef=db.doc(`businesses/${ownerUid}/metadata/storage`);
     const legacyRef=db.doc(`businesses/${ownerUid}/state/main`);
     const stamp=()=>firebase.firestore.FieldValue.serverTimestamp();
-    function context(){if(resolveUser()?.uid!==ownerUid)throw Error('SPARK_IMPORTER_OWNER_CONTEXT_CHANGED');}
+    function context(){authority();if(resolveUser()?.uid!==ownerUid)throw Error('SPARK_IMPORTER_OWNER_CONTEXT_CHANGED');}
     async function source(){context();const candidate=await readSource();context();return api.selectSource({ownerUid,...candidate});}
     async function assertPinned(manifest){
       await assertGuard(manifest);
@@ -45,6 +52,7 @@
         ||(current.deviceRevision||'')!==manifest.deviceRevision)throw Error('SPARK_IMPORT_SOURCE_CHANGED_STOP');
     }
     async function assertGuard(manifest){
+      await verifyAuthority(true);
       context();const guard=await readGuard();context();
       // Cheap durable metadata guard between chunks, not a full source read or
       // hash per batch. Full server/local hashes are verified at phase changes.
@@ -141,6 +149,7 @@
       return rows;
     }
     async function prepareShadow(){
+      await verifyAuthority(true);
       const selected=await source();
       const manifest={...await api.plan({ownerUid,snapshot:selected.snapshot,identity:selected.identity,remoteRevision:selected.remoteRevision,deviceRevision:selected.deviceRevision||''}),
         remoteHash:selected.remoteHash};
@@ -213,6 +222,7 @@
       return {phase:'READY_TO_CUTOVER',manifest,equality,cashProofs,cutoverPerformed:false};
     }
     async function prepareRuntime({captureHash,validateOnly=false}){
+      await verifyAuthority(true);
       context();
       if(!requireCashProof||!recovery.readHandoff||!root.CLICK360_SPARK_HANDOFF)
         throw Error('SPARK_RUNTIME_VERIFIED_HANDOFF_REQUIRED');
@@ -308,6 +318,7 @@
       // Reuse the complete authoritative enumeration for a LOCAL handoff
       // verifier. This grants no migration transition or write capability.
       readServerRecords:async manifest=>{
+        await verifyAuthority(false);
         context();
         const allowedModules=new Set([...Object.values(api.arrays),'config','metadata']);
         const coveredBusinesses=new Set(manifest?.businessIds||[]);

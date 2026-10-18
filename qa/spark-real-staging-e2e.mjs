@@ -7,6 +7,7 @@ import {chromium,webkit} from 'playwright';
 import {connectAdmin,connectAuth} from '../scripts/lib/firebase-admin-connect.mjs';
 import {getDeployedFirestoreRules} from '../scripts/lib/firestore-rules-remote.mjs';
 import {largeTenantData,stateDocument,accountAccess} from './r38-emulator-support.mjs';
+import {certifyRetailReport} from './spark-retail-report-pwa.mjs';
 import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
 const PROJECT='click360-staging-7620168025',URL=`https://${PROJECT}.web.app/`;
@@ -319,7 +320,48 @@ try{
     }
     assert.equal((await record('products',data.products[0].id)).stock,1,'Payments must not consume stock again');
     assert.equal((await record('cashSessions',historical.id)).saleCount,3,'Payments must not recount sales');
+    const cancellationBaseline=await record('cashSessions',historical.id);
+    // Use the actual product/sale/payment/cancellation controls with a tiny
+    // decimal deposit, not a privileged fixture financial mutation.
+    await page.evaluate(()=>{location.hash='#sell';});
+    await page.locator('#manualCode').fill('STAGE-SPARK');await page.locator('#addCode').click();
+    await page.locator('#payMethod').selectOption('Apartado');await page.locator('#customer').fill('Cliente compensación staging');
+    await page.locator('#customerPhone').fill('0000000000');await page.locator('#customerCedula').fill('SYNTHETIC-ONLY');
+    await page.locator('#layawayDueDate').fill('2026-12-31');await page.locator('#layawayTermsAccepted').check();
+    await page.locator('#layawayInitialMethod').selectOption('Transferencia');await page.locator('#cashReceived').fill('0.10');
+    await resetStatus();await page.locator('#chargeBtn').click();await confirmed();
+    const cancellationSale=await page.evaluate(()=>click360GetTenantState().sales.at(-1));
+    assert.equal((await record('products',data.products[0].id)).stock,0);
+    await page.locator('#doneSaleBtn').click();await page.evaluate(()=>{location.hash='#debtors';});
+    await page.locator(`button[onclick*="payLayaway('${cancellationSale.id}')"]`).click();
+    await page.locator('#layawayPaymentAmount').fill('0.20');await page.locator('#layawayPaymentMethod').selectOption('Efectivo');
+    await resetStatus();await page.locator('#confirmLayawayPayment').click();await confirmed();
+    const cancellationSource=await record('sales',cancellationSale.storageRecordId),lastReceiptId=cancellationSource.payments.at(-1).operationId;
+    assert.equal(cancellationSource.received,0.30);
+    assert.deepEqual(cancellationSource.receiptSummary,{version:1,cashSessionId:historical.id,uniformSession:true,
+      cash:0.20,card:0,transfer:0.10,receivablePayments:0.30});
+    const originalReceipts={initial:await record('movements',cancellationSale.operationId),later:await record('movements',lastReceiptId)};
+    page.removeAllListeners('dialog');page.on('dialog',dialog=>dialog.accept(dialog.type()==='prompt'?'Corrección sintética staging':undefined));
+    await resetStatus();await page.locator(`button[onclick*="cancelSale('${cancellationSale.id}')"]`).click();await confirmed();
+    const cancelledSale=await record('sales',cancellationSale.storageRecordId),cancelOperationId=cancelledSale.cancelOperationId;
+    assert.equal(cancelledSale.status,'cancelled');assert.equal((await record('products',data.products[0].id)).stock,1);
+    assert.deepEqual(cancelledSale.payments,cancellationSource.payments,'Cancellation preserves the complete payment history');
+    assert.deepEqual({initial:await record('movements',cancellationSale.operationId),later:await record('movements',lastReceiptId)},originalReceipts,'Cancellation cannot zero or replace an original receipt');
+    const compensatingMovement=await record('movements',`${cancelOperationId}-rev`);
+    assert.equal(compensatingMovement.amount,0.30);assert.equal(compensatingMovement.compensationSign,-1);
+    assert.equal((await record('operationLedger',cancelOperationId)).kind,'sale_cancel');
+    const cancellationAfter=await record('cashSessions',historical.id);
+    for(const field of ['saleCount','salesTotal','itemCount','taxTotal','cashBalance','paymentTotals'])assert.deepEqual(cancellationAfter[field],cancellationBaseline[field]);
+    await page.evaluate(id=>window.cancelSale(id),cancellationSale.id);
+    assert.equal((await record('products',data.products[0].id)).stock,1,'Retry cannot restore stock a second time');
+    const cancellationHealth=await page.evaluate(()=>click360SparkOperationalSession.health());
+    assert.equal(cancellationHealth.pendingCount+cancellationHealth.unknownCount+cancellationHealth.projectionPendingCount,0);
+    await page.waitForFunction(()=>!click360SparkOperationalSession.isBusy()&&!click360SparkCoordinator.isBusy());
+    const cancellationReport=await certifyRetailReport(page,{ownerUid:uid,businessId:uid,from:historical.date,to:historical.date});
+    assert.equal(cancellationReport.sold,90);assert.equal(cancellationReport.tickets,3);
     const historicalClose=await closeSession();assert.equal(historicalClose.report.total,90);assert.equal(historicalClose.report.saleCount,3);
+    assert.deepEqual(historicalClose.report.paymentTotals,cancellationBaseline.paymentTotals,'Closed report uses net verified payment totals after compensation');
+    assert.equal(historicalClose.report.theoreticalCash,cancellationBaseline.cashBalance);
     assert.equal((await record('dailyReports',originalClose.closed.reportId)).total,120);
     await page.evaluate(()=>{location.hash='#crm';});await page.locator('#newCustomerBtn').click();
     await page.locator('#customerName').fill('Cliente staging integral');await page.locator('#customerPhoneCrm').fill('000');
@@ -352,7 +394,8 @@ try{
           reports:s.dailyReports.filter(r=>r.businessId===businessId).length
         };
       },{productId:data.products[0].id,createdId:created.id,customerId:customer.id,businessId:uid});
-      assert.deepEqual(observed,{stock:1,createdStock:11,notes:'Edición sintética',sales:7,saleIds:7,reports:3});
+      assert.deepEqual(observed,{stock:1,createdStock:11,notes:'Edición sintética',sales:8,saleIds:8,reports:3});
+      assert.equal(await current.evaluate(id=>click360GetTenantState().sales.find(s=>s.storageRecordId===id)?.status,cancellationSale.storageRecordId),'cancelled','Restart and second device retain cancelled sale, not deletion');
       if(current!==page)await current.context().close();
     }
     await page.evaluate(()=>{location.hash='#cash';});
@@ -363,6 +406,9 @@ try{
       workerBootstrap:true,workerSale:true,workerFounderFloor:true,workerOwnerProofDenied:true,workerRevocationPreservesIndexedDB:true,
       twoBusinessSwitch:true,workerForeignBusinessDenied:true,otherBusinessStockUnchanged:true,
       exactCashClose:true,successorSession:true,historicalSales:true,layawayDeposit:true,receivablePayments:true,
+      saleCancellation:true,decimalDepositAndReceiptCompensated:true,cancelledSaleHistoryRetained:true,cancellationStockRestoredOnce:true,
+      cancellationOriginalReceiptsIntact:true,cancellationLedgerConfirmed:true,cancellationCloseNetTotalsExact:true,
+      completeRetailReport:true,completeRetailCollectedTotal:cancellationReport.collected,
       paymentsDoNotRepeatStockOrSales:true,customerCreateEdit:true,productCreateCompoundInventoryEdit:true,
       fullJourneyRestart:true,finalSecondDevice:true,historicalWorkingDatePreserved:true,
       seededSourceHash:plan.sourceHash,fixtureWrites:seedRows.length,migrationCertified:false});

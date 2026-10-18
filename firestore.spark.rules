@@ -1845,9 +1845,9 @@ service cloud.firestore {
     function sparkKindPermission(ownerUid, businessId, kind) {
       // Auth/path establishes the owner without calculating a worker module
       // and action first. The writable account contract is STILL enforced.
-      return kind in ["sale", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "manual_movement_correct", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "layaway_status", "scoped_settings"]
+      return kind in ["sale", "sale_cancel", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "manual_movement_correct", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "layaway_status", "scoped_settings"]
         && (request.auth.uid == ownerUid ? sparkOwner(ownerUid)
-          : (!(kind in ["scoped_settings", "manual_movement_correct"]) && sparkWorkerPermission(ownerUid, businessId,
+          : (!(kind in ["scoped_settings", "manual_movement_correct", "sale_cancel"]) && sparkWorkerPermission(ownerUid, businessId,
           kind in ["receivable_payment", "layaway_status"] ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
             (kind == "cash_movement" ? "movements" : "cashSessions")))),
           kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
@@ -1874,6 +1874,7 @@ service cloud.firestore {
             && r.settingsModule in ["config", "labelTemplates", "labelProfiles"]
             && (r.settingsModule != "config" || r.settingsId == "main")
             && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/$(r.settingsModule)/$(r.settingsId)).data.lastOperationId == operationId)
+          : kind == "sale_cancel" ? sparkCancellationLedger(ownerUid, businessId, operationId, r)
           : kind == "manual_movement_correct" ? sparkManualCorrectionLedger(ownerUid, businessId, operationId, r)
           : kind == "layaway_status" ? (r.keys().hasOnly(["saleId", "layawayId"])
               && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/layaways/$(r.layawayId)).data.lastOperationId == operationId
@@ -2024,13 +2025,109 @@ service cloud.firestore {
       return sparkLedger(ownerUid, businessId, op).kind == "receivable_payment"
         && old.status in ["layaway", "pending_payment"] && old.balance > 0
         && sparkMoneyEqual(old.received + old.balance, old.total)
-        && d.diff(old).affectedKeys().hasOnly(["received", "balance", "payments", "status"])
+        && d.diff(old).affectedKeys().hasOnly(["received", "balance", "payments", "status", "receiptSummary"])
         && movement.saleId == recordId && movement.paymentType == "receivable_payment" && movement.amount > 0 && movement.amount <= old.balance
         && sparkMoneyEqual(d.received, old.received + movement.amount) && sparkMoneyEqual(d.balance, old.balance - movement.amount)
         && d.status == (d.balance == 0 ? "paid" : old.status)
         && d.payments is list && d.payments.size() == before.size() + 1
         && d.payments[d.payments.size() - 1] == movement.payment
-        && d.payments.toSet() == before.toSet().union([movement.payment].toSet());
+        && d.payments.toSet() == before.toSet().union([movement.payment].toSet())
+        && sparkReceiptSummaryPayment(old, d, movement);
+    }
+
+    function sparkReceiptSummaryPayment(old, next, movement) {
+      let before = old.get("receiptSummary", null);
+      return before == null ? !next.keys().hasAny(["receiptSummary"])
+        : next.receiptSummary.keys().hasAll(["version", "cashSessionId", "uniformSession", "cash", "card", "transfer", "receivablePayments"])
+          && next.receiptSummary.keys().hasOnly(["version", "cashSessionId", "uniformSession", "cash", "card", "transfer", "receivablePayments"])
+          && next.receiptSummary.version == 1 && next.receiptSummary.cashSessionId == before.cashSessionId
+          && next.receiptSummary.uniformSession == (before.uniformSession && before.cashSessionId == movement.cashSessionId)
+          && sparkMoneyEqual(next.receiptSummary.cash, before.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+          && sparkMoneyEqual(next.receiptSummary.card, before.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
+          && sparkMoneyEqual(next.receiptSummary.transfer, before.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
+          && sparkMoneyEqual(next.receiptSummary.receivablePayments, before.receivablePayments + movement.amount);
+    }
+
+    function sparkCancellationLedger(ownerUid, businessId, op, result) {
+      let sale = sparkAfter(ownerUid, businessId, "sales", result.saleId);
+      return request.auth.uid == ownerUid && result.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
+        && result.movementId == op + "-rev" && sale.lastOperationId == op && sale.data.cancelOperationId == op
+        && result.cashSessionId == sale.data.cashSessionId
+        && sparkAfter(ownerUid, businessId, "movements", result.movementId).lastOperationId == op
+        && sparkAfter(ownerUid, businessId, "cashSessions", result.cashSessionId).lastOperationId == op
+        && (sale.data.method == "Apartado" ? result.layawayId == sale.data.layawayId
+          && sparkAfter(ownerUid, businessId, "layaways", result.layawayId).lastOperationId == op : !result.keys().hasAny(["layawayId"]));
+    }
+
+    function sparkCancellationSale(ownerUid, businessId, recordId) {
+      let old = resource.data.data;
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(ownerUid, businessId, op);
+      let origin = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/operationLedger/$(old.operationId)).data.data;
+      let receipts = old.receiptSummary;
+      return request.auth.uid == ownerUid && ledger.kind == "sale_cancel" && ledger.result.saleId == recordId
+        && old.status in ["paid", "layaway", "pending_payment"] && !old.keys().hasAny(["cancelOperationId"])
+        && origin.kind == "sale" && origin.status == "committed" && origin.result.saleId == recordId
+        && receipts.version == 1 && receipts.uniformSession == true && receipts.cashSessionId == old.cashSessionId
+        && sparkMoneyEqual(receipts.cash + receipts.card + receipts.transfer, old.received)
+        && d.diff(old).affectedKeys().hasOnly(["status", "cancelOperationId", "cancelReason"])
+        && d.status == "cancelled" && d.cancelOperationId == op && d.cancelReason is string && d.cancelReason.size() > 0
+        && (old.stockOrder.size() == 0 ? true : sparkStockHead(ownerUid, businessId, op, old.stockOrder));
+    }
+
+    function sparkCancellationProduct(ownerUid, businessId, recordId, op) {
+      let ledger = sparkLedger(ownerUid, businessId, op);
+      let sale = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(ledger.result.saleId)).data.data;
+      let d = request.resource.data.data;
+      return sparkStockChain(ownerUid, businessId, recordId, op, sale.stockOrder)
+        && sale.stockDeltas[recordId] is int && sale.stockDeltas[recordId] > 0
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["stock", "qty", "id", "businessId"])
+        && d.stock == resource.data.data.stock + sale.stockDeltas[recordId];
+    }
+
+    function sparkCancellationSession(ownerUid, businessId, op, counters) {
+      let ledger = sparkLedger(ownerUid, businessId, op);
+      let sale = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(ledger.result.saleId)).data.data;
+      let before = resource.data.operational;
+      let r = sale.receiptSummary;
+      return sale.cashSessionId == request.resource.data.id && sale.date == resource.data.data.date
+        && get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == sale.cashSessionId
+        && counters.diff(before).affectedKeys().hasOnly(["saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "paymentTotals"])
+        && counters.saleCount == before.saleCount - 1 && counters.itemCount == before.itemCount - sale.itemCount
+        && sparkMoneyEqual(counters.salesTotal, before.salesTotal - sale.total)
+        && sparkMoneyEqual(counters.taxTotal, before.taxTotal - sale.iva)
+        && sparkMoneyEqual(counters.cashBalance, before.cashBalance - r.cash)
+        && counters.paymentTotals.keys().hasAll(["cash", "card", "transfer", "receivablePayments"])
+        && counters.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+        && sparkMoneyEqual(counters.paymentTotals.cash, before.paymentTotals.cash - r.cash)
+        && sparkMoneyEqual(counters.paymentTotals.card, before.paymentTotals.card - r.card)
+        && sparkMoneyEqual(counters.paymentTotals.transfer, before.paymentTotals.transfer - r.transfer)
+        && sparkMoneyEqual(counters.paymentTotals.receivablePayments, before.paymentTotals.receivablePayments - r.receivablePayments)
+        && counters.itemCount >= 0 && counters.taxTotal >= 0
+        && counters.paymentTotals.cash >= 0 && counters.paymentTotals.card >= 0 && counters.paymentTotals.transfer >= 0 && counters.paymentTotals.receivablePayments >= 0;
+    }
+
+    function sparkCancellationMovement(ownerUid, businessId, recordId, ledger) {
+      let d = request.resource.data.data;
+      let sale = get(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(ledger.result.saleId)).data.data;
+      return recordId == ledger.result.movementId && recordId == d.operationId + "-rev"
+        && d.keys().hasOnly(["id", "businessId", "operationId", "saleId", "cashSessionId", "date", "kind", "amount", "compensationSign", "paymentTotals", "note"])
+        && d.saleId == ledger.result.saleId && d.cashSessionId == sale.cashSessionId && d.date == sale.date
+        && d.kind == "sale_cancellation" && d.compensationSign == -1 && d.amount == sale.received
+        && d.paymentTotals == sale.receiptSummary && d.note is string && d.note.size() > 0;
+    }
+
+    function sparkCancellationLayaway(ownerUid, businessId, recordId) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
+      let sale = sparkAfter(ownerUid, businessId, "sales", ledger.result.saleId).data;
+      return ledger.kind == "sale_cancel" && ledger.result.layawayId == recordId
+        && resource.data.data.status != "picked_up" && resource.data.data.get("pickedUpAt", "") == ""
+        && d.saleId == ledger.result.saleId && sale.status == "cancelled" && sale.layawayId == recordId
+        && d.paid == sale.received && d.balance == sale.balance
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "cancelOperationId", "cancelReason"])
+        && d.status == "cancelled" && d.cancelOperationId == sale.cancelOperationId && d.cancelReason == sale.cancelReason;
     }
 
     function sparkPaymentMovement(ownerUid, businessId, op, movement) {
@@ -2222,6 +2319,7 @@ service cloud.firestore {
               && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData", "stock", "qty"])
               && getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.productId == recordId
               && d.stock == resource.data.data.stock + getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data.quantityDelta)
+          : kind == "sale_cancel" ? (!creating && sparkCancellationProduct(ownerUid, businessId, recordId, op))
           : kind == "sale" ? (!creating
               && sparkProductSaleMutation(ownerUid, businessId, recordId, op)) : false);
     }
@@ -2366,6 +2464,8 @@ service cloud.firestore {
               && sparkSaleCounterDelta(ownerUid, businessId, op, counters)
               && sparkSalePayments(ownerUid, businessId, op, counters)
               )
+          : kind == "sale_cancel" ? (!creating && resource.data.data.status == "open" && d == resource.data.data
+              && sparkCancellationSession(ownerUid, businessId, op, counters))
           : kind == "receivable_payment" ? (!creating && resource.data.data.status == "open" && d == resource.data.data
               && sparkPaymentSessionMutation(ownerUid, businessId, op, counters))
           : kind == "cash_close" ? (!creating && resource.data.data.status == "open" && d.status == "closed"
@@ -2392,7 +2492,8 @@ service cloud.firestore {
       let d = request.resource.data.data;
       let ledger = sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId);
       let kind = ledger.kind;
-      return kind == "manual_movement_correct" ? sparkManualCorrectionMovement(ownerUid, businessId, recordId, ledger)
+      return kind == "sale_cancel" ? sparkCancellationMovement(ownerUid, businessId, recordId, ledger)
+        : kind == "manual_movement_correct" ? sparkManualCorrectionMovement(ownerUid, businessId, recordId, ledger)
         : (request.resource.data.lastOperationId == recordId
         && d.id == recordId && d.businessId == businessId && d.operationId == recordId
         && d.amount is number && d.amount >= 0 && d.date is string
@@ -2534,7 +2635,15 @@ service cloud.firestore {
 
     function sparkSaleRuntimeLine(ownerUid, businessId, op) {
       let sale = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/sales/$(op)).data.data;
-      return sale.customOrder.size() <= 11 ? true : sparkSaleLine(sale, 11);
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(ownerUid)/businessUnits/$(businessId)/storage/v2/movements/$(op)).data.data;
+      // Receipt proof belongs to this mandatory atomic core row, away from
+      // the already-heavy four-manual-line movement validator.
+      return (sale.customOrder.size() <= 11 ? true : sparkSaleLine(sale, 11))
+        && sale.receiptSummary == {"version": 1, "cashSessionId": sale.cashSessionId, "uniformSession": true,
+          "cash": movement.paymentMethod == "Efectivo" ? movement.amount : 0,
+          "card": movement.paymentMethod == "Tarjeta" ? movement.amount : 0,
+          "transfer": movement.paymentMethod == "Transferencia" ? movement.amount : 0,
+          "receivablePayments": movement.paymentType == "receivable_payment" ? movement.amount : 0};
     }
 
     function sparkCustomerMutation(ownerUid, businessId, recordId, creating) {
@@ -2705,7 +2814,8 @@ service cloud.firestore {
       allow update: if request.resource.data.module == "sales" && signedIn() && resource.data is map
         && !resource.data.keys().hasAny(["historyPolicy"])
         && sparkBoundOperation(ownerUid, businessId)
-        && sparkPaymentSaleMutation(ownerUid, businessId, recordId)
+        && (sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
+          ? sparkCancellationSale(ownerUid, businessId, recordId) : sparkPaymentSaleMutation(ownerUid, businessId, recordId))
         && sparkOperationalUpdate(ownerUid, businessId, "sales", recordId);
       allow delete: if false;
     }
@@ -2733,7 +2843,8 @@ service cloud.firestore {
         && sparkBoundOperation(ownerUid, businessId)
         && (sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "layaway_status"
           ? sparkLayawayStatusMutation(ownerUid, businessId, recordId)
-          : sparkPaymentLayawayMutation(ownerUid, businessId, recordId))
+          : sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
+            ? sparkCancellationLayaway(ownerUid, businessId, recordId) : sparkPaymentLayawayMutation(ownerUid, businessId, recordId))
         && sparkOperationalUpdate(ownerUid, businessId, "layaways", recordId);
       allow delete: if false;
     }

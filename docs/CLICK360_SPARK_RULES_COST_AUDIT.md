@@ -1,5 +1,72 @@
 # PR #96 — Rules cost audit, continuation 2026-10-10
 
+## Append-only sale cancellation — 2026-10-18
+
+Candidate extension from `3abdb839` (not deployed): final decimal-safe Rules SHA-256
+`2771cf52c230b44c698706f545d259bcaca09834b51989ee36e0b7b32cff98a3`.
+There was previously **no permitted sale cancellation**. The added owner-only
+command never zeroes/deletes original receipts, items or stock deltas. It adds
+one deterministic aggregate compensation, marks the sale/reservation cancelled,
+returns the exact original stock deltas and reverses verified exact-session
+totals in one atomic commit. Closed/protected history stays denied.
+
+`receiptSummary` is not supplied as cancellation authority by the UI. Its first
+value is proved against the actual initial payment movement by the mandatory
+sale runtime write. Every subsequent receipt must increment that same summary
+by its actual method/amount. A receipt in another session permanently clears
+`uniformSession`; cancellation cannot cross a closed original session. Existing
+imported rows without a summary can still receive authorized payments, but that
+path cannot manufacture/backfill a cancellation proof. Cancellation additionally
+requires the immutable original operational sale ledger. Unsupported imported
+history needs an independently specified recovery/refund workflow, not invented
+zeroes or a silent legacy fallback.
+
+| Operation | New external Rules sources versus preceding candidate | Local proof |
+|---|---|---|
+| SALE | None; existing sale/movement/runtime references are reused | Exact initial receipt summary map; proof on the mandatory runtime validator, not the heavier four-manual-line movement validator |
+| RECEIVABLE_PAYMENT | None | Old/new sale summary plus already-read exact payment; amount/method delta and immutable source session |
+| SALE_CANCEL | Exact original ledger before; source sale before/after; new cancellation ledger before/after; exact session after; runtime before; new compensation after; N stock successors after; optional reservation after; existing mode/account sources | Immutable financial source fields, status-only cancellation marker, exact stock delta, summary reversal and new reciprocal ledger |
+| Other financial commands | None | Existing predicates remain required |
+
+The **application transaction** performs `7 + N + L` document reads including
+control and absence checks (`N <= 12`, `L = 1` for an associated reservation),
+independent of the number of historical sales/receipts. It writes `4 + N + L`
+core documents; derived audit remains reconstructible after commit. These are
+SDK transport counts, **not** Firestore Rules access-call or billing estimates.
+
+For Rules, each affected product's own resource provides its old stock; the
+existing successor chain proves every next product update. Each product proof
+references the source sale, successor and new ledger; the sale additionally
+references its original ledger and stock head. The compensation uses the same
+source sale. Summary changes add no membership/plan/history lookup. The owner
+fast path still uses auth/path rather than worker membership. Both Firestore
+budgets must pass empirically; repeated same-path/version reads are cacheable,
+not guaranteed free expression work. Do not interpret a conservative distinct
+source list as an exact charged-access count.
+
+Exact-source full client suite passed including cancellation of twelve stock
+lines with mixed initial deposit and subsequent cash/card/transfer receipts.
+Negative SDK cases reject omitted/extra stock, changed original payments,
+forged summaries, foreign business, worker re-signing and altered compensation.
+Logs: `output/sale-cancellation-client-rules-20261018.log` and the full-suite
+portion of `output/sale-cancellation-full-rules-20261018.log`. That combined
+command's later headroom attempt reused the preceding suite's deliberately
+expired owner fixture and failed; it is **not** a successful full sequence.
+The fresh-lifecycle operational `+16` probe subsequently passed. The expanded
+cancellation probe subsequently passed with sixteen extra request-dependent
+predicates, including forged closed/cross-session client reads. A real SDK
+decimal regression (`0.10` initial deposit + `0.20` receipt, then cancellation)
+first reproduced the strict floating-map equality failure. The corrected proof
+requires exact map keys/identity/version/boolean plus the existing strict
+`sparkMoneyEqual` check per monetary field; it adds no document reference and
+does not tolerate a changed cent. This stricter probe passed on the final hash
+above, with zero expression/access/internal evaluator errors:
+`output/cancellation-decimal-after-20261018.log`. Added comparison work is
+confined to receipt and cancellation validators; sale cart line validation and
+financial atomicity remain intact. Final exact-HEAD browser/staging/CI remain
+separate certification gates; no production/cutover claim follows from this
+worksheet.
+
 ## Current worker bootstrap continuation — 2026-10-12
 
 Current candidate Rules SHA256: `95007fec1ba1b002ce9935c1b195c6c2b7e09202714ee58117342d5e80008ef8`. Exact-source and RAM-only `+16` suites passed with zero expression/access/internal evaluator errors. Proofs: `artifacts/spark-rules-proof/exact-source.json` and `headroom.json`; logs: `output/spark-worker-rules-20261012.log` and `spark-worker-rules-headroom-20261012.log`. These are working-source emulator results, not production/staging deployment or clean-HEAD CI.

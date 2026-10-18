@@ -3,6 +3,8 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import './qa-spark-migration-bootstrap.mjs';
 import './qa-spark-independent-cash-opening.mjs';
+import './qa-recovery-copy-status.mjs';
+import './qa-spark-retail-report.mjs';
 const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta.url),'utf8');
 // Production #98 is not optional when the modular candidate succeeds it.
 // Execute the actual startup boundary for all document readiness states.
@@ -46,7 +48,8 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
       movementsForBiz:()=>[],today:()=> '2026-09-03',isCashIncomeMovement:()=>false,staleOpenCashSession:()=>null,
       isDayStarted:()=>false,isDayClosed:()=>closed,escapeHtml:String,icon:()=>'',fmt:String,sparkHistoryPageControl:()=>''});
     const helperStart=app.indexOf('  function hasReadOnlyCashHistory('),helperEnd=app.indexOf('  function openIndependentCashDayDialog(',helperStart);
-    vm.runInContext(app.slice(helperStart,helperEnd)+app.slice(start,end),scope);const html=scope.cashView();
+    const counterStart=app.indexOf('  function sparkCashCounterView('),counterEnd=app.indexOf('  function isCashIncomeMovement(',counterStart);
+    vm.runInContext(app.slice(counterStart,counterEnd)+app.slice(helperStart,helperEnd)+app.slice(start,end),scope);const html=scope.cashView();
     assert.equal(html.includes('id="reopenCashBtn"'),closed,'Confirmed closed state must expose the existing successor action');
     assert.equal(html.includes('id="startDayBtnCash"'),!closed,'A closed day cannot be mislabeled as never opened');
   }
@@ -70,9 +73,9 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
   assert.equal(JSON.parse(JSON.stringify(scope.state)).legalAcceptances[0].id,'legal-qa');
   assert.equal(JSON.parse(JSON.stringify(scope.state)).settings.workers[0].name,'Trabajador');
 }
-function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false,moduleNames=['products','sales'],prepareMigration,verifyLocalHandoff,controlSourceHash='source'}={}){
+function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CONFIRMED',cache=false,paging=false,moduleNames=['products','sales'],prepareMigration,verifyLocalHandoff,controlSourceHash='source',projectId='demo-click360-spark-modular',actorUid='owner',productionPolicy={enabled:true,operationalAccess:true,pilotOwnerUids:['owner'],automaticMigration:false,automaticCutover:false}}={}){
   const events=new Map(),phases=[],writes=[],observed={restored:0,installed:0,created:0,replayed:0,closed:0};
-  let actor='owner',business='business',projections=0,releaseRead=null,queryBarrier=null,moduleBarrier=null,busy=false;
+  let actor=actorUid,business='business',projections=0,releaseRead=null,queryBarrier=null,moduleBarrier=null,busy=false;
   const root={navigator:{onLine:true,locks:{request:async(_name,_options,callback)=>callback({name:'fixture-lock'})}},document:{visibilityState:'visible',addEventListener(){},removeEventListener(){}},
     addEventListener:(name,fn)=>events.set(name,fn),removeEventListener:name=>events.delete(name),
     CLICK360_SPARK_MIGRATION:{arrays:Object.fromEntries(moduleNames.map(name=>[name,name])),
@@ -80,14 +83,17 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
       canonicalJson:value=>globalThis.CLICK360_SPARK_MIGRATION.canonicalJson(JSON.parse(JSON.stringify(value)))},
     CLICK360_SPARK_RECORD_CODEC:{unpack:async record=>record},
     CLICK360_MODULAR_PERSISTENCE:{identity:(ownerUid,businessId)=>({ownerUid,businessId})},
+    CLICK360_RELEASE_ASSETS:{'app.js':'21409a1d2dc7'},click360User:{},
     firebase:{firestore:{FieldValue:{serverTimestamp(){throw Error('Bootstrap must not issue writes');}}}}};
   const snap=data=>({exists:!!data,data:()=>data,metadata:{fromCache:cache,hasPendingWrites:false}});
   const control={ownerUid:'owner',schemaVersion:2,storageMode:mode,phase:'MODULAR',semanticEquality:'PASS',
-    sourceHash:controlSourceHash,reconstructedHash:controlSourceHash,businessIds:['business']};
-  const db={app:{options:{projectId:'demo-click360-spark-modular'}},
+    sourceHash:controlSourceHash,reconstructedHash:controlSourceHash,businessIds:['business'],
+    ...(actorUid!=='owner'?{businessId:'business',id:'storage'}:{})};
+  const db={app:{options:{projectId}},
     doc:path=>({get:async options=>{
       assert.equal(options.source,'server');if(releaseRead)await releaseRead;
-      return snap(path.endsWith('/metadata/storage')?control:{id:'business'});
+      return snap(path==='storageRollout/sparkV1'?productionPolicy:path.endsWith('/metadata/storage')?control:path.includes('/members/')?
+        {uid:actorUid,ownerUid:'owner',businessId:'business',status:'active',permissions:{products:{read:true},sales:{read:true},cashSessions:{read:true},settings:{read:true}}}:{id:'business'});
     }}),collection:path=>{
       let after=null;
       const q={orderBy:()=>q,limit:()=>q,startAfter:value=>{after=value;return q;},where:()=>q,
@@ -103,8 +109,9 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
         }};
       return q;
     }};
-  root.CLICK360_SPARK_OPERATIONAL_UI={create:async()=>{
+  root.CLICK360_SPARK_OPERATIONAL_UI={create:async options=>{
     observed.created++;
+    observed.operationalAuthority=options.operationalAuthority;
     return {identity:{businessId:business},currentCash:async()=>({source:'server',identity:{ownerUid:'owner',businessId:business},session:null}),
       close:()=>observed.closed++,isBusy:()=>busy,
       health:async()=>({pendingCount:pending,unknownCount:unknown,projectionPendingCount:projections}),
@@ -116,13 +123,13 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
       }};
   }};
   const context=vm.createContext({window:root,structuredClone,console});vm.runInContext(source,context);
-  const coordinator=root.CLICK360_SPARK_BOOTSTRAP.create({projectId:db.app.options.projectId,db,ownerUid:'owner',actorUid:'owner',deviceId:'device',
+  const coordinator=root.CLICK360_SPARK_BOOTSTRAP.create({projectId:db.app.options.projectId,db,ownerUid:'owner',actorUid,deviceId:'device',
     resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid:'owner'}),resolveBusiness:()=>business,
     restoreLocal:async()=>{observed.restored++;},readLocal:async()=>local,
     prepareMigration,verifyLocalHandoff,installBusiness:async value=>{business=value.businessId;},installView:async()=>{observed.installed++;},
     onPhase:detail=>phases.push(detail)});
   root.click360SparkCoordinator=coordinator;
-  return {coordinator,observed,phases,writes,events,changeActor:value=>actor=value,
+  return {coordinator,observed,phases,writes,events,root,changeActor:value=>actor=value,
     activateMode:()=>{control.storageMode='modular';control.phase='MODULAR';},
     blockReads:promise=>releaseRead=promise,blockQueries:promise=>queryBarrier=promise,
     blockModuleReads:promise=>moduleBarrier=promise,setBusy:value=>busy=value};
@@ -229,6 +236,34 @@ for(const mode of ['legacy','migrating']){
     const f=make(delta);await assert.rejects(f.coordinator.recover());assert.equal(f.observed.installed,0);
     assert.equal(f.observed.created,0);f.coordinator.close();local.uiWorkingDates.business='2026-09-03';
   }
+}
+for(const actorUid of ['owner','authorized-worker']){
+  const f=fixture({projectId:'click-360',actorUid}),scope={projectId:'click-360',ownerUid:'owner',businessId:'business',actorUid};
+  assert.throws(()=>f.root.CLICK360_SPARK_BOOTSTRAP.assertAuthority({verified:true},scope),/AUTHORITY_REQUIRED/);
+  await f.coordinator.recover();const token=f.observed.operationalAuthority;
+  assert(token);assert.equal(f.root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(token,scope),true,
+    'Already-MODULAR owner/worker bootstrap does not need new migration flags');
+  assert.throws(()=>f.root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(token,{...scope,businessId:'other'}),/AUTHORITY_REQUIRED/);
+  f.root.CLICK360_RELEASE_ASSETS['app.js']='f'.repeat(12);
+  assert.throws(()=>f.root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(token,scope),/AUTHORITY_REQUIRED/);
+  delete f.root.CLICK360_RELEASE_ASSETS['app.js'];
+  assert.throws(()=>f.root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(token,scope),/AUTHORITY_REQUIRED/);
+  f.root.CLICK360_RELEASE_ASSETS['app.js']='21409a1d2dc7';
+  f.changeActor('revoked');assert.throws(()=>f.root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(token,scope),/CONTEXT_CHANGED/);
+  f.coordinator.close();assert.throws(()=>f.root.CLICK360_SPARK_BOOTSTRAP.assertAuthority(token,scope),/CONTEXT_CHANGED/);
+}
+for(const productionPolicy of [null,{}, {enabled:true,pilotOwnerUids:['owner']},
+  {enabled:true,operationalAccess:true,pilotOwnerUids:['other']},
+  {enabled:true,operationalAccess:false,pilotOwnerUids:['owner'],automaticRecoveryCopy:true}]){
+  const legacy=fixture({projectId:'click-360',mode:'legacy',productionPolicy});
+  assert.equal((await legacy.coordinator.recover()).handled,false);assert.equal(legacy.observed.created,0);legacy.coordinator.close();
+  const modular=fixture({projectId:'click-360',productionPolicy});
+  await assert.rejects(modular.coordinator.recover(),/OPERATIONAL_ENROLLMENT_REQUIRED/);
+  assert.equal(modular.observed.created,0);modular.coordinator.close();
+}
+{
+  const f=fixture({projectId:'click-360'});delete f.root.CLICK360_RELEASE_ASSETS['app.js'];
+  await assert.rejects(f.coordinator.recover(),/AUTHORITY_REQUIRED/);assert.equal(f.observed.created,0);f.coordinator.close();
 }
 console.log(JSON.stringify({status:'PASS',automaticBootstrap:true,fullDrainCounts:[99,100,101,250,1000],
   cacheNotAuthoritative:true,unknownAndLegacyPendingPreserved:true,actorIsolation:true,singleFlight:true,

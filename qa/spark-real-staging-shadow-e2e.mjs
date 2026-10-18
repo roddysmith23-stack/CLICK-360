@@ -12,6 +12,8 @@ import '../spark-modular-migration.js';
 import '../spark-modular-handoff.js';
 const PROJECT='click360-staging-7620168025',URL=`https://${PROJECT}.web.app/`;
 const args=Object.fromEntries(process.argv.slice(2).map(s=>s.split('=')));
+assert(args['--browser']===undefined||['chromium','webkit'].includes(args['--browser']),'UNSUPPORTED_FOCUSED_BROWSER');
+assert(!args['--browser']||process.env.CI!=='true','FOCUSED_RUN_CANNOT_REPLACE_REQUIRED_MATRIX');
 const recoveryOnly=args['--recovery-only']==='true';
 assert(args['--runtime-preparation']===undefined||['true','false'].includes(args['--runtime-preparation']));
 const runtimePreparation=!recoveryOnly&&args['--runtime-preparation']!=='false';
@@ -39,6 +41,7 @@ assert.equal(admin.projectId,PROJECT);
 let browser;const results=[];
 try{
   for(const [engine,name]of [[chromium,'chromium'],[webkit,'webkit']]){
+    if(args['--browser']&&args['--browser']!==name)continue;
     console.log(JSON.stringify({stage:'REAL_SHADOW_START',engine:name,recoveryOnly,projectId:PROJECT}));
     const uid='qa-spark-staging-'+randomUUID(),email=uid+'@click360-qa.invalid',password=randomBytes(32).toString('base64url');
     assert(uid.startsWith('qa-spark-staging-'));await auth.createUser({uid,email,password,emailVerified:true});
@@ -425,6 +428,6 @@ try{
   }
   const result={status:'PASS',scope:automaticCutover?'REAL_STAGING_SYNTHETIC_AUTOMATIC_APPROVED_MIGRATION':localHandoff?'REAL_STAGING_SYNTHETIC_APPROVED_LOCAL_HANDOFF':recoveryOnly?'REAL_STAGING_RECOVERY_COPY_CLIENT_VERIFIED_ONLY':runtimePreparation
     ?'REAL_STAGING_SHADOW_AND_RUNTIME_PREPARATION_ONLY':'REAL_STAGING_SHADOW_PREPARATION_ONLY',buildSha:release.buildSha,projectId:PROJECT,
-    rulesHash,results,productionWrites:0,operationalCutover:localHandoff,automaticCoordinatorCutover:automaticCutover,realCustomerCutover:false};
+    rulesHash,results,focusedBrowser:args['--browser']||null,fullBrowserMatrix:!args['--browser'],productionWrites:0,operationalCutover:localHandoff,automaticCoordinatorCutover:automaticCutover,realCustomerCutover:false};
   await writeFile(directory+'/result.json',JSON.stringify(result),{mode:0o600,flag:'wx'});console.log(JSON.stringify(result));
 }finally{await browser?.close();await admin.terminate();}
