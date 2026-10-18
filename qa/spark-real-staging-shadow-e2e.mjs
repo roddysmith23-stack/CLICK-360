@@ -63,7 +63,7 @@ try{
     if(automaticCutover){
       // Incomplete CLOSED historical counters must stay immutable, never be
       // invented as zero to make a later independent opening possible.
-      local.cashSessions.push({id:'immutable-closed-session',businessId:uid,date:'2026-08-30',status:'closed',reportId:'immutable-closed-report'});
+      local.cashSessions.push({id:'immutable-closed-session',businessId:uid,date:'2026-08-30',status:'closed',closedAt:'2026-08-31T00:00:00Z',reportId:'immutable-closed-report'});
       local.dailyReports.push({id:'immutable-closed-report',businessId:uid,date:'2026-08-30',cashSessionId:'immutable-closed-session',total:8});
     }
     const cashProof=await CLICK360_SPARK_MIGRATION.deriveCashSummaries({snapshot:local,businessId:uid,historicalReadOnly:automaticCutover});
