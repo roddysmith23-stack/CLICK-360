@@ -324,7 +324,12 @@ try{
             await page.locator('#independentCashOpenBtn').click();
             assert.equal(await page.locator('#independentCashAmount').inputValue(),'','Never propose an inferred historical opening fund');
             await page.locator('#independentCashAmount').fill('0');
-            await page.evaluate(()=>{window.QA_HANDOFF_CLOSE=null;});
+            await page.evaluate(()=>{
+              // This is a new document after the restart above. The old
+              // document's close observer does not survive a PWA reopen.
+              window.QA_HANDOFF_CLOSE=null;
+              window.addEventListener('click360-spark-operation-status',event=>{window.QA_HANDOFF_CLOSE=event.detail;});
+            });
             await page.locator('#independentCashConfirm').click();
             await page.waitForFunction(()=>window.QA_HANDOFF_CLOSE?.status==='CONFIRMED');
             const independent=await page.evaluate(()=>({operationId:window.QA_HANDOFF_CLOSE.operationId,
