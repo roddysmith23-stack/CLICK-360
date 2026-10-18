@@ -199,7 +199,9 @@
       const final=await ref.get({source:'server'});context();
       if(final.metadata?.fromCache!==false||final.metadata?.hasPendingWrites!==false
         ||!sameManifest(final.data())||final.data().state!=='CLIENT_VERIFIED')throw Error('SPARK_RECOVERY_SERVER_READ_REQUIRED');
-      return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,sourceHash:core.sourceHash,journalHash:core.journalHash,
+      const serverDate=final.data().clientVerifiedAt?.toDate?.();
+      const verifiedAt=serverDate instanceof Date&&Number.isFinite(serverDate.getTime())?serverDate.toISOString():null;
+      return {status:'RECOVERY_COPY_CLIENT_VERIFIED',ownerUid,serverReadVerified:true,verifiedAt,captureHash,sourceHash:core.sourceHash,journalHash:core.journalHash,
         partCount:parts.length,payloadBytes:core.payloadBytes,operationalCloudConfirmed:false,cutoverPerformed:false};
     }
     return Object.freeze({pin,read,deviceIdentity,captureDevice,readCapture,preserveCloud,close:()=>db.close()});

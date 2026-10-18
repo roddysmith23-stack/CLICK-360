@@ -1,5 +1,25 @@
 # PR #96 — Rules cost audit, continuation 2026-10-10
 
+## Backend executable-size gate — 2026-10-18
+
+The backend rejected candidate `2771cf52…` at 264,763 compiled bytes (maximum
+256,000). Firebase CLI hid this PATCH 400 behind a fallback CREATE 409; the
+old release remained active. Removing two uncalled functions alone reduced
+the measured executable to 261,871 bytes, still rejected. Neither failure is
+a staging certificate or a reason to weaken authorization.
+
+Candidate `96d8f29e36c3bd4e71d90a06a6c8b58a1cf3487c7221cea5da0057b3dda26fd0`
+was subsequently accepted by the real staging Rules release API. Exact compiled
+byte count is not returned on success; only acceptance below the backend limit
+is claimed. Source changes are deletion of the uncalled
+`sparkOperationalMutation`/`sparkReceivableLedgerProof` and alpha-renaming of
+bound function parameters. All 189 effective permission paths/predicates keep
+SHA-256 `ddfd8814051c9f2f6beb4eeda52d781e47e16cfcb9fe631a786fda8bf5f4254d`.
+The reversible token-aware transformation and retained-function fingerprints
+are enforced by `qa-spark-rules-scope-parity.mjs`; field names, strings, helper
+names and match captures are not renamed. Fresh exact-source, legacy, headroom,
+served-PWA and exact-HEAD staging/CI checks remain separate release gates.
+
 ## Append-only sale cancellation — 2026-10-18
 
 Candidate extension from `3abdb839` (not deployed): final decimal-safe Rules SHA-256

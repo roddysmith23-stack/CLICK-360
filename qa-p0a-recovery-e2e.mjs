@@ -46,7 +46,12 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
             journalCapture,deviceId:device.deviceId,buildSha:input.buildSha,
             remoteReference:{source:'server',revision:41,hash:await CLICK360_P0A_CANONICAL.hash(remote.payload.data)}});
           const rows=new Map([['businesses/synthetic-owner/state/main',remote]]);let commits=0,lostReply=bytes===860000;
-          const snap=(path)=>({exists:rows.has(path),data:()=>structuredClone(rows.get(path)),metadata:{fromCache:false,hasPendingWrites:false}});
+          const snap=(path)=>({exists:rows.has(path),data:()=>{
+            const data=structuredClone(rows.get(path));
+            if(data?.clientVerifiedAt==='SYNTHETIC_SERVER_TIMESTAMP')
+              data.clientVerifiedAt={toDate:()=>new Date('2026-10-16T00:29:37.484Z')};
+            return data;
+          },metadata:{fromCache:false,hasPendingWrites:false}});
           const cloud={app:{options:{projectId:'demo-click360-spark-modular'}},doc:path=>({path,get:async()=>snap(path)}),
             collection:path=>{
               let after=-1,limit=100;
@@ -71,6 +76,9 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
           const second=await recovery.preserveCloud(args);
           if(first.status!=='RECOVERY_COPY_CLIENT_VERIFIED'||second.captureHash!==first.captureHash
             ||rows.size!==count||first.operationalCloudConfirmed!==false)throw Error('COPY_RETRY_NOT_IDEMPOTENT');
+          if(first.ownerUid!=='synthetic-owner'||first.serverReadVerified!==true
+            ||first.verifiedAt!=='2026-10-16T00:29:37.484Z'||second.verifiedAt!==first.verifiedAt)
+            throw Error('COPY_SERVER_DATE_MISSING_OR_REPLACED_ON_RETRY');
           const partPath=`businesses/synthetic-owner/recoveryCopies/${copy.captureHash}/parts/p0`,original=structuredClone(rows.get(partPath));
           rows.set(partPath,{...original,content:original.content+'corrupt'});
           let corruptDenied=false;try{await recovery.preserveCloud(args);}catch(error){corruptDenied=error.message==='SPARK_RECOVERY_REMOTE_PART_CONFLICT';}

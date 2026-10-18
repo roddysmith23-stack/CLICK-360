@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
+import {compactBoundParameters,restoreBoundParameters} from './scripts/spark-rules-bound-parameters.mjs';
 export function fingerprints(source){
   const tokens=[...source.matchAll(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/|[A-Za-z_][A-Za-z_0-9]*|\d+(?:\.\d+)?|[^\s]/g)]
     .map(m=>m[0]).filter(t=>!t.startsWith('//')&&!t.startsWith('/*'));
@@ -42,6 +43,9 @@ if(process.argv[1]?.endsWith('qa-spark-rules-scope-parity.mjs')){
   const source=readFileSync('firestore.spark.rules','utf8'),actual=fingerprints(source);
   const expected=JSON.parse(readFileSync('qa/fixtures/spark-rules-scope-parity.json','utf8'));
   assert.deepEqual(actual,expected.fingerprints,'Scope optimization changed an authorization predicate or effective permission path');
+  assert.equal(compactBoundParameters(source).replacements,0,'Deployed Rules must retain their certified compact bindings');
+  assert.deepEqual(fingerprints(restoreBoundParameters(source).content),expected.alphaEquivalentTo,
+    'Compact bindings changed more than alpha-renaming: predicates, fields and paths must match the reviewed retained source');
   const parent=source.indexOf('match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2 {');
   assert(parent>0&&source.indexOf('function sparkLedgerProof(')>parent,'Operational helpers must stay localized');
   assert(source.indexOf('function sparkActiveMember(')<parent,'Membership path must retain its shared validator');

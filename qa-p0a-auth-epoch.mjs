@@ -5,13 +5,14 @@ const source=await readFile('firebase-service.js','utf8'),a=source.indexOf('  le
 assert(a>0&&z>a);
 let finishFirst,firstReached;const reached=new Promise(r=>firstReached=r),blocked=new Promise(r=>finishFirst=r);
 const user={uid:'owner'},identity={authUid:'owner',ownerUid:'owner',ownerId:'owner'};
-const runs=[],context={...identity};
+const runs=[],events=[],context={...identity};
 const sandbox={AUTH_EPOCH:1,ACTIVE_CONTEXT:context,AUTH_APPROVED:false,auth:{currentUser:user},
+  CustomEvent:class {constructor(type){this.type=type;}},
   db:{app:{options:{projectId:'click-360'}},doc:()=>({get:async()=>({metadata:{fromCache:false,hasPendingWrites:false},
     data:()=>({enabled:true,automaticRecoveryCopy:true,automaticShadow:false,pilotOwnerUids:['owner']})})})},
   firebase:{},getDeviceId:()=> 'device',navigator:{locks:{request:async(name,options,fn)=>fn({name})}},
   isCurrentAuthEpoch:(u,e)=>u.uid===user.uid&&e===sandbox.AUTH_EPOCH,activeIdentityIsValid:()=>true,
-  window:{addEventListener:()=>{},click360User:{ownerId:'owner'},CLICK360_RELEASE_ASSETS:{'app.js':'a'.repeat(12)},
+  window:{addEventListener:()=>{},dispatchEvent:event=>events.push(event.type),click360User:{ownerId:'owner'},CLICK360_RELEASE_ASSETS:{'app.js':'a'.repeat(12)},
     click360PrepareTenantStorage:async()=>{},CLICK360_V16_STORAGE:{getSnapshot:async()=>({snapshot:{kept:true},deviceRevision:'43'})},
     CLICK360_P0A_BOOTSTRAP:{create:options=>({prepare:async()=>{
       runs.push(sandbox.AUTH_EPOCH);if(runs.length===1){firstReached();await blocked;}
@@ -25,6 +26,7 @@ sandbox.window.click360SparkRecoveryCopy=null;sandbox.window.click360SparkMigrat
 const next=sandbox.runP0ARecovery(user,2);finishFirst();await Promise.all([first,next]);
 assert.deepEqual(runs,[1,2],'A new authenticated epoch must not inherit an obsolete recovery run');
 assert.equal(sandbox.window.click360SparkRecoveryCopy?.status,'RECOVERY_COPY_CLIENT_VERIFIED');
+assert.deepEqual(events,['click360-sync-status'],'Only the current authenticated recovery updates the sync UI');
 console.log('PASS same-owner Auth redelivery while recovery awaits: current epoch resumes once, no inherited stale run');
 
 const bootStart=source.lastIndexOf("  if (document.readyState === 'loading')"),bootEnd=source.lastIndexOf('})();');
