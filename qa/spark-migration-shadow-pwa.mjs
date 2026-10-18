@@ -1,4 +1,6 @@
 import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
+import {waitForMigrationOutcome} from './spark-migration-progress.mjs';
+import '../qa-spark-migration-progress.mjs';
 import {assert,identity,newAppContext,largeTenantData,stateDocument,accountAccess,seed,url,emulatorOwnerEmail,emulatorPassword} from './r38-emulator-support.mjs';
 // Called inside the existing served-UI suite and emulator lifecycle. No separate
 // runtime injection, financial replay or production project is involved.
@@ -177,11 +179,7 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
     await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email:emulatorOwnerEmail,password:emulatorPassword});
     // UID belongs to the default emulator owner created by the parent suite.
     try{
-      await page.waitForFunction(()=>{
-        const c=window.click360SparkBootstrapState;
-        if(c?.phase==='BLOCKED'&&c.reason!=='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED')throw Error(c.reason);
-        return c?.reason==='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED';
-      },null,{timeout:60000});
+      await waitForMigrationOutcome(page,{expectedReason:'SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED'});
     }catch(error){
       console.log(JSON.stringify({stage:'SHADOW_PREPARATION_DIAGNOSTIC',browser:label,
         state:await page.evaluate(()=>({bootstrap:window.click360SparkBootstrapState,progress:window.click360SparkMigrationState,
@@ -204,11 +202,7 @@ export async function certifyShadowPreparation({browser,env,uid,label}){
       });
     };
     await verify();await page.close();page=await context.newPage();await page.goto(url,{waitUntil:'domcontentloaded'});
-    await page.waitForFunction(()=>{
-      const c=window.click360SparkBootstrapState;
-      if(c?.phase==='BLOCKED'&&c.reason!=='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED')throw Error(c.reason);
-      return c?.reason==='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED';
-    },null,{timeout:60000});
+    await waitForMigrationOutcome(page,{expectedReason:'SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED'});
     await verify();
     console.log(JSON.stringify({stage:'CONNECTED_SHADOW_PREPARATION_PASS',browser:label,sourceHash,reconstructedHash:sourceHash,
       localBytes:CLICK360_SPARK_MIGRATION.byteLength(local),businesses:2,localHistoricalSalePreserved:true,

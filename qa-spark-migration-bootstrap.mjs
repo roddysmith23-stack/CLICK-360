@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import './spark-modular-migration.js';
 import './spark-modular-reconciliation.js';
 import './spark-modular-handoff.js';
+import './spark-modular-record-codec.js';
 import './spark-migration-bootstrap.js';
 const api=globalThis.CLICK360_SPARK_MIGRATION;
 const ownerUid='migration-owner',businessIds=['business-a','business-b'];
@@ -208,6 +209,7 @@ async function localHandoffFixture(){
   f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/runtimePreparation`,approval);
   f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/cutover`,{ownerUid,sourceHash:plan.sourceHash,
     buildSha:f.options.buildSha,businessIds:[...plan.businessIds]});
+  f.serverDocs.set(`approvedUsers/${ownerUid}`,{plan:'founder_legacy',manualLimitOverrides:{productsActive:600}});
   const manifest=await api.plan({ownerUid,snapshot:f.record.snapshot,identity,
     remoteRevision:pin.remoteRevision,deviceRevision:pin.deviceRevision});
   for(const row of manifest.records){
@@ -218,8 +220,26 @@ async function localHandoffFixture(){
     }
   }
   const records=[...manifest.records,...plan.runtimes.map(row=>({path:row.path,content:approval.runtimeRecords[row.content.businessId]}))];
+  for(const businessId of plan.businessIds){
+    const scope={ownerUid,businessId};
+    const flat={id:'storage',...scope,tenantKey:`owner:${ownerUid}:business:${businessId}`,storageSchemaVersion:2,
+      module:'metadata',recordVersion:1,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',
+      sourceHash:plan.sourceHash,reconstructedHash:plan.sourceHash,accountPlan:'founder_legacy',manualLimitOverrides:{productsActive:600}};
+    records.push({path:`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/storage`,
+      content:await CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity:scope,moduleName:'metadata',recordId:'storage'})});
+  }
   f.setServerRecords(records);
   return {...f,rows,plan,approval,control,records};
+}
+for(const plan of ['normal','',null,'lifetime']){
+  const f=await localHandoffFixture();
+  f.serverDocs.set(`accountAccess/${ownerUid}`,{plan});
+  await assert.rejects(f.verify(),/OWNER_PLAN_UNSUPPORTED/,'An existing unsupported account cannot fall back to a legacy Founder approval');
+}
+{
+  const f=await localHandoffFixture(),proof=await f.verify();
+  f.serverDocs.set(`approvedUsers/${ownerUid}`,{plan:'founder_legacy',manualLimitOverrides:{productsActive:2500}});
+  await assert.rejects(proof.assertStable(),/OWNER_CONTRACT_CHANGED/);
 }
 {
   const f=await localHandoffFixture(),before=structuredClone(f.record),pins=structuredClone([...f.pins]);

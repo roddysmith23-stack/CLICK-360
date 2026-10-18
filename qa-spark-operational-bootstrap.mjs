@@ -2,6 +2,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import './qa-spark-migration-bootstrap.mjs';
+import './qa-spark-independent-cash-opening.mjs';
 const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta.url),'utf8');
 // Production #98 is not optional when the modular candidate succeeds it.
 // Execute the actual startup boundary for all document readiness states.
@@ -44,7 +45,8 @@ const source=readFileSync(new URL('./spark-operational-bootstrap.js',import.meta
       latestCashSession:()=>closed?{id:'exact-closed-session',status:'closed'}:null,
       movementsForBiz:()=>[],today:()=> '2026-09-03',isCashIncomeMovement:()=>false,staleOpenCashSession:()=>null,
       isDayStarted:()=>false,isDayClosed:()=>closed,escapeHtml:String,icon:()=>'',fmt:String,sparkHistoryPageControl:()=>''});
-    vm.runInContext(app.slice(start,end),scope);const html=scope.cashView();
+    const helperStart=app.indexOf('  function hasReadOnlyCashHistory('),helperEnd=app.indexOf('  function openIndependentCashDayDialog(',helperStart);
+    vm.runInContext(app.slice(helperStart,helperEnd)+app.slice(start,end),scope);const html=scope.cashView();
     assert.equal(html.includes('id="reopenCashBtn"'),closed,'Confirmed closed state must expose the existing successor action');
     assert.equal(html.includes('id="startDayBtnCash"'),!closed,'A closed day cannot be mislabeled as never opened');
   }

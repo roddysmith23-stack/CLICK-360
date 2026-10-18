@@ -7,6 +7,7 @@ import {chromium,webkit} from 'playwright';
 import {connectAdmin,connectAuth} from '../scripts/lib/firebase-admin-connect.mjs';
 import {getDeployedFirestoreRules} from '../scripts/lib/firestore-rules-remote.mjs';
 import {largeTenantData,stateDocument,accountAccess,identity} from './r38-emulator-support.mjs';
+import {waitForMigrationOutcome} from './spark-migration-progress.mjs';
 import '../spark-modular-migration.js';
 import '../spark-modular-handoff.js';
 const PROJECT='click360-staging-7620168025',URL=`https://${PROJECT}.web.app/`;
@@ -59,18 +60,26 @@ try{
       cashSessionId:'historical-session',date:'2026-09-03',kind:'apertura',amount:0},
       {id:'local-payment',operationId:'local-sale',businessId:uid,cashSessionId:'historical-session',
         saleId:'local-sale',date:'2026-09-03',kind:'ingreso',paymentType:'sale',paymentMethod:'Transferencia',amount:30});
-    const cashProof=await CLICK360_SPARK_MIGRATION.deriveCashSummaries({snapshot:local,businessId:uid});
+    if(automaticCutover){
+      // Incomplete CLOSED historical counters must stay immutable, never be
+      // invented as zero to make a later independent opening possible.
+      local.cashSessions.push({id:'immutable-closed-session',businessId:uid,date:'2026-08-30',status:'closed',reportId:'immutable-closed-report'});
+      local.dailyReports.push({id:'immutable-closed-report',businessId:uid,date:'2026-08-30',cashSessionId:'immutable-closed-session',total:8});
+    }
+    const cashProof=await CLICK360_SPARK_MIGRATION.deriveCashSummaries({snapshot:local,businessId:uid,historicalReadOnly:automaticCutover});
     assert(cashProof.canProceed,'Staging shadow source must contain a financially provable historical session');
     const sourceHash=await CLICK360_SPARK_MIGRATION.hash(local);assert(CLICK360_SPARK_MIGRATION.byteLength(local)>850000);
     // Admin is used ONLY to create private synthetic fixtures/policy. Every
     // migration write and comparison below is performed by the actual PWA SDK.
-    const batch=admin.batch();batch.create(admin.doc(`accountAccess/${uid}`),{...accountAccess(uid),email,source:'qa_spark_staging'});
+    const batch=admin.batch();batch.create(admin.doc(`accountAccess/${uid}`),{...accountAccess(uid),email,source:'qa_spark_staging',
+      manualLimitOverrides:{businesses:1,workers:1,productsActive:600}});
     batch.create(admin.doc(`businesses/${uid}/state/main`),envelope);await batch.commit();
     await admin.runTransaction(async tx=>{
       const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),p=snap.data();
       assert(!p||Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.every(id=>id.startsWith('qa-spark-staging-')),
         'STAGING_POLICY_HAS_NON_FIXTURE_PILOTS_STOP');
       tx.set(ref,{...(p||{}),enabled:true,automaticShadow:!recoveryOnly,automaticRecoveryCopy:recoveryOnly,
+        automaticHistoricalReadOnly:automaticCutover,
         automaticRuntimePreparation:false,automaticCutover:false,automaticMigration:false,
         pilotOwnerUids:[...new Set([...(p?.pilotOwnerUids||[]),uid])]});
     });
@@ -139,11 +148,7 @@ try{
           assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),envelope);
           return copy;
         }
-        await page.waitForFunction(()=>{
-          const c=window.click360SparkBootstrapState;
-          if(c?.phase==='BLOCKED'&&c.reason!=='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED')throw Error(c.reason);
-          return c?.reason==='SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED';
-        },null,{timeout:30000});
+        await waitForMigrationOutcome(page,{expectedReason:'SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED'});
         assert.deepEqual(await page.evaluate(tenant=>CLICK360_V16_STORAGE.getSnapshot(tenant),tenant),before);
         assert.equal(await page.evaluate(()=>!!window.click360SparkOperationalSession),false);
         const control=(await admin.doc(`businesses/${uid}/metadata/storage`).get()).data();
@@ -221,10 +226,21 @@ try{
             const ref=click360Db.doc(`businesses/${uid}/metadata/storage`);
             await click360Db.runTransaction(async tx=>{
               const snap=await tx.get(ref),control=snap.data();
+              const account=(await tx.get(click360Db.doc(`accountAccess/${uid}`))).data();
               if(snap.metadata.fromCache||control.storageMode!=='migrating'
                 ||control.phase!=='READY_TO_CUTOVER')throw Error('SYNTHETIC_CUTOVER_SOURCE_REQUIRED');
+              const proofs=[];
+              for(const businessId of control.businessIds){
+                const identity={ownerUid:uid,businessId},flat={id:'storage',...identity,
+                  tenantKey:`owner:${uid}:business:${businessId}`,storageSchemaVersion:2,module:'metadata',recordVersion:1,
+                  storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:control.sourceHash,
+                  reconstructedHash:control.reconstructedHash,accountPlan:account.plan,manualLimitOverrides:account.manualLimitOverrides||{}};
+                proofs.push({ref:click360Db.doc(`businesses/${uid}/businessUnits/${businessId}/storage/v2/metadata/storage`),
+                  data:await CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity,moduleName:'metadata',recordId:'storage'})});
+              }
               tx.update(ref,{storageMode:'modular',phase:'MODULAR',recordVersion:control.recordVersion+1,
                 updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+              for(const proof of proofs)tx.set(proof.ref,proof.data);
             });
           },uid);
           await page.close();page=await context.newPage();await page.goto(URL,{waitUntil:'domcontentloaded'});
@@ -297,8 +313,69 @@ try{
           assert.equal(await page.evaluate(()=>click360GetTenantState().cashSessions.find(s=>s.id==='historical-session')?.status),'closed');
           assert.equal(await page.evaluate(()=>click360GetTenantState().sales.filter(s=>s.id==='local-sale').length),1);
           assert.equal(await page.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id)?.stock,local.products[0].id),local.products[0].stock);
+          let workerAutomaticAuthority=false;
+          if(automaticCutover){
+            const historyBase=`businesses/${uid}/businessUnits/${uid}/storage/v2`;
+            const protectedBefore=await Promise.all(['cashSessions/immutable-closed-session','dailyReports/immutable-closed-report']
+              .map(path=>admin.doc(`${historyBase}/${path}`).get().then(s=>s.data())));
+            assert(protectedBefore.every(row=>row?.historyPolicy),'Unproven closed history must be protected before using the new-session UI');
+            await page.evaluate(()=>{location.hash='#cash';});
+            await page.locator('#workingDateInput').fill('2026-08-30');await page.locator('#workingDateInput').dispatchEvent('change');
+            await page.locator('#independentCashOpenBtn').click();
+            assert.equal(await page.locator('#independentCashAmount').inputValue(),'','Never propose an inferred historical opening fund');
+            await page.locator('#independentCashAmount').fill('0');
+            await page.evaluate(()=>{window.QA_HANDOFF_CLOSE=null;});
+            await page.locator('#independentCashConfirm').click();
+            await page.waitForFunction(()=>window.QA_HANDOFF_CLOSE?.status==='CONFIRMED');
+            const independent=await page.evaluate(()=>({operationId:window.QA_HANDOFF_CLOSE.operationId,
+              session:click360GetTenantState().cashSessions.find(s=>s.date==='2026-08-30'&&s.status==='open')}));
+            assert(independent.session?.id&&independent.session.id!=='immutable-closed-session');
+            const independentLedger=(await admin.doc(`${historyBase}/operationLedger/${independent.operationId}`).get()).data();
+            assert.equal(independentLedger.data.kind,'cash_open');assert.equal(independentLedger.data.result.cashSessionId,independent.session.id);
+            assert.deepEqual(await Promise.all(['cashSessions/immutable-closed-session','dailyReports/immutable-closed-report']
+              .map(path=>admin.doc(`${historyBase}/${path}`).get().then(s=>s.data()))),protectedBefore);
+            assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),envelope);
+            // The coordinator, not this fixture, must have published both
+            // scoped authorities atomically with the owner-wide activation.
+            for(const businessId of [uid,second]){
+              const scoped=(await admin.doc(`businesses/${uid}/businessUnits/${businessId}/storage/v2/metadata/storage`).get()).data();
+              assert.equal(scoped?.data?.sourceHash,sourceHash);assert.equal(scoped.businessId,businessId);
+              assert.equal(scoped.data.accountPlan,'founder_legacy');
+            }
+            const workerUid='qa-spark-staging-'+randomUUID(),workerEmail=workerUid+'@click360-qa.invalid',workerPassword=randomBytes(32).toString('base64url');
+            await auth.createUser({uid:workerUid,email:workerEmail,password:workerPassword,emailVerified:true});
+            await writeFile(`${directory}/${name}-worker.private.json`,JSON.stringify({uid:workerUid,email:workerEmail,password:workerPassword}),{flag:'wx',mode:0o600});
+            const permissions={products:{read:true},sales:{read:true},cashSessions:{read:true},movements:{read:true},customers:{read:true},settings:{read:true},layaways:{read:true}};
+            const workerBatch=admin.batch();
+            workerBatch.create(admin.doc(`businesses/${uid}/featureFlags/workers`),{enabled:true});
+            workerBatch.create(admin.doc(`businesses/${uid}/businessUnits/${uid}/members/${workerUid}`),{
+              uid:workerUid,ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,boundarySchemaVersion:1,status:'active',role:'cashier',permissions});
+            workerBatch.create(admin.doc(`approvedUsers/${workerUid}`),{uid:workerUid,ownerId:uid,businessUnitId:uid,role:'cashier',approved:true,status:'active',email:workerEmail,name:'Synthetic worker',permissions});
+            workerBatch.create(admin.doc(`workerAccessRequests/${uid}_${workerUid}`),{ownerId:uid,uid:workerUid,businessUnitId:uid,status:'approved'});
+            await workerBatch.commit();
+            const workerContext=await browser.newContext({viewport:{width:390,height:844}});
+            try{
+              const workerPage=await workerContext.newPage();await workerPage.goto(URL,{waitUntil:'domcontentloaded'});
+              await workerPage.waitForFunction(()=>!!window.click360Auth?.signInWithEmailAndPassword);
+              await workerPage.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email:workerEmail,password:workerPassword});
+              await workerPage.waitForFunction(()=>{
+                const state=window.click360SparkBootstrapState;if(state?.phase==='BLOCKED')throw Error(state.reason);
+                return state?.phase==='READY'&&!!window.click360SparkOperationalSession;
+              });
+              assert.equal(await workerPage.evaluate(id=>click360GetTenantState().products.find(p=>p.id===id)?.stock,local.products[0].id),local.products[0].stock);
+              assert.equal(await workerPage.evaluate(()=>click360GetTenantState().sales.filter(s=>s.id==='local-sale').length),1);
+              assert.equal(await workerPage.evaluate(()=>CLICK360_TENANT_QUOTA.planEntitlements(CLICK360_V16_DOMAIN,click360User.access.plan,click360User.manualLimitOverrides).limits.productsActive),2000);
+              assert.equal(await workerPage.evaluate(async owner=>{
+                try{await click360Db.runTransaction(tx=>tx.get(click360Db.doc(`businesses/${owner}/metadata/storage`)));return false;}
+                catch(error){return error.code==='permission-denied';}
+              },uid),true,'Scoped proof must not expose owner-wide authority to a worker');
+              workerAutomaticAuthority=true;
+            }finally{await workerContext.close();}
+          }
           handoffEvidence={status:'LOCAL_HANDOFF_VERIFIED',syntheticApprovedTransition:true,
             automaticCoordinator:automaticCutover,
+            workerAutomaticAuthority,
+            independentProtectedHistoryOpening:automaticCutover,
             originalSourcePinUnchanged:true,ownerWideBusinesses:2,importedSaleOnce:true,stockPreserved:true,
             importedSessionClosed:true,reportTotal:30,reportSaleCount:1,closeLedgerConfirmed:true,
             postCloseRestart:true,productionWrites:0};
@@ -322,6 +399,7 @@ try{
           recoveryStatus:window.click360SparkRecoveryCopy?.status,
           recoveryReason:window.click360SparkRecoveryCopy?.reason,
           migrationPhase:window.click360SparkMigrationState?.phase,
+          visibility:document.visibilityState,
           online:navigator.onLine,
           authenticated:!!window.click360Auth?.currentUser
         })).catch(()=>({pageUnavailable:true})));
@@ -336,7 +414,7 @@ try{
       if(runtimePreparation)await admin.runTransaction(async tx=>{
         const ref=admin.doc('storageRollout/sparkV1'),snap=await tx.get(ref),policy=snap.data();
         assert(policy?.pilotOwnerUids?.every(id=>id.startsWith('qa-spark-staging-')),'RUNTIME_POLICY_NON_SYNTHETIC_STOP');
-        tx.update(ref,{automaticRuntimePreparation:false,automaticCutover:false,automaticMigration:false});
+        tx.update(ref,{automaticRuntimePreparation:false,automaticCutover:false,automaticMigration:false,automaticHistoricalReadOnly:false});
       });
     }
   }

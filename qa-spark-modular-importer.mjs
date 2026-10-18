@@ -275,7 +275,9 @@ try{
     [cutoverApprovalPath,{...cutoverApproval,sourceHash:'f'.repeat(64)},cutoverApproval,/ACTIVATION_ADMIN_APPROVAL_CHANGED/],
     [`businesses/${ownerUid}/storageApprovals/runtimePreparation`,null,approval,/ACTIVATION_ADMIN_APPROVAL_CHANGED/],
     [`businesses/${ownerUid}/state/main`,{...rootState,payload:{...rootState.payload,data:{...rootState.payload.data,interruptedMaintenance:true}}},rootState,/ACTIVATION_REMOTE_DRIFT_STOP/],
-    [firstRuntime.path,{...originalRuntime,recordVersion:2},originalRuntime,/ACTIVATION_RUNTIME_CHANGED/]
+    [firstRuntime.path,{...originalRuntime,recordVersion:2},originalRuntime,/ACTIVATION_RUNTIME_CHANGED/],
+    [`accountAccess/${ownerUid}`,{uid:ownerUid,businessId:ownerUid,status:'founder_legacy',plan:'founder_legacy',manualLimitOverrides:{productsActive:600}},null,/ACTIVATION_OWNER_CONTRACT_CHANGED/],
+    [`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/storage`,{unexpected:true},null,/ACTIVATION_SCOPED_PROOF_CONFLICT/]
   ]){
     // Authorized synthetic maintenance between the full preflight and commit
     // must not be hidden by a matching old approval/source revision.
@@ -283,12 +285,23 @@ try{
       ?deleteDoc(doc(c.firestore(),path)):setDoc(doc(c.firestore(),path),value));
     await assert.rejects(localHandoff.activateApproved(),reason);
     assert.equal((await getDocFromServer(storageRef)).data().storageMode,'migrating');
-    await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),path),restore));
+    await env.withSecurityRulesDisabled(c=>restore===null?deleteDoc(doc(c.firestore(),path)):setDoc(doc(c.firestore(),path),restore));
   }
   const activation=await localHandoff.activateApproved();
   assert.equal(activation.phase,'MODULAR');assert.equal(activation.cutoverPerformed,true);
   assert.equal(activation.operationalCloudConfirmed,false);
   assert.equal((await getDocFromServer(storageRef)).data().recordVersion,savedControl.recordVersion+1);
+  const scopedProofs=[];
+  for(const id of approval.businessIds){
+    const path=`businesses/${ownerUid}/businessUnits/${id}/storage/v2/metadata/storage`;
+    const record=(await getDocFromServer(doc(client,path))).data();
+    assert.equal(record.data.accountPlan,'founder_legacy','Absent legacy plan uses the Rules default, not a UI alias');
+    assert.deepEqual(record.data.manualLimitOverrides,{});
+    assert.equal(record.data.sourceHash,result.equality.sourceHash);scopedProofs.push({path,record});
+  }
+  await env.withSecurityRulesDisabled(c=>deleteDoc(doc(c.firestore(),scopedProofs[1].path)));
+  await assert.rejects(localHandoff.verifyLocalHandoff(),/SERVER_RECORD_DRIFT_STOP/);
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),scopedProofs[1].path),scopedProofs[1].record));
   const handoffVerified=await localHandoff.verifyLocalHandoff();
   assert.equal(handoffVerified.status,'LOCAL_HANDOFF_VERIFIED');await handoffVerified.assertStable();
   assert.equal(handoffVerified.sourceHash,result.equality.sourceHash);

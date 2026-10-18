@@ -136,3 +136,46 @@ unknown operations, drift or semantic differences stop activation without
 overwriting local data. Production promotion and actual individual cutover still
 require the owner's final evidence-based authorization. No physical iPhone,
 physical printer or physical second-device acceptance is inferred from emulation.
+
+## Final integration follow-up (17 October, Guayaquil)
+
+`6450adef5f9412bec5287bd2854426af6c0663b5` has all three GitHub workflows
+SUCCESS. The previous `760e76f` real retail journey passed both Chromium and
+WebKit. The real `6450ade` automatic owner coordinator also reached verified
+activation, native handoff, imported-session close/report and restart in
+Chromium. Its WebKit preparation exceeded the test's single 30-second envelope;
+that matrix is NOT certified. Completed import chunks/scopes are now observed
+with a bounded per-progress deadline; a repeated heartbeat, oscillation, conflict
+or stall cannot reset it or authorize success. No business retry or financial
+verification has been removed.
+
+The next candidate adds worker scoped proofs for every owner business in the
+SAME root activation transaction, derived from authoritative accountAccess
+(approvedUsers only if absent). Proofs contain only plan/overrides and exact
+source identity. Each is server-reread; post-handoff accepts only these exact
+derived paths, never generic metadata exclusions. Founder override 600 remains
+stored as 600 and the existing acquired floor still evaluates to 2/2/2000.
+
+Rules change only five root reads in the scoped-proof write predicate from
+get to getAfter. Owner/worker identity, contract, field allowlist, commercial
+transaction validators and legacy permissions remain unchanged. Rules do NOT
+force an arbitrary owner client to publish every business proof: the coordinator
+enforces full coverage atomically and verifies it. A missing proof denies worker
+availability rather than granting permissions. Do not misrepresent that boundary.
+
+The real protected-history cash renderer/handler now offers an owner-only new
+independent session with explicitly entered fund and working date. It never
+modifies the protected predecessor or infers unknown historical counters. The
+real handler/parser VM regressions pass; this particular new button still needs
+its served-browser result and is not covered by the older successor certificate.
+
+Spark UI emulator listeners use dedicated non-ephemeral ports; startup reports
+exact port conflicts and aborts readiness on child exit. Teardown owns only its
+captured process tree, including detached Java descendants. A zombie is proven
+from process state, not interpreted from EPERM alone. New lifecycle, progress,
+contract-drift and missing/conflicting scoped-proof regressions are permanent.
+
+Production remains recovery-only and unmodified. The most recently received
+physical-source copy must not be presented as the current iPhone's complete
+state. Full latest-candidate CI, served staging, production approval and physical
+device reconciliation remain separate gates.

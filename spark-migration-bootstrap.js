@@ -22,6 +22,34 @@
         throw Error('SPARK_MIGRATION_BOOTSTRAP_SERVER_REQUIRED');
       return s;
     }
+    async function scopedContract(read){
+      // Same single authoritative choice as sparkScopedEntitlements: an
+      // existing accountAccess never falls back to a different legacy plan.
+      const primary=await read(db.doc(`accountAccess/${ownerUid}`));context();
+      const account=primary.exists?primary:await read(db.doc(`approvedUsers/${ownerUid}`));context();
+      if(!account.exists)throw Error('SPARK_ACTIVATION_OWNER_CONTRACT_REQUIRED');
+      const body=account.data(),accountPlan=Object.hasOwn(body,'plan')?body.plan:'founder_legacy';
+      if(!['base','pro','business','enterprise','founder','founder_legacy'].includes(accountPlan))
+        throw Error('SPARK_ACTIVATION_OWNER_PLAN_UNSUPPORTED');
+      const value=body.manualLimitOverrides;
+      const manualLimitOverrides=value&&typeof value==='object'
+        &&[Object.prototype,null].includes(Object.getPrototypeOf(value))?value:{};
+      return {source:primary.exists?'accountAccess':'approvedUsers',
+        account:JSON.parse(JSON.stringify(body)),accountPlan,manualLimitOverrides};
+    }
+    async function scopedRecords(control,contract){
+      const rows=[];
+      for(const businessId of control.businessIds){
+        const identity={ownerUid,businessId};
+        const flat={id:'storage',...identity,tenantKey:`owner:${ownerUid}:business:${businessId}`,
+          storageSchemaVersion:2,module:'metadata',recordVersion:1,storageMode:'modular',phase:'MODULAR',
+          semanticEquality:'PASS',sourceHash:control.sourceHash,reconstructedHash:control.reconstructedHash,
+          accountPlan:contract.accountPlan,manualLimitOverrides:contract.manualLimitOverrides};
+        rows.push({path:`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/storage`,
+          content:await root.CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity,moduleName:'metadata',recordId:'storage'})});context();
+      }
+      return rows;
+    }
     async function verifyLocalHandoff({preCutover=false}={}){
       context();
       if(productionRecoveryOnly)throw Error('SPARK_LOCAL_HANDOFF_NONPRODUCTION_ONLY');
@@ -51,6 +79,7 @@
           ||control.phase!==(preCutover?'READY_TO_CUTOVER':'MODULAR')||control.semanticEquality!=='PASS'||control.sourceHash!==control.reconstructedHash
           ||control.buildSha!==buildSha)throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
         const authorization=(await server(runtimeRef)).data(),cutover=(await server(cutoverRef)).data();
+        const contract=await scopedContract(server),contractHash=await api.hash(contract);context();
         recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});context();
         const preserved=await recovery.readHandoff(authorization?.captureHash);context();
         if(preserved?.durable!==true||!preserved.plan)throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
@@ -113,6 +142,10 @@
         const records=await importer.readServerRecords(manifest);context();
         const expected=new Map(manifest.records.map(row=>[row.path,row.content]));
         for(const row of plan.runtimes)expected.set(row.path,approval.runtimeRecords[row.content.businessId]);
+        // Only exact, independently derived per-business authority is allowed
+        // in addition to source records/runtimes. Never ignore metadata or
+        // orphan records wholesale in order to obtain equality.
+        if(!preCutover)for(const row of await scopedRecords(control,contract))expected.set(row.path,row.content);
         if(records.length!==expected.size||new Set(records.map(r=>r.path)).size!==records.length
           ||records.some(row=>!expected.has(row.path)||!same(row.content,expected.get(row.path))))
           throw Error('SPARK_LOCAL_HANDOFF_SERVER_RECORD_DRIFT_STOP');
@@ -127,12 +160,15 @@
           const latestLegacy=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
           if(latestLegacy?.revision!==control.remoteRevision||await api.hash(latestLegacy?.payload?.data)!==control.remoteHash)
             throw Error('SPARK_LOCAL_HANDOFF_REMOTE_DRIFT_STOP');
+          if(await api.hash(await scopedContract(server))!==contractHash)
+            throw Error('SPARK_ACTIVATION_OWNER_CONTRACT_CHANGED');
           context();
         }
         await localStable(journal);await authorizationsStable();context();
         return {verified:true,status:preCutover?'PRE_CUTOVER_VERIFIED':'LOCAL_HANDOFF_VERIFIED',buildSha,
           controlVersion:control.recordVersion,remoteHash:control.remoteHash,remoteRevision:control.remoteRevision,
           sourceDeviceId:control.sourceDeviceId,runtimeApprovalHash:await api.hash(authorization),
+          contractHash,
           runtimeHashes:structuredClone(approval.preparedRuntimeHashes),
           sourceHash:plan.sourceHash,deviceRevision:pin.deviceRevision,
           deviceMetadataHash:metadataHash,businessIds:[...control.businessIds],captureHash:preserved.captureHash,
@@ -174,10 +210,17 @@
           throw Error('SPARK_ACTIVATION_ADMIN_APPROVAL_CHANGED');
         if(!r||r.revision!==verified.remoteRevision||await api.hash(r.payload?.data)!==verified.remoteHash)
           throw Error('SPARK_ACTIVATION_REMOTE_DRIFT_STOP');
+        const contract=await scopedContract(ref=>tx.get(ref));
+        if(await api.hash(contract)!==verified.contractHash)throw Error('SPARK_ACTIVATION_OWNER_CONTRACT_CHANGED');
+        const scoped=await scopedRecords(c,contract);
         for(const businessId of verified.businessIds){
           const runtime=await tx.get(db.doc(`businesses/${ownerUid}/businessUnits/${businessId}/storage/v2/metadata/runtime`));context();
           if(!runtime.exists||await api.hash(runtime.data())!==verified.runtimeHashes[businessId])
             throw Error('SPARK_ACTIVATION_RUNTIME_CHANGED');
+        }
+        for(const row of scoped){
+          const existing=await tx.get(db.doc(row.path));context();
+          if(existing.exists)throw Error('SPARK_ACTIVATION_SCOPED_PROOF_CONFLICT');
         }
         // The transaction retains exact remote versions while the native
         // source/journal/context is checked again. Only storage control changes;
@@ -185,6 +228,7 @@
         await verified.assertStable();context();
         tx.update(controlRef,{storageMode:'modular',phase:'MODULAR',recordVersion:c.recordVersion+1,
           updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+        for(const row of scoped)tx.set(db.doc(row.path),row.content);
       });
       onProgress({phase:'ACTIVATION_COMMITTED_VERIFYING',operationalCloudConfirmed:false});
       context();const confirmed=(await server(controlRef)).data();
@@ -192,6 +236,12 @@
         ||confirmed.sourceHash!==verified.sourceHash||confirmed.reconstructedHash!==verified.sourceHash
         ||confirmed.buildSha!==buildSha||confirmed.recordVersion!==verified.controlVersion+1)
         throw Error('SPARK_ACTIVATION_SERVER_CONFIRMATION_REQUIRED');
+      const confirmedContract=await scopedContract(server);
+      if(await api.hash(confirmedContract)!==verified.contractHash)throw Error('SPARK_ACTIVATION_OWNER_CONTRACT_CHANGED');
+      for(const row of await scopedRecords(confirmed,confirmedContract)){
+        if(api.canonicalJson((await server(db.doc(row.path))).data())!==api.canonicalJson(row.content))
+          throw Error('SPARK_ACTIVATION_SCOPED_PROOF_CONFIRMATION_REQUIRED');
+      }
       return {phase:'MODULAR',storageMode:'modular',sourceHash:verified.sourceHash,
         cutoverPerformed:true,operationalCloudConfirmed:false};
     }

@@ -2788,11 +2788,11 @@ service cloud.firestore {
         && request.resource.data.data.id == "storage" && request.resource.data.data.businessId == businessId
         && request.resource.data.data.storageMode == "modular" && request.resource.data.data.phase == "MODULAR"
         && request.resource.data.data.semanticEquality == "PASS"
-        && get(sparkControlPath(ownerUid)).data.storageMode == "modular"
-        && get(sparkControlPath(ownerUid)).data.phase == "MODULAR"
-        && businessId in get(sparkControlPath(ownerUid)).data.businessIds
-        && request.resource.data.data.sourceHash == get(sparkControlPath(ownerUid)).data.sourceHash
-        && request.resource.data.data.reconstructedHash == get(sparkControlPath(ownerUid)).data.reconstructedHash
+        && getAfter(sparkControlPath(ownerUid)).data.storageMode == "modular"
+        && getAfter(sparkControlPath(ownerUid)).data.phase == "MODULAR"
+        && businessId in getAfter(sparkControlPath(ownerUid)).data.businessIds
+        && request.resource.data.data.sourceHash == getAfter(sparkControlPath(ownerUid)).data.sourceHash
+        && request.resource.data.data.reconstructedHash == getAfter(sparkControlPath(ownerUid)).data.reconstructedHash
         && request.resource.data.data.sourceHash == request.resource.data.data.reconstructedHash;
       allow update: if request.resource.data.get("module", "") == "metadata" && signedIn()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")

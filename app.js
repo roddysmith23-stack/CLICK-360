@@ -3415,6 +3415,13 @@ function parseMoney(value) {
          <button class="btn primary block" id="startDayBtnCash" style="width:100%;">Iniciar Día (Apertura)</button>
        </div>
       `;
+    } else if (isDayClosed() && hasReadOnlyCashHistory(currentBusiness()?.id,today())) {
+      topCard = `
+       <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px solid var(--gold);">
+         <h3 style="margin-bottom:8px; color:var(--gold);">🔒 Historial de caja protegido</h3>
+         <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">El cierre anterior se conserva sin cambios. Para continuar, el propietario puede iniciar una caja independiente e indicar su fondo inicial.</p>
+         <button class="btn primary" id="independentCashOpenBtn">Iniciar nueva caja independiente</button>
+       </div>`;
     } else if (isDayClosed()) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border: 1px solid var(--gold);">
@@ -8971,6 +8978,52 @@ function parseMoney(value) {
 	    }
 	  }
 
+  function hasReadOnlyCashHistory(businessId,date){
+    if(!window.click360SparkOperationalSession)return false;
+    const session=latestCashSession(businessId,date);
+    return session?.status==='closed'&&(session.storageHistoryReadOnly===true
+      ||(state.dailyReports||[]).some(row=>row.businessId===businessId&&row.date===date
+        &&(row.cashSessionId===session.id||row.id===session.reportId)&&row.storageHistoryReadOnly===true));
+  }
+
+  function openIndependentCashDayDialog(){
+    const businessId=currentBusiness()?.id,date=today(),ownerUid=window.click360SparkOperationalSession?.identity.ownerUid;
+    if(!isOwnerUser()||!ownerUid||window.click360Auth?.currentUser?.uid!==ownerUid
+      ||window.click360SparkOperationalSession.identity.businessId!==businessId||!hasReadOnlyCashHistory(businessId,date))
+      return toast('Solo el propietario puede iniciar esta caja independiente.', 'err');
+    if(currentOpenCashSession(businessId,date))return toast('Ya existe una caja abierta para esta fecha.', 'err');
+    showModal(`<div class="modalHeader"><h2>Iniciar nueva caja independiente</h2><button class="closeBtn" data-close>×</button></div>
+      <p>El historial protegido no se reabre ni se modifica. Indica el dinero con el que comienza esta nueva caja.</p>
+      <form id="independentCashOpenForm"><div class="field"><label>Fecha de trabajo</label><input id="independentCashDate" type="date" value="${escapeHtml(date)}" readonly></div>
+      <div class="field"><label>Fondo inicial ($)</label><input id="independentCashAmount" inputmode="decimal" autocomplete="off" placeholder="Ingresa el monto, incluso si es 0" required></div>
+      <button id="independentCashConfirm" class="btn primary block" type="submit">Iniciar caja independiente</button></form>`);
+    $('#independentCashOpenForm').onsubmit=async event=>{
+      event.preventDefault();const button=$('#independentCashConfirm');
+      if(button.disabled)return;
+      if(!isOwnerUser()||!window.click360SparkOperationalSession||currentBusiness()?.id!==businessId||today()!==date
+        ||window.click360Auth?.currentUser?.uid!==ownerUid||window.click360SparkOperationalSession.identity.ownerUid!==ownerUid
+        ||window.click360SparkOperationalSession.identity.businessId!==businessId
+        ||$('#independentCashDate').value!==date||!hasReadOnlyCashHistory(businessId,date))
+        return toast('La fecha, el usuario o el negocio cambió. Reabre el formulario sin modificar el historial.', 'err');
+      if(currentOpenCashSession(businessId,date))return toast('Ya existe una caja abierta para esta fecha.', 'err');
+      const entered=$('#independentCashAmount').value.trim(),openingAmount=parseMoney(entered);
+      if(!/^\d[\d\s.,]*$/.test(entered)||!Number.isFinite(openingAmount)||openingAmount<0)return toast('Indica un fondo inicial válido. Si no hay efectivo, escribe 0.', 'err');
+      button.disabled=true;
+      try{
+        const previousState=cloneState(state),cashSessionId=uid('cash'),operationId=uid('cashopen');
+        state.movements.push({id:operationId,operationId,cashSessionId,businessId,date,kind:'apertura',amount:openingAmount,
+          when:nowLabel(),createdBy:authUser().name,note:'Apertura de caja independiente',createdAtMs:Date.now()});
+        state.cashSessions.push({id:cashSessionId,operationId,businessId,date,status:'open',registerName:'Caja principal',
+          openingAmount,openedAt:new Date().toISOString(),openedBy:authUser().name,openedByRole:authUser().role,
+          openedByUid:window.click360User?.uid||'',notes:''});
+        addAudit('cash_opened',{amount:openingAmount,businessId,date,independentHistoryOpening:true,operationId});
+        const committed=await commitCriticalMutation(previousState,'cash_opened',next=>next.cashSessions.some(row=>row.id===cashSessionId&&row.businessId===businessId),
+          {sparkCommand:{kind:'cash_open',input:{operationId,cashSessionId,date,openingAmount}}});
+        if(!committed.ok){renderApp('cash');return;}
+        closeModal();renderApp('cash');toast(committed.pending?'Apertura guardada; sincronización pendiente.':'Nueva caja iniciada. El historial anterior permanece intacto.');
+      }finally{button.disabled=false;}
+    };
+  }
 	  async function reopenCashDay(reason) {
 	    const bid = currentBusiness()?.id;
 	    if (!bid) return false;
@@ -9020,6 +9073,7 @@ function parseMoney(value) {
 
 		  function bindCash(){
 	    $('#calculatorCashBtn')?.addEventListener('click', () => openCalculator({ preferredTarget: isDayStarted() ? '' : 'apertureAmountInput' }));
+    $('#independentCashOpenBtn')?.addEventListener('click',openIndependentCashDayDialog);
     const btnReopenCash = $('#reopenCashBtn');
 	    if (btnReopenCash) {
 	      btnReopenCash.onclick = async () => {
