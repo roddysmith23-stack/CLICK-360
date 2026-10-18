@@ -43,11 +43,11 @@ await assert.rejects(()=>api.capacitySnapshotProof({...input,localRecord:{...inp
 await assert.rejects(()=>api.capacitySnapshotProof({...input,unknownOperations:1}),/UNKNOWN_OPERATIONS_STOP/);
 const migration=globalThis.CLICK360_SPARK_MIGRATION;
 const rules=await readFile('firestore.spark.rules','utf8');
-const whitelist=rules.match(/function sparkShadowModule\(moduleName\)\s*\{[\s\S]*?moduleName\.matches\("([^"]+)"\)/);
+const whitelist=rules.match(/function sparkShadowModule\(([A-Za-z_]\w*)\)\s*\{[\s\S]*?\b\1\.matches\("([^"]+)"\)/);
 assert(whitelist,'Exact module scope guard required');
 const allowedModules=new Set([...Object.values(migration.arrays),'config']);
-assert.deepEqual(new Set(whitelist[1].slice(2,-2).split('|')),allowedModules);
-const modulePattern=new RegExp(whitelist[1]);
+assert.deepEqual(new Set(whitelist[2].slice(2,-2).split('|')),allowedModules);
+const modulePattern=new RegExp(whitelist[2]);
 for(const moduleName of allowedModules){
   assert(modulePattern.test(moduleName));
   assert(!modulePattern.test(`prefix-${moduleName}`));
