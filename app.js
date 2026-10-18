@@ -3394,6 +3394,9 @@ function parseMoney(value) {
     const saldo = aperture + income - out;
 
     const staleSession = staleOpenCashSession();
+    // An immutable closed session remains history even if its legacy report
+    // lacks a status field. Never offer the ordinary inferred-$0 opening.
+    const protectedHistory=hasReadOnlyCashHistory(currentBusiness()?.id,today());
     let topCard = '';
     if (staleSession) {
       topCard = `
@@ -3403,7 +3406,7 @@ function parseMoney(value) {
          <button class="btn primary" id="closeStaleCashBtn" type="button">Cerrar caja del ${escapeHtml(staleSession.date)}</button>
        </div>
       `;
-    } else if (!isDayStarted() && !isDayClosed()) {
+    } else if (!protectedHistory && !isDayStarted() && !isDayClosed()) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px dashed var(--gold);">
          <h3 style="margin-bottom:8px;">🔑 Iniciar Jornada de Hoy</h3>
@@ -3415,7 +3418,7 @@ function parseMoney(value) {
          <button class="btn primary block" id="startDayBtnCash" style="width:100%;">Iniciar Día (Apertura)</button>
        </div>
       `;
-    } else if (isDayClosed() && hasReadOnlyCashHistory(currentBusiness()?.id,today())) {
+    } else if (protectedHistory) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px solid var(--gold);">
          <h3 style="margin-bottom:8px; color:var(--gold);">🔒 Historial de caja protegido</h3>

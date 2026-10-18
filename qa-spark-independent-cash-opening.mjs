@@ -62,14 +62,15 @@ for(const options of [{owner:false},{modular:false}]){
 // Execute the real renderer, proving routing is exclusive to protected Spark
 // history; ordinary successor/legacy actions remain the original UI.
 const cashStart=source.indexOf('function cashView()'),cashEnd=source.indexOf('function labelKind(',cashStart);
-for(const modular of [false,true])for(const protectedHistory of [false,true]){
+for(const modular of [false,true])for(const protectedHistory of [false,true])for(const closedFlag of [false,true]){
   const h=harness({modular});h.state.cashSessions[0].storageHistoryReadOnly=protectedHistory;h.state.dailyReports[0].storageHistoryReadOnly=protectedHistory;
   Object.assign(h.scope,{tenantDataHydrated:true,movementsForBiz:()=>[],isCashIncomeMovement:()=>false,staleOpenCashSession:()=>null,
-    isDayStarted:()=>false,isDayClosed:()=>true,icon:()=>'',fmt:String,actionId:String,sparkHistoryPageControl:()=>''});
+    isDayStarted:()=>false,isDayClosed:()=>closedFlag,icon:()=>'',fmt:String,actionId:String,sparkHistoryPageControl:()=>''});
   vm.runInContext(source.slice(cashStart,cashEnd),h.scope);const html=h.scope.cashView();
   assert.equal(html.includes('id="independentCashOpenBtn"'),modular&&protectedHistory);
-  assert.equal(html.includes('id="reopenCashBtn"'),!(modular&&protectedHistory));
-  assert.equal(html.includes('id="startDayBtnCash"'),false);
+  assert.equal(html.includes('id="reopenCashBtn"'),closedFlag&&!(modular&&protectedHistory));
+  assert.equal(html.includes('id="startDayBtnCash"'),!closedFlag&&!(modular&&protectedHistory),
+    'A protected closed source without a legacy report status cannot offer inferred zero opening');
 }
 assert(source.includes("$('#independentCashOpenBtn')?.addEventListener('click',openIndependentCashDayDialog)"));
 console.log('PASS actual protected-history cash UI: explicit owner fund (including typed zero), exact date/context, new independent cash_open IDs, no predecessor/counter inference, old report/session/sale/stock preserved, double submit denied, legacy unchanged. VM handler coverage; real served browser certification remains separate.');
