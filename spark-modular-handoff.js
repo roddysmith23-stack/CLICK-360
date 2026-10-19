@@ -2,6 +2,27 @@
   'use strict';
   // Pure preparation only: no SDK, journal mutation, mode change or writer.
   // Derived runtime is NOT part of the preserved legacy source or its hash.
+  function validateReceivableLinks(snapshot){
+    const ids=snapshot.businesses.map(b=>b.id),scope=row=>row.businessId||snapshot.settings?.legacyDataBusinessId||(ids.length===1?ids[0]:'');
+    const active=new Set(['active','partially_paid','paid','expired','ready_for_pickup']);
+    for(const sale of snapshot.sales||[]){
+      if(sale.method!=='Apartado')continue;
+      const linked=(snapshot.layaways||[]).filter(r=>scope(r)===scope(sale)&&r.saleId===sale.id);
+      if(!['layaway','pending_payment'].includes(sale.status)&&!linked.some(r=>active.has(r.status)))continue;
+      const row=linked[0];
+      if(linked.length!==1||!row.id||!ids.includes(scope(sale))
+        ||(Object.hasOwn(sale,'layawayId')&&sale.layawayId!==row.id)
+        ||[sale.total,sale.received,sale.balance].some(n=>typeof n!=='number'||!Number.isFinite(n)||n<0)
+        ||Math.round((sale.received+sale.balance)*100)!==Math.round(sale.total*100)
+        ||row.total!==sale.total||row.paid!==sale.received||row.balance!==sale.balance
+        ||root.CLICK360_SPARK_MIGRATION.canonicalJson(row.payments||[])!==root.CLICK360_SPARK_MIGRATION.canonicalJson(sale.payments||[]))
+        throw Error('SPARK_HANDOFF_ACTIVE_RECEIVABLE_RELATIONSHIP_CONFLICT');
+    }
+    for(const row of snapshot.layaways||[])if(active.has(row.status)
+      &&(snapshot.sales||[]).filter(s=>s.id===row.saleId&&scope(s)===scope(row)&&s.method==='Apartado').length!==1)
+      throw Error('SPARK_HANDOFF_ACTIVE_RECEIVABLE_RELATIONSHIP_CONFLICT');
+    return true;
+  }
   async function plan({ownerUid,snapshot,sourceHash,deviceMetadataHash,journalHash,journalCapture,
     businessIds,financialProofs,unknownCount,conflictCount,historicalReadOnly=false}){
     const api=root.CLICK360_SPARK_MIGRATION;
@@ -18,6 +39,7 @@
       throw Error('SPARK_HANDOFF_OWNER_COVERAGE_REQUIRED');
     if(snapshot.identity&&[snapshot.identity.ownerUid,snapshot.identity.ownerId].some(id=>id!==ownerUid))
       throw Error('SPARK_HANDOFF_SOURCE_OWNER_MISMATCH');
+    validateReceivableLinks(snapshot);
     if(unknownCount!==0||conflictCount!==0)throw Error('SPARK_HANDOFF_UNRESOLVED_OPERATIONS');
     if(journalCapture?.ownerUid!==ownerUid||journalCapture.enumerationComplete!==true
       ||!Array.isArray(journalCapture.rows)||journalCapture.recordCount!==journalCapture.rows.length
@@ -85,5 +107,5 @@
       deviceMetadataHash:plan.deviceMetadataHash,journalHash:plan.journalHash,businessIds:[...plan.businessIds],
       runtimeRecords,runtimeHashes,preparedRuntimeHashes,openSessionSummaries,openSessionSummaryHashes};
   }
-  root.CLICK360_SPARK_HANDOFF=Object.freeze({plan,runtimeApproval});
+  root.CLICK360_SPARK_HANDOFF=Object.freeze({plan,runtimeApproval,validateReceivableLinks});
 })(typeof window==='undefined'?globalThis:window);

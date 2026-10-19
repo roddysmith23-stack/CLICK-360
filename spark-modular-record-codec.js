@@ -4,7 +4,7 @@
   // transaction kernel. No transport, migration activation or commercial write.
   const metadata=['recordVersion','createdAt','updatedAt','closedAt','createdBy','updatedBy','lastOperationId','saleStockIndex'];
   const sessionOperational=['summaryVersion','saleCount','salesTotal','itemCount','taxTotal','cashBalance','openingAmount','incomeCash','expenseCash','paymentTotals','closeCycle'];
-  const identityFields=['id','ownerUid','businessId','tenantKey','schemaVersion','storageSchemaVersion','module','storageMetadataKeys'];
+  const identityFields=['id','ownerUid','businessId','tenantKey','schemaVersion','storageSchemaVersion','module','storageMetadataKeys','storageImportedSourceHash'];
   const domainId=(identity,moduleName,recordId)=>moduleName==='config'&&recordId==='main'?identity.businessId:recordId;
   function stockMirror(data,moduleName){
     if(moduleName!=='products')return;
@@ -27,6 +27,12 @@
     if(raw.data.businessId!==undefined&&raw.data.businessId!==identity.businessId)throw Error('SPARK_CODEC_PAYLOAD_BUSINESS_MISMATCH');
     if(raw.data.id!==undefined&&raw.data.id!==domainId(identity,moduleName,recordId))throw Error('SPARK_CODEC_PAYLOAD_ID_MISMATCH');
     const flat=structuredClone(raw.data);
+    // Read-only provenance, never a payload field or a manufactured link.
+    // Legacy layaways have an exact reverse saleId but may lack sale.layawayId.
+    delete flat.storageImportedSourceHash;
+    if(['sales','layaways'].includes(moduleName)&&/^[a-f0-9]{64}$/.test(raw.sourceHash||'')
+      &&Array.isArray(raw.sourcePath)&&raw.sourcePath[0]===moduleName)
+      flat.storageImportedSourceHash=raw.sourceHash;
     if(Object.hasOwn(raw,'historyPolicy')){
       const p=raw.historyPolicy;
       if(!['cashSessions','sales','movements','dailyReports','layaways'].includes(moduleName)

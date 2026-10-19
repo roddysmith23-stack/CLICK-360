@@ -5,6 +5,12 @@
   const SCHEMA_VERSION = 2;
   const PRODUCTION_PROJECT_ID = 'click-360';
   const LEGACY_WRITE_FENCE = 'REJECT_AFTER_CUTOVER';
+  function layawayLink(sale,layaway){
+    return !!sale&&!!layaway&&sale.ownerUid===layaway.ownerUid&&sale.businessId===layaway.businessId
+      &&layaway.saleId===sale.id&&(Object.hasOwn(sale,'layawayId')?sale.layawayId===layaway.id:
+        /^[a-f0-9]{64}$/.test(sale.storageImportedSourceHash||'')
+        &&sale.storageImportedSourceHash===layaway.storageImportedSourceHash);
+  }
   const MODULES = Object.freeze([
     'products',
     'sales',
@@ -763,7 +769,7 @@
           if(Object.keys(p).some(key=>!['operationId','saleId','layawayId','expectedSaleVersion','expectedLayawayVersion','nextStatus','changedAt'].includes(key)))throw Error('LAYAWAY_STATUS_FIELDS_INVALID');
           const saleId=safeId(p.saleId,'saleId'),layawayId=safeId(p.layawayId,'layawayId');
           const sale=await tx.get('sales',saleId),layaway=await tx.get('layaways',layawayId);
-          if(!sale||!layaway||sale.method!=='Apartado'||sale.layawayId!==layawayId||layaway.saleId!==saleId)throw Error('LAYAWAY_STATUS_RELATIONSHIP_CONFLICT');
+          if(!sale||!layaway||sale.method!=='Apartado'||!layawayLink(sale,layaway))throw Error('LAYAWAY_STATUS_RELATIONSHIP_CONFLICT');
           if(p.expectedSaleVersion!==sale.recordVersion||p.expectedLayawayVersion!==layaway.recordVersion)throw Error('LAYAWAY_STATUS_REVISION_CONFLICT');
           if(!['paid','layaway'].includes(sale.status)||layaway.pickedUpAt||!['active','partially_paid','paid','expired','ready_for_pickup'].includes(layaway.status)
             ||money(sale.total,'SALE_TOTAL')<=0||sale.received!==sale.total||sale.balance!==0
@@ -794,7 +800,7 @@
           if(sale.method==='Apartado'){
             layawayId=safeId(p.layawayId,'layawayId');
             const linked=await tx.get('layaways',layawayId);
-            if(sale.layawayId!==layawayId||!linked||linked.saleId!==saleId||linked.paid!==received||linked.balance!==balance)
+            if(!layawayLink(sale,linked)||linked.paid!==received||linked.balance!==balance)
               throw Error('PAYMENT_LAYAWAY_CONFLICT');
             stage('layaways',layawayId,linked,{...linked,paid:nextReceived,balance:nextBalance,payments,
               status:nextBalance===0?'paid':'partially_paid',lastOperationId:op});

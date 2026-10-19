@@ -778,6 +778,43 @@ try{
     {identity,moduleName:'auditEvents',recordId:'audit-uncommitted'});
   await assertFails(setDoc(doc(client,`${base}/auditEvents/audit-uncommitted`),fakeAudit));
   assert.equal((await getDocFromServer(doc(client,`${base}/auditEvents/audit-uncommitted`))).exists(),false);
+  // Published legacy Apartado has only reservation.saleId, not sale.layawayId.
+  // Seed historical fixtures only; all payments/status writes use client Rules.
+  const importedSaleId='legacy-receivable-sale',importedLayawayId='legacy-receivable-reservation';
+  await env.withSecurityRulesDisabled(async context=>{
+    for(const [moduleName,recordId,data]of [
+      ['sales',importedSaleId,{id:importedSaleId,businessId,method:'Apartado',status:'layaway',total:6,received:1,balance:5,
+        cashSessionId:'legacy-closed-session',payments:[{id:'legacy-receipt',amount:1,method:'Transferencia'}]}],
+      ['layaways',importedLayawayId,{id:importedLayawayId,businessId,saleId:importedSaleId,status:'partially_paid',
+        total:6,paid:1,balance:5,payments:[{id:'legacy-receipt',amount:1,method:'Transferencia'}]}]]){
+      await setDoc(doc(context.firestore(),`${base}/${moduleName}/${recordId}`),{id:recordId,ownerUid,businessId,
+        schemaVersion:2,module:moduleName,sourceHash:'a'.repeat(64),sourcePath:[moduleName,0],data,dataHash:await CLICK360_SPARK_MIGRATION.hash(data)});
+    }
+  });
+  await repo.commitOperation('cash_open',{operationId:'imported-payment-opening',cashSessionId:'imported-payment-session',date:'2026-10-19',openingAmount:0});
+  const importedRuntime=await get('metadata','runtime');
+  const importedSession=await get('cashSessions',importedRuntime.openCashSessionId);
+  const importedPayment={operationId:'legacy-imported-payment',saleId:importedSaleId,layawayId:importedLayawayId,
+    expectedRecordVersion:1,cashSessionId:importedSession.id,date:importedSession.date,amount:5,method:'Transferencia'};
+  const importedStockBefore=(await get('products','p1')).stock;
+  const forgedImported=api.createSparkRepository({ownerUid,businessId,actorUid:ownerUid,
+    transport:transportFor(client,ownerUid,'',(ref,raw)=>ref.path.endsWith(`/layaways/${importedLayawayId}`)
+      ?{...raw,data:{...raw.data,saleId:'wrong-sale'}}:raw),serverTimestamp});
+  await assertFails(forgedImported.commitOperation('receivable_payment',{...importedPayment,operationId:'forged-imported-link'}));
+  assert.equal((await get('sales',importedSaleId)).balance,5);
+  await repo.commitOperation('receivable_payment',importedPayment);
+  assert.equal((await repo.commitOperation('receivable_payment',importedPayment)).status,'already_committed');
+  await assert.rejects(()=>repo.commitOperation('receivable_payment',{...importedPayment,amount:4}));
+  const importedAfter=await get('sales',importedSaleId),importedLayawayAfter=await get('layaways',importedLayawayId);
+  assert.equal(importedAfter.balance,0);assert.equal(importedAfter.payments.length,2);
+  assert.equal(importedAfter.layawayId,undefined,'Do not rewrite the preserved legacy forward-link absence');
+  assert.equal(importedLayawayAfter.balance,0);assert.equal(importedLayawayAfter.saleId,importedSaleId);
+  assert.equal((await get('products','p1')).stock,importedStockBefore);
+  assert.equal((await get('cashSessions',importedSession.id)).saleCount,importedSession.saleCount,'A receipt is not another sale');
+  await repo.commitOperation('layaway_status',{operationId:'legacy-imported-pickup',saleId:importedSaleId,layawayId:importedLayawayId,
+    expectedSaleVersion:2,expectedLayawayVersion:2,nextStatus:'picked_up',changedAt:'2026-10-19T12:00:00.000Z'});
+  assert.equal((await get('layaways',importedLayawayId)).status,'picked_up');
+  await budgetObservation('imported_reverse_link_payment_and_pickup');
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),{status:'inactive'}));
   await assertFails(workerRepo.lookupOperation('worker-sale','sale',workerPrepared.payloadSha256));
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),`businesses/${ownerUid}/businessUnits/${businessId}/members/${workerUid}`),{status:'revoked'}));

@@ -1986,6 +1986,14 @@ service cloud.firestore {
         && sparkPaymentLedgerLinks(_o, _b, op, _z);
     }
 
+    function sparkLayawayLink(_s, _l, _i) {
+      return _s.ownerUid == _l.ownerUid && _s.businessId == _l.businessId
+        && _s.id == _l.data.saleId && _l.id == _i
+        && (_s.data.keys().hasAny(["layawayId"]) ? _s.data.layawayId == _i
+          : _s.get("sourceHash", "").matches("^[a-f0-9]{64}$") && _s.sourceHash == _l.get("sourceHash", "")
+            && _s.get("sourcePath", [""])[0] == "sales" && _l.get("sourcePath", [""])[0] == "layaways");
+    }
+
     function sparkPaymentLedgerLinks(_o, _b, op, _z) {
       let sale = sparkAfter(_o, _b, "sales", _z.saleId);
       let movement = sparkAfter(_o, _b, "movements", op);
@@ -1994,7 +2002,7 @@ service cloud.firestore {
         && _z.movementId == op && movement.lastOperationId == op && sale.lastOperationId == op && session.lastOperationId == op
         && !exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op))
         && movement.data.saleId == _z.saleId && movement.data.cashSessionId == _z.cashSessionId
-        && (sale.data.method == "Apartado" ? (_z.layawayId == sale.data.layawayId
+        && (sale.data.method == "Apartado" ? (sparkLayawayLink(sale, sparkAfter(_o, _b, "layaways", _z.layawayId), _z.layawayId)
           && sparkAfter(_o, _b, "layaways", _z.layawayId).lastOperationId == op) : !_z.keys().hasAny(["layawayId"]));
     }
 
@@ -2165,7 +2173,7 @@ service cloud.firestore {
       let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
       let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(old.saleId)).data;
       return ledger.kind == "layaway_status" && ledger.result == {"saleId": old.saleId, "layawayId": _r}
-        && sale.data.method == "Apartado" && sale.data.layawayId == _r
+        && sale.data.method == "Apartado" && sparkLayawayLink(sale, resource.data, _r)
         && sale.data.status in ["paid", "layaway"] && !sale.keys().hasAny(["historyPolicy"])
         && sale.data.total is number && sale.data.total > 0 && sale.data.received == sale.data.total && sale.data.balance == 0
         && old.total == sale.data.total && old.paid == sale.data.total && old.balance == 0
@@ -2187,10 +2195,13 @@ service cloud.firestore {
     function sparkPaymentLayawayDelta(_o, _b, _r) {
       let d = request.resource.data.data;
       let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
-      let sale = sparkAfter(_o, _b, "sales", d.saleId).data;
-      return ledger.kind == "receivable_payment" && ledger.result.layawayId == _r && sale.layawayId == _r
+      let sale = sparkAfter(_o, _b, "sales", d.saleId);
+      let movement = sparkAfter(_o, _b, "movements", request.resource.data.lastOperationId).data;
+      return ledger.kind == "receivable_payment" && ledger.result.layawayId == _r && sparkLayawayLink(sale, request.resource.data, _r)
         && d.diff(resource.data.data).affectedKeys().hasOnly(["paid", "balance", "payments", "status"])
-        && d.paid == sale.received && d.balance == sale.balance && d.payments == sale.payments
+        && d.paid == sale.data.received && d.balance == sale.data.balance && d.payments == sale.data.payments
+        && sparkMoneyEqual(d.paid, resource.data.data.paid + movement.amount)
+        && sparkMoneyEqual(d.balance, resource.data.data.balance - movement.amount)
         && d.status == (d.balance == 0 ? "paid" : "partially_paid");
     }
 
