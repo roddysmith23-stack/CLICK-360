@@ -36,4 +36,11 @@ for(let run=0;run<2;run++){
 const child=spawn(process.execPath,['-e','process.exit(7)'],{detached:true,stdio:'ignore'});
 await assert.rejects(waitForOwnedServices([child],[`http://127.0.0.1:${port}/`],{readLog:()=> 'EXACT_STARTUP_FAILURE'}),/QA_OWNED_SERVICE_EXIT:7:.*\nEXACT_STARTUP_FAILURE/);
 await stopOwnedProcessTree(child);
+{
+  const stalled=spawn(process.execPath,['-e',`require('http').createServer(()=>{}).listen(${port},'127.0.0.1')`],{detached:true,stdio:'ignore'});
+  try{await assert.rejects(waitForOwnedServices([stalled],[`http://127.0.0.1:${port}/`],{timeoutMs:500,readLog:()=> 'STALLED_ENDPOINT_EVIDENCE'}),
+    error=>error.message.includes('QA_SERVICES_STARTUP_TIMEOUT:')&&error.message.includes(`127.0.0.1:${port}`)&&error.message.includes('STALLED_ENDPOINT_EVIDENCE'));}
+  finally{await stopOwnedProcessTree(stalled);}
+  await assertPortsAvailable([port]);
+}
 console.log('PASS emulator lifecycle: occupied port fails without killing owner, two starts/awaited descendant teardown, child exit cancels readiness with exact log');

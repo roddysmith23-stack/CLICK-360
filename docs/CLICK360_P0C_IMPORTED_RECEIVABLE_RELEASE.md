@@ -28,6 +28,13 @@ This is not a stock, quota or authentication failure.
 
 ## Regression evidence required before promotion
 
+The served report journey also reproduced a background access refresh
+detaching its query button before click. Same-business modular reports now
+retain that control on background refresh only; explicit filter/navigation
+and result renders, business switches and authorization gates remain active.
+The shared PWA report test forces this refresh and requires node/handler
+preservation before its real authoritative query, without sleeps or retries.
+
 - `qa-spark-imported-receivable-links.mjs` (included by command adapter CI):
   codec provenance, missing-forward compatibility, adversarial links, no
   source rewrite, payment and pickup boundaries.

@@ -34,8 +34,27 @@ export async function certifyRetailReport(page,{ownerUid,businessId,from,to}){
     }
     result.sold/=100;result.collected/=100;return result;
   },{ownerUid,businessId,from,to});
+  await page.waitForFunction(()=>!window.click360SparkCoordinator.isBusy()&&!window.click360SparkOperationalSession.isBusy());
+  await page.evaluate(()=>{
+    const button=document.querySelector('#queryRetailReport');
+    // Real background access refresh used to detach the pointer target and
+    // silently drop the pending click. No timing sleep or retry hides it.
+    window.click360Route('reports',{preserveActiveModal:true});
+    if(!button.isConnected||button!==document.querySelector('#queryRetailReport'))throw Error('RETAIL_REPORT_BACKGROUND_REFRESH_DETACHED_QUERY');
+  });
   await page.locator('#queryRetailReport').click();
-  await page.waitForFunction(()=>document.querySelector('#app')?.textContent.includes('Período completo leído de la nube'));
+  try{
+    await page.waitForFunction(()=>document.querySelector('#app')?.textContent.includes('Período completo leído de la nube'));
+  }catch(error){
+    const diagnostic=await page.evaluate(async()=>({
+      route:location.hash,from:document.querySelector('#repFrom')?.value,to:document.querySelector('#repTo')?.value,
+      buttonDisabled:document.querySelector('#queryRetailReport')?.disabled,
+      bootstrap:window.click360SparkBootstrapState,coordinatorBusy:window.click360SparkCoordinator?.isBusy(),
+      health:await window.click360SparkOperationalSession?.health(),
+      text:document.querySelector('#app')?.textContent.slice(0,600),toast:document.querySelector('#toast')?.textContent
+    }));
+    console.error(JSON.stringify({stage:'RETAIL_REPORT_CONFIRMATION_FAILED',diagnostic}));throw error;
+  }
   for(const field of ['sold','collected','tickets']){
     const text=await page.locator(`[data-retail-total="${field}"]`).textContent();
     const value=Number(text.replace(/[^\d.-]/g,''));
