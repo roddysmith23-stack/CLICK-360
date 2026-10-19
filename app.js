@@ -196,8 +196,11 @@
     return lastSaveFailure;
   }
   function writeGateStatus() {
+    if(uiPreferencePending)return {allowed:false,reason:'device_save_pending'};
     if (deviceSavePending) return { allowed: false, reason: 'device_save_pending' };
     if (window.click360IsMixedBuild?.()) return { allowed:false, reason:'client_data_protection' };
+    if(window.click360SparkBootstrapState&&!['LEGACY','READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState.phase))
+      return {allowed:false,reason:'client_data_protection'};
     // r37 (legacy consent grace): a legacy owner whose 7-day grace period
     // has expired without accepting the updated Terms/Privacy is blocked
     // from NEW commercial mutations here -- but this must never touch
@@ -212,6 +215,23 @@
     }
     return { allowed: true, reason: 'ok' };
   }
+  window.click360SparkMutationGate=function(command){
+    if(uiPreferencePending)return {allowed:false,reason:'device_save_pending'};
+    if(window.click360IsMixedBuild?.()||!tenantDataHydrated||!activeTenantContext
+      ||(window.click360SparkBootstrapState&&!['READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState.phase)))
+      return {allowed:false,reason:'client_data_protection'};
+    if(legalMutationGateActive())return {allowed:false,reason:'legal_acceptance_required'};
+    const access=window.click360SparkAccessGate?.();
+    if(access?.allowed!==true)return access||{allowed:false,reason:'auth_not_ready'};
+    if(command?.kind==='scoped_settings'&&window.click360Auth?.currentUser?.uid!==window.click360SparkOperationalSession?.identity.ownerUid)
+      return {allowed:false,reason:'permission_required'};
+    if(authUser().role==='owner')return access;
+    const permission={sale:['sales','create'],product_create:['products','create'],product_edit:['products','update'],inventory_adjust:['products','update'],
+      product_delete:['products','delete'],customer_create:['customers','create'],customer_edit:['customers','update'],customer_delete:['customers','delete'],
+      cash_open:['cashSessions','create'],cash_close:['cashSessions','close'],cash_movement:['movements','create'],receivable_payment:['layaways','payment']}[command?.kind];
+    if(!permission||window.click360User?.permissions?.[permission[0]]?.[permission[1]]!==true)return {allowed:false,reason:'permission_required'};
+    return access;
+  };
   function localOnlyPersistenceMode() {
     try {
       const sync = typeof window.click360GetSyncStatus === 'function'
@@ -275,13 +295,24 @@
    * @param {string} nextId - ID del negocio destino
    * @param {string} currentRoute - ruta activa actual
    */
-  function selectBusinessAtomically(nextId, currentRoute) {
+  async function selectBusinessAtomically(nextId, currentRoute) {
+    if(uiPreferencePending)return toast('Espera a que termine de guardarse la fecha de trabajo.','err');
     // Guard: evitar doble-tap o cambio mientras ya se está cambiando
     if (BUSINESS_SWITCH_GUARD) return;
     if (!state.businesses.some((b) => b.id === nextId)) return;
     if (state.activeBusinessId === nextId) { closeModal(); return; }
 
     BUSINESS_SWITCH_GUARD = true;
+    if(window.click360SparkCoordinator){
+      try{
+        if(window.click360SparkCoordinator.isBusy()||window.click360SparkOperationalSession?.isBusy())
+          return toast('Espera a que termine la operación actual.','err');
+        await window.click360SparkCoordinator.recover(nextId);
+        closeModal();renderApp(currentRoute);
+      }catch{toast('No pudimos abrir el otro negocio todavía. Tus datos permanecen protegidos.','err');}
+      finally{BUSINESS_SWITCH_GUARD=false;}
+      return;
+    }
     try {
       // 1. Cambiar ID de negocio activo
       state.activeBusinessId = nextId;
@@ -394,6 +425,7 @@
   }
   function slug(s) { return String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'negocio'; }
   let workingDate = null;
+  let uiPreferencePending=false;
   // P0-2 (SHARY): this used to read date.getFullYear()/getMonth()/getDate(),
   // which resolve in whatever timezone the DEVICE's OS clock is configured
   // to -- not necessarily the business's real timezone. A device with a
@@ -447,9 +479,29 @@
     const number = Number(value);
     return Number.isFinite(number) ? String(number) : String(fallback);
   }
-  function setWorkingDate(d) {
-    workingDate = d || null;
-    renderApp(route);
+  async function setWorkingDate(d) {
+    if(uiPreferencePending||window.click360SparkCoordinator?.isBusy()||window.click360SparkOperationalSession?.isBusy()){
+      if($('#workingDateInput'))$('#workingDateInput').value=today();
+      return toast('Espera a que termine la operación actual.','err');
+    }
+    const context=activeTenantContext,businessId=currentBusiness()?.id,date=d||null;
+    const controls=['workingDateInput','startDayBtnCash','chargeBtn','closeDayBtn'].map(id=>$('#'+id)).filter(Boolean)
+      .map(element=>({element,disabled:element.disabled}));
+    controls.forEach(({element})=>element.disabled=true);
+    uiPreferencePending=true;
+    try{
+      if(context&&tenantDataHydrated&&storageState?.indexedDbReady===true){
+        const dates=await window.CLICK360_V16_STORAGE.putWorkingDate(context,businessId,date);
+        if(context!==activeTenantContext||businessId!==currentBusiness()?.id)return;
+        if(indexedTenantCacheMeta)indexedTenantCacheMeta.uiWorkingDates=dates;
+      }else if(window.click360SparkOperationalSession)throw Error('La fecha requiere almacenamiento durable.');
+      workingDate=date;uiPreferencePending=false;renderApp(route);
+    }catch{toast('No pudimos conservar la nueva fecha. Tu información permanece protegida.','err');}
+    finally{
+      uiPreferencePending=false;
+      if(context===activeTenantContext&&businessId===currentBusiness()?.id)
+        controls.forEach(({element,disabled})=>{if(element.isConnected)element.disabled=disabled;});
+    }
   }
   function nowLabel() { return new Date().toLocaleString('es-EC', { dateStyle:'short', timeStyle:'medium' }); }
   function formattedTodaySpanish() {
@@ -831,9 +883,12 @@ function parseMoney(value) {
   function queueIndexedSnapshot(snapshot, metadata = {}) {
     if (!activeTenantContext || !window.CLICK360_V16_STORAGE) return Promise.resolve(false);
     const context = activeTenantContext;
-    return window.CLICK360_V16_STORAGE.putSnapshot(context, cloneState(snapshot), metadata).then(() => {
+    const write=metadata.verifiedLocalHandoff
+      ?window.CLICK360_V16_STORAGE.promoteVerifiedSnapshot:window.CLICK360_V16_STORAGE.putSnapshot;
+    return write(context, cloneState(snapshot), metadata).then((saved) => {
       if (activeTenantContext !== context) return false;
       indexedTenantCacheMeta = {
+        uiWorkingDates:saved?.uiWorkingDates||{},
         cloudCapacityBlocked: metadata.cloudCapacityBlocked === true,
         pendingOperations: metadata.pendingOperations || [],
         payloadBytes: stateSizeBytes(snapshot),
@@ -874,6 +929,13 @@ function parseMoney(value) {
     });
   }
   function save(options = {}) {
+    // A connected Spark certification session must never fall through to the
+    // monolithic auto-save writer. Unsupported UI flows stay fail-closed.
+    if (window.click360SparkOperationalSession) {
+      publishSaveFailure('spark_ui_explicit_command_required', 'save_spark_command');
+      restoreLastPersistedState();
+      return false;
+    }
     if (!activeTenantContext || !stateStorageKey()) {
       console.warn('CLICK360: intento de guardar sin tenant activo bloqueado.');
       publishSaveFailure('tenant_not_active', 'save_context');
@@ -1095,6 +1157,24 @@ function parseMoney(value) {
     }
     const operationId = uid('persist');
     try {
+      if (window.click360SparkOperationalSession) {
+        const sparkIdentity=window.click360SparkOperationalSession.identity;
+        if(sparkIdentity.ownerUid!==(context.ownerUid||context.ownerId)||sparkIdentity.businessId!==currentBusiness()?.id){
+          restoreCriticalSnapshot(previousState);return {ok:false,pending:false,notQueued:true,reason:'spark_ui_business_context_changed'};
+        }
+        let command;
+        try { command=typeof options.sparkCommand==='function'?options.sparkCommand():options.sparkCommand; }
+        catch(error) { restoreCriticalSnapshot(previousState);return {ok:false,pending:false,notQueued:true,reason:'spark_ui_command_invalid'}; }
+        const gate=window.click360SparkMutationGate?.(command);
+        if(gate?.allowed!==true){restoreCriticalSnapshot(previousState);toast(writeBlockMessage(gate||{}),'err');
+          return {ok:false,pending:false,notQueued:true,reason:gate?.reason||'client_data_protection'};}
+        const committed = await window.click360SparkOperationalSession.commit({
+          reason, command, candidate:cloneState(state)
+        });
+        if (committed.notQueued) restoreCriticalSnapshot(previousState);
+        if(!committed.ok)toast('No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.','err');
+        return committed;
+      }
       if (!save({ allowIndexedDbOffline: true, operationId, deferSync: true })) {
         return {
           ok:false,
@@ -1166,13 +1246,26 @@ function parseMoney(value) {
     // already-committed product/sale with the pre-operation state.
     if (!refreshed && !synced) restoreCriticalSnapshot(previousState);
     if (!options.suppressFailureToast) toast('El cambio no fue confirmado y no se registró como completado.', 'err');
-    const reason = !synced
+    const confirmationReason = !synced
       ? (refreshed ? 'remote_commit_rejected' : 'remote_commit_unknown')
       : (refreshed ? 'remote_state_mismatch' : 'remote_confirmation_failed');
-    return { ok: false, pending: false, reason };
+    return { ok: false, pending: false, reason:confirmationReason };
     } finally {
       actionLock.release();
     }
+  }
+  async function commitScopedPrintSetting(previousState,moduleName,record){
+    if(!window.click360SparkOperationalSession)return {ok:save()};
+    const previous=(previousState.settings?.[moduleName]||[]).find(item=>item.id===record.id&&item.businessId===record.businessId);
+    return commitCriticalMutation(previousState,'print_settings_updated',()=>false,{sparkCommand:()=>
+      window.CLICK360_MODULAR_UI_ADAPTER.scopedSettingsCommand({identity:window.click360SparkOperationalSession.identity,
+        actorUid:window.click360Auth?.currentUser?.uid,operationId:uid('print-settings'),moduleName,record,previous})});
+  }
+  function scopedBusinessSettingsCommand(previousState,record){
+    return window.CLICK360_MODULAR_UI_ADAPTER.scopedSettingsCommand({
+      identity:window.click360SparkOperationalSession.identity,actorUid:window.click360Auth?.currentUser?.uid,
+      operationId:uid('business-settings'),moduleName:'config',record:{...record,businessId:record.id},
+      previous:previousState.businesses.find(item=>item.id===record.id)});
   }
   // Action Guardian: wraps a critical-mutation trigger button so a second
   // tap/click while the first is still in flight is ignored outright (no
@@ -1491,10 +1584,17 @@ function parseMoney(value) {
     else renderLogin('', { ready:true });
   };
   window.click360SetTenantContext = function(context, options = {}) {
+    resetWorkerAccessGate();
     if (!context?.authUid || !context?.ownerId || !context?.businessId || !context?.tenantKey) {
       throw new Error('Contexto de cuenta incompleto. No se cargaron datos.');
     }
-    if (activeTenantContext?.tenantKey !== context.tenantKey) activeSellDraft = { key:'', cart:[] };
+    if (activeTenantContext?.tenantKey !== context.tenantKey
+      || activeTenantContext?.authUid !== context.authUid) {
+      activeSellDraft = { key:'', cart:[] };
+      window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
+      window.click360SparkOperationalSession?.close();
+      window.click360SparkOperationalSession = null;
+    }
     activeTenantContext = Object.freeze({ ...context, schemaVersion: 10 });
     indexedTenantCacheMeta = null;
     lastSavePersistence = null;
@@ -1612,6 +1712,13 @@ function parseMoney(value) {
     };
   };
   window.click360ClearTenantContext = function() {
+    resetWorkerAccessGate();
+    window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
+    window.click360SparkBootstrapState=null;
+    // Revoke the old writer before clearing its context or hydrating another
+    // account. Closing a connection must never delete its durable journal.
+    window.click360SparkOperationalSession?.close();
+    window.click360SparkOperationalSession = null;
     stopScanner();
     activeTenantContext = null;
     activeSellDraft = { key:'', cart:[] };
@@ -1660,6 +1767,7 @@ function parseMoney(value) {
       state = normalizeState(candidate);
       state.identity = tenantIdentity();
       indexedTenantCacheMeta = {
+        uiWorkingDates:record.uiWorkingDates||{},
         cloudCapacityBlocked: record.cloudCapacityBlocked === true,
         pendingOperations: record.pendingOperations || [],
         payloadBytes: stateSizeBytes(candidate),
@@ -1675,6 +1783,7 @@ function parseMoney(value) {
         source: String(record.source || 'indexeddb_cache')
       };
       tenantStateDeferred = false;
+      workingDate=record.uiWorkingDates?.[state.activeBusinessId]||null;
       tenantDataHydrated = true;
       tenantStateProvenance = 'verified_cache';
       rememberPersistedState();
@@ -1697,6 +1806,138 @@ function parseMoney(value) {
   window.click360GetTenantState = function() {
     if (!activeTenantContext) return null;
     return JSON.parse(JSON.stringify(state));
+  };
+  window.click360GetActiveBusinessId=()=>currentBusiness()?.id||'';
+  window.addEventListener('click360-spark-view-ready',event=>{
+    if(event.detail?.source!=='server'||event.detail.businessId!==currentBusiness()?.id
+      ||BUSINESS_SWITCH_GUARD||window.click360SparkAccessGate?.().allowed!==true)return;
+    // Server refresh may update an idle view, never destroy an active form or
+    // checkout closure. The latest records are already durable in IndexedDB.
+    if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
+    renderApp(route,{preserveActiveModal:true});
+  });
+  window.click360InstallSparkBusiness=async function({businessId,configuration,verifiedLocalHandoff=null}){
+    if(!activeTenantContext||!configuration.businesses.some(b=>b.id===businessId))throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_INVALID');
+    const next=cloneState(state);next.businesses=cloneState(configuration.businesses);next.activeBusinessId=businessId;
+    next.identity=tenantIdentity();
+    // Restore global configuration leaves only. Record arrays are loaded from
+    // their current modules, never a stale whole legacy snapshot.
+    for(const entry of configuration.entries){
+      const path=entry.sourcePath;
+      if(!['settings','finance','logistics','legalAcceptances'].includes(path[0])||!path.length)continue;
+      let target=next;
+      for(let i=0;i<path.length-1;i++){
+        const key=path[i];
+        target=target[key]||=(typeof path[i+1]==='number'?[]:{});
+      }
+      target[path.at(-1)]=cloneState(entry.data);
+    }
+    const candidate=normalizeState(next);candidate.identity=tenantIdentity();
+    // Persist the verified selection before exposing a new repository. A
+    // background rejected save must not restore the previous business while
+    // server pages for the new business are still being fetched.
+    const saved=await queueIndexedSnapshot(candidate,{
+      source:'spark_operational_candidate',deviceRevision:uid('spark-business'),
+      expectedDeviceRevision:indexedTenantCacheMeta?.deviceRevision||'',
+      ...(verifiedLocalHandoff?{verifiedLocalHandoff}:{}),
+      pendingRemoteSync:indexedTenantCacheMeta?.pendingRemoteSync===true,cloudCapacityBlocked:false
+    });
+    if(!saved)throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_DURABILITY_FAILED');
+    state=candidate;workingDate=indexedTenantCacheMeta?.uiWorkingDates?.[businessId]||null;
+    rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
+    tenantDataHydrated=true;tenantStateDeferred=false;
+  };
+  window.click360InstallSparkView=async function({source,businessId,records,append=false}){
+    if(source!=='server'||!window.click360SparkOperationalSession||currentBusiness()?.id!==businessId)throw Error('SPARK_UI_BOOTSTRAP_VIEW_INVALID');
+    const health=await window.click360SparkOperationalSession.health();
+    if(health.pendingCount||health.unknownCount||health.projectionPendingCount)throw Error('SPARK_UI_BOOTSTRAP_PENDING_VIEW_BLOCKED');
+    const next=cloneState(state);
+    for(const [path,rows]of Object.entries(records)){
+      if(!Object.hasOwn(window.CLICK360_SPARK_MIGRATION.arrays,path))throw Error('SPARK_UI_BOOTSTRAP_MODULE_INVALID');
+      const keys=path.split('.');let target=next;for(const key of keys.slice(0,-1))target=target[key]||={};
+      const key=keys.at(-1),old=target[key]||[];
+      const incoming=rows.map(row=>{
+        if(row.businessId!==businessId)throw Error('SPARK_UI_BOOTSTRAP_RECORD_SCOPE_INVALID');
+        const value=cloneState(row);
+        if(path==='sales'){value.storageRecordId=row.id;value.id=row.legacyId||row.id;}
+        return value;
+      });
+      target[key]=append?old.filter(r=>!incoming.some(n=>n.id===r.id&&n.businessId===r.businessId)).concat(incoming)
+        :old.filter(r=>r.businessId!==businessId).concat(incoming);
+    }
+    for(const p of next.products.filter(p=>p.businessId===businessId&&p.deleted===true)){
+      next.deletedProducts||=[];
+      if(!next.deletedProducts.some(d=>d.id===p.id&&d.businessId===businessId))next.deletedProducts.push(p);
+    }
+    next.products=next.products.filter(p=>p.deleted!==true);
+    // UI aliases must not change canonical server relations or operation IDs.
+    for(const path of ['movements','layaways'])for(const row of next[path]||[]){
+      const sale=next.sales?.find(s=>s.businessId===row.businessId&&s.storageRecordId===row.saleId);
+      if(sale)row.saleId=sale.id;
+    }
+    await window.click360PersistSparkCandidate(next,{operationId:uid('spark-view'),pendingRemoteSync:false});
+  };
+  window.click360PersistSparkCandidate = async function(candidate, metadata) {
+    const context=activeTenantContext;
+    if(!window.click360SparkOperationalSession||!context||!candidate
+      ||candidate.identity?.tenantKey!==context.tenantKey)throw Error('SPARK_UI_LOCAL_SCOPE_INVALID');
+    if(stateSizeBytes(candidate)>MAX_LOCAL_ONLY_TENANT_STATE_BYTES)throw Error('SPARK_UI_DEVICE_CAPACITY_EXCEEDED');
+    const durable=await queueIndexedSnapshot(candidate,{
+      ...metadata,source:'spark_operational_candidate',storageArchitecture:'spark_modular',
+      expectedDeviceRevision:indexedTenantCacheMeta?.deviceRevision||'',
+      deviceRevision:metadata.operationId,cloudCapacityBlocked:false
+    });
+    if(!durable||context!==activeTenantContext)throw Error('SPARK_UI_DEVICE_COMMIT_FAILED');
+    publishSaveFailure();
+    state=cloneState(candidate);rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
+    return true;
+  };
+  window.click360ProjectSparkOperation = async function(projection) {
+    const session=window.click360SparkOperationalSession,context=activeTenantContext;
+    if(!session||projection.source!=='server'||projection.identity?.tenantKey!==session.identity.tenantKey
+      ||currentBusiness()?.id!==projection.identity.businessId)throw Error('SPARK_UI_PROJECTION_SCOPE_INVALID');
+    const next=cloneState(state),businessId=projection.identity.businessId;
+    for(const [moduleName,records]of Object.entries(projection.records)){
+      if(!['products','sales','movements','cashSessions','dailyReports','layaways','customers','config','labelTemplates','labelProfiles'].includes(moduleName))throw Error('SPARK_UI_PROJECTION_MODULE_INVALID');
+      const target=moduleName==='config'?next.businesses:['customers','labelTemplates','labelProfiles'].includes(moduleName)?(next.settings[moduleName]||=[]):(next[moduleName]||=[]);
+      for(const record of records){
+        if(record.businessId!==businessId)throw Error('SPARK_UI_PROJECTION_BUSINESS_INVALID');
+        if(moduleName==='products'&&record.deleted===true){
+          next.deletedProducts ||= [];
+          const tombstoneIndex=next.deletedProducts.findIndex(p=>p.id===record.id&&p.businessId===businessId);
+          const tombstone={...record,reason:'manual_delete'};
+          if(tombstoneIndex<0)next.deletedProducts.push(tombstone);else next.deletedProducts[tombstoneIndex]=tombstone;
+          next.products=next.products.filter(p=>p.id!==record.id||p.businessId!==businessId);
+          continue;
+        }
+        const value=cloneState(moduleName==='dailyReports'&&record.status==='closed'
+          ?window.CLICK360_MODULAR_UI_ADAPTER.cashReportView(record):record),id=moduleName==='sales'?(record.legacyId||record.id):record.id;
+        value.id=id;
+        if(moduleName==='sales')value.storageRecordId=record.id;
+        // Preserve receipt/layaway relationships used by the existing UI.
+        if(value.saleId){const sale=projection.records.sales?.find(s=>s.id===value.saleId)||next.sales?.find(s=>s.operationId===value.saleId);value.saleId=sale?.legacyId||sale?.id||value.saleId;}
+        let index=target.findIndex(item=>(moduleName==='config'?item.id===businessId:item.businessId===businessId)&&item.id===id);
+        // One operation may have several immutable financial records (a
+        // compensation plus its replacement). Canonical IDs take precedence.
+        // Only normalize the legacy single-receipt alias whose server ID is
+        // the operation itself; never merge distinct compensation records.
+        if(index<0&&moduleName==='movements'&&id===value.operationId
+          &&!Object.hasOwn(value,'compensationSign')&&!value.replacesMovementId)
+          index=target.findIndex(item=>item.businessId===businessId&&item.operationId===value.operationId
+            &&!Object.hasOwn(item,'compensationSign')&&!item.replacesMovementId);
+        if(index<0)target.push(value);else {
+          target[index]={...target[index],...value};
+          if(moduleName==='dailyReports'&&record.status==='closed')delete target[index].html;
+        }
+      }
+    }
+    await window.click360PersistSparkCandidate(next,{operationId:projection.operationId,pendingRemoteSync:false});
+    if(context!==activeTenantContext)throw Error('SPARK_UI_CONTEXT_CHANGED');
+    // The initiating live handler still owns its DOM (checkout inputs,
+    // product form, cash button). Projection must not detach those controls
+    // before that handler finishes. Replay without a handler may refresh.
+    if(!window.click360DebugCriticalActionGate?.().size)
+      renderApp(location.hash.replace('#','')||'home',{preserveActiveModal:true});
   };
   window.click360PersistTenantState = function() {
     return save();
@@ -1832,6 +2073,7 @@ function parseMoney(value) {
     }
   };
   window.click360ApplyTenantState = function(nextState, context) {
+    if(window.click360SparkOperationalSession)throw Error('SPARK_UI_LEGACY_OVERWRITE_BLOCKED');
     const candidatePayload = { identity: nextState?.identity || context, data: nextState || {} };
     if (!activeTenantContext || !context || context.tenantKey !== activeTenantContext.tenantKey
       || !tenantRuntime?.validBusinessPayload(candidatePayload, activeTenantContext)) {
@@ -2106,7 +2348,7 @@ function parseMoney(value) {
     // without real evidence. When click360GetSyncState is available and
     // returns needs_review/pending_write, we surface those explicitly.
     const rawSyncState = typeof window.click360GetSyncState === 'function'
-      ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
+      && !window.click360SparkOperationalSession ? window.click360GetSyncState({ reason: 'sync_pill' }) : null;
     const effectiveStatus = (() => {
       if (rawSyncState?.cloudCapacityBlocked && rawSyncState.blocking) return 'error';
       if (rawSyncState?.cloudCapacityBlocked || indexedTenantCacheMeta?.cloudCapacityBlocked) return 'cloud_capacity_blocked';
@@ -2117,6 +2359,8 @@ function parseMoney(value) {
       return s.status;
     })();
     const map = {
+      modular_confirmed:['Guardado y respaldado en nube','La última operación y su copia local fueron verificadas.'],
+      modular_pending:['Guardado en este dispositivo · respaldo en nube pendiente','No repitas la operación. CLICK 360 comprobará su confirmación.'],
       cloud_capacity_blocked: ['Guardado en este dispositivo · respaldo en nube pendiente', 'La copia local está protegida. El respaldo cloud requiere almacenamiento modular; no borres los datos del dispositivo.'],
 	      synced: ['Guardado en nube', 'Tus datos están guardados en este dispositivo y confirmados en la nube.'],
 	      syncing: ['Sincronizando', 'Guardando cambios de forma segura.'],
@@ -2133,6 +2377,18 @@ function parseMoney(value) {
     };
     const [title, detail] = map[effectiveStatus] || map.local;
     return { ...s, status: effectiveStatus, title, detail };
+  }
+  function recoveryCopyStatusInfo() {
+    const copy=window.click360SparkRecoveryCopy;
+    const ownerUid=window.click360Auth?.currentUser?.uid;
+    const instant=typeof copy?.verifiedAt==='string'?new Date(copy.verifiedAt):null;
+    if(!ownerUid||copy?.ownerUid!==ownerUid||copy?.status!=='RECOVERY_COPY_CLIENT_VERIFIED'
+      ||copy.serverReadVerified!==true||copy.operationalCloudConfirmed!==false
+      ||!/^[a-f0-9]{64}$/.test(copy.captureHash||'')||!/^[a-f0-9]{64}$/.test(copy.sourceHash||'')
+      ||!instant||!Number.isFinite(instant.getTime()))return null;
+    const date=new Intl.DateTimeFormat('es-EC',{dateStyle:'medium',timeStyle:'short',timeZone:'America/Guayaquil'}).format(instant);
+    return {title:`Copia de recuperación en nube verificada · ${date}`,
+      detail:'Protege el estado capturado en esa fecha. No confirma cambios posteriores ni sustituye la sincronización comercial indicada arriba.'};
   }
   function syncPillHtml(compact=false) {
     const info = syncStatusInfo();
@@ -2296,13 +2552,13 @@ function parseMoney(value) {
   }
   function labelTemplatesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
-    return (state.settings?.labelTemplates || []).filter((template) => template.businessId === bid
-      || (!template.businessId && legacyBusinessId === bid));
+    return (state.settings?.labelTemplates || []).filter((template) => template.deleted!==true && (template.businessId === bid
+      || (!template.businessId && legacyBusinessId === bid)));
   }
   function labelProfilesForBiz(bid=currentBusiness()?.id) {
     const legacyBusinessId = state.settings?.legacyDataBusinessId;
-    return (state.settings?.labelProfiles || []).filter((profile) => profile.businessId === bid
-      || (!profile.businessId && legacyBusinessId === bid));
+    return (state.settings?.labelProfiles || []).filter((profile) => profile.deleted!==true && (profile.businessId === bid
+      || (!profile.businessId && legacyBusinessId === bid)));
   }
   const printDeviceMemory = new Map();
   function printDeviceStorageKey(businessId=currentBusiness()?.id) {
@@ -2480,9 +2736,47 @@ function parseMoney(value) {
       && !(state.dailyReports || []).some((report) => report.businessId === businessId && report.date === date
         && report.cashSessionId === session.id && report.status === 'closed')) || null;
   }
+  function sparkCashCounterView(session){
+    if(!window.click360SparkOperationalSession)return null;
+    const status=window.click360GetSyncStatus?.().status;
+    if(status!=='modular_confirmed')return {pending:true};
+    if(!session||session.storageHistoryReadOnly||session.summaryVersion!==1
+      ||['openingAmount','cashBalance','salesTotal','incomeCash','expenseCash'].some(key=>typeof session[key]!=='number'||!Number.isFinite(session[key]))
+      ||typeof session.paymentTotals?.cash!=='number'||!Number.isFinite(session.paymentTotals.cash))return {unverified:true};
+    return {opening:session.openingAmount,income:session.incomeCash+session.paymentTotals.cash,
+      out:session.expenseCash,balance:session.cashBalance,sales:session.salesTotal};
+  }
   function isCashIncomeMovement(m) {
+    if(m?.kind==='sale_cancellation'&&m.status!=='cancelled')return saleCancellationPaymentTotals(m).cash>0;
     if (!m || m.kind !== 'ingreso' || m.status === 'cancelled') return false;
     return !['Tarjeta', 'Transferencia'].includes(m.paymentMethod || '');
+  }
+  function saleCancellationPaymentTotals(m,sales=state.sales) {
+    const sale=sales.find(row=>(row.id===m.saleId||row.storageRecordId===m.saleId)&&row.businessId===m.businessId),p=m.paymentTotals,r=sale?.receiptSummary;
+    if(m.compensationSign!==-1||!sale||sale.status!=='cancelled'||sale.cancelOperationId!==m.operationId
+      ||sale.cashSessionId!==m.cashSessionId||sale.date!==m.date||!p||!r||p.version!==1||p.uniformSession!==true||p.cashSessionId!==m.cashSessionId
+      ||['version','uniformSession','cashSessionId','cash','card','transfer','receivablePayments'].some(k=>p[k]!==r[k])
+      ||['cash','card','transfer','receivablePayments'].some(k=>typeof p[k]!=='number'||!Number.isFinite(p[k])||p[k]<0)
+      ||!Number.isFinite(m.amount)||m.amount<0||m.amount!==sale.received
+      ||Math.abs(p.cash+p.card+p.transfer-m.amount)>0.00001)throw Error('CASH_SALE_COMPENSATION_RELATION_INVALID');
+    return p;
+  }
+  function movementCashIncomeAmount(m) {
+    return m.kind==='sale_cancellation'?-saleCancellationPaymentTotals(m).cash:movementEffectiveAmount(m);
+  }
+  function movementEffectiveAmount(m,sales=state.sales,movements=state.movements) {
+    const amount=Number(m?.amount||0);
+    if(m?.kind==='sale_cancellation'){saleCancellationPaymentTotals(m,sales);return -amount;}
+    if(!Object.hasOwn(m||{},'compensationSign'))return amount;
+    const original=movements.find(row=>row.id===m.compensatesMovementId&&row.businessId===m.businessId);
+    if(m.compensationSign!==-1||!Number.isFinite(amount)||amount<0||!original
+      ||!['ingreso','egreso','retiro','compra'].includes(m.kind)||original.kind!==m.kind
+      ||Number(original.amount)!==amount||original.status==='cancelled'
+      ||['saleId','paymentType','productId','compensationSign'].some(key=>Object.hasOwn(original,key))
+      ||!m.operationId||original.compensatedByOperationId!==m.operationId||original.reversalMovementId!==m.id
+      ||original.cashSessionId!==m.cashSessionId||original.date!==m.date)
+      throw Error('CASH_COMPENSATION_RELATION_INVALID');
+    return -amount;
   }
   function isDayStarted() {
     const bid = currentBusiness()?.id;
@@ -2525,7 +2819,7 @@ function parseMoney(value) {
       return Object.keys(logisticsPermissions).some((key) => logisticsPermissions[key] === true);
     }
     const routeModule = { inventory: 'inventory', sell: 'sales', cash: 'cash', settings: 'settings', reports: 'reports', crm: 'customers', reminders: 'reminders', invoices: 'suppliers', workers: 'workers', debtors: 'layaways' }[section];
-	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:'settings', reminders:'settings', workers:'members', printing:'settings', debtors:'layaways' }[section];
+	    const boundaryModule = { inventory:'products', sell:'sales', cash:'cashSessions', settings:'settings', reports:'auditEvents', crm:window.click360SparkOperationalSession?'customers':'settings', reminders:'settings', workers:'members', printing:'settings', debtors:'layaways' }[section];
 	    if (routeModule && Object.keys(permissions).length) {
 	      return permissions[routeModule]?.view === true || permissions[boundaryModule]?.read === true;
 	    }
@@ -2784,6 +3078,16 @@ function parseMoney(value) {
 	    updateClock();
 	    clockTimer = setInterval(updateClock, 60000);
     $$('[data-route]').forEach(b=>b.onclick=()=>renderApp(b.dataset.route));
+    $$('[data-spark-history]').forEach(button=>button.onclick=async()=>{
+      const coordinator=window.click360SparkCoordinator,context=activeTenantContext,businessId=currentBusiness()?.id;
+      if(button.disabled||uiPreferencePending||!coordinator||coordinator.isBusy()||window.click360SparkOperationalSession?.isBusy())return;
+      button.disabled=true;
+      try{
+        await coordinator.loadMore(button.dataset.sparkHistory);
+        if(context===activeTenantContext&&businessId===currentBusiness()?.id&&coordinator===window.click360SparkCoordinator)renderApp(route);
+      }catch{toast('No pudimos cargar más registros todavía. Tus datos permanecen protegidos.','err');}
+      finally{if(button.isConnected)button.disabled=false;}
+    });
     requestAnimationFrame(() => { document.querySelector('.bottomNav .navBtn.active')?.scrollIntoView({block:'nearest',inline:'center',behavior:'instant'}); });
 	    ['businessPickerTop','businessPickerSide'].forEach(id=>{ const el=$('#'+id); if(el) el.onclick=openBusinessSwitcher; });
     $('#logoutTop')?.addEventListener('click',()=>window.click360AppLogout());
@@ -2812,7 +3116,10 @@ function parseMoney(value) {
           if(!checkAuth('business')) return;
           if(!can(r)) r='home';
           if (r !== 'legal' && requiresLegalHardGate()) r = 'legalGate';
-          else if (r !== 'legal' && requiresWorkerAccessGate()) r = 'workerAccessGate';
+          else if (r !== 'legal' && requiresWorkerAccessGate()) {
+            if(r!=='workerAccessGate')workerAccessRequestedRoute=r;
+            r = 'workerAccessGate';
+          }
       const activeModal = arguments[1]?.preserveActiveModal === true && r === route
         ? $('#modalRoot .modalOverlay.show') : null;
       if (activeModal && activeModal.dataset.businessId === currentBusiness()?.id
@@ -2823,6 +3130,16 @@ function parseMoney(value) {
       const cashOpening = r === 'cash' && route === 'cash' ? $('#apertureAmountInput') : null;
       const cashOpeningState = cashOpening && cashOpening.dataset.businessId === currentBusiness()?.id
         ? {value:cashOpening.value,focused:document.activeElement === cashOpening} : null;
+      // Background access refresh must not replace the opening button between
+      // pointer-up and click. Retain the actual handler/draft, not just text.
+      // Explicit navigation, changed business/day and permission/legal gates
+      // still render normally; no cloud confirmation is inferred here.
+      const cashStart = cashOpeningState ? $('#startDayBtnCash') : null;
+      if (arguments[1]?.preserveActiveModal === true && cashStart && tenantDataHydrated
+          && !isDayStarted() && !isDayClosed()) {
+        markAppReady('route:cash');
+        return;
+      }
       // Access/snapshot refreshes must not destroy the active checkout closure
       // (cart, tender inputs and the in-flight button lock). Auth/legal gates
       // above still take precedence; a different tenant or closed day renders.
@@ -2877,13 +3194,15 @@ function parseMoney(value) {
       return `<div class="pageHead homeGreeting"><div><h1>Hola, <span>${escapeHtml(authUser().name || 'Usuario')}</span></h1></div></div>${dataNotReadyCardHtml('Cargando tu inventario, ventas y caja desde la nube...')}`;
     }
     const b=currentBusiness(), products=productsForBiz(), sales=salesForBiz().filter(s=>s.date===today() && s.status!=='cancelled'), mov=movementsForBiz().filter(m=>m.date===today() && m.status!=='cancelled');
-    const apertura=mov.find(m=>m.kind==='apertura')?.amount||0;
-    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
-    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
-    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
-    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+m.amount,0);
+    const modularCash=sparkCashCounterView(currentOpenCashSession()||latestCashSession()),modular=!!modularCash;
+    const apertura=modular?modularCash.opening:mov.find(m=>m.kind==='apertura')?.amount||0;
+    const income=modular?modularCash.sales:mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementCashIncomeAmount(m),0);
+    const expenses=modular?null:mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const compras=modular?null:mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const retiros=modular?null:mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
     const out=expenses+compras+retiros;
-    const saldo=apertura+income-out;
+    const saldo=modular?modularCash.balance:apertura+income-out;
+    const cashMoney=value=>modular?(modularCash.pending?'Pendiente de confirmar':value===undefined?'Consultar caja verificada':fmt(value)):fmt(value);
     const low=products.filter(p=>p.qty<=3).length;
     const motivationalPhrases = [
       '"El éxito no es casualidad, es constancia."',
@@ -2900,8 +3219,8 @@ function parseMoney(value) {
 	    return `<div class="pageHead homeGreeting"><div><h1>Hola, <span>${escapeHtml(authUser().name || 'Usuario')}</span></h1><p>${escapeHtml(b.name)}</p></div></div>
       ${accessBannerHtml()}
       <section class="grid kpis">
-        <div class="card kpi gold"><div class="icon">\u2197</div><small>Ventas de hoy</small><strong class="goldText">${fmt(income)}</strong></div>
-        <div class="card kpi"><div class="icon">\u25A3</div><small>Caja</small><strong>${fmt(saldo)}</strong></div>
+        <div class="card kpi gold"><div class="icon">\u2197</div><small>${modular?'Ventas de esta sesión':'Ventas de hoy'}</small><strong class="goldText">${cashMoney(income)}</strong></div>
+        <div class="card kpi"><div class="icon">\u25A3</div><small>Caja</small><strong>${cashMoney(saldo)}</strong></div>
         <div class="card kpi"><div class="icon">\u25A7</div><small>Inventario</small><strong>${products.length}</strong></div>
         <div class="card kpi"><div class="icon">\u26A0</div><small>Stock bajo</small><strong>${low}</strong></div>
       </section>
@@ -3003,7 +3322,7 @@ function parseMoney(value) {
     if (!tenantDataHydrated) {
       return `<div class="pageHead"><div><h1>Vender</h1></div></div>${dataNotReadyCardHtml('Cargando el estado de tu jornada y tu inventario...')}`;
     }
-    if (!isDayStarted()) {
+    if (!isDayStarted() && !isDayClosed()) {
       return `<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; padding:60px 20px; text-align:center; min-height:50vh;">
         <div style="font-size:48px; margin-bottom:16px;">🔑</div>
         <h2>Jornada no Iniciada</h2>
@@ -3105,15 +3424,20 @@ function parseMoney(value) {
     const mov = hasSessionTaggedMovements
       ? allMov.filter((movement) => movement.cashSessionId === displaySession.id)
       : allMov;
-    const aperture=mov.slice().reverse().find(m=>m.kind==='apertura')?.amount || 0;
-    const income=mov.filter(isCashIncomeMovement).reduce((a,m)=>a+m.amount,0);
-    const expenses=mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+m.amount,0);
-    const compras=mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+m.amount,0);
-    const retiros=mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+m.amount,0);
-    const out=expenses+compras+retiros;
-    const saldo = aperture + income - out;
+    const modularCash=sparkCashCounterView(displaySession),modular=!!modularCash;
+    const aperture=modular?modularCash.opening:mov.slice().reverse().find(m=>m.kind==='apertura')?.amount || 0;
+    const income=modular?modularCash.income:mov.filter(isCashIncomeMovement).reduce((a,m)=>a+movementCashIncomeAmount(m),0);
+    const expenses=modular?null:mov.filter(m=>m.kind==='egreso').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const compras=modular?null:mov.filter(m=>m.kind==='compra').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const retiros=modular?null:mov.filter(m=>m.kind==='retiro').reduce((a,m)=>a+movementEffectiveAmount(m),0);
+    const out=modular?modularCash.out:expenses+compras+retiros;
+    const saldo = modular?modularCash.balance:aperture + income - out;
+    const cashMoney=value=>modular?(modularCash.pending?'Pendiente de confirmar':value===null||value===undefined?'No verificado':fmt(value)):fmt(value);
 
     const staleSession = staleOpenCashSession();
+    // An immutable closed session remains history even if its legacy report
+    // lacks a status field. Never offer the ordinary inferred-$0 opening.
+    const protectedHistory=hasReadOnlyCashHistory(currentBusiness()?.id,today());
     let topCard = '';
     if (staleSession) {
       topCard = `
@@ -3123,7 +3447,7 @@ function parseMoney(value) {
          <button class="btn primary" id="closeStaleCashBtn" type="button">Cerrar caja del ${escapeHtml(staleSession.date)}</button>
        </div>
       `;
-    } else if (!isDayStarted()) {
+    } else if (!protectedHistory && !isDayStarted() && !isDayClosed()) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px dashed var(--gold);">
          <h3 style="margin-bottom:8px;">🔑 Iniciar Jornada de Hoy</h3>
@@ -3135,6 +3459,13 @@ function parseMoney(value) {
          <button class="btn primary block" id="startDayBtnCash" style="width:100%;">Iniciar Día (Apertura)</button>
        </div>
       `;
+    } else if (protectedHistory) {
+      topCard = `
+       <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border:1px solid var(--gold);">
+         <h3 style="margin-bottom:8px; color:var(--gold);">🔒 Historial de caja protegido</h3>
+         <p style="font-size:13px; color:var(--muted); margin-bottom:16px;">El cierre anterior se conserva sin cambios. Para continuar, el propietario puede iniciar una caja independiente e indicar su fondo inicial.</p>
+         <button class="btn primary" id="independentCashOpenBtn">Iniciar nueva caja independiente</button>
+       </div>`;
     } else if (isDayClosed()) {
       topCard = `
        <div class="card" style="text-align:center; padding:24px; margin-bottom:16px; border: 1px solid var(--gold);">
@@ -3150,13 +3481,11 @@ function parseMoney(value) {
          <button class="btn silver" id="closeDayBtn">Cerrar día</button>
        </div>
        <section class="grid cashGrid">
-         <div class="card kpi"><small>Caja Inicial</small><strong class="goldText">${fmt(aperture)}</strong></div>
-         <div class="card kpi"><small>Ingresos (Ventas)</small><strong class="goldText">${fmt(income)}</strong></div>
-         <div class="card kpi"><small>Egresos</small><strong>${fmt(out)}</strong></div>
-         <div class="card kpi"><small>Saldo Actual</small><strong class="goldText">${fmt(saldo)}</strong></div>
-         <div class="card kpi"><small>Gastos</small><strong>${fmt(expenses)}</strong></div>
-         <div class="card kpi"><small>Compras</small><strong>${fmt(compras)}</strong></div>
-         <div class="card kpi"><small>Retiros</small><strong>${fmt(retiros)}</strong></div>
+         <div class="card kpi"><small>Caja Inicial</small><strong class="goldText">${cashMoney(aperture)}</strong></div>
+         <div class="card kpi"><small>Ingresos en efectivo</small><strong class="goldText">${cashMoney(income)}</strong></div>
+         <div class="card kpi"><small>Egresos</small><strong>${cashMoney(out)}</strong></div>
+         <div class="card kpi"><small>Saldo Actual</small><strong class="goldText">${cashMoney(saldo)}</strong></div>
+         ${modular?'':`<div class="card kpi"><small>Gastos</small><strong>${fmt(expenses)}</strong></div><div class="card kpi"><small>Compras</small><strong>${fmt(compras)}</strong></div><div class="card kpi"><small>Retiros</small><strong>${fmt(retiros)}</strong></div>`}
        </section>
       `;
     }
@@ -3176,7 +3505,7 @@ function parseMoney(value) {
          <div class="movementList">
            ${mov.slice().reverse().map(m=>{
               const isCancelled = m.status === 'cancelled';
-              const editDeleteButtons = (authUser().role === 'owner' && !isCancelled) ? `
+              const editDeleteButtons = (authUser().role === 'owner' && !isCancelled && !m.compensatedByOperationId && m.compensationSign!==-1) ? `
                 <div style="display:flex; gap:6px; margin-top:6px; justify-content:flex-end;">
                   <button class="btn silver" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.editMovement('${actionId(m.id)}')">✎ Editar</button>
                   <button class="btn danger" style="padding:2px 8px; font-size:11px; min-height:24px; font-weight:bold;" onclick="window.click360GuardedAction(this, () => window.deleteMovement('${actionId(m.id)}'))">🗑 Anular</button>
@@ -3184,13 +3513,15 @@ function parseMoney(value) {
               ` : '';
               const cancelledLabel = isCancelled ? `<br><span style="font-size:11px;color:#ff4d4d;font-weight:bold;">🚫 ANULADO por ${escapeHtml(m.cancelledBy || 'owner')} a las ${escapeHtml(m.cancelledAt || '')}</span>` : '';
               const textStyle = isCancelled ? 'text-decoration: line-through; opacity: 0.5;' : '';
-              const amtDisplay = isCancelled ? `<span style="text-decoration:line-through;color:var(--muted);font-weight:normal;font-size:12px;margin-right:6px;">${fmt(m.originalAmount || 0)}</span><span style="color:#ff4d4d;">$0.00</span>` : `<span class="${m.kind==='ingreso'||m.kind==='apertura'?'pos':'neg'}">${m.kind==='ingreso'||m.kind==='apertura'?'+':'−'}${fmt(m.amount)}</span>`;
+              let effective=null;try{effective=movementEffectiveAmount(m);}catch(error){if(!modular)throw error;}
+              const effectivePositive=(m.kind==='ingreso'||m.kind==='apertura'||m.kind==='sale_cancellation')!==(effective<0);
+              const amtDisplay = isCancelled ? `<span style="text-decoration:line-through;color:var(--muted);font-weight:normal;font-size:12px;margin-right:6px;">${fmt(m.originalAmount || 0)}</span><span style="color:#ff4d4d;">$0.00</span>` : `<span class="${effectivePositive?'pos':'neg'}">${effectivePositive?'+':'−'}${fmt(m.amount)}</span>`;
 
               return `<div class="movement" style="flex-direction:column; align-items:stretch; gap:4px; padding:10px 0; border-bottom:1px solid var(--line); ${textStyle}">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                   <span><b>${escapeHtml(labelKind(m.kind))}</b><br><small>${escapeHtml(m.note||'')}</small>${cancelledLabel}<br><span style="font-size:10px;color:var(--gold);opacity:0.8;">🧑‍💻 ${escapeHtml(m.createdBy||m.user||'Sistema')} • 🕒 ${escapeHtml(m.when || m.date || '')}</span></span>
                   <div style="text-align:right; font-weight:bold;">
-                    ${amtDisplay}
+                    ${effective===null?'Relación pendiente de consulta del período':amtDisplay}
                   </div>
                 </div>
                 ${editDeleteButtons}
@@ -3200,10 +3531,15 @@ function parseMoney(value) {
       </section>
       ` : ''}
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial de Cierres</h3><div class="movementList">
-	         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)} ${r.status === 'reopened' ? '<span class="badge gold">Reabierto</span>' : ''}<br><small>Caja F.: ${fmt(r.closeCash)}${r.reopenReason ? ' · Motivo: ' + escapeHtml(r.reopenReason) : ''}</small></span><button class="btn silver" onclick="window.viewDailyReport('${actionId(r.id)}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
-      </div></section>`;
+	         ${(state.dailyReports || []).filter(r=>r.businessId===currentBusiness().id).slice().reverse().slice(0,window.click360SparkOperationalSession?undefined:5).map(r=>`<div class="movement"><span>Cierre ${escapeHtml(r.date)} ${r.status === 'reopened' ? '<span class="badge gold">Reabierto</span>' : ''}<br><small>Caja F.: ${fmt(r.closeCash)}${r.reopenReason ? ' · Motivo: ' + escapeHtml(r.reopenReason) : ''}</small></span><button class="btn silver" onclick="window.viewDailyReport('${actionId(r.id)}')">Ver Imagen</button></div>`).join('') || '<p class="empty">No hay cierres previos.</p>'}
+      </div>${sparkHistoryPageControl('dailyReports')}</section>`;
   }
   function labelKind(k){ return ({apertura:'Apertura',ingreso:'Ingreso',egreso:'Gasto',compra:'Compra',retiro:'Retiro'})[k]||k; }
+
+  function sparkHistoryPageControl(source){
+    if(!window.click360SparkOperationalSession||!window.click360SparkCoordinator?.hasMore(source))return '';
+    return `<p class="fieldHint">Este historial tiene más registros en la nube.</p><button type="button" class="btn silver" data-spark-history="${escapeHtml(source)}">Cargar más registros</button>`;
+  }
 
   function salePayments(sale = {}) {
     if (Array.isArray(sale.payments) && sale.payments.length) return sale.payments;
@@ -3304,6 +3640,22 @@ function parseMoney(value) {
     return s;
   }
 
+  let sparkRetailReport=null,sparkRetailReportVisible=100;
+  function verifiedSparkRetailReport(){
+    const proof=sparkRetailReport,identity=window.click360SparkOperationalSession?.identity;
+    return proof?.source==='server'&&proof.complete===true&&proof.ownerUid===identity?.ownerUid
+      &&proof.actorUid===window.click360Auth?.currentUser?.uid&&proof.businessId===currentBusiness()?.id
+      &&proof.from===state.reportsFrom&&proof.to===state.reportsTo?proof:null;
+  }
+  window.click360LookupRetailReportSale=function(id){
+    const sale=verifiedSparkRetailReport()?.sales.find(row=>row.id===id||row.legacyId===id);
+    return sale?cloneState({...sale,storageRecordId:sale.id,id:sale.legacyId||sale.id}):null;
+  };
+  window.printRetailHistoryReceipt=function(id){
+    const sale=window.click360LookupRetailReportSale(decodeActionId(id));
+    if(!sale)return toast('Vuelve a consultar el período antes de abrir este comprobante.', 'err');
+    window.showSaleCompleteModal(sale.id,sale);
+  };
 	  function reportsView() {
 	    // r37-2 (NO FALSE STATES): salesForBiz() reads straight off `state`,
 	    // still the empty seed before hydration -- without this guard a
@@ -3314,31 +3666,34 @@ function parseMoney(value) {
 	    }
 	    state.reportsFrom = state.reportsFrom || today();
 	    state.reportsTo = state.reportsTo || today();
-	    const allSales = salesForBiz();
+        const modular=!!window.click360SparkOperationalSession,proof=modular?verifiedSparkRetailReport():null;
+	    const allSales = modular?(proof?.sales||[]):salesForBiz();
 	    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
 	    const validSales = sales.filter(s => s.status !== 'cancelled');
-	    const tickets=validSales.length;
-	    const soldTotal=validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal=collectedInRange(allSales, state.reportsFrom, state.reportsTo);
-	    const pendingTotal=validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
+	    const tickets=proof?proof.tickets:validSales.length;
+	    const soldTotal=proof?proof.soldTotal:validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
+	    const collectedTotal=proof?proof.collectedTotal:collectedInRange(allSales, state.reportsFrom, state.reportsTo);
+	    const pendingTotal=proof?proof.pendingTotal:validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
-	    const top=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
-    return `<div class="pageHead"><div><h1>Reportes</h1><p>Resumen general de tu negocio.</p></div>
+	    const top=proof?proof.top:Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+        const displayMoney=value=>modular&&!proof?'—':value===null?'No verificado':fmt(value),historySales=modular?sales.slice(0,sparkRetailReportVisible):sales.slice().reverse();
+    return `<div class="pageHead"><div><h1>Reportes</h1><p>${modular?(proof?`Período completo leído de la nube · consulta ${escapeHtml(proof.confirmedAt)}${proof.protectedHistory?' · Contiene historial protegido; los cobros son importes registrados, no una conciliación financiera de esos registros.':''}`:'Consulta el período para obtener totales completos de la nube. No se muestran cifras parciales como resultados definitivos.'):'Resumen general de tu negocio.'}</p></div>
         <div class="toolbar" style="gap:8px;">
 	          <button class="btn silver" onclick="window.printReports('print')">Imprimir</button>
 	          <button class="btn silver" onclick="window.printReports('pdf')">Guardar PDF</button>
 	          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
         </div>
       </div>
+      ${modular?'<button class="btn primary" id="queryRetailReport">Consultar período completo</button>':sparkHistoryPageControl('sales')}
       <div class="card sectionCard reportRangeCard">
         <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${safeDateInputValue(state.reportsFrom)}"></div>
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
       </div>
-	      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText">${fmt(soldTotal)}</strong></div><div class="card kpi"><small>Cobrado</small><strong class="goldText">${fmt(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${fmt(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong>${tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div></section>
-	      <section class="card sectionCard" style="margin-top:14px"><h3>Cobros por fecha real</h3>${buildChartHtml(allSales)}</section>
-      <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
+      <section class="grid cashGrid"><div class="card kpi"><small>Vendido</small><strong class="goldText" data-retail-total="sold">${displayMoney(soldTotal)}</strong></div><div class="card kpi"><small>Cobros registrados</small><strong class="goldText" data-retail-total="collected">${displayMoney(collectedTotal)}</strong></div><div class="card kpi"><small>Pendiente</small><strong>${displayMoney(pendingTotal)}</strong></div><div class="card kpi"><small>Tickets</small><strong data-retail-total="tickets">${modular&&!proof?'—':tickets}</strong></div><div class="card kpi"><small>Promedio cobrado</small><strong>${displayMoney(collectedTotal===null?null:tickets?collectedTotal/tickets:0)}</strong></div></section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Cobros por fecha real</h3>${modular?(proof?(proof.unknownFields.includes('collectedTotal')?'Hay cobros históricos no verificables; no se presentan totales parciales.':proof.collectionDays.map(([date,total])=>`<div class="movement"><span>${escapeHtml(date)}</span><b>${fmt(total)}</b></div>`).join('')):'Consulta el período para ver los cobros.'):buildChartHtml(allSales)}</section>
+      <section class="card sectionCard" style="margin-top:14px"><h3>Más vendidos</h3>${proof?.unknownFields.includes('top')?'Hay cantidades históricas no verificadas; se conserva el historial sin inventar unidades.':top.map(([n,c])=>`<div class="movement"><span>${escapeHtml(n)}</span><b class="goldText">${c}</b></div>`).join('') || '<p class="empty">Sin ventas.</p>'}</section>
       <section class="card sectionCard" style="margin-top:14px"><h3>Historial</h3>
-        ${sales.slice().reverse().map(s=>`
+        ${historySales.map(s=>`
         <div class="movement" style="flex-direction:column; gap:8px;">
           <div style="display:flex; justify-content:space-between; width:100%;">
              <span>${escapeHtml(s.when)}<br>
@@ -3346,17 +3701,18 @@ function parseMoney(value) {
                <span class="badge ${s.status==='cancelled'?'danger':'gold'}">${s.status==='cancelled'?'Anulada':s.status==='pending_payment'?'Pendiente':s.status==='layaway'?'Apartado':'Pagada'}</span>
                <br><small style="font-size:10px;color:var(--gold);">🧑‍💻 ${escapeHtml(s.createdBy||'Sistema')}</small>
              </span>
-             <b class="${s.status==='cancelled'?'neg':'goldText'}">${fmt(s.total)}</b>
+             <b class="${s.status==='cancelled'?'neg':'goldText'}">${modular&&typeof s.total!=='number'?'No verificado':fmt(s.total)}</b>
           </div>
           <div style="display:flex; gap:8px; justify-content:flex-end; width:100%; flex-wrap:wrap; margin-top:6px;">
-            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.printReceipt('${actionId(s.id)}')">
+            <button class="btn silver" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.${modular?'printRetailHistoryReceipt':'printReceipt'}('${actionId(s.id)}')">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg> Ticket
             </button>
             ${s.status!=='cancelled' ? `<button class="btn danger" style="min-height:32px; padding:6px 12px; font-size:12px;" onclick="window.click360GuardedAction(this, () => window.cancelSale('${actionId(s.id)}'))">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg> Anular
             </button>` : ''}
           </div>
-        </div>`).join('') || '<p class="empty">Sin ventas.</p>'}
+        </div>`).join('') || `<p class="empty">${modular&&!proof?'Período todavía no consultado.':'Sin ventas en el período consultado.'}</p>`}
+        ${modular&&proof&&sales.length>sparkRetailReportVisible?'<button class="btn silver" id="moreRetailReportRows">Mostrar siguientes 100 ventas del período</button>':''}
       </section>`;
   }
 
@@ -3420,11 +3776,20 @@ function parseMoney(value) {
 		  if (nextStatus === 'picked_up' && !confirm('Confirma que el cliente recibio todos los productos reservados.')) return;
 		  const previousState = cloneState(state);
 		  const operationId = uid('laystatus');
+		  const changedAt = new Date().toISOString();
+		  let sparkCommand;
+		  if(window.click360SparkOperationalSession){
+		    try {sparkCommand=window.CLICK360_MODULAR_UI_ADAPTER.layawayStatusCommand({
+		      sale:previousState.sales.find((item) => item.id === layaway.saleId && item.businessId === layaway.businessId),
+		      layaway:previousState.layaways.find((item) => item.id === layawayId && item.businessId === layaway.businessId),
+		      identity:window.click360SparkOperationalSession.identity,operationId,nextStatus,changedAt});}
+		    catch {return toast('No pudimos validar la entrega. Tu apartado y sus pagos permanecen intactos.', 'err');}
+		  }
 		  layaway.status = nextStatus;
-		  layaway.updatedAt = new Date().toISOString();
+		  layaway.updatedAt = changedAt;
 		  if (nextStatus === 'picked_up') layaway.pickedUpAt = layaway.updatedAt;
 		  addAudit('layaway_status_updated', { layawayId, saleId: layaway.saleId, status: nextStatus, operationId, entityType:'layaway', entityId:layawayId });
-		  const committed = await commitCriticalMutation(previousState, 'layaway_status_updated', (next) => next.layaways?.some((item) => item.id === layawayId && item.status === nextStatus));
+		  const committed = await commitCriticalMutation(previousState, 'layaway_status_updated', (next) => next.layaways?.some((item) => item.id === layawayId && item.status === nextStatus),{sparkCommand});
 		  if (!committed.ok) return;
 		  renderApp('debtors');
 		  toast(committed.pending ? 'Cambio guardado; sincronización pendiente.' : (nextStatus === 'picked_up' ? 'Entrega registrada' : 'Apartado listo para retiro'));
@@ -3480,13 +3845,13 @@ function parseMoney(value) {
         <div class="field"><label>Módulo</label><select id="activityModule"><option value="">Todos</option>${modules.map((module) => `<option value="${escapeHtml(module)}">${escapeHtml(module)}</option>`).join('')}</select></div>
         <div class="field"><label>Acción</label><select id="activityAction"><option value="">Todas</option>${actions.map((action) => `<option value="${escapeHtml(action)}">${escapeHtml(String(action).replaceAll('_', ' '))}</option>`).join('')}</select></div>
       </div></section>
-      <section class="card sectionCard" style="margin-top:14px"><div id="activityList" data-page-size="50">${activityRowsHtml(events)}</div></section>`;
+      <section class="card sectionCard" style="margin-top:14px"><div id="activityList" data-page-size="50">${activityRowsHtml(events)}</div>${sparkHistoryPageControl('auditLogs')}</section>`;
   }
   function activityRowsHtml(events = []) {
-    return events.slice(0, 100).map((event) => `<article class="activityRow" data-activity-date="${escapeHtml(String(event.createdAt || '').slice(0, 10))}" data-activity-actor="${escapeHtml(event.createdBy || '')}" data-activity-module="${escapeHtml(auditModule(event.action))}" data-activity-action="${escapeHtml(event.action || '')}"><span class="activityIcon">${icon(auditModule(event.action) === 'Caja' ? 'wallet-cards' : auditModule(event.action) === 'Inventario' ? 'package' : auditModule(event.action) === 'Trabajadores' ? 'users-round' : 'history')}</span><span><b>${escapeHtml(auditHumanText(event))}</b><small>${escapeHtml(event.when || event.createdAt || '')} · ${escapeHtml(auditModule(event.action))}</small></span></article>`).join('') || '<p class="empty">Aún no hay actividad registrada para este negocio.</p>';
+    return events.slice(0, window.click360SparkOperationalSession?undefined:100).map((event) => `<article class="activityRow" data-activity-date="${escapeHtml(String(event.createdAt || '').slice(0, 10))}" data-activity-actor="${escapeHtml(event.createdBy || '')}" data-activity-module="${escapeHtml(auditModule(event.action))}" data-activity-action="${escapeHtml(event.action || '')}"><span class="activityIcon">${icon(auditModule(event.action) === 'Caja' ? 'wallet-cards' : auditModule(event.action) === 'Inventario' ? 'package' : auditModule(event.action) === 'Trabajadores' ? 'users-round' : 'history')}</span><span><b>${escapeHtml(auditHumanText(event))}</b><small>${escapeHtml(event.when || event.createdAt || '')} · ${escapeHtml(auditModule(event.action))}</small></span></article>`).join('') || '<p class="empty">Aún no hay actividad registrada para este negocio.</p>';
   }
   async function bindActivity() {
-	  if (isOwnerUser() && typeof window.click360ListBusinessUnitAuditEvents === 'function') {
+	  if (!window.click360SparkOperationalSession && isOwnerUser() && typeof window.click360ListBusinessUnitAuditEvents === 'function') {
 	    try {
 	      const remoteEvents = await window.click360ListBusinessUnitAuditEvents(currentBusiness()?.id || '');
 	      const known = new Set((state.auditLogs || []).map((event) => event.id || event.eventId));
@@ -3869,23 +4234,38 @@ function parseMoney(value) {
 	  let workerAccessGateChecking = false;
 	  let workerAccessGateStatus = null; // 'needs_profile' | 'pending' | 'approved'
 	  let workerAccessGateData = null;
+      let workerAccessGateEpoch = 0;
+      let workerAccessRequestedRoute = 'home';
+      function resetWorkerAccessGate(){
+        workerAccessGateEpoch++;
+        workerAccessGateChecked=false;workerAccessGateChecking=false;
+        workerAccessGateStatus=null;workerAccessGateData=null;workerAccessRequestedRoute='home';
+      }
 	  async function ensureWorkerAccessGateChecked() {
 	    if (workerAccessGateChecked || workerAccessGateChecking) return;
+        const context=activeTenantContext,epoch=workerAccessGateEpoch;
 	    workerAccessGateChecking = true;
 	    try {
 	      const request = await window.click360GetWorkerAccessRequestStatus?.().catch(() => null);
+          if(context!==activeTenantContext||epoch!==workerAccessGateEpoch)return;
 	      workerAccessGateData = request;
 	      workerAccessGateStatus = !request ? 'needs_profile' : (request.status === 'approved' ? 'approved' : 'pending');
 	    } finally {
+          if(context!==activeTenantContext||epoch!==workerAccessGateEpoch)return;
 	      workerAccessGateChecked = true;
 	      workerAccessGateChecking = false;
-	      renderApp(route);
+	      renderApp(workerAccessGateStatus==='approved'?workerAccessRequestedRoute:route);
 	    }
 	  }
-	  function requiresWorkerAccessGate() {
-	    if (isOwnerUser() || window.click360IsPlatformAdmin?.()) return false;
-	    if (!tenantDataHydrated) return false;
-	    if (!workerAccessGateChecked) { ensureWorkerAccessGateChecked(); return true; }
+  function requiresWorkerAccessGate() {
+    if (isOwnerUser() || window.click360IsPlatformAdmin?.()) return false;
+    if (!tenantDataHydrated) return false;
+    const native=window.click360SparkOperationalSession;
+    if(native&&window.click360SparkWorkerIdentityVerified?.()===true
+      &&native.identity.ownerUid===activeTenantContext?.ownerId
+      &&native.identity.businessId===currentBusiness()?.id
+      &&['INSTALLING_UI','READY','OFFLINE_READY'].includes(window.click360SparkBootstrapState?.phase))return false;
+    if (!workerAccessGateChecked) { ensureWorkerAccessGateChecked(); return true; }
 	    return workerAccessGateStatus !== 'approved';
 	  }
 	  function workerAccessGateView() {
@@ -4200,8 +4580,8 @@ function parseMoney(value) {
 	  function crmCustomers() {
 	    const businessId = currentBusiness()?.id;
       const legacyBusinessId = state.settings?.legacyDataBusinessId;
-	    return (state.settings?.customers || []).filter((customer) => customer.businessId === businessId
-        || (!customer.businessId && legacyBusinessId === businessId));
+	    return (state.settings?.customers || []).filter((customer) => customer.deleted !== true
+        && (customer.businessId === businessId || (!customer.businessId && legacyBusinessId === businessId)));
 	  }
 	  function crmView() {
 	    // r37-2 (NO FALSE STATES): crmCustomers() reads state.settings.customers,
@@ -4213,7 +4593,7 @@ function parseMoney(value) {
 	    }
 	    const customers = crmCustomers();
 	    return `<div class="pageHead"><div><h1>Clientes</h1><p>Seguimiento de clientes y contacto por WhatsApp.</p></div><div class="toolbar"><button class="btn primary" id="newCustomerBtn">Nuevo cliente</button></div></div>
-	      <section class="card sectionCard"><div class="field"><label>Buscar</label><input id="customerSearch" placeholder="Nombre o telefono"></div><div id="customerList">${customerCards(customers)}</div></section>`;
+	      <section class="card sectionCard"><div class="field"><label>Buscar</label><input id="customerSearch" placeholder="Nombre o telefono"></div><div id="customerList">${customerCards(customers)}</div>${sparkHistoryPageControl('settings.customers')}</section>`;
 	  }
 	  function customerCards(customers) {
 	    if (!customers.length) return '<p class="empty">Todavia no hay clientes registrados.</p>';
@@ -4225,15 +4605,26 @@ function parseMoney(value) {
 	  function openCustomerModal(customerId = '') {
 	    const customer = crmCustomers().find((item) => item.id === customerId) || { id: '', name: '', phone: '', notes: '' };
 	    showModal(`<div class="modalHeader"><h2>${customer.id ? 'Editar' : 'Nuevo'} cliente</h2><button class="closeBtn" data-close>×</button></div><form id="customerForm" class="formGrid"><div class="field"><label>Nombre</label><input id="customerName" required value="${escapeHtml(customer.name)}"></div><div class="field"><label>Telefono / WhatsApp</label><input id="customerPhoneCrm" inputmode="tel" value="${escapeHtml(customer.phone)}" placeholder="593999999999"></div><div class="field full"><label>Notas</label><input id="customerNotes" value="${escapeHtml(customer.notes)}"></div><button class="btn primary block" type="submit">Guardar cliente</button></form>`);
-	    $('#customerForm').onsubmit = (event) => {
+	    $('#customerForm').onsubmit = async (event) => {
 	      event.preventDefault();
 	      const name = $('#customerName').value.trim();
 	      if (!name) return toast('Ingresa el nombre del cliente.', 'err');
+	      if (!writeGateStatus().allowed) return toast('No se puede guardar el cliente hasta proteger el estado actual.', 'err');
+	      const previousState = cloneState(state);
 	      state.settings.customers ||= [];
 	      const next = { id: customer.id || uid('customer'), businessId: currentBusiness().id, name, phone: $('#customerPhoneCrm').value.trim(), notes: $('#customerNotes').value.trim(), updatedAt: new Date().toISOString() };
 	      const index = state.settings.customers.findIndex((item) => item.id === next.id);
 	      if (index >= 0) state.settings.customers[index] = next;
 	      else state.settings.customers.push(next);
+	      if (window.click360SparkOperationalSession) {
+	        const committed = await commitCriticalMutation(previousState, 'customer_saved', () => false, {
+	          sparkCommand: () => window.CLICK360_MODULAR_UI_ADAPTER.customerMutationCommand({customer:next,
+	            previous:customer.id ? customer : null,identity:window.click360SparkOperationalSession.identity,operationId:uid('customer-op')})
+	        });
+	        if (!committed.ok) return;
+	        closeModal(); renderApp('crm'); toast(committed.pending ? 'Cliente guardado en este dispositivo; sincronización pendiente.' : 'Cliente guardado');
+	        return;
+	      }
 	      if (!save()) return;
 	      closeModal(); renderApp('crm'); toast('Cliente guardado');
 	    };
@@ -4356,8 +4747,23 @@ function parseMoney(value) {
 	  }
 	  function bindCrmActions() {
 	    $$('[data-customer-edit]').forEach((button) => button.onclick = () => openCustomerModal(decodeActionId(button.dataset.customerEdit)));
-	    $$('[data-customer-delete]').forEach((button) => button.onclick = () => {
+	    $$('[data-customer-delete]').forEach((button) => button.onclick = async () => {
 	      const id = decodeActionId(button.dataset.customerDelete);
+          const session=window.click360SparkOperationalSession;
+          if(session){
+            const customer=crmCustomers().find(item=>item.id===id);
+            let command;
+            try{command=window.CLICK360_MODULAR_UI_ADAPTER.customerMutationCommand({customer,previous:customer,
+              identity:session.identity,operationId:uid('customer-delete'),deleting:true});}
+            catch{return toast('No pudimos validar el cliente. Su información permanece intacta.', 'err');}
+            const previousState=cloneState(state);
+            customer.deleted=true;
+            const committed=await commitCriticalMutation(previousState,'customer_deleted',next=>
+              next.settings.customers?.some(item=>item.id===id&&item.businessId===session.identity.businessId&&item.deleted===true),{sparkCommand:command});
+            renderApp('crm');
+            if(committed.ok)toast(committed.pending?'Cambio guardado; sincronización pendiente.':'Cliente eliminado del listado; historial conservado.');
+            return;
+          }
 	      state.settings.customers = (state.settings.customers || []).filter((customer) => customer.id !== id);
 	      if (!save()) return;
 	      renderApp('crm'); toast('Cliente eliminado');
@@ -6475,12 +6881,14 @@ function parseMoney(value) {
 	    const firstDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
 	    const lastDay = localDateKey(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
 	    const cloud = syncStatusInfo();
+        const recoveryCopy = recoveryCopyStatusInfo();
 
 	    return `<div class="pageHead"><div><h1>Nube y Respaldo</h1><p>Sincronizaci\u00f3n y reportes contables.</p></div></div>
 	      <section class="card sectionCard">
 	        <h3>Nube CLICK 360</h3>
 	        <p id="cloudStatusDynamic" class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">\u2605 ${escapeHtml(cloud.title)}</p>
 	        <p id="cloudStatusDetail" class="cloudStatus">${escapeHtml(cloud.detail)}</p>
+            <div id="recoveryCopyStatus" ${recoveryCopy?'':'hidden'} role="status"><p id="recoveryCopyTitle" class="cloudStatus">${escapeHtml(recoveryCopy?.title||'')}</p><p id="recoveryCopyDetail" class="fieldHint">${escapeHtml(recoveryCopy?.detail||'')}</p></div>
 		        <div class="split" style="gap:10px;margin-top:12px;"><button type="button" class="btn silver" id="refreshCloudBtn">Actualizar desde nube</button><button type="button" class="btn primary" id="forceSyncCloud">Guardar ahora en nube</button></div>
 		        <div class="syncRecoveryCard">
 		          <button type="button" class="btn block" id="clearLocalAppStateBtn">Reparar sincronización</button>
@@ -6880,45 +7288,57 @@ function parseMoney(value) {
 	    });
 
     $$('[data-edit-tpl]').forEach((button) => button.onclick = () => openLabelModal(labelSample, button.dataset.editTpl));
-    $$('[data-rename-tpl]').forEach((button) => button.onclick = () => {
+    $$('[data-rename-tpl]').forEach((button) => button.onclick = async () => {
       const template = labelTemplatesForBiz().find((item) => item.id === button.dataset.renameTpl);
       if (!template) return;
       const name = prompt('Nuevo nombre de la plantilla:', template.name);
       if (!name?.trim()) return;
+      const previousState=cloneState(state);
       template.name = name.trim();
       template.updatedAt = new Date().toISOString();
-      if (!save()) return;
+      if (!(await commitScopedPrintSetting(previousState,'labelTemplates',template)).ok) return;
       renderApp('inventory');
       toast('Plantilla renombrada');
     });
-    $$('[data-duplicate-tpl]').forEach((button) => button.onclick = () => {
+    $$('[data-duplicate-tpl]').forEach((button) => button.onclick = async () => {
       const template = labelTemplatesForBiz().find((item) => item.id === button.dataset.duplicateTpl);
       if (!template) return;
-      const copy = JSON.parse(JSON.stringify(template));
+      const previousState=cloneState(state),copy = JSON.parse(JSON.stringify(template));
       copy.id = uid('tpl');
       copy.name = `${template.name} copia`;
       copy.isDefault = false;
       copy.createdAt = new Date().toISOString();
       copy.updatedAt = copy.createdAt;
       state.settings.labelTemplates.push(copy);
-      if (!save()) return;
+      if (!(await commitScopedPrintSetting(previousState,'labelTemplates',copy)).ok) return;
       renderApp('inventory');
       toast('Plantilla duplicada');
     });
     $$('[data-default-tpl]').forEach((button) => button.onclick = () => {
+      // This legacy action changes several records. Do not split its single
+      // intended preference change into independently confirmed modular writes.
+      if(window.click360SparkOperationalSession)return toast('La selección predeterminada aún no está disponible. Puedes elegir tu diseño al imprimir.', 'err');
       labelTemplatesForBiz().forEach((template) => { template.isDefault = template.id === button.dataset.defaultTpl; });
       if (!save()) return;
       renderApp('inventory');
       toast('Plantilla predeterminada actualizada');
     });
     $$('[data-del-tpl]').forEach(btn => {
-       btn.onclick = () => {
+       btn.onclick = async () => {
           if (confirm('¿Estás seguro de eliminar esta plantilla de etiquetas?')) {
              const tplId = btn.dataset.delTpl;
              state.settings ||= {};
              state.settings.labelTemplates ||= [];
              const businessId = currentBusiness().id;
-             const previous = [...state.settings.labelTemplates];
+             const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
+             const existing=previous.find(template=>template.id===tplId&&template.businessId===businessId);
+             if(window.click360SparkOperationalSession){
+               if(!existing)return toast('Plantilla no encontrada.', 'err');
+               state.settings.labelTemplates=previous.map(template=>template===existing?{...template,deleted:true}:template);
+               addAudit('label_template_deleted',{templateId:tplId,businessId});
+               if(!(await commitScopedPrintSetting(previousState,'labelTemplates',{...existing,deleted:true})).ok)return;
+               renderApp('inventory');toast('Plantilla eliminada','ok');return;
+             }
              state.settings.labelTemplates = previous.filter((template) =>
                template.id !== tplId || !(
                  template.businessId === businessId
@@ -7156,8 +7576,14 @@ function parseMoney(value) {
       window.click360SetCriticalWriteGuard?.(true);
       let committed;
       try {
-      committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), { suppressFailureToast:true });
-	      if (!committed.ok && navigator.onLine) {
+      committed = await commitCriticalMutation(previousState, 'product_saved', (next) => remoteApplied(next, updatedAtMs), {
+        suppressFailureToast:true,
+        sparkCommand:()=>window.CLICK360_MODULAR_UI_ADAPTER.productMutationCommand({
+          product:desiredProduct,previous:previousState.products.find(item=>item.id===desiredProduct.id&&item.businessId===b.id),
+          identity:window.click360SparkOperationalSession.identity,operationId:uid('productop'),date:today()
+        })
+      });
+	      if (!committed.ok && navigator.onLine && !window.click360SparkOperationalSession) {
 	        const failedSyncState = window.click360GetSyncState?.({ cleanup:true, reason:'product_retry_prepare' });
 	        diagnostics.conflictDetected = failedSyncState?.status === 'real_conflict';
 	        if (diagnostics.conflictDetected && typeof window.click360ResolveSyncConflict === 'function') {
@@ -7174,7 +7600,7 @@ function parseMoney(value) {
 	        }
 	        if (wait.confirmed) committed = { ok:true, pending:false, recovered:true };
 	      }
-      if (!committed.ok && diagnostics.retryBaselineAuthoritative === true && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
+      if (!committed.ok && !window.click360SparkOperationalSession && diagnostics.retryBaselineAuthoritative === true && navigator.onLine && window.click360SyncStatus?.status === 'synced' && window.click360WriteGate?.().allowed === true) {
 	        const refreshedProduct = state.products.find((candidate) => candidate.id === desiredProduct.id && candidate.businessId === b.id) || null;
 	        const codeTakenByAnotherProduct = state.products.some((candidate) => candidate.businessId === b.id && candidate.id !== desiredProduct.id && normalizeCode(candidate.code) === normalizeCode(desiredProduct.code));
 	        // The ONLY safe automatic retry: the target product, per an
@@ -7220,8 +7646,9 @@ function parseMoney(value) {
 	      } finally {
 	        window.click360SetCriticalWriteGuard?.(false);
 	      }
-	      diagnostics.confirmedAtMs = committed.ok ? Date.now() : null;
-	      diagnostics.outcome = committed.ok ? 'confirmed' : (diagnostics.targetChangedRemotely ? 'safe_conflict' : 'not_confirmed');
+	      const cloudConfirmed=committed.ok&&(!window.click360SparkOperationalSession||!committed.pending);
+	      diagnostics.confirmedAtMs = cloudConfirmed ? Date.now() : null;
+	      diagnostics.outcome = cloudConfirmed ? 'confirmed' : (committed.ok?'pending':(diagnostics.targetChangedRemotely ? 'safe_conflict' : 'not_confirmed'));
 	      // A detected, safe conflict (the target product genuinely changed
 	      // remotely, so we correctly declined to auto-retry) must surface
 	      // its own explicit, recoverable message -- never the generic
@@ -7246,16 +7673,23 @@ function parseMoney(value) {
 	      const businessId = currentBusiness()?.id;
 	      const p=state.products.find(x=>x.id===id && x.businessId===businessId);
 	      if (!p) return toast('Producto no encontrado en este negocio.', 'err');
+          let sparkCommand;
+          if(window.click360SparkOperationalSession){
+            try{sparkCommand=window.CLICK360_MODULAR_UI_ADAPTER.productDeleteCommand({product:p,
+              identity:window.click360SparkOperationalSession.identity,operationId:uid('product-delete')});}
+            catch{return toast('No pudimos verificar este producto. Tu inventario permanece intacto.','err');}
+          }
 	      const previousState = cloneState(state);
 	      if(p) {
 	        tombstoneProduct(p, 'manual_delete');
-	        state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
+	        if(!sparkCommand)state.movements.push({id:uid('mov'),businessId,date:today(),when:nowLabel(),kind:'egreso',amount:0,note:`Eliminó producto: ${p.name}`,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy: authUser().name});
 	      }
 	      state.products=state.products.filter(x=>x.id!==id || x.businessId!==businessId);
-	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.stock ?? p.qty ?? 0) }, after:{ stock:0 } });
+	      addAudit('product_deleted', { productId:id, entityType:'product', entityId:id, before:{ stock:Number(p.stock ?? p.qty ?? 0) },
+            after:sparkCommand?{stock:Number(p.stock ?? p.qty ?? 0),deleted:true}:{stock:0} });
 	      const committed = await commitCriticalMutation(previousState, 'product_deleted', (next) =>
 	        !next.products.some((item) => item.id === id && item.businessId === businessId)
-	        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId));
+        && next.deletedProducts.some((item) => item.id === id && item.businessId === businessId), {sparkCommand});
 	      renderApp('inventory');
 	      if (committed.ok) toast(committed.pending ? 'Producto eliminado; sincronización pendiente.' : 'Producto eliminado');
 	    }
@@ -7264,7 +7698,7 @@ function parseMoney(value) {
 	  function bindSell(){
 	    if(!$('#payMethod')) return;
       $('#payMethod').dataset.businessId = currentBusiness()?.id || '';
-	    const sellDraftKey = `${activeTenantContext?.tenantKey || ''}:${currentBusiness()?.id || ''}`;
+    const sellDraftKey = `${activeTenantContext?.authUid || ''}:${activeTenantContext?.tenantKey || ''}:${currentBusiness()?.id || ''}`;
       if (activeSellDraft.key !== sellDraftKey) activeSellDraft = { key:sellDraftKey, cart:[] };
 	    let cart=activeSellDraft.cart;
 	    const replaceCart = (next) => { cart = next; activeSellDraft = { key:sellDraftKey, cart }; };
@@ -7569,7 +8003,15 @@ function parseMoney(value) {
 	      state.operationLedger.push({ operationId:sale.operationId, type:method === 'Apartado' ? 'layaway_created' : 'sale_created', businessId:sale.businessId, entityId:sale.id, createdAt:sale.createdAt });
 	      addAudit(method === 'Apartado' ? 'layaway_created' : 'sale_created', { saleId: sale.id, total: sale.total, method: sale.method, paymentMethod:layawayInitialMethod, status: sale.status, operationId:sale.operationId, entityType:method === 'Apartado' ? 'layaway' : 'sale', entityId:sale.id });
       const committed = await commitCriticalMutation(previousState, 'sale_created', (next) =>
-        next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId));
+        next.sales.some((item) => item.id === sale.id && item.businessId === sale.businessId), {
+          sparkCommand:window.click360SparkOperationalSession ? () => ({kind:'sale',input:(method==='Apartado'
+            ? window.CLICK360_MODULAR_UI_ADAPTER.layawayCommand
+            : method==='Pendiente'?window.CLICK360_MODULAR_UI_ADAPTER.pendingPaymentCommand
+            : window.CLICK360_MODULAR_UI_ADAPTER.liveSaleCommand)({sale,cartLines:cart,
+                identity:window.click360SparkOperationalSession.identity,cashSessionId:sale.cashSessionId,
+                workingDate:sale.date,initialPaymentMethod:layawayInitialMethod,
+                layaway:state.layaways?.find(item=>item.saleId===sale.id)})}) : undefined
+        });
       if(!committed.ok) {
         // Confirmation failure may follow an already-committed write. Do not
         // leave this cart chargeable under a new sale operation ID.
@@ -8080,7 +8522,7 @@ function parseMoney(value) {
 	      const button = $('#verifyCashCloseStatusBtn');
 	      button?.setAttribute('disabled', 'disabled');
 	      try {
-	        const verifyServerClose = window.click360VerifyCashCloseOnServer;
+        const verifyServerClose = window.click360SparkOperationalSession?.verifyCashClose || window.click360VerifyCashCloseOnServer;
 	        const serverCheck = typeof verifyServerClose === 'function'
 	          ? await verifyServerClose(recovery.target || {})
 	          : { ok:false, errorCode:'cash_close_server_preflight_unavailable' };
@@ -8162,29 +8604,35 @@ function parseMoney(value) {
 	      : (state.movements || []).filter((movement) => movement.businessId === businessId && movement.date === date
 	        && (!activeSession?.id || movement.cashSessionId === activeSession.id));
 	    const apertureMov = closeMovements.slice().reverse().find((movement) => movement.kind === 'apertura');
-	    const lastCash = apertureMov ? Number(apertureMov.amount || 0) : Number(business?.lastCashBalance || 0);
+	    const lastCash = window.click360SparkOperationalSession ? activeSession?.openingAmount
+        : apertureMov ? Number(apertureMov.amount || 0) : Number(business?.lastCashBalance || 0);
 	    return { business, businessId, date, activeSession, closeMovements, apertureMov, lastCash, overrideRequested: !!requestedOverride };
 	  }
 	  function buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId }) {
 	    updateCashCloseDiagnostic('cash_close_calculate_totals', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
-	    const income = basis.closeMovements.filter(isCashIncomeMovement).reduce((a, m) => a + Number(m.amount || 0), 0);
-	    const out = basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura').reduce((a, m) => a + Number(m.amount || 0), 0);
-	    const balanceCalculado = cInicial + income - out;
+    const modular=!!window.click360SparkOperationalSession,s=basis.activeSession,counters=modular?sparkCashCounterView(s):null;
+    if(modular&&(counters.pending||counters.unverified||s.businessId!==basis.businessId||s.date!==basis.date||s.status!=='open'
+      ||s.openingAmount!==cInicial||['itemCount','taxTotal'].some(k=>typeof s[k]!=='number'||!Number.isFinite(s[k]))
+      ||['cash','card','transfer','receivablePayments'].some(k=>typeof s.paymentTotals[k]!=='number'||!Number.isFinite(s.paymentTotals[k]))))
+      throw Error('SPARK_UI_CASH_COUNTERS_PENDING_OR_UNVERIFIED');
+    const income = modular?counters.income:basis.closeMovements.filter(isCashIncomeMovement).reduce((a, m) => a + movementCashIncomeAmount(m), 0);
+    const out = modular?counters.out:basis.closeMovements.filter(m => m.kind !== 'ingreso' && m.kind !== 'apertura' && m.kind !== 'sale_cancellation').reduce((a, m) => a + movementEffectiveAmount(m), 0);
+	    const balanceCalculado = modular?counters.balance:cInicial + income - out;
 	    const diferencia = eFisico - balanceCalculado;
 	    const recordsForSession = globalThis.CLICK360_CASH_RECONCILIATION?.recordsForCashSession;
-	    const sales = (recordsForSession
+	    const sales = modular?[]:(recordsForSession
 	      ? recordsForSession(state.sales || [], basis.activeSession, basis.businessId, basis.date)
 	      : (state.sales || []).filter((sale) => sale.businessId === basis.businessId && sale.date === basis.date
 	        && (!basis.activeSession?.id || sale.cashSessionId === basis.activeSession.id)))
 	      .filter((sale) => sale.status !== 'cancelled');
-	    const salesEfectivo = sales.filter(s => s.method === 'Efectivo').reduce((a, s) => a + Number(s.total || 0), 0);
-	    const salesTarjeta = sales.filter(s => s.method === 'Tarjeta').reduce((a, s) => a + Number(s.total || 0), 0);
-	    const salesTransf = sales.filter(s => s.method === 'Transferencia').reduce((a, s) => a + Number(s.total || 0), 0);
-	    const abonosApartado = basis.closeMovements.filter((movement) => movement.status !== 'cancelled'
+	    const salesEfectivo = modular?s.paymentTotals.cash:sales.filter(s => s.method === 'Efectivo').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const salesTarjeta = modular?s.paymentTotals.card:sales.filter(s => s.method === 'Tarjeta').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const salesTransf = modular?s.paymentTotals.transfer:sales.filter(s => s.method === 'Transferencia').reduce((a, s) => a + Number(s.total || 0), 0);
+	    const abonosApartado = modular?s.paymentTotals.receivablePayments:basis.closeMovements.filter((movement) => movement.status !== 'cancelled'
 	      && (movement.paymentMethod === 'Apartado' || movement.paymentType === 'receivable_payment'))
 	      .reduce((sum, movement) => sum + Number(movement.amount || 0), 0);
-	    const totalIva = sales.reduce((a, s) => a + Number(s.iva || 0), 0);
-	    let totalItems = 0;
+	    const totalIva = modular?s.taxTotal:sales.reduce((a, s) => a + Number(s.iva || 0), 0);
+	    let totalItems = modular?s.itemCount:0;
 	    sales.forEach(s => saleItems(s).forEach(i => { totalItems += Number(i.qty || 0); }));
 	    updateCashCloseDiagnostic('cash_close_build_summary', { business: basis.business, cashSessionId: basis.activeSession?.id || '', reportId });
 	    const bizSettings = basis.business?.settings || {};
@@ -8247,7 +8695,7 @@ function parseMoney(value) {
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Efectivo:</span><span>${fmt(paymentTotals.cash)}</span></div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tarjeta:</span><span>${fmt(paymentTotals.card)}</span></div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Transferencia:</span><span>${fmt(paymentTotals.transfer)}</span></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado:</span><span>${fmt(paymentTotals.layawayPayments)}</span></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Abonos Apartado${paymentTotals.receivableIncluded?' (incluidos arriba)':''}:</span><span>${fmt(paymentTotals.layawayPayments)}</span></div>
 	      <div style="border-top:1px dashed #000; margin:8px 0;"></div>
 	      <div style="text-align:center;font-weight:bold;margin-bottom:4px">MOVIMIENTOS DE CAJA</div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Ingresos en efectivo:</span><span>+${fmt(report.income)}</span></div>
@@ -8335,6 +8783,7 @@ function parseMoney(value) {
 	    let inFlightKey = '';
 	    let commitStarted = false;
 	    let reportId = '';
+    let verifiedModularReportId = '';
 	    let evaluatedGate = null;
 	    let diagnosticContext = {};
 	    let cashCloseTarget = null;
@@ -8370,7 +8819,11 @@ function parseMoney(value) {
 	        ) || null;
 	        if (directSession && directSession.status !== 'closed') {
 	          resolvedSession = directSession;
-	        } else if (directSession && directSession.status === 'closed') {
+        } else if (directSession && directSession.status === 'closed' && window.click360SparkOperationalSession) {
+          // A pending local close is not authoritative. Preserve exact identity
+          // and consult/reconcile the modular ledger before announcing success.
+          resolvedSession = directSession;
+        } else if (directSession && directSession.status === 'closed') {
 	          // Session was closed between modal-open and submit. Treat as
 	          // already-closed success instead of letting the write proceed.
 	          const alreadyClosed = updateCashCloseDiagnostic('cash_close_already_confirmed_local', {
@@ -8421,7 +8874,7 @@ function parseMoney(value) {
 	      }
 	      if (navigator.onLine !== false) {
 	        stage = 'cash_close_verify_server_before_write';
-	        const verifyServerClose = window.click360VerifyCashCloseOnServer;
+	        const verifyServerClose = window.click360SparkOperationalSession?.verifyCashClose || window.click360VerifyCashCloseOnServer;
 	        if (typeof verifyServerClose !== 'function') {
 	          const error = new Error('Server cash-close verification is unavailable.');
 	          error.code = 'cash_close_server_preflight_unavailable';
@@ -8429,6 +8882,7 @@ function parseMoney(value) {
 	          throw error;
 	        }
 	        const serverCheck = await verifyServerClose(cashCloseTarget);
+        if(window.click360SparkOperationalSession)verifiedModularReportId=serverCheck?.reportId||'';
 	        if (!serverCheck?.ok) {
 	          const error = new Error('Server cash-close verification failed.');
 	          error.code = serverCheck?.errorCode || 'cash_close_server_preflight_failed';
@@ -8464,7 +8918,8 @@ function parseMoney(value) {
 	        error.code = 'cash_close_invalid_amounts';
 	        throw error;
 	      }
-	      reportId = uid('rep');
+	      reportId = window.click360SparkOperationalSession ? verifiedModularReportId : uid('rep');
+      if(!reportId)throw Object.assign(Error('SPARK_UI_CASH_CLOSE_SERVER_ID_REQUIRED'),{code:'cash_close_server_preflight_unavailable',outcome:'unknown'});
 	      const summary = buildCashCloseSummary({ basis, cInicial, eFisico, observations, reportId });
 	      stage = 'cash_close_persist_summary';
 	      previousState = cloneState(state);
@@ -8520,7 +8975,8 @@ function parseMoney(value) {
 	        const reportClosed = (next.dailyReports || []).some((report) => report.id === reportId && report.businessId === basis.businessId && report.status === 'closed');
 	        const sessionClosed = !resolvedSessionId || (next.cashSessions || []).some((session) => session.id === resolvedSessionId && session.businessId === basis.businessId && session.status === 'closed' && session.reportId === reportId);
 	        return reportClosed && sessionClosed;
-	      });
+	      },{sparkCommand:{kind:'cash_close',input:{operationId:reportId,cashSessionId:resolvedSessionId,
+        date:cashCloseTarget.date,declaredCash:eFisico,observations}}});
 	      if (!committed.ok) {
 	        const error = new Error(writeBlockMessage(window.click360LastWriteBlock || { reason: committed.reason || 'cash_close_commit_not_confirmed' }));
 	        error.code = committed.reason || 'cash_close_commit_not_confirmed';
@@ -8531,9 +8987,10 @@ function parseMoney(value) {
 	          error.outcome = classifyOutcome({ localRejected:true });
 	          throw error;
 	        }
-	        if (navigator.onLine !== false && typeof window.click360VerifyCashCloseOnServer === 'function') {
+	        const verifyClosed=window.click360SparkOperationalSession?.verifyCashClose||window.click360VerifyCashCloseOnServer;
+	        if (navigator.onLine !== false && typeof verifyClosed === 'function') {
 	          stage = 'cash_close_verify_server_after_failure';
-	          const serverCheck = await window.click360VerifyCashCloseOnServer(cashCloseTarget);
+	          const serverCheck = await verifyClosed(cashCloseTarget);
 	          if (serverCheck?.ok && serverCheck.closed) {
 	            const confirmed = updateCashCloseDiagnostic('cash_close_confirmed_after_response_failure', {
 	              ...diagnosticContext,
@@ -8553,6 +9010,9 @@ function parseMoney(value) {
 	        }
 	        throw error;
 	      }
+      if(window.click360SparkOperationalSession&&committed.operationalCloudConfirmed){
+        Object.assign(closeDetails,state.dailyReports.find(report=>report.id===reportId));delete closeDetails.html;
+      }
 	      updateCashCloseDiagnostic('cash_close_verify_closed', { business: basis.business, closeDetails, reportId, status: committed.pending ? 'pending' : 'confirmed' });
 	      window.click360RecordTelemetry?.('cash_close', { requestId: reportId, mode: summary.diferencia === 0 ? 'balanced' : 'difference' }).catch?.(() => {});
 	      closeModal(false);
@@ -8588,6 +9048,52 @@ function parseMoney(value) {
 	    }
 	  }
 
+  function hasReadOnlyCashHistory(businessId,date){
+    if(!window.click360SparkOperationalSession)return false;
+    const session=latestCashSession(businessId,date);
+    return session?.status==='closed'&&(session.storageHistoryReadOnly===true
+      ||(state.dailyReports||[]).some(row=>row.businessId===businessId&&row.date===date
+        &&(row.cashSessionId===session.id||row.id===session.reportId)&&row.storageHistoryReadOnly===true));
+  }
+
+  function openIndependentCashDayDialog(){
+    const businessId=currentBusiness()?.id,date=today(),ownerUid=window.click360SparkOperationalSession?.identity.ownerUid;
+    if(!isOwnerUser()||!ownerUid||window.click360Auth?.currentUser?.uid!==ownerUid
+      ||window.click360SparkOperationalSession.identity.businessId!==businessId||!hasReadOnlyCashHistory(businessId,date))
+      return toast('Solo el propietario puede iniciar esta caja independiente.', 'err');
+    if(currentOpenCashSession(businessId,date))return toast('Ya existe una caja abierta para esta fecha.', 'err');
+    showModal(`<div class="modalHeader"><h2>Iniciar nueva caja independiente</h2><button class="closeBtn" data-close>×</button></div>
+      <p>El historial protegido no se reabre ni se modifica. Indica el dinero con el que comienza esta nueva caja.</p>
+      <form id="independentCashOpenForm"><div class="field"><label>Fecha de trabajo</label><input id="independentCashDate" type="date" value="${escapeHtml(date)}" readonly></div>
+      <div class="field"><label>Fondo inicial ($)</label><input id="independentCashAmount" inputmode="decimal" autocomplete="off" placeholder="Ingresa el monto, incluso si es 0" required></div>
+      <button id="independentCashConfirm" class="btn primary block" type="submit">Iniciar caja independiente</button></form>`);
+    $('#independentCashOpenForm').onsubmit=async event=>{
+      event.preventDefault();const button=$('#independentCashConfirm');
+      if(button.disabled)return;
+      if(!isOwnerUser()||!window.click360SparkOperationalSession||currentBusiness()?.id!==businessId||today()!==date
+        ||window.click360Auth?.currentUser?.uid!==ownerUid||window.click360SparkOperationalSession.identity.ownerUid!==ownerUid
+        ||window.click360SparkOperationalSession.identity.businessId!==businessId
+        ||$('#independentCashDate').value!==date||!hasReadOnlyCashHistory(businessId,date))
+        return toast('La fecha, el usuario o el negocio cambió. Reabre el formulario sin modificar el historial.', 'err');
+      if(currentOpenCashSession(businessId,date))return toast('Ya existe una caja abierta para esta fecha.', 'err');
+      const entered=$('#independentCashAmount').value.trim(),openingAmount=parseMoney(entered);
+      if(!/^\d[\d\s.,]*$/.test(entered)||!Number.isFinite(openingAmount)||openingAmount<0)return toast('Indica un fondo inicial válido. Si no hay efectivo, escribe 0.', 'err');
+      button.disabled=true;
+      try{
+        const previousState=cloneState(state),cashSessionId=uid('cash'),operationId=uid('cashopen');
+        state.movements.push({id:operationId,operationId,cashSessionId,businessId,date,kind:'apertura',amount:openingAmount,
+          when:nowLabel(),createdBy:authUser().name,note:'Apertura de caja independiente',createdAtMs:Date.now()});
+        state.cashSessions.push({id:cashSessionId,operationId,businessId,date,status:'open',registerName:'Caja principal',
+          openingAmount,openedAt:new Date().toISOString(),openedBy:authUser().name,openedByRole:authUser().role,
+          openedByUid:window.click360User?.uid||'',notes:''});
+        addAudit('cash_opened',{amount:openingAmount,businessId,date,independentHistoryOpening:true,operationId});
+        const committed=await commitCriticalMutation(previousState,'cash_opened',next=>next.cashSessions.some(row=>row.id===cashSessionId&&row.businessId===businessId),
+          {sparkCommand:{kind:'cash_open',input:{operationId,cashSessionId,date,openingAmount}}});
+        if(!committed.ok){renderApp('cash');return;}
+        closeModal();renderApp('cash');toast(committed.pending?'Apertura guardada; sincronización pendiente.':'Nueva caja iniciada. El historial anterior permanece intacto.');
+      }finally{button.disabled=false;}
+    };
+  }
 	  async function reopenCashDay(reason) {
 	    const bid = currentBusiness()?.id;
 	    if (!bid) return false;
@@ -8603,25 +9109,33 @@ function parseMoney(value) {
 	      toast('No se encontró un cierre vigente para reabrir.', 'err');
 	      return false;
 	    }
+        let sparkCommand,openingAmount=currentBusiness().lastCashBalance||0;
+        if(window.click360SparkOperationalSession){
+          try{
+            sparkCommand=window.CLICK360_MODULAR_UI_ADAPTER.cashSuccessorCommand({report:closedReport,
+              identity:window.click360SparkOperationalSession.identity,operationId,cashSessionId:operationId,date:today(),reason});
+            openingAmount=sparkCommand.input.openingAmount;
+          }catch{return toast('No pudimos verificar el cierre anterior. Tus datos permanecen protegidos.','err');}
+        }
 	    closedReport.status = 'reopened';
 	    closedReport.reopenedAt = new Date().toISOString();
 	    closedReport.reopenedBy = authUser().name;
 	    closedReport.reopenReason = reason;
 	    state.movements.push({
 	      id: uid('mov'), operationId, businessId: bid, date: today(), when: nowLabel(), kind: 'apertura',
-	      amount: currentBusiness().lastCashBalance || 0, note: `Reapertura de caja: ${reason}`,
+	      amount: openingAmount, note: `Reapertura de caja: ${reason}`,
 	      createdBy: authUser().name, reopened: true, cashSessionId: operationId, createdAtMs: Date.now()
 	    });
 	    state.cashSessions ||= [];
 	    state.cashSessions.push({
 	      id: operationId, operationId, businessId: bid, registerName: 'Caja principal', date: today(), status: 'open',
 	      openedByUid: window.click360User?.uid || '', openedBy: authUser().name, openedByRole: authUser().role || 'owner',
-	      openedAt: new Date().toISOString(), openingAmount: currentBusiness().lastCashBalance || 0,
+	      openedAt: new Date().toISOString(), openingAmount,
 	      reopened: true, reopenReason: reason, notes: ''
 	    });
 	    addAudit('cash_reopened', { businessId: bid, date: today(), reason, reports: [closedReport.id] });
 	    const committed = await commitCriticalMutation(previousState, 'cash_reopened', (next) =>
-	      next.movements.some((movement) => movement.operationId === operationId && movement.businessId === bid));
+	      next.movements.some((movement) => movement.operationId === operationId && movement.businessId === bid),{sparkCommand});
 	    renderApp('cash');
 	    if (committed.ok) toast(committed.pending ? 'Reapertura guardada; sincronización pendiente.' : 'Caja reabierta con auditoría');
 	    return committed.ok;
@@ -8629,6 +9143,7 @@ function parseMoney(value) {
 
 		  function bindCash(){
 	    $('#calculatorCashBtn')?.addEventListener('click', () => openCalculator({ preferredTarget: isDayStarted() ? '' : 'apertureAmountInput' }));
+    $('#independentCashOpenBtn')?.addEventListener('click',openIndependentCashDayDialog);
     const btnReopenCash = $('#reopenCashBtn');
 	    if (btnReopenCash) {
 	      btnReopenCash.onclick = async () => {
@@ -8702,7 +9217,9 @@ function parseMoney(value) {
 	             addAudit('cash_opened', { amount: amt, businessId: currentBusiness().id });
 	             const businessId = currentBusiness().id;
 	             const committed = await commitCriticalMutation(previousState, 'cash_opened', (next) =>
-	               next.cashSessions.some((session) => session.id === cashSessionId && session.businessId === businessId));
+	               next.cashSessions.some((session) => session.id === cashSessionId && session.businessId === businessId), {
+                 sparkCommand:{kind:'cash_open',input:{operationId,cashSessionId,date:today(),openingAmount:amt}}
+               });
 	             if (!committed.ok) { renderApp('cash'); return; }
 	             window.click360RecordTelemetry?.('cash_open', { mode: authUser().role || 'owner' }).catch?.(() => {});
 	             renderApp('cash');
@@ -8748,7 +9265,10 @@ function parseMoney(value) {
 	          state.movements.push({id:movementId,operationId:movementId,businessId,date:today(),when:nowLabel(),kind:k,amount:a,note:n,paymentMethod:k==='ingreso'?'Efectivo':null,cashSessionId:currentOpenCashSession(businessId)?.id||'',createdAtMs:Date.now(),createdBy:authUser().name});
           addAudit('cash_movement_created', { kind:k, amount:a, note:n });
 	          const committed = await commitCriticalMutation(previousState, 'cash_movement_created', (next) =>
-	            next.movements.some((movement) => movement.id === movementId && movement.businessId === businessId));
+	            next.movements.some((movement) => movement.id === movementId && movement.businessId === businessId), {
+              sparkCommand:{kind:'cash_movement',input:{operationId:movementId,cashSessionId:currentOpenCashSession(businessId)?.id||'',
+                date:today(),movementKind:k,amount:a,note:n}}
+            });
 	          if (!committed.ok) { closeModal(); renderApp('cash'); return; }
 	          closeModal(); renderApp('cash'); toast(committed.pending ? 'Movimiento guardado; sincronización pendiente.' : 'Movimiento guardado');
           } finally {
@@ -9256,6 +9776,21 @@ function parseMoney(value) {
       // trigger cloud writes/sync gates from Safari just for changing a filter.
       $('#repFrom').onchange = (e) => { state.reportsFrom = e.target.value; renderApp('reports'); };
       $('#repTo').onchange = (e) => { state.reportsTo = e.target.value; renderApp('reports'); };
+      $('#moreRetailReportRows')?.addEventListener('click',()=>{if(verifiedSparkRetailReport()){sparkRetailReportVisible+=100;renderApp('reports');}});
+      $('#queryRetailReport')?.addEventListener('click',async event=>{
+        const button=event.currentTarget;if(button.disabled)return;button.disabled=true;
+        const coordinator=window.click360SparkCoordinator,businessId=currentBusiness()?.id,from=state.reportsFrom,to=state.reportsTo;
+        sparkRetailReport=null;sparkRetailReportVisible=100;
+        try{
+          const proof=await coordinator.readRetailReport({from,to});
+          if(coordinator!==window.click360SparkCoordinator||currentBusiness()?.id!==businessId||state.reportsFrom!==from||state.reportsTo!==to)return;
+          sparkRetailReport=proof;renderApp('reports');
+        }catch(error){
+          sparkRetailReport=null;
+          toast(error.message==='SPARK_REPORT_READ_BUDGET'?'El período contiene demasiados registros para una sola consulta. Elige un período más corto.':'No pudimos completar una consulta estable. Tus datos no cambiaron; vuelve a consultar cuando la sincronización esté al día.', 'err');
+          if(currentBusiness()?.id===businessId)renderApp('reports');
+        }finally{button.disabled=false;}
+      });
   }
 
   function bindSettings(){
@@ -9409,7 +9944,7 @@ function parseMoney(value) {
 		       const committed = await commitCriticalMutation(previousState, 'business_profile_updated', (next) =>
 		         next.businesses.some((business) => business.id === businessId
 		           && business.name === expectedName
-		           && business.settings?.ruc === expectedRuc));
+		           && business.settings?.ruc === expectedRuc),{sparkCommand:()=>scopedBusinessSettingsCommand(previousState,b)});
 		       renderApp('settings');
 		       if (committed.ok) toast(committed.pending ? 'Perfil del negocio guardado; sincronización pendiente.' : 'Perfil del negocio guardado');
 		       } finally {
@@ -9569,7 +10104,16 @@ function parseMoney(value) {
 	    document.addEventListener('keydown', modalKeyHandler);
 	    $('.modalOverlay', root).addEventListener('pointerdown', (event) => { if (event.target === event.currentTarget) closeModal(); });
 	    refreshIcons(root);
-	    requestAnimationFrame(() => (heading || focusable()[0] || dialog).focus());
+    requestAnimationFrame(() => {
+      // A form can explicitly focus its input immediately after showModal.
+      // Do not steal that focus in a later frame (WebKit fill/typing can then
+      // land on the heading and leave the amount empty). Preserve customer
+      // focus too; never focus a detached modal after it has been closed.
+      if (!dialog.isConnected) return;
+      const active = document.activeElement;
+      if (dialog.contains(active) && active?.matches?.('input,select,textarea,button,a[href]')) return;
+      (heading || focusable()[0] || dialog).focus();
+    });
 	  }
 		  function closeModal(restoreFocus = true){
 		    if (modalKeyHandler) document.removeEventListener('keydown', modalKeyHandler);
@@ -11056,11 +11600,15 @@ function parseMoney(value) {
 	      $('#deleteTemplateBtn').disabled = !activeTemplateId;
 	      updateLabelEditorIdentity();
 	    };
-	    const persistTemplate = ({ forceNew = false, suggestedName = '', nameOverride = '', silent = false, deferSave = false } = {}) => {
+	    const persistTemplate = async ({ forceNew = false, suggestedName = '', nameOverride = '', silent = false, deferSave = false } = {}) => {
 		       if (!editorBusinessIsActive()) {
 		         toast('El negocio activo cambió. Reabre el asistente para guardar con seguridad.', 'err');
 		         return null;
 		       }
+           if(deferSave&&window.click360SparkOperationalSession){
+             toast('El guardado combinado de diseño y perfil aún no está disponible. Guarda el diseño por separado.', 'err');return null;
+           }
+		       const previousState=cloneState(state);
 		       const existing = forceNew ? null : labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	       const name = nameOverride || prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
 		       if (!name?.trim()) return null;
@@ -11073,6 +11621,7 @@ function parseMoney(value) {
 	         startSlot:currentOpts.startSlot
 	       });
 		       const tpl = {
+          ...(existing || {}),
           id: existing?.id || uid('tpl'),
           name: name.trim(),
           bgColor: currentOpts.bgColor,
@@ -11130,8 +11679,8 @@ function parseMoney(value) {
 	         refreshInventoryTemplateSection();
 	         return tpl;
 	       }
-	       if(!save()) {
-	          state.settings.labelTemplates = previousTemplates;
+	       if(!(await commitScopedPrintSetting(previousState,'labelTemplates',tpl)).ok) {
+	          if(!window.click360SparkOperationalSession)state.settings.labelTemplates = previousTemplates;
 	          activeTemplateId = previousTemplateId;
 	          window.click360RecordTelemetry?.('template_save_failure', { requestId: tpl.id, errorCode: 'local_save_rejected' }).catch?.(() => {});
 	          refreshTemplateSelect();
@@ -11151,12 +11700,18 @@ function parseMoney(value) {
 	      const current = labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	      persistTemplate({ forceNew: true, suggestedName: `${current?.name || 'Mi Plantilla QR'} - copia` });
 	    };
-	    $('#deleteTemplateBtn').onclick = () => {
+	    $('#deleteTemplateBtn').onclick = async () => {
 	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
 	      const current = labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId);
 	      if (!current || !confirm(`¿Eliminar la plantilla "${current.name}"?`)) return;
 	      const businessId = editorBusinessId;
-	      const previous = [...(state.settings.labelTemplates || [])];
+	      const previousState=cloneState(state),previous = [...(state.settings.labelTemplates || [])];
+	      if(window.click360SparkOperationalSession){
+            state.settings.labelTemplates=previous.map(template=>template===current?{...template,deleted:true}:template);
+            addAudit('label_template_deleted',{templateId:current.id,name:current.name});
+            if(!(await commitScopedPrintSetting(previousState,'labelTemplates',{...current,deleted:true})).ok)return;
+            activeTemplateId='';refreshTemplateSelect();refreshInventoryTemplateSection();toast('Plantilla eliminada','ok');return;
+          }
 	      state.settings.labelTemplates = previous.filter((template) =>
 	        template.id !== activeTemplateId || !(
 	          template.businessId === businessId
@@ -11227,8 +11782,9 @@ function parseMoney(value) {
 	      }
 	      applyPrintProfile(labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === selectedId));
 	    };
-	    const persistPrintProfile = ({ forceNew = false, suggestedName = '' } = {}) => {
+	    const persistPrintProfile = async ({ forceNew = false, suggestedName = '' } = {}) => {
 	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+          if(window.click360SparkOperationalSession)return toast('El guardado combinado de diseño y perfil aún no está disponible. Guarda el diseño por separado.', 'err');
 	      const preflight = updateSheetPreview();
 	      if (preflight.blocking) return toast('Corrige los errores rojos antes de guardar el perfil.', 'err');
 	      const existing = forceNew ? null : labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
@@ -11241,7 +11797,7 @@ function parseMoney(value) {
 	      const templateName = activeTemplateId
 	        ? (labelTemplatesForBiz(editorBusinessId).find((template) => template.id === activeTemplateId)?.name || `${name.trim()} - diseño`)
 	        : `${name.trim()} - diseño`;
-	      const templateSnapshot = persistTemplate({
+	      const templateSnapshot = await persistTemplate({
 	        forceNew: !activeTemplateId,
 	        suggestedName: templateName,
 	        nameOverride: templateName,
@@ -11319,6 +11875,7 @@ function parseMoney(value) {
 	    };
 	    $('#deletePrintProfileBtn').onclick = () => {
 	      if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el asistente.', 'err');
+          if(window.click360SparkOperationalSession)return toast('La modificación de este perfil avanzado aún no está disponible. Tus preferencias siguen intactas.', 'err');
 	      const current = labelProfilesForBiz(editorBusinessId).find((profile) => profile.id === activePrintProfileId);
 	      if (!current || !confirm(`¿Eliminar el perfil "${current.name}" de este negocio?`)) return;
 	      const previous = JSON.parse(JSON.stringify(state.settings.labelProfiles || []));
@@ -12330,7 +12887,8 @@ function parseMoney(value) {
       saveTemplate:async (name, universalDocument, templateId = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo para guardar con seguridad.', 'err');
         state.settings ||= {}; state.settings.labelTemplates ||= [];
-        const previous = [...state.settings.labelTemplates];
+        const activeProfileId=loadPrintDeviceState(businessId).universalProfileId || '';
+        const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
         const existing = state.settings.labelTemplates.find((template) => template.id === templateId && template.businessId === businessId);
         const template = {
           ...(existing || {}), id:existing?.id || uid('tpl'), name, businessId,
@@ -12344,24 +12902,26 @@ function parseMoney(value) {
         const index = state.settings.labelTemplates.findIndex((item) => item.id === template.id && item.businessId === businessId);
         if (index >= 0) state.settings.labelTemplates[index] = template; else state.settings.labelTemplates.push(template);
         addAudit('universal_label_template_saved', { templateId:template.id, businessId, renderer:'universal-mm-v2' });
-        if (!save()) { state.settings.labelTemplates = previous; toast('No se pudo guardar la plantilla en este dispositivo.', 'err'); return null; }
+        if (!(await commitScopedPrintSetting(previousState,'labelTemplates',template)).ok) { toast('No se pudo guardar la plantilla en este dispositivo.', 'err'); return null; }
         refreshInventoryTemplateSection(); toast('Plantilla del lienzo guardada.', 'ok'); return template;
       },
       deleteTemplate:async (templateId) => {
         if (!editorBusinessIsActive()) { toast('El negocio activo cambió. Reabre el lienzo.', 'err'); return false; }
         state.settings ||= {}; state.settings.labelTemplates ||= [];
-        const previous = [...state.settings.labelTemplates];
+        const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
         const beforeCount = previous.length;
-        state.settings.labelTemplates = previous.filter((template) => !(template.id === templateId && template.businessId === businessId));
-        if (state.settings.labelTemplates.length === beforeCount) { toast('Plantilla no encontrada.', 'err'); return false; }
+        const existing=previous.find(template=>template.id===templateId&&template.businessId===businessId);
+        if(window.click360SparkOperationalSession&&existing)state.settings.labelTemplates=previous.map(template=>template===existing?{...template,deleted:true}:template);
+        else state.settings.labelTemplates = previous.filter((template) => !(template.id === templateId && template.businessId === businessId));
+        if (!existing) { toast('Plantilla no encontrada.', 'err'); return false; }
         addAudit('universal_label_template_deleted', { templateId, businessId, renderer:'universal-mm-v2' });
-        if (!save()) { state.settings.labelTemplates = previous; toast('No se pudo eliminar la plantilla.', 'err'); return false; }
+        if (!(await commitScopedPrintSetting(previousState,'labelTemplates',{...existing,deleted:true})).ok) { toast('No se pudo eliminar la plantilla.', 'err'); return false; }
         refreshInventoryTemplateSection(); toast('Plantilla eliminada.', 'ok'); return true;
       },
       saveProfile:async (universalDocument, profileId = '', profileName = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo.', 'err');
         state.settings ||= {}; state.settings.labelProfiles ||= [];
-        const previous = [...state.settings.labelProfiles];
+        const previousState=cloneState(state),previous = [...state.settings.labelProfiles];
         const existing = state.settings.labelProfiles.find((profile) => profile.id === profileId && profile.businessId === businessId);
         const name = String(profileName || existing?.name || `Perfil ${universalDocument.paper.widthMm}x${universalDocument.paper.heightMm} mm`).trim().slice(0, 80);
         const normalizedPaper = canvasApi.normalizeDocument(universalDocument).paper;
@@ -12370,7 +12930,7 @@ function parseMoney(value) {
         const index = state.settings.labelProfiles.findIndex((item) => item.id === profile.id && item.businessId === businessId);
         if (index >= 0) state.settings.labelProfiles[index] = profile; else state.settings.labelProfiles.push(profile);
         addAudit('universal_label_profile_saved', { profileId:profile.id, businessId, status:'provisional' });
-        if (!save()) { state.settings.labelProfiles = previous; toast('No se pudo guardar el perfil.', 'err'); return null; }
+        if (!(await commitScopedPrintSetting(previousState,'labelProfiles',profile)).ok) { toast('No se pudo guardar el perfil.', 'err'); return null; }
         const localState = loadPrintDeviceState(businessId);
         const calibrationKey = window.CLICK360_SMART_PRINT?.universalCalibrationKey(profile.id);
         const geometryFingerprint = window.CLICK360_SMART_PRINT?.universalPaperGeometryFingerprint(sharedPaper) || '';
@@ -12667,7 +13227,15 @@ function parseMoney(value) {
         r.readAsText(file);
     };
 
-    function generateExcelReport(dateFrom, dateTo) {
+    function assertRetailExportProof(dateFrom,dateTo,proof){
+      if(!window.click360SparkOperationalSession&&!proof)return;
+      const identity=window.click360SparkOperationalSession?.identity;
+      if(!proof||proof.source!=='server'||proof.complete!==true||proof.ownerUid!==identity?.ownerUid
+        ||proof.actorUid!==window.click360Auth?.currentUser?.uid||proof.businessId!==currentBusiness()?.id
+        ||proof.from!==(dateFrom||'0001-01-01')||proof.to!==dateTo)throw Error('SPARK_REPORT_EXPORT_CONTEXT_CHANGED');
+    }
+    function generateExcelReport(dateFrom, dateTo,proof=null) {
+       assertRetailExportProof(dateFrom,dateTo,proof);
        const biz = currentBusiness();
        const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
 
@@ -12679,7 +13247,7 @@ function parseMoney(value) {
        let totalCobrado = 0;
        let totalPendiente = 0;
        let salesCount = 0;
-       state.sales.filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
+       (proof?proof.sales:state.sales).filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
           if (s.status !== 'cancelled') salesCount++;
           if (s.status !== 'cancelled') {
              totalVentas += s.total || 0;
@@ -12724,15 +13292,17 @@ function parseMoney(value) {
        let totalEgresos = 0;
        let totalIngresosEfectivo = 0;
        let movCount = 0;
-       state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
+       (proof?proof.movements:state.movements).filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
           if (m.status !== 'cancelled') movCount++;
-          const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura';
-          const signedAmount = isOutflow ? -m.amount : m.amount;
+          const isOutflow = m.kind !== 'ingreso' && m.kind !== 'apertura' && m.kind !== 'sale_cancellation';
+          const effectiveAmount=movementEffectiveAmount(m,proof?proof.sales:state.sales,proof?proof.movements:state.movements);
+          const signedAmount = (isOutflow ? -1 : 1)*effectiveAmount;
           if (m.status !== 'cancelled') {
-             if (isOutflow) totalEgresos += m.amount;
-             else if (m.kind === 'ingreso') {
-                totalIngresos += m.amount;
-                if (isCashIncomeMovement(m)) totalIngresosEfectivo += m.amount;
+             if (isOutflow) totalEgresos += effectiveAmount;
+             else if (m.kind === 'ingreso'||m.kind==='sale_cancellation') {
+                totalIngresos += effectiveAmount;
+                if(m.kind==='sale_cancellation')totalIngresosEfectivo-=saleCancellationPaymentTotals(m,proof?proof.sales:state.sales).cash;
+                else if (isCashIncomeMovement(m)) totalIngresosEfectivo += effectiveAmount;
              }
           }
           movRows.push([
@@ -12752,7 +13322,7 @@ function parseMoney(value) {
        const invoiceRows = [
           ["FECHA", "ID FACTURA", "PROVEEDOR", "NUMERO", "MONTO", "IVA", "NOTAS", "ATENDIDO POR", "CREADA", "ESTADO"]
        ];
-       state.invoices.filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
+       (proof?proof.invoices:state.invoices).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
           invoiceRows.push([
              i.date,
              i.id,
@@ -12768,16 +13338,18 @@ function parseMoney(value) {
        });
 
        // 3. Compile Summary Sheet
+       if(proof){totalVentas=proof.soldTotal;totalCobrado=proof.collectedTotal;totalPendiente=proof.pendingTotal;salesCount=proof.tickets;}
        const summaryRows = [
           ["REPORTE CONTABLE CLICK 360"],
           ["Negocio:", biz.name],
           ["Periodo:", `${dateFrom} al ${dateTo}`],
           ["Fecha Reporte:", nowLabel()],
+          ...(proof?[["Consulta de nube:",proof.confirmedAt],["Integridad financiera histórica:",proof.financiallyVerified?'Campos verificados':'Hay historia protegida o campos no verificados; no es conciliación financiera']]:[]),
           [],
           ["INDICADOR/METRICA", "VALOR"],
-          ["Total Ventas ($)", totalVentas],
-          ["Total Cobrado ($)", totalCobrado],
-          ["Saldo Pendiente ($)", totalPendiente],
+          ["Total Ventas ($)", totalVentas===null?'No verificado':totalVentas],
+          ["Total Cobrado ($)", totalCobrado===null?'No verificado':totalCobrado],
+          ["Saldo Pendiente ($)", totalPendiente===null?'No verificado':totalPendiente],
           ["Transacciones de Venta", salesCount],
           ["Total Ingresos Caja ($)", totalIngresos],
           ["Ingresos Efectivo Caja ($)", totalIngresosEfectivo],
@@ -12817,7 +13389,8 @@ function parseMoney(value) {
 	      const text = String(spreadsheetCell(value) ?? '').replace(/\r?\n/g, ' ');
 	      return /[",;\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 	    }
-	    function downloadCsvFallback(dateFrom, dateTo) {
+	    function downloadCsvFallback(dateFrom, dateTo,proof=null) {
+	      assertRetailExportProof(dateFrom,dateTo,proof);
 	      const biz = currentBusiness();
 	      const inRange = (d) => { const date = (d || '').slice(0,10); return (!dateFrom || date >= dateFrom) && date <= dateTo; };
 	      const rows = [
@@ -12826,7 +13399,7 @@ function parseMoney(value) {
 	      let totalVentas = 0;
 	      let salesCount = 0;
 	      let movCount = 0;
-	      state.sales.filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
+	      (proof?proof.sales:state.sales).filter(s => s.businessId === biz.id && inRange(s.date)).forEach(s => {
 	        if (s.status !== 'cancelled') { totalVentas += s.total || 0; salesCount++; }
 	        (s.items || []).forEach(item => rows.push([
 	          "VENTA",
@@ -12841,16 +13414,17 @@ function parseMoney(value) {
 	          labelStatus(s.status)
 	        ]));
 	      });
-	      state.movements.filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
+	      (proof?proof.movements:state.movements).filter(m => m.businessId === biz.id && inRange(m.date)).forEach(m => {
 	        movCount++;
 	        rows.push(["MOVIMIENTO", m.when || m.date, m.id, m.kind || '', m.note || '', '', m.amount || 0, '', m.createdBy || m.user || 'Sistema', m.status || 'OK']);
 	      });
-	      (state.invoices || []).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
+	      (proof?proof.invoices:(state.invoices || [])).filter(i => i.businessId === biz.id && inRange(i.date)).forEach(i => {
 	        rows.push(["FACTURA", i.date, i.id, i.provider || '', i.number || '', '', i.amount || 0, '', i.createdBy || 'Sistema', i.status === 'cancelled' ? 'ANULADA' : 'OK']);
 	      });
 	      rows.push([]);
+          if(proof){totalVentas=proof.soldTotal;salesCount=proof.tickets;rows.push(['CONSULTA DE NUBE',proof.confirmedAt,'CAMPOS NO VERIFICADOS',proof.unknownFields.join(', ')]);}
 	      rows.push(["RESUMEN", "NEGOCIO", biz.name, "PERIODO", `${dateFrom} al ${dateTo}`, "", "", "", "", ""]);
-	      rows.push(["RESUMEN", "TOTAL VENTAS", "", "", "", "", totalVentas, "", "", ""]);
+	      rows.push(["RESUMEN", "TOTAL VENTAS", "", "", "", "", totalVentas===null?'No verificado':totalVentas, "", "", ""]);
 	      const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
 	      const a = document.createElement('a');
 	      const objectUrl = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8' }));
@@ -12862,16 +13436,13 @@ function parseMoney(value) {
 	    }
 
     const exp = $('#exportCsvBtn');
-    if(exp) exp.onclick = () => {
+    if(exp) exp.onclick = async () => {
 	      const dateFrom = $('#csvDateFrom')?.value || '';
 	      const dateTo = $('#csvDateTo')?.value || today();
-	      if (!window.XLSX) {
-	         downloadCsvFallback(dateFrom, dateTo);
-	         toast('Sin internet para Excel. Se descargó reporte CSV.', 'ok');
-	         return;
-	      }
       try {
-         const info = generateExcelReport(dateFrom, dateTo);
+         const proof=window.click360SparkOperationalSession?await window.click360SparkCoordinator.readRetailReport({from:dateFrom||'0001-01-01',to:dateTo,includeInvoices:true}):null;
+         if (!window.XLSX) {downloadCsvFallback(dateFrom,dateTo,proof);toast('Reporte CSV generado con la consulta completa.', 'ok');return;}
+         const info = generateExcelReport(dateFrom, dateTo,proof);
          toast(`Reporte Excel generado con éxito`, 'ok');
       } catch (err) {
          console.error(err);
@@ -12880,14 +13451,15 @@ function parseMoney(value) {
     };
 
     const sendBtn = $('#sendReportBtn');
-    if (sendBtn) sendBtn.onclick = () => {
+    if (sendBtn) sendBtn.onclick = async () => {
 	      const dateFrom = $('#csvDateFrom')?.value || today();
 	      const dateTo = $('#csvDateTo')?.value || today();
 	      try {
-	         const info = window.XLSX ? generateExcelReport(dateFrom, dateTo) : downloadCsvFallback(dateFrom, dateTo);
+             const proof=window.click360SparkOperationalSession?await window.click360SparkCoordinator.readRetailReport({from:dateFrom,to:dateTo,includeInvoices:true}):null;
+	         const info = window.XLSX ? generateExcelReport(dateFrom, dateTo,proof) : downloadCsvFallback(dateFrom, dateTo,proof);
 	         const bizName = currentBusiness().name;
 
-         const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: $${info.totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${info.salesCount}\n📋 Movimientos de caja: ${info.movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo EXCEL adjunto para ver los detalles._`;
+         const text = `📊 *Reporte Contable — ${bizName}*\n📅 Periodo: ${dateFrom} al ${dateTo}\n\n💰 Total Ventas: ${info.totalVentas===null?'No verificado':'$'+info.totalVentas.toFixed(2)}\n🧾 Transacciones de venta: ${info.salesCount}\n📋 Movimientos de caja: ${info.movCount}\n\n_Reporte generado por CLICK 360_\n_Por favor descarga el archivo EXCEL adjunto para ver los detalles._`;
 
 	         toast(`${info.csv ? 'CSV' : 'Excel'} descargado. Abriendo WhatsApp... Adjunta el archivo al chat.`, 'ok', 6000);
          setTimeout(() => {
@@ -12912,6 +13484,51 @@ function parseMoney(value) {
     }
   }
 
+  async function cancelSparkSale(sale){
+    const runtime=window.click360SparkOperationalSession,identity=runtime.identity,context=activeTenantContext;
+    let session=state.cashSessions.find(row=>row.id===sale.cashSessionId&&row.businessId===identity.businessId);
+    let layaway=state.layaways?.find(row=>row.businessId===identity.businessId&&row.saleId===sale.id);
+    if(!session||session.status!=='open'||session.summaryVersion!==1||session.storageHistoryReadOnly
+      ||sale.storageHistoryReadOnly||layaway?.status==='picked_up'||layaway?.pickedUpAt)
+      return toast('Esta venta pertenece a una caja o historial protegido. No se modificó ningún dato.', 'err');
+    if(!sale.receiptSummary||sale.receiptSummary.uniformSession!==true||sale.receiptSummary.cashSessionId!==session.id)
+      return toast('No se puede anular hasta verificar todos los cobros de esta venta. Su información permanece intacta.', 'err');
+    if(!confirm('¿Anular esta venta y registrar su compensación sin borrar el historial?'))return;
+    const reason=prompt('Motivo de anulación:');if(!reason?.trim())return toast('Debes indicar el motivo de anulación','err');
+    const sourceFingerprint=window.CLICK360_SPARK_MIGRATION.canonicalJson(sale),sessionVersion=session.recordVersion;
+    // One new intention gets one ID; durable journal retries keep this exact
+    // command. A rejected old revision must not reserve the entity's ID for
+    // every future, genuinely new cancellation intention.
+    const operationId=uid('sale-cancel'),reversalId=`${operationId}-rev`;
+    const live=state.sales.find(row=>row.id===sale.id&&row.businessId===identity.businessId);
+    session=state.cashSessions.find(row=>row.id===sale.cashSessionId&&row.businessId===identity.businessId);
+    if(activeTenantContext!==context||window.click360SparkOperationalSession!==runtime||currentBusiness()?.id!==identity.businessId
+      ||!live||window.CLICK360_SPARK_MIGRATION.canonicalJson(live)!==sourceFingerprint
+      ||session?.recordVersion!==sessionVersion||session.status!=='open')
+      return toast('La información cambió antes de confirmar. No se modificó ningún dato.', 'err');
+    sale=live;layaway=state.layaways?.find(row=>row.businessId===identity.businessId&&row.saleId===sale.id);
+    let command;
+    try{command=window.CLICK360_MODULAR_UI_ADAPTER.saleCancellationCommand({sale,identity,
+      actorUid:window.click360Auth?.currentUser?.uid,operationId,cashSessionId:session.id,reason});}
+    catch{return toast('La venta requiere conciliación antes de anularse. No se modificó ningún dato.','err');}
+    const previousState=cloneState(state),receipts=sale.receiptSummary;
+    if(!Array.isArray(sale.stockOrder)||sale.stockOrder.some(id=>!state.products.some(row=>row.id===id&&row.businessId===identity.businessId&&row.deleted!==true)))
+      return toast('Falta verificar el inventario de esta venta. No se modificó ningún dato.','err');
+    for(const id of sale.stockOrder){const product=state.products.find(row=>row.id===id&&row.businessId===identity.businessId);
+      product.stock=Number(product.stock??product.qty)+sale.stockDeltas[id];product.qty=product.stock;}
+    sale.status='cancelled';sale.cancelOperationId=operationId;sale.cancelReason=reason.trim();
+    if(layaway){layaway.status='cancelled';layaway.cancelOperationId=operationId;layaway.cancelReason=reason.trim();}
+    session.saleCount-=1;session.salesTotal=Math.round((session.salesTotal-sale.total)*100)/100;
+    session.itemCount-=sale.itemCount;session.taxTotal=Math.round((session.taxTotal-sale.iva)*100)/100;
+    session.cashBalance=Math.round((session.cashBalance-receipts.cash)*100)/100;
+    for(const key of ['cash','card','transfer','receivablePayments'])session.paymentTotals[key]=Math.round((session.paymentTotals[key]-receipts[key])*100)/100;
+    state.movements.push({id:reversalId,businessId:identity.businessId,operationId,saleId:sale.id,cashSessionId:session.id,date:sale.date,
+      kind:'sale_cancellation',amount:sale.received,compensationSign:-1,paymentTotals:cloneState(receipts),note:reason.trim()});
+    addAudit('sale_cancelled',{saleId:sale.id,businessId:identity.businessId,operationId});
+    const committed=await commitCriticalMutation(previousState,'sale_cancelled',()=>false,{sparkCommand:command});
+    renderApp('reports');if(committed.ok)toast(committed.pending?'Anulación guardada; confirmación en nube pendiente.':'Venta anulada y compensación confirmada sin borrar el historial.');
+    return committed;
+  }
   window.cancelSale = async function(saleId) {
 		  saleId = decodeActionId(saleId);
     if (authUser().role !== 'owner') {
@@ -12921,6 +13538,7 @@ function parseMoney(value) {
     const sale = salesForBiz(businessId).find(s=>s.id === saleId);
     if(!sale) return toast('Venta no encontrada', 'err');
     if(sale.status === 'cancelled') return toast('Esta venta ya fue anulada.', 'err');
+    if(window.click360SparkOperationalSession)return cancelSparkSale(sale);
     if(isBusinessDateClosed(sale.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular la venta.', 'err');
     const linkedLayaway = state.layaways?.find((item) => item.saleId === sale.id && item.businessId === businessId);
     if (linkedLayaway && window.CLICK360_V16_DOMAIN?.layawayStatus(linkedLayaway) === 'picked_up') {
@@ -13045,6 +13663,13 @@ function parseMoney(value) {
 	  const { amount, method } = decision;
 	  const paymentId = request.operationId;
 	  if (window.CLICK360_V16_DOMAIN?.operationAlreadyApplied(state, paymentId)) return toast('Este abono ya fue registrado.');
+	  let sparkPaymentCommand;
+	  if(window.click360SparkOperationalSession){
+	    try {sparkPaymentCommand=window.CLICK360_MODULAR_UI_ADAPTER.receivablePaymentCommand({sale,layaway:linkedLayaway,
+	      identity:window.click360SparkOperationalSession.identity,operationId:paymentId,cashSessionId:paymentSessionId,
+	      workingDate:paymentDate,amount,method});}
+	    catch {return toast('No pudimos validar el abono. Tu venta y el inventario permanecen intactos.', 'err');}
+	  }
 		    const previousState = cloneState(state);
 
 	    sale.received = (sale.received || 0) + amount;
@@ -13092,7 +13717,7 @@ function parseMoney(value) {
 	    addAudit('layaway_payment_added', { saleId: sale.id, layawayId:linkedLayaway?.id || '', amount, method, balance: sale.balance, operationId:paymentId, entityType:'layaway', entityId:linkedLayaway?.id || sale.id });
     const committed = await commitCriticalMutation(previousState, 'sale_payment_received', (next) =>
       next.sales.some((item) => item.id === sale.id && item.businessId === businessId
-        && item.payments?.some((payment) => payment.id === paymentId)));
+        && item.payments?.some((payment) => payment.id === paymentId)),{sparkCommand:sparkPaymentCommand});
     renderApp(route);
     if (committed.ok) {
       const remoteSale = salesForBiz(businessId).find((item) => item.id === sale.id);
@@ -13102,10 +13727,10 @@ function parseMoney(value) {
     }
   };
 
-	  window.showSaleCompleteModal = function(id) {
+	  window.showSaleCompleteModal = function(id,readOnlyHistory=null) {
 		  id = decodeActionId(id);
 	    const business = currentBusiness();
-	    const s = salesForBiz(business?.id).find(x=>x.id===id);
+	    const s = readOnlyHistory || salesForBiz(business?.id).find(x=>x.id===id);
 	    if(!s) return;
 	    if (!business || s.businessId !== business.id) return toast('El comprobante pertenece a otro negocio y fue bloqueado.', 'err');
 	    const receiptTemplate = receiptTemplatePreferences();
@@ -13114,7 +13739,7 @@ function parseMoney(value) {
 
     showModal(`
       <div class="modalHeader"><h2>Venta Completada</h2><button class="closeBtn" data-close>×</button></div>
-      <p style="color:var(--green); text-align:center; font-weight:bold; margin-bottom:12px;">✓ Guardado exitosamente</p>
+      <p style="color:var(--green); text-align:center; font-weight:bold; margin-bottom:12px;">${readOnlyHistory?'Comprobante del historial consultado':'✓ Guardado exitosamente'}</p>
 
       <div style="display:flex; justify-content:center; margin-bottom:16px;">
         <div style="max-height:220px; overflow-y:auto; border:1px solid #444; border-radius:12px; background:#fff; padding:4px;">
@@ -13148,6 +13773,39 @@ function parseMoney(value) {
     };
   };
 
+  async function commitSparkManualMovementCorrection(movement,replacement){
+    const live=state.movements.find(row=>row.id===movement?.id&&row.businessId===movement?.businessId);
+    const canonical=window.CLICK360_SPARK_MIGRATION?.canonicalJson;
+    if(!live||live.businessId!==currentBusiness()?.id||typeof canonical!=='function'
+      ||live.recordVersion!==movement.recordVersion||canonical(live)!==canonical(movement))
+      return toast('El movimiento cambió mientras estaba abierto. No se modificó; vuelve a abrirlo.', 'err');
+    // A durable refresh may replace state with equal JSON while the modal
+    // still holds the preceding object. Mutate only the current live record.
+    movement=live;
+    const operationId=uid('manual-correction'),session=state.cashSessions.find(row=>row.id===movement.cashSessionId&&row.businessId===movement.businessId);
+    if(!session||session.status!=='open'||session.summaryVersion!==1)return toast('Este movimiento pertenece a una caja protegida. No se modificó.', 'err');
+    let command;
+    try {command=window.CLICK360_MODULAR_UI_ADAPTER.manualMovementCorrectionCommand({movement,replacement,
+      identity:window.click360SparkOperationalSession.identity,actorUid:window.click360Auth?.currentUser?.uid,operationId,
+      reason:replacement?'Corrección de movimiento manual':'Anulación de movimiento manual'});}
+    catch {return toast('Este movimiento no admite una corrección manual. Su información permanece intacta.', 'err');}
+    const previousState=cloneState(state),reversalId=`${operationId}-rev`,replacementId=replacement?`${operationId}-new`:'';
+    movement.compensatedByOperationId=operationId;movement.reversalMovementId=reversalId;movement.replacementMovementId=replacementId;
+    const shared={businessId:movement.businessId,cashSessionId:movement.cashSessionId,date:movement.date,operationId,createdBy:authUser().name,when:nowLabel()};
+    state.movements.push({...shared,id:reversalId,kind:movement.kind,amount:movement.amount,note:command.input.reason,
+      compensationSign:-1,compensatesMovementId:movement.id});
+    if(replacement)state.movements.push({...shared,id:replacementId,...replacement,replacesMovementId:movement.id});
+    const oldIncome=movement.kind==='ingreso'?movement.amount:0,oldExpense=movement.kind==='ingreso'?0:movement.amount;
+    const newIncome=replacement?.kind==='ingreso'?replacement.amount:0,newExpense=replacement&&replacement.kind!=='ingreso'?replacement.amount:0;
+    session.incomeCash=Math.round((session.incomeCash-oldIncome+newIncome)*100)/100;
+    session.expenseCash=Math.round((session.expenseCash-oldExpense+newExpense)*100)/100;
+    session.cashBalance=Math.round((session.cashBalance-oldIncome+oldExpense+newIncome-newExpense)*100)/100;
+    const reason=replacement?'cash_movement_updated':'cash_movement_cancelled';
+    addAudit(reason,{movementId:movement.id,businessId:movement.businessId,operationId});
+    const committed=await commitCriticalMutation(previousState,reason,next=>next.movements.some(row=>row.id===reversalId),{sparkCommand:command});
+    if(committed.ok){closeModal();renderApp('cash');toast(committed.pending?'Corrección guardada; sincronización pendiente.':'Corrección registrada sin borrar el movimiento original.');}
+    return committed;
+  }
 	  window.editMovement = function(id) {
 	  id = decodeActionId(id);
     if (authUser().role !== 'owner') {
@@ -13200,6 +13858,7 @@ function parseMoney(value) {
        const a = parseMoney($('#emAmount').value);
        const n = $('#emNote').value.trim();
        if (!Number.isFinite(a) || a < 0) { toast('Monto inválido', 'err'); return; }
+       if(window.click360SparkOperationalSession)return await commitSparkManualMovementCorrection(m,{kind:k,amount:a,note:n});
 	       const previousState = cloneState(state);
 	       const operationId = uid('movementedit');
 
@@ -13233,6 +13892,7 @@ function parseMoney(value) {
     if (!mov) return toast('Movimiento no encontrado', 'err');
 	    if (mov.status === 'cancelled') return toast('Este movimiento ya fue anulado.', 'err');
 	    if (isBusinessDateClosed(mov.date, businessId)) return toast('Reabre la caja de esa fecha antes de anular el movimiento.', 'err');
+      if(window.click360SparkOperationalSession)return await commitSparkManualMovementCorrection(mov,null);
 	    const previousState = cloneState(state);
 	    const operationId = uid('movementcancel');
 
@@ -13315,15 +13975,18 @@ function parseMoney(value) {
   window.printReports = function(mode = 'print') {
     state.reportsFrom = state.reportsFrom || today();
     state.reportsTo = state.reportsTo || today();
-	    const allSales = salesForBiz();
+        const proof=window.click360SparkOperationalSession?verifiedSparkRetailReport():null;
+        if(window.click360SparkOperationalSession&&!proof)return toast('Consulta primero el período completo antes de imprimir. No se imprimirán totales parciales.', 'err');
+	    const allSales = proof?proof.sales:salesForBiz();
 	    const sales = allSales.filter(s => s.date >= state.reportsFrom && s.date <= state.reportsTo);
 	    const validSales = sales.filter(s => s.status!=='cancelled');
-	    const soldTotal = validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
-	    const collectedTotal = validSales.reduce((a,s)=>a+collectedAmount(s),0);
-	    const pendingTotal = validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
-	    const tickets = validSales.length;
+	    const soldTotal = proof?proof.soldTotal:validSales.reduce((a,s)=>a+(Number(s.total)||0),0);
+	    const collectedTotal = proof?proof.collectedTotal:validSales.reduce((a,s)=>a+collectedAmount(s),0);
+	    const pendingTotal = proof?proof.pendingTotal:validSales.reduce((a,s)=>a+Number(s.balance || 0),0);
+	    const tickets = proof?proof.tickets:validSales.length;
+        const reportMoney=value=>value===null||value===undefined?'No verificado':fmt(value);
 	    const counts={}; validSales.forEach(s=>saleItems(s).forEach(i=>counts[i.name]=(counts[i.name]||0)+i.qty));
-    const top = Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+    const top = proof?proof.top:Object.entries(counts).sort((a,b)=>b[1]-a[1]);
 
     // Anulados
     const cancelled = sales.filter(s => s.status==='cancelled');
@@ -13333,18 +13996,19 @@ function parseMoney(value) {
       <h2 style="font-size:20px; margin:0 0 10px;">${escapeHtml(currentBusiness().name)} - Reporte General</h2>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Periodo:</span><span>${state.reportsFrom} a ${state.reportsTo}</span></div>
       <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Impreso:</span><span>${nowLabel()}</span></div>
+      ${proof?`<p>Consulta completa de nube: ${escapeHtml(proof.confirmedAt)}. ${proof.protectedHistory?'Contiene historial protegido: los importes registrados no equivalen a una conciliación financiera histórica.':''}</p>`:''}
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
 
       <div style="width:100%; max-width:400px; margin:0 auto 20px;">
-        <h3 style="margin-top:10px; text-align:center;">Crecimiento de Ventas (7 días)</h3>
-        ${buildChartHtml(allSales).replace(/var\\(--gold\\)/g, '#D4AF37').replace(/var\\(--line\\)/g, '#ddd').replace(/var\\(--muted\\)/g, '#666')}
+        <h3 style="margin-top:10px; text-align:center;">${proof?'Cobros por fecha real':'Crecimiento de Ventas (7 días)'}</h3>
+        ${proof?(proof.unknownFields.includes('collectedTotal')?'Hay cobros históricos no verificables; no se presentan totales parciales.':proof.collectionDays.map(([date,total])=>`<p>${escapeHtml(date)}: ${fmt(total)}</p>`).join('')):buildChartHtml(allSales).replace(/var\\(--gold\\)/g, '#D4AF37').replace(/var\\(--line\\)/g, '#ddd').replace(/var\\(--muted\\)/g, '#666')}
       </div>
 
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendido:</span><strong>${fmt(soldTotal)}</strong></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cobrado:</span><strong>${fmt(collectedTotal)}</strong></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pendiente:</span><strong>${fmt(pendingTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Vendido:</span><strong>${reportMoney(soldTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Cobrado:</span><strong>${reportMoney(collectedTotal)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Pendiente:</span><strong>${reportMoney(pendingTotal)}</strong></div>
 	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Tickets Exitosos:</span><strong>${tickets}</strong></div>
-	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio cobrado:</span><strong>${fmt(tickets?collectedTotal/tickets:0)}</strong></div>
+	      <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span>Promedio cobrado:</span><strong>${reportMoney(collectedTotal===null?null:tickets?collectedTotal/tickets:0)}</strong></div>
       <div style="border-top:1px solid #ccc; margin:12px 0;"></div>
       <h3 style="margin-top:10px;">Productos Más Vendidos</h3>
       <table style="width:100%; border-collapse:collapse; margin-top:10px;">
@@ -13390,6 +14054,12 @@ function parseMoney(value) {
 	    if (title) title.textContent = `★ ${info.title}`;
 	    const detail = $('#cloudStatusDetail');
 	    if (detail) detail.textContent = info.detail;
+        const recoveryCopy=recoveryCopyStatusInfo(),recoveryNode=$('#recoveryCopyStatus');
+        if(recoveryNode){
+          recoveryNode.hidden=!recoveryCopy;
+          $('#recoveryCopyTitle').textContent=recoveryCopy?.title||'';
+          $('#recoveryCopyDetail').textContent=recoveryCopy?.detail||'';
+        }
 	  });
 		  window.addEventListener('click360-access-changed', () => {
 		    if (currentUser()) renderApp(route, {preserveActiveModal:true});

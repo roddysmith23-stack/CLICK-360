@@ -26,7 +26,7 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
           content,contentHash:await CLICK360_P0A_CANONICAL.hash(content)};
         await new Promise((resolve,reject)=>{const tx=old.transaction('snapshots','readwrite');
           tx.objectStore('snapshots').add(legacyRow);tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);});old.close();
-        const recovery=await CLICK360_SPARK_RECOVERY.open({ownerUid:'synthetic-owner',resolveUser:()=>({uid:'synthetic-owner'})});
+        const recovery=await CLICK360_P0A_RECOVERY.open({ownerUid:'synthetic-owner',resolveUser:()=>({uid:'synthetic-owner'})});
         const device=await recovery.deviceIdentity('initial-device-id');
         const same=await recovery.deviceIdentity('volatile-local-storage-id');
         if(device.deviceId!==same.deviceId||!device.durable)throw Error('DURABLE_DEVICE_IDENTITY_REQUIRED');
@@ -46,7 +46,12 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
             journalCapture,deviceId:device.deviceId,buildSha:input.buildSha,
             remoteReference:{source:'server',revision:41,hash:await CLICK360_P0A_CANONICAL.hash(remote.payload.data)}});
           const rows=new Map([['businesses/synthetic-owner/state/main',remote]]);let commits=0,lostReply=bytes===860000;
-          const snap=(path)=>({exists:rows.has(path),data:()=>structuredClone(rows.get(path)),metadata:{fromCache:false,hasPendingWrites:false}});
+          const snap=(path)=>({exists:rows.has(path),data:()=>{
+            const data=structuredClone(rows.get(path));
+            if(data?.clientVerifiedAt==='SYNTHETIC_SERVER_TIMESTAMP')
+              data.clientVerifiedAt={toDate:()=>new Date('2026-10-16T00:29:37.484Z')};
+            return data;
+          },metadata:{fromCache:false,hasPendingWrites:false}});
           const cloud={app:{options:{projectId:'demo-click360-spark-modular'}},doc:path=>({path,get:async()=>snap(path)}),
             collection:path=>{
               let after=-1,limit=100;
@@ -71,6 +76,9 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
           const second=await recovery.preserveCloud(args);
           if(first.status!=='RECOVERY_COPY_CLIENT_VERIFIED'||second.captureHash!==first.captureHash
             ||rows.size!==count||first.operationalCloudConfirmed!==false)throw Error('COPY_RETRY_NOT_IDEMPOTENT');
+          if(first.ownerUid!=='synthetic-owner'||first.serverReadVerified!==true
+            ||first.verifiedAt!=='2026-10-16T00:29:37.484Z'||second.verifiedAt!==first.verifiedAt)
+            throw Error('COPY_SERVER_DATE_MISSING_OR_REPLACED_ON_RETRY');
           const partPath=`businesses/synthetic-owner/recoveryCopies/${copy.captureHash}/parts/p0`,original=structuredClone(rows.get(partPath));
           rows.set(partPath,{...original,content:original.content+'corrupt'});
           let corruptDenied=false;try{await recovery.preserveCloud(args);}catch(error){corruptDenied=error.message==='SPARK_RECOVERY_REMOTE_PART_CONFLICT';}
@@ -98,10 +106,10 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
       const reopened=await context.newPage();await reopened.goto('https://spark-recovery.example.test/');
       for(const content of sources)await reopened.addScriptTag({content});
       const restored=await reopened.evaluate(async({hash,captureHash})=>{
-        const recovery=await CLICK360_SPARK_RECOVERY.open({ownerUid:'synthetic-owner',resolveUser:()=>({uid:'synthetic-owner'})});
+        const recovery=await CLICK360_P0A_RECOVERY.open({ownerUid:'synthetic-owner',resolveUser:()=>({uid:'synthetic-owner'})});
         const row=await recovery.read(hash),device=await recovery.deviceIdentity('changed-id-after-restart');
         const captured=await recovery.readCapture(captureHash);if(captured?.capture.journalCapture.rows[100].state!=='unknown')throw Error('RECOVERY_CAPTURE_RESTART_LOSS');recovery.close();
-        const other=await CLICK360_SPARK_RECOVERY.open({ownerUid:'synthetic-other',resolveUser:()=>({uid:'synthetic-other'})});
+        const other=await CLICK360_P0A_RECOVERY.open({ownerUid:'synthetic-other',resolveUser:()=>({uid:'synthetic-other'})});
         const isolated=await other.read(hash);other.close();
         return {stock:row.snapshot.products[0].stock,sale:row.snapshot.sales[0].id,pending:row.pendingOperations,durable:row.durable,isolated:isolated===null,deviceId:device.deviceId};
       },{hash:initial.sourceHash,captureHash:initial.captureHash});
@@ -111,4 +119,3 @@ for(const [name,engine]of Object.entries({chromium,webkit,firefox})){
     }finally{await context.close();}
   }finally{await browser.close();}
 }
-

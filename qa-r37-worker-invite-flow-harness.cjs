@@ -71,11 +71,28 @@ assert(gateViewBlock.includes('workerAccessTermsCheckbox'), 'the profile-complet
 assert(gateViewBlock.includes('href="#legal"'), 'the gate must let the worker read the full terms before accepting, same as the owner hard gate');
 
 // ── Gate logic: fail-closed, hydration-safe, owner/admin-exempt ──
-const requiresGateBlock = app.slice(app.indexOf('function requiresWorkerAccessGate('), app.indexOf('function requiresWorkerAccessGate(') + 500);
+const requiresGateBlock = app.slice(app.indexOf('function requiresWorkerAccessGate('), app.indexOf('function workerAccessGateView('));
 assert(requiresGateBlock.includes('isOwnerUser()'), 'the worker access gate must never apply to owner accounts');
 assert(requiresGateBlock.includes('click360IsPlatformAdmin'), 'the worker access gate must exempt internal platform staff');
 assert(requiresGateBlock.includes('tenantDataHydrated'), 'the worker access gate must never fire before real tenant data is hydrated (UNKNOWN != FALSE)');
 assert(requiresGateBlock.includes('!workerAccessGateChecked'), 'while the real access-request status is still unknown, the gate must default to BLOCKING (fail-closed) -- a Cajero must never see restricted UI/data before this device actually knows their request was approved');
+// Execute that unchanged legacy fallback; source length is not authorization.
+{
+  const vm = require('node:vm');
+  let checks = 0;
+  const context = { window:{}, isOwnerUser:()=>false, tenantDataHydrated:true,
+    workerAccessGateChecked:false, workerAccessGateStatus:null,
+    ensureWorkerAccessGateChecked:()=>{ checks++; } };
+  vm.createContext(context);
+  vm.runInContext(`${requiresGateBlock};globalThis.requiresGate=requiresWorkerAccessGate`,context);
+  assert.equal(context.requiresGate(),true,'Legacy unknown approval still blocks');
+  assert.equal(checks,1);
+  context.tenantDataHydrated=false;
+  assert.equal(context.requiresGate(),false,'Hydration is not evidence of a rejection');
+  context.tenantDataHydrated=true;context.workerAccessGateChecked=true;context.workerAccessGateStatus='pending';
+  assert.equal(context.requiresGate(),true,'Legacy pending approval still blocks');
+  context.workerAccessGateStatus='approved';assert.equal(context.requiresGate(),false);
+}
 
 const ensureCheckedBlock = app.slice(app.indexOf('async function ensureWorkerAccessGateChecked('), app.indexOf('async function ensureWorkerAccessGateChecked(') + 900);
 assert(ensureCheckedBlock.includes(".catch(() => null)"), 'the access-request status check must degrade gracefully (never throw and break the boot sequence) if the read fails');

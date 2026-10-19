@@ -1,0 +1,10 @@
+{
+  "firestore": { "rules": "firestore.spark.rules" },
+  "emulators": {
+    "firestore": { "host": "127.0.0.1", "port": 48944, "websocketPort": 48945 },
+    "hub": { "host": "127.0.0.1", "port": 48946 },
+    "logging": { "host": "127.0.0.1", "port": 48947 },
+    "ui": { "enabled": false },
+    "singleProjectMode": true
+  }
+}

@@ -18,6 +18,20 @@ const ASSETS = [
   './runtime-guard.js',
   './safe-update.js',
   './app.js',
+  './spark-modular-migration.js',
+  './spark-modular-reconciliation.js',
+  './spark-modular-recovery.js',
+  './spark-modular-importer.js',
+  './spark-modular-handoff.js',
+  './spark-migration-bootstrap.js',
+  './spark-modular-record-codec.js',
+  './spark-modular-transaction-transport.js',
+  './modular-operation-journal.js',
+  './modular-persistence.js',
+  './modular-operation-coordinator.js',
+  './modular-ui-adapter.js',
+  './spark-operational-ui-runtime.js',
+  './spark-operational-bootstrap.js',
   './firebase-config.js',
   './p0-tenant-guard.js',
   './worker-data-boundary.js',
@@ -107,6 +121,11 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const request = event.request;
   const url = new URL(request.url);
+  // Auth, Firestore, and any other cross-origin request must stay network-only.
+  // Do not wrap streaming WebChannel in respondWith(fetch(...)): WebKit can
+  // buffer that service-worker response until the long-lived stream closes.
+  // Falling through also guarantees authenticated responses never enter cache.
+  if (url.origin !== location.origin) return;
 
   // P0-2 (SHARY laptop black screen, Track A): /repair.html is the
   // independent rescue path -- it must never depend on this worker (or on
@@ -187,7 +206,4 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Auth, Firestore, and any other cross-origin request must stay network-only.
-  // Caching them risks preserving authenticated responses beyond their session.
-  event.respondWith(fetch(request));
 });

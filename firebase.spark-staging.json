@@ -1,0 +1,13 @@
+{
+  "hosting": {
+    "site": "click360-staging-7620168025",
+    "public": "dist",
+    "ignore": ["firebase.spark-staging.json", "**/.*", "**/node_modules/**"],
+    "headers": [
+      {"source": "**/*.@(js|css)", "headers": [{"key": "Cache-Control", "value": "no-cache, must-revalidate"}]},
+      {"source": "/{,index.html,repair.html,terms.html,privacy.html,release-manifest.json,service-worker.js}", "headers": [{"key": "Cache-Control", "value": "no-cache, no-store, must-revalidate"}]},
+      {"source": "**", "headers": [{"key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive"}]}
+    ]
+  },
+  "firestore": {"rules": "firestore.spark.rules"}
+}

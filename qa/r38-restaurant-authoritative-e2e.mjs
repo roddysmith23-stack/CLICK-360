@@ -13,7 +13,7 @@ process.env.CLICK360_R38_CORE_PROJECT='demo-click360-r38-restaurant';
 const h=await import('./r38-emulator-support.mjs');
 const config=h.writeEmulatorConfig();
 const emulators=spawn(path.join(h.root,'node_modules/.bin/firebase'),['emulators:start','--only','firestore,auth','--project',h.projectId,'--config',config],{cwd:path.dirname(config),detached:true,stdio:'ignore',env:{...process.env,PATH:`${h.javaDirs.join(':')}:${process.env.PATH}`}});
-const server=spawn(process.execPath,[path.join(h.root,'node_modules/http-server/bin/http-server'),'.','-p',String(h.port),'-c-1'],{cwd:h.root,detached:true,stdio:'ignore'});
+const server=spawn(process.execPath,[path.join(h.root,'node_modules/http-server/bin/http-server'),'dist','-p',String(h.port),'-c-1'],{cwd:h.root,detached:true,stdio:'ignore'});
 let env,browser,page,uid,device,stage='startup';
 try{
   await h.waitForUrl(`http://127.0.0.1:${h.firestorePort}/`,'Firestore');await h.waitForUrl(`http://127.0.0.1:${h.authPort}/`,'Auth');await h.waitForUrl(h.url,'HTTP');

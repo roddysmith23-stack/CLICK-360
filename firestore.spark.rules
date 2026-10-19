@@ -1,0 +1,2902 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // CEO Admin Web (r36): the ONE real server-side security boundary for the
+    // admin panel. Deliberately a single hardcoded, human-verified email --
+    // matches AUTHORIZED_ADMIN_EMAILS in scripts/lib/click360-v16-admin-core.mjs
+    // exactly (the same identity that already has unrestricted production
+    // database access via Application Default Credentials for the CLI admin
+    // scripts). This does not widen the trust boundary; it adds one more
+    // access path (the browser) for the same already-fully-trusted operator.
+    // Hiding a menu item is NOT security -- every admin-only read/write below
+    // is independently gated by this function, checked on every request.
+    function isPlatformAdmin() {
+      return signedIn()
+        && request.auth.token.get("email", null) != null
+        && request.auth.token.email.lower() == 'roddysmithceo@gmail.com';
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/approvedUsers/$(request.auth.uid));
+    }
+
+    function userData() {
+      return userDoc().data;
+    }
+
+    function inviteDoc(email) {
+      return get(/databases/$(database)/documents/approvedUsersByEmail/$(email));
+    }
+
+    function inviteData(email) {
+      return inviteDoc(email).data;
+    }
+
+    function hasActiveInvite(email) {
+      return signedIn()
+        && email != null
+        && exists(/databases/$(database)/documents/approvedUsersByEmail/$(email))
+        && inviteData(email).status == "active"
+        && inviteData(email).approved == true;
+    }
+
+    function membershipDoc(_b) {
+      return get(/databases/$(database)/documents/businesses/$(_b)/members/$(request.auth.uid));
+    }
+
+    function membershipData(_b) {
+      return membershipDoc(_b).data;
+    }
+
+    function supportedMemberRole(role) {
+      return role in ["worker", "seller", "cashier", "inventory", "supervisor", "admin"];
+    }
+
+    function hasActiveMembership(_b) {
+      let member = membershipData(_b);
+      return signedIn()
+        && _b != "demo-click360"
+        && exists(/databases/$(database)/documents/businesses/$(_b)/members/$(request.auth.uid))
+        && member.uid == request.auth.uid
+        && member.ownerId == _b
+        && member.businessId == _b
+        && member.tenantKey == "owner:" + _b + ":business:" + _b
+        && member.status == "active"
+        && supportedMemberRole(member.role);
+    }
+
+    function approvedUser() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && (
+          (userData().keys().hasAll(["status", "approved"])
+            && userData().status == "active"
+            && userData().approved == true)
+          || (!userData().keys().hasAll(["status"]) && userData().approved == true)
+        )
+        && (
+          userData().role == "owner"
+          || userData().isOwner == true
+          || userData().ownerId == request.auth.uid
+          || hasActiveMembership(userData().ownerId)
+          || (
+            request.auth.token.email != null
+            && hasActiveInvite(request.auth.token.email)
+            && inviteData(request.auth.token.email).ownerId == userData().ownerId
+          )
+        );
+    }
+
+    function legacyOwnerUser() {
+      let data = userData();
+      return signedIn()
+        && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && data.approved == true
+        && (!data.keys().hasAny(["status"]) || data.status == "active")
+        && data.ownerId == request.auth.uid
+        && (data.role == "owner" || data.isOwner == true);
+    }
+
+    function accessDoc() {
+      return get(/databases/$(database)/documents/accountAccess/$(request.auth.uid));
+    }
+
+    function accessData() {
+      return accessDoc().data;
+    }
+
+    function hasAccountAccess() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid));
+    }
+
+    function accountAccessReadable() {
+      let data = accessData();
+      return signedIn()
+        && hasAccountAccess()
+        && data.uid == request.auth.uid
+        && data.businessId == request.auth.uid
+        && (!data.keys().hasAny(["ownerId"]) || data.ownerId == request.auth.uid)
+        && (!data.keys().hasAny(["tenantKey"])
+          || data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid)
+        && data.businessId != "demo-click360"
+        && data.status in ["trial", "trial_active", "expired", "trial_expired", "active", "paid_base",
+          "paid_pro", "paid_business", "paid_enterprise", "founder", "founder_legacy", "lifetime"];
+    }
+
+    function activeAccountOwnerUser() {
+      let data = accessData();
+      return accountAccessReadable()
+        && (
+          ((data.status in ["trial", "trial_active"])
+            && data.trialDays == 7
+            && data.trialStartedAt is timestamp
+            && request.time < data.trialStartedAt + duration.value(7, "d"))
+          || ((data.status in ["founder", "lifetime"])
+            && data.plan in ["base", "pro", "founder", "lifetime"])
+          // Real commercial tier for historical customers (SHARY, Lia):
+          // permanent, no expiresAt check, no billing -- distinct from the
+          // internal-only "founder" status above. See v16-domain.js
+          // evaluateEntitlement()'s matching founder_legacy branch.
+          || (data.status == "founder_legacy" && data.plan == "founder_legacy")
+          || (data.status == "active"
+            && data.lifetime == true
+            && data.plan == "pro"
+            && data.planCode == "pro_lifetime"
+            && data.billingStatus == "lifetime")
+          || ((data.status in ["active", "paid_base", "paid_pro", "paid_business", "paid_enterprise"])
+            && data.plan in ["normal", "base", "pro", "business", "enterprise"]
+            && (!data.keys().hasAny(["planCode"]) || data.planCode != "pro_lifetime")
+            && (!data.keys().hasAny(["expiresAt"])
+              || (data.expiresAt is timestamp && request.time < data.expiresAt)))
+        );
+    }
+
+    function ownerUser() {
+      return hasAccountAccess() ? activeAccountOwnerUser() : legacyOwnerUser();
+    }
+
+    function ownerReadUser() {
+      return hasAccountAccess() ? accountAccessReadable() : legacyOwnerUser();
+    }
+
+    function tenantReadable(_b) {
+      // V16.2 keeps the monolithic tenant snapshot owner-only. Worker access
+      // returns after business modules move to per-record collections in P1;
+      // exposing this document would reveal every module regardless of role.
+      return ownerReadUser() && request.auth.uid == _b;
+    }
+
+    function businessUnitDoc(_o, _b) {
+      return get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b));
+    }
+
+    function businessUnitData(_o, _b) {
+      return businessUnitDoc(_o, _b).data;
+    }
+
+    function businessUnitMemberDoc(_o, _b) {
+      return get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid));
+    }
+
+    function businessUnitMemberData(_o, _b) {
+      return businessUnitMemberDoc(_o, _b).data;
+    }
+
+    function rootMembershipAfter(_o) {
+      return getAfter(/databases/$(database)/documents/businesses/$(_o)/members/$(request.auth.uid)).data;
+    }
+
+    function validBusinessUnitIdentity(data, _o, _b) {
+      return _o != "demo-click360"
+        && data.ownerUid == _o
+        && data.businessId == _b
+        && data.tenantKey == "owner:" + _o + ":business:" + _b
+        && data.boundarySchemaVersion == 1;
+    }
+
+    // Phase 3.2 gradual rollout gate: a tenant's Workers module is only
+    // reachable while businesses/{ownerUid}/featureFlags/workers exists with
+    // { enabled: true }. This doc is provisioned by the trusted migration
+    // admin process (worker-boundary-migrate.mjs) and adjusted only by
+    // scripts/worker-boundary-admin.mjs (both bypass rules via the Admin
+    // SDK); no client can create, update, or delete it. This is the single
+    // chokepoint every businessUnits rule below funnels through via
+    // businessUnitReady(), so per-tenant activation/deactivation cannot be
+    // bypassed from a modified client.
+    function workersFeatureFlagEnabled(_o) {
+      return exists(/databases/$(database)/documents/businesses/$(_o)/featureFlags/workers)
+        && get(/databases/$(database)/documents/businesses/$(_o)/featureFlags/workers).data.enabled == true;
+    }
+
+    function businessUnitReady(_o, _b) {
+      let unit = businessUnitData(_o, _b);
+      return signedIn()
+        && workersFeatureFlagEnabled(_o)
+        && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b))
+        && validBusinessUnitIdentity(unit, _o, _b)
+        && unit.status == "CUTOVER_VERIFIED";
+    }
+
+    function activeBusinessUnitMember(_o, _b) {
+      let member = businessUnitMemberData(_o, _b);
+      return businessUnitReady(_o, _b)
+        && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid))
+        && validBusinessUnitIdentity(member, _o, _b)
+        && member.uid == request.auth.uid
+        && member.status == "active"
+        && supportedMemberRole(member.role)
+        && member.permissions is map;
+    }
+
+    function businessUnitOwner(_o, _b) {
+      return request.auth.uid == _o
+        && ownerUser()
+        && businessUnitReady(_o, _b);
+    }
+
+    function businessUnitPermission(_o, _b, _m, action) {
+      let member = businessUnitMemberData(_o, _b);
+      return businessUnitOwner(_o, _b)
+        || (signedIn() && request.auth.uid != _o && activeBusinessUnitMember(_o, _b)
+          && member.permissions.get(_m, {}).get(action, false) == true);
+    }
+
+    // r37.2 (LOGISTICS WORKER PERMISSIONS): the real backend half of "un
+    // Vendedor A solo puede tocar la Ruta A" -- reads the actual route
+    // document and checks the requester's uid against its real assignment
+    // fields. Mirrors p2-logistics-domain.js's canAccessRoute() at the
+    // rules layer so a hand-crafted request (bypassing the app entirely)
+    // is rejected the same way a client-side check would be, not just
+    // hidden from the UI.
+    function logisticsRouteData(_o, _b, routeId) {
+      return get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/logisticsRoutes/$(routeId)).data;
+    }
+
+    function logisticsAssignedTo(_o, _b, routeId, field) {
+      return logisticsRouteData(_o, _b, routeId).get(field, "") == request.auth.uid;
+    }
+
+    // P0 commercial rule: every business includes at most 2 active workers
+    // (excluding the owner) unless additional paid seats are purchased. This
+    // is enforced server-side so it cannot be bypassed by a modified client:
+    // any write that activates or deactivates a businessUnits member must
+    // atomically write the matching entitlement/seats counter in the SAME
+    // transaction/batch, or the whole write is rejected.
+    function seatEntitlementDoc(_o, _b) {
+      return get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/entitlement/seats);
+    }
+
+    function seatEntitlementData(_o, _b) {
+      return seatEntitlementDoc(_o, _b).data;
+    }
+
+    function seatEntitlementAfter(_o, _b) {
+      return getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/entitlement/seats).data;
+    }
+
+    function validSeatEntitlementIdentity(data, _o, _b) {
+      return data.ownerUid == _o
+        && data.businessId == _b
+        && data.tenantKey == "owner:" + _o + ":business:" + _b
+        && data.boundarySchemaVersion == 1;
+    }
+
+    function seatCapacity(entitlement) {
+      return entitlement.baseSeatCap + entitlement.addOnSeats;
+    }
+
+    // A seat was validly consumed for request.auth.uid's own activation in
+    // this same write: the entitlement counter increases by exactly one,
+    // stays within capacity, is tagged with the acting uid, and that same
+    // uid's member doc genuinely transitions into "active" in this same
+    // transaction (was absent or non-active before, active after). Tying the
+    // counter to a real, independently-verified transition means the counter
+    // itself can never be bumped by a standalone write.
+    function seatConsumedForSelf(_o, _b) {
+      let before = seatEntitlementData(_o, _b);
+      let after = seatEntitlementAfter(_o, _b);
+      let memberPath = /databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid);
+      let memberAfter = getAfter(memberPath).data;
+      return validSeatEntitlementIdentity(after, _o, _b)
+        && after.baseSeatCap == before.baseSeatCap
+        && after.addOnSeats == before.addOnSeats
+        && after.activeMembers == before.activeMembers + 1
+        && after.activeMembers <= seatCapacity(after)
+        && after.lastActionUid == request.auth.uid
+        && memberAfter.uid == request.auth.uid
+        && memberAfter.status == "active"
+        && (!exists(memberPath) || get(memberPath).data.status != "active");
+    }
+
+    // A seat was validly released by an owner/admin revoking exactly the
+    // member named in the entitlement write's own lastActionUid, in this
+    // same transaction: the counter decreases by exactly one, and that
+    // member's doc genuinely transitions from "active" to "revoked" in this
+    // same write. Tying the decrement to a real, named transition means the
+    // counter can never be freed by a standalone write without an actual
+    // revocation.
+    function seatReleased(_o, _b) {
+      let before = seatEntitlementData(_o, _b);
+      let after = seatEntitlementAfter(_o, _b);
+      let releasedUid = after.lastActionUid;
+      let memberPath = /databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(releasedUid);
+      return validSeatEntitlementIdentity(after, _o, _b)
+        && after.baseSeatCap == before.baseSeatCap
+        && after.addOnSeats == before.addOnSeats
+        && after.activeMembers == before.activeMembers - 1
+        && after.activeMembers >= 0
+        && releasedUid is string && releasedUid.size() > 0
+        && get(memberPath).data.status == "active"
+        && getAfter(memberPath).data.status == "revoked";
+    }
+
+    function validBoundaryCreate(_o, _b, _m, _r) {
+      return validBusinessUnitIdentity(request.resource.data, _o, _b)
+        && sparkLegacyWritable(_o)
+        && request.resource.data.id == _r
+        && request.resource.data.module == _m
+        && request.resource.data.recordVersion == 1
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    function validBoundaryUpdate(_o, _b, _m, _r) {
+      return validBusinessUnitIdentity(resource.data, _o, _b)
+        && sparkLegacyWritable(_o)
+        && validBusinessUnitIdentity(request.resource.data, _o, _b)
+        && request.resource.data.id == _r
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.module == _m
+        && request.resource.data.module == resource.data.module
+        && request.resource.data.recordVersion == resource.data.recordVersion + 1
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    function boundaryProductUpdateAllowed(_o, _b, _r) {
+      let member = businessUnitMemberData(_o, _b);
+      let productPermissions = member.permissions.get("products", {});
+      let salesPermissions = member.permissions.get("sales", {});
+      let operationId = request.resource.data.get("lastOperationId", "");
+      return businessUnitOwner(_o, _b)
+        || (signedIn() && request.auth.uid != _o && activeBusinessUnitMember(_o, _b)
+          && (
+            productPermissions.get("update", false) == true
+            || (productPermissions.get("delete", false) == true
+              && request.resource.data.status == "deleted"
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                "status", "deletedAt", "recordVersion", "updatedBy", "updatedAt"
+              ]))
+            || (salesPermissions.get("create", false) == true
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                "stock", "qty", "updatedAtMs", "lastOperationId", "recordVersion", "updatedBy", "updatedAt"
+              ])
+              && request.resource.data.stock is number
+              && request.resource.data.stock >= 0
+              && request.resource.data.stock < resource.data.stock
+              && operationId.size() > 0
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/sales/$(operationId)).data.actorUid == request.auth.uid
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/sales/$(operationId)).data.createdAt == request.time
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/sales/$(operationId)).data.stockDeltas.get(_r, 0)
+                == resource.data.stock - request.resource.data.stock)
+          ));
+    }
+
+    // Spark V1 control is owner-wide because legacy state/main contains ALL
+    // businesses. A business-only client fence cannot protect this document.
+    function sparkControlPath(_o) {
+      return /databases/$(database)/documents/businesses/$(_o)/metadata/storage;
+    }
+
+    function sparkLegacyWritable(_o) {
+      return !existsAfter(sparkControlPath(_o))
+        || getAfter(sparkControlPath(_o)).data.storageMode == "legacy";
+    }
+
+    function sparkLegacyReadable(_o) {
+      return !exists(sparkControlPath(_o)) || get(sparkControlPath(_o)).data.storageMode == "legacy";
+    }
+
+    function sparkOwner(_o) {
+      return signedIn() && request.auth.uid == _o
+        && (exists(/databases/$(database)/documents/accountAccess/$(_o))
+          ? sparkAccountWritable(_o) : sparkApprovedOwnerReadable(_o));
+    }
+
+    function sparkOwnerRead(_o) {
+      return signedIn() && request.auth.uid == _o && sparkOwnerReadableAccess(_o);
+    }
+
+    function sparkOwnerReadableAccess(_o) {
+      // Same readable contract as ownerReadUser, evaluated against the path
+      // owner once. Do not re-enter the legacy signedIn/exists/get call chain
+      // for every server read included in a composed transaction.
+      return exists(/databases/$(database)/documents/accountAccess/$(_o))
+        ? sparkAccountReadable(_o) : sparkApprovedOwnerReadable(_o);
+    }
+
+    function sparkAccountReadable(_o) {
+      let d = get(/databases/$(database)/documents/accountAccess/$(_o)).data;
+      return sparkAccountReadableData(d, _o);
+    }
+
+    function sparkAccountReadableData(d, _o) {
+      return d.uid == _o && d.businessId == _o
+        && d.get("ownerId", _o) == _o
+        && d.get("tenantKey", "owner:" + _o + ":business:" + _o) == "owner:" + _o + ":business:" + _o
+        && _o != "demo-click360"
+        && d.status in ["trial", "trial_active", "expired", "trial_expired", "active", "paid_base",
+          "paid_pro", "paid_business", "paid_enterprise", "founder", "founder_legacy", "lifetime"];
+    }
+
+    function sparkAccountWritable(_o) {
+      let d = get(/databases/$(database)/documents/accountAccess/$(_o)).data;
+      return sparkAccountReadableData(d, _o)
+        && (d.status in ["trial", "trial_active"]
+          ? (d.trialDays == 7 && d.trialStartedAt is timestamp
+            && request.time < d.trialStartedAt + duration.value(7, "d"))
+          : (d.status in ["founder", "lifetime"]
+            ? d.plan in ["base", "pro", "founder", "lifetime"]
+            : (d.status == "founder_legacy" ? d.plan == "founder_legacy"
+              : ((d.status == "active" && d.get("lifetime", false) == true && d.plan == "pro"
+                  && d.get("planCode", "") == "pro_lifetime" && d.get("billingStatus", "") == "lifetime")
+                || (d.status in ["active", "paid_base", "paid_pro", "paid_business", "paid_enterprise"]
+                  && d.plan in ["normal", "base", "pro", "business", "enterprise"]
+                  && d.get("planCode", "") != "pro_lifetime"
+                  && (!d.keys().hasAny(["expiresAt"]) || (d.expiresAt is timestamp && request.time < d.expiresAt)))))));
+    }
+
+    function sparkApprovedOwnerReadable(_o) {
+      let d = get(/databases/$(database)/documents/approvedUsers/$(_o)).data;
+      return d.approved == true && d.get("status", "active") == "active"
+        && d.ownerId == _o && (d.role == "owner" || d.isOwner == true);
+    }
+
+    function sparkRolloutAllowed(_o) {
+      let policy = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
+      return policy.enabled == true && _o in policy.pilotOwnerUids;
+    }
+
+    // Shadow equality is not permission to activate commercial writers.
+    // This policy is administrative-only, default-deny and bound to exactly
+    // one owner's immutable source/build/whole-owner business coverage.
+    function sparkCutoverApproved(_o) {
+      let policy = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
+      let approval = get(/databases/$(database)/documents/businesses/$(_o)/storageApprovals/$("cutover")).data;
+      return policy.enabled == true && policy.get("automaticCutover", false) == true
+        && policy.pilotOwnerUids is list && _o in policy.pilotOwnerUids
+        && approval.keys().hasOnly(["ownerUid", "sourceHash", "buildSha", "businessIds"])
+        && approval.ownerUid == _o
+        && approval.sourceHash == resource.data.sourceHash
+        && approval.buildSha == resource.data.buildSha
+        && approval.businessIds == resource.data.businessIds;
+    }
+
+    function sparkPhaseStep(before, after) {
+      return before == after
+        || (before == "LEGACY" && after == "MIGRATION_PREPARING")
+        || (before == "MIGRATION_PREPARING" && after == "SHADOW_WRITING")
+        || (before == "SHADOW_WRITING" && after == "SHADOW_VERIFYING")
+        || (before == "SHADOW_VERIFYING" && after == "READY_TO_CUTOVER")
+        || (before == "READY_TO_CUTOVER" && after == "MODULAR")
+        || (before == "MODULAR" && after == "FROZEN");
+    }
+
+    function sparkModeMatchesPhase(data) {
+      return (data.phase == "LEGACY" && data.storageMode == "legacy")
+        || (data.phase in ["MIGRATION_PREPARING", "SHADOW_WRITING", "SHADOW_VERIFYING", "READY_TO_CUTOVER"]
+          && data.storageMode == "migrating")
+        || (data.phase == "MODULAR" && data.storageMode == "modular"
+          && data.semanticEquality == "PASS" && data.reconstructedHash == data.sourceHash)
+        || (data.phase == "FROZEN" && data.storageMode == "frozen");
+    }
+
+    function sparkValidControl(_o) {
+      let data = request.resource.data;
+      return data.keys().hasOnly([
+          "ownerUid", "schemaVersion", "storageMode", "phase", "sourceHash", "remoteHash",
+          "remoteRevision", "deviceRevision", "sourceDeviceId", "businessIds", "recordCount",
+          "payloadBytes", "recordVersion", "semanticEquality", "reconstructedHash", "buildSha",
+          "createdAt", "updatedAt", "updatedBy"
+        ])
+        && data.ownerUid == _o && data.schemaVersion == 2
+        && data.sourceHash is string && data.sourceHash.size() == 64
+        && data.remoteHash is string && data.remoteHash.size() == 64
+        && data.remoteRevision is int && data.remoteRevision >= 0
+        && data.deviceRevision is string && data.sourceDeviceId is string
+        && data.sourceDeviceId.size() > 0 && data.sourceDeviceId.size() <= 120
+        && data.businessIds is list && data.businessIds.size() > 0
+        && data.businessIds.toSet().size() == data.businessIds.size()
+        && data.recordCount is int && data.recordCount > 0
+        && data.payloadBytes is int && data.payloadBytes > 0
+        && data.buildSha is string && data.buildSha.size() >= 12 && data.buildSha.size() <= 40
+        && data.updatedBy == request.auth.uid && data.updatedAt == request.time
+        && sparkModeMatchesPhase(data);
+    }
+
+    // Also used by the business membership path outside operational storage.
+    function sparkActiveMember(_o, _b) {
+      let member = businessUnitMemberData(_o, _b);
+      return signedIn() && workersFeatureFlagEnabled(_o)
+        && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid))
+        && validBusinessUnitIdentity(member, _o, _b)
+        && member.uid == request.auth.uid && member.status == "active"
+        && supportedMemberRole(member.role) && member.permissions is map;
+    }
+
+    function sparkValidShadow(_o, _b, _m, _r) {
+      let data = request.resource.data;
+      return data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash", "historyPolicy", "operational", "operationalHash"])
+        && data.ownerUid == _o && data.businessId == _b
+        && data.schemaVersion == 2 && data.module == _m && data.id == _r
+        && data.sourceHash == get(sparkControlPath(_o)).data.sourceHash
+        && data.sourcePath is list && data.sourcePath.size() > 0
+        && data.dataHash is string && data.dataHash.size() == 64
+        && (!data.keys().hasAny(["operational", "operationalHash"]) || (
+          _m == "cashSessions" && !data.keys().hasAny(["historyPolicy"])
+          && data.operationalHash is string && data.operationalHash.matches("^[a-f0-9]{64}$")
+          && data.operational.keys().hasOnly(["summaryVersion", "saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "openingAmount", "incomeCash", "expenseCash", "paymentTotals", "closeCycle"])
+          && data.operational.summaryVersion == 1 && data.operational.saleCount is int && data.operational.saleCount >= 0
+          && data.operational.salesTotal is number && data.operational.salesTotal >= 0
+          && data.operational.itemCount is int && data.operational.itemCount >= 0
+          && data.operational.taxTotal is number && data.operational.taxTotal >= 0
+          && data.operational.cashBalance is number && data.operational.openingAmount == data.data.openingAmount
+          && data.operational.incomeCash is number && data.operational.incomeCash >= 0
+          && data.operational.expenseCash is number && data.operational.expenseCash >= 0
+          && data.operational.closeCycle is int && data.operational.closeCycle >= 1
+          && data.operational.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+          && data.operational.paymentTotals.cash is number && data.operational.paymentTotals.cash >= 0
+          && data.operational.paymentTotals.card is number && data.operational.paymentTotals.card >= 0
+          && data.operational.paymentTotals.transfer is number && data.operational.paymentTotals.transfer >= 0
+          && data.operational.paymentTotals.receivablePayments is number && data.operational.paymentTotals.receivablePayments >= 0))
+        && (!data.keys().hasAny(["historyPolicy"]) || (
+          _m in ["cashSessions", "sales", "movements", "dailyReports", "layaways"]
+          && data.historyPolicy.keys().hasOnly(["version", "mode", "sourceHash", "recordHash", "reason"])
+          && data.historyPolicy.version == 1 && data.historyPolicy.mode == "CLOSED_READ_ONLY"
+          && data.historyPolicy.sourceHash == data.sourceHash && data.historyPolicy.recordHash == data.dataHash
+          && data.historyPolicy.reason == "MIGRATION_CASH_HISTORICAL_COMPONENT_UNVERIFIED"
+          && (_m != "cashSessions" || (data.data.status == "closed"
+            && data.data.closedAt is string && data.data.closedAt.size() > 0))));
+    }
+
+    function sparkShadowModule(_m) {
+      // Exact anchored whitelist, not a prefix grant. Keep the same module set
+      // in one constant; regression tests verify parity and reject prefixes.
+      // This optimization alone does NOT resolve compound-denial budget costs.
+      return _m.matches("^(products|sales|movements|cashSessions|dailyReports|auditEvents|deletedProducts|supplierInvoices|layaways|tables|tableOrders|restaurantPayments|restaurantPrintHistory|restaurantEvents|restaurantRecipes|labelPrintHistory|legacyOperationLedger|customers|labelTemplates|labelProfiles|reminders|logisticsVehicles|logisticsRoutes|logisticsLoadSheets|logisticsRouteSales|logisticsCollections|logisticsReturns|logisticsSettlements|logisticsRouteExpenses|logisticsRouteCustomers|logisticsEvents|logisticsPrintHistory|financePayments|financeLoans|financeEnvelopes|financeGoals|config)$");
+    }
+
+    function validStatePayload() {
+      return request.resource.data.payload.keys().hasAll(["schemaVersion", "identity", "data"])
+        && request.resource.data.payload.data.keys().hasAll([
+          "businesses", "products", "sales", "movements", "invoices", "dailyReports",
+          "deletedProducts", "auditLogs", "settings"
+        ])
+        && request.resource.data.payload.data.businesses is list
+        && request.resource.data.payload.data.businesses.size() > 0
+        && request.resource.data.payload.data.products is list
+        && request.resource.data.payload.data.sales is list
+        && request.resource.data.payload.data.movements is list
+        && request.resource.data.payload.data.invoices is list
+        && request.resource.data.payload.data.dailyReports is list
+        && request.resource.data.payload.data.deletedProducts is list
+        && request.resource.data.payload.data.auditLogs is list
+        && request.resource.data.payload.data.settings is map
+        && request.resource.data.payload.data.settings.keys().hasAll(["workers", "labelTemplates"])
+        && request.resource.data.payload.data.settings.workers is list
+        && request.resource.data.payload.data.settings.labelTemplates is list
+        && (!request.resource.data.payload.data.keys().hasAny(["layaways"]) || request.resource.data.payload.data.layaways is list)
+        && (!request.resource.data.payload.data.keys().hasAny(["cashSessions"]) || request.resource.data.payload.data.cashSessions is list)
+        && (!request.resource.data.payload.data.keys().hasAny(["notifications"]) || request.resource.data.payload.data.notifications is list)
+        && (!request.resource.data.payload.data.keys().hasAny(["legalAcceptances"]) || request.resource.data.payload.data.legalAcceptances is list);
+    }
+
+    function writeMatchesTenant(_b) {
+      return _b != "demo-click360"
+        && request.resource.data.schemaVersion == 10
+        && request.resource.data.ownerUid == _b
+        && request.resource.data.ownerId == _b
+        && request.resource.data.businessId == _b
+        && request.resource.data.tenantKey == "owner:" + _b + ":business:" + _b
+        && request.resource.data.payload.schemaVersion == 10
+        && request.resource.data.payload.identity.schemaVersion == 10
+        && request.resource.data.payload.identity.ownerUid == _b
+        && request.resource.data.payload.identity.ownerId == _b
+        && request.resource.data.payload.identity.businessId == _b
+        && request.resource.data.payload.identity.tenantKey == "owner:" + _b + ":business:" + _b
+        && validStatePayload();
+    }
+
+    function validWorkerUserCreate(uid) {
+      return validV16WorkerUserCreate(uid) || (signedIn()
+        && uid == request.auth.uid
+        && request.auth.token.email != null
+        && hasActiveInvite(request.auth.token.email)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.role == inviteData(request.auth.token.email).role
+        && request.resource.data.ownerId == inviteData(request.auth.token.email).ownerId
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.isOwner != true
+        && request.resource.data.keys().hasOnly([
+          "uid", "email", "role", "ownerId", "name", "photoURL", "status",
+          "approved", "businessLimit", "createdAt", "updatedAt", "approvedFromEmail", "isOwner"
+        ]));
+    }
+
+    function validV16WorkerUserCreate(uid) {
+      let ownerId = request.resource.data.ownerId;
+      let inviteHash = request.resource.data.invitationHash;
+      let invite = get(/databases/$(database)/documents/businesses/$(ownerId)/invitations/$(inviteHash)).data;
+      let inviteAfter = getAfter(/databases/$(database)/documents/businesses/$(ownerId)/invitations/$(inviteHash)).data;
+      let memberAfter = getAfter(/databases/$(database)/documents/businesses/$(ownerId)/members/$(uid)).data;
+      return signedIn()
+        && uid == request.auth.uid
+        && ownerId != uid
+        && ownerId != "demo-click360"
+        && request.auth.token.email != null
+        && invite.email == request.auth.token.email
+        && invite.ownerId == ownerId
+        && invite.businessId == ownerId
+        && invite.inviteHash == inviteHash
+        && invite.status == "pending"
+        && invite.createdAt is timestamp
+        && request.time < invite.createdAt + duration.value(invite.expiresAfterDays, "d")
+        && inviteAfter.status == "accepted"
+        && inviteAfter.acceptedBy == uid
+        && inviteAfter.consumed == true
+        && memberAfter.uid == uid
+        && memberAfter.ownerId == ownerId
+        && memberAfter.businessId == ownerId
+        && (!invite.keys().hasAny(["businessUnitId"])
+          || memberAfter.businessUnitId == invite.businessUnitId)
+        && memberAfter.invitationHash == inviteHash
+        && memberAfter.status == "active"
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.ownerId == ownerId
+        && request.resource.data.businessId == ownerId
+        && request.resource.data.tenantKey == "owner:" + ownerId + ":business:" + ownerId
+        && request.resource.data.invitationHash == inviteHash
+        && (!invite.keys().hasAny(["businessUnitId"])
+          || request.resource.data.businessUnitId == invite.businessUnitId)
+        && request.resource.data.role == invite.role
+        && request.resource.data.permissions == invite.permissions
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.isOwner == false
+        && request.resource.data.approvedFromInvitation == true
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly([
+          "uid", "email", "name", "photoURL", "role", "permissions", "ownerId",
+          "businessId", "businessUnitId", "tenantKey", "invitationHash", "status", "approved", "isOwner",
+          "businessLimit", "workerLimit", "approvedFromInvitation", "createdAt", "updatedAt"
+        ]);
+    }
+
+    function validProfileFields() {
+      return request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && request.resource.data.photoURL is string
+        && request.resource.data.photoURL.size() <= 100000;
+    }
+
+    function ownProfileUpdateOnly(uid) {
+      return approvedUser()
+        && request.auth.uid == uid
+        && validProfileFields()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "photoURL", "updatedAt"]);
+    }
+
+    function ownerRevokesWorker() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.role != "owner"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "approved", "revokedAt", "revokedBy", "updatedAt"])
+        && (request.resource.data.status == "blocked" || request.resource.data.status == "revoked")
+        && request.resource.data.approved == false
+        && request.resource.data.revokedBy == request.auth.uid;
+    }
+
+    function ownerUpdatesWorkerAccess() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && resource.data.role != "owner"
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.isOwner != true
+        && supportedMemberRole(request.resource.data.role)
+        && request.resource.data.permissions is map
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["role", "permissions", "updatedAt"])
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    function validInviteWrite(email) {
+      return ownerUser()
+        && request.resource.data.email == email
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.role == "worker"
+        && request.resource.data.status == "active"
+        && request.resource.data.approved == true
+        && request.resource.data.keys().hasOnly([
+          "email", "role", "ownerId", "inviteToken", "status", "approved",
+          "name", "businessLimit", "createdAt", "updatedAt"
+        ]);
+    }
+
+    function validInviteRevoke() {
+      return ownerUser()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "approved", "revokedAt", "revokedBy", "updatedAt"])
+        && (request.resource.data.status == "blocked" || request.resource.data.status == "revoked")
+        && request.resource.data.approved == false
+        && request.resource.data.revokedBy == request.auth.uid;
+    }
+
+    match /approvedUsers/{uid} {
+      allow read: if signedIn() && (
+        request.auth.uid == uid
+        || (ownerUser() && resource.data.ownerId == request.auth.uid && resource.data.role == "worker")
+      );
+      // Owner accounts are provisioned only by an administrative credential.
+      allow create: if validWorkerUserCreate(uid);
+      allow update: if ownProfileUpdateOnly(uid) || ownerRevokesWorker() || ownerUpdatesWorkerAccess();
+      allow delete: if false;
+    }
+
+    match /approvedUsersByEmail/{email} {
+      allow read: if signedIn() && (
+        request.auth.token.email == email
+        || (ownerUser() && resource.data.ownerId == request.auth.uid)
+      );
+      allow create: if validInviteWrite(email);
+      allow update: if validInviteWrite(email) || validInviteRevoke();
+      allow delete: if false;
+    }
+
+    match /accountAccess/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
+      // CEO Admin Web: activation/plan-change/suspend writes for ANY tenant.
+      // The exact field shape (status/planCode/limits/onboardingProfile/etc.)
+      // is built by the single canonical activationFields() in
+      // v16-domain.js -- the same function the CLI uses -- so this rule only
+      // needs to enforce identity/plan-validity/monotonic-revision, not
+      // re-derive the whole shape. app.js additionally writes a backup to
+      // adminBackups and an entry to adminAuditLogs around every such write.
+      allow create: if isPlatformAdmin()
+        && uid != "demo-click360"
+        && request.resource.data.uid == uid
+        && request.resource.data.businessId == uid
+        && request.resource.data.plan in ["base", "pro", "business", "enterprise", "founder_legacy"]
+        && request.resource.data.revision == 1;
+      allow update: if isPlatformAdmin()
+        && uid != "demo-click360"
+        && request.resource.data.uid == uid
+        && request.resource.data.businessId == uid
+        && request.resource.data.plan in ["base", "pro", "business", "enterprise", "founder_legacy"]
+        && request.resource.data.revision is int
+        && request.resource.data.revision > resource.data.revision;
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasAll([
+          "uid", "ownerId", "businessId", "tenantKey", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
+          "trialStartedAt", "lastSeenAt", "createdAt", "source", "entitlementVersion", "revision"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "uid", "ownerId", "businessId", "tenantKey", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
+          "trialStartedAt", "profileUpdatedAt", "lastSeenAt", "createdAt", "source", "entitlementVersion", "revision"
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.businessId == request.auth.uid
+        && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
+        && request.resource.data.businessId != "demo-click360"
+        && request.resource.data.email == request.auth.token.email
+        && !exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
+        && !exists(/databases/$(database)/documents/approvedUsersByEmail/$(request.auth.token.email))
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 120
+        && (!request.resource.data.keys().hasAny(["photoURL"])
+          || (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 100000))
+        && request.resource.data.status == "trial"
+        && request.resource.data.plan == "normal"
+        && request.resource.data.planCode == "base"
+        && request.resource.data.trialDays == 7
+        && request.resource.data.source == "self_service"
+        && request.resource.data.entitlementVersion == 16
+        && request.resource.data.revision == 1
+        && request.resource.data.trialStartedAt == request.time
+        && (!request.resource.data.keys().hasAny(["profileUpdatedAt"])
+          || request.resource.data.profileUpdatedAt == request.time)
+        && request.resource.data.lastSeenAt == request.time
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn()
+        && request.auth.uid == uid
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["name", "photoURL", "profileUpdatedAt", "lastSeenAt"])
+        && request.resource.data.lastSeenAt == request.time
+        && (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(["lastSeenAt"])
+          || (request.resource.data.profileUpdatedAt == request.time
+            && request.resource.data.name is string
+            && request.resource.data.name.size() <= 120
+            && (!request.resource.data.keys().hasAny(["photoURL"])
+              || (request.resource.data.photoURL is string && request.resource.data.photoURL.size() <= 100000)))
+        );
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/invitations/{inviteHash} {
+      allow read: if businessId != "demo-click360" && signedIn() && (
+        (ownerUser() && request.auth.uid == businessId)
+        || (request.auth.token.email != null && resource.data.email == request.auth.token.email)
+      );
+      allow create: if businessId != "demo-click360"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && request.resource.data.keys().hasAll([
+          "inviteHash", "email", "name", "role", "permissions", "ownerId", "businessId",
+          "tenantKey", "status", "expiresAfterDays", "singleUse", "createdAt", "createdBy", "appVersion"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "inviteHash", "email", "name", "role", "permissions", "ownerId", "businessId", "businessUnitId",
+          "tenantKey", "status", "expiresAfterDays", "singleUse", "createdAt", "createdBy", "appVersion"
+        ])
+        && request.resource.data.inviteHash == inviteHash
+        && request.resource.data.ownerId == businessId
+        && request.resource.data.businessId == businessId
+        && (!request.resource.data.keys().hasAny(["businessUnitId"])
+          || (request.resource.data.businessUnitId is string
+            && request.resource.data.businessUnitId.size() > 0
+            && request.resource.data.businessUnitId.size() <= 120))
+        && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.email is string
+        && request.resource.data.name is string
+        && supportedMemberRole(request.resource.data.role)
+        && request.resource.data.permissions is map
+        && request.resource.data.status == "pending"
+        && request.resource.data.expiresAfterDays == 7
+        && request.resource.data.singleUse == true
+        && request.resource.data.createdAt == request.time
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0");
+      allow update: if businessId != "demo-click360" && (
+        (ownerUser()
+          && request.auth.uid == businessId
+          && resource.data.ownerId == businessId
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.businessId == resource.data.businessId
+          && request.resource.data.tenantKey == resource.data.tenantKey
+          && request.resource.data.inviteHash == resource.data.inviteHash
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "status", "revokedAt", "revokedBy", "role", "permissions", "updatedAt", "updatedBy"
+          ])
+          && supportedMemberRole(request.resource.data.role)
+          && request.resource.data.permissions is map)
+        || (signedIn()
+          && request.auth.token.email != null
+          && resource.data.email == request.auth.token.email
+          && resource.data.status == "pending"
+          && resource.data.createdAt is timestamp
+          && request.time < resource.data.createdAt + duration.value(resource.data.expiresAfterDays, "d")
+          && request.resource.data.status == "accepted"
+          && request.resource.data.acceptedBy == request.auth.uid
+          && request.resource.data.acceptedAt == request.time
+          && request.resource.data.consumed == true
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "acceptedBy", "acceptedAt", "consumed"])
+          && getAfter(/databases/$(database)/documents/businesses/$(businessId)/members/$(request.auth.uid)).data.status == "active")
+      );
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/ownerInviteSecrets/{inviteHash} {
+      allow read: if businessId != "demo-click360"
+        && ownerReadUser()
+        && request.auth.uid == businessId;
+      allow create, update: if businessId != "demo-click360"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && request.resource.data.ownerId == businessId
+        && request.resource.data.inviteHash == inviteHash;
+      allow delete: if false;
+    }
+
+    match /businesses/{businessId}/members/{uid} {
+      allow read: if businessId != "demo-click360" && signedIn() && (
+        (ownerReadUser() && request.auth.uid == businessId)
+        || request.auth.uid == uid
+      );
+      allow create: if businessId != "demo-click360" && signedIn() && (
+        (ownerUser() && request.auth.uid == businessId
+          && request.resource.data.ownerId == businessId
+          && request.resource.data.businessId == businessId
+          && (!get(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.keys().hasAny(["businessUnitId"])
+            || request.resource.data.businessUnitId == get(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.businessUnitId)
+          && request.resource.data.uid == uid
+          && request.resource.data.status == "active"
+          && request.resource.data.role != "owner")
+        || (request.auth.uid == uid
+          && request.auth.token.email != null
+          && request.resource.data.uid == uid
+          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.ownerId == businessId
+          && request.resource.data.businessId == businessId
+          && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
+          && request.resource.data.status == "active"
+          && request.resource.data.role != "owner"
+          && request.resource.data.permissions is map
+          && get(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.status == "pending"
+          && get(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.email == request.auth.token.email
+          && getAfter(/databases/$(database)/documents/businesses/$(businessId)/invitations/$(request.resource.data.invitationHash)).data.status == "accepted"
+          && request.resource.data.acceptedAt == request.time
+          && request.resource.data.lastAccessAt == request.time)
+      );
+      allow update: if businessId != "demo-click360"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && resource.data.ownerId == businessId
+        && request.resource.data.ownerId == businessId
+        && request.resource.data.businessId == businessId
+        && request.resource.data.uid == uid
+        && request.resource.data.role != "owner"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "role", "permissions", "status", "updatedAt", "updatedBy", "revokedAt", "revokedBy"
+        ]);
+      allow delete: if false;
+    }
+
+    // Phase 3.2 per-tenant Workers rollout switch. Admin-provisioned and
+    // admin-adjusted only (worker-boundary-migrate.mjs / worker-boundary-admin.mjs
+    // via the Admin SDK, which bypasses rules) -- see workersFeatureFlagEnabled().
+    // The owner may read their own tenant's flag (e.g. to show rollout status);
+    // no client may ever write it.
+    match /businesses/{ownerUid}/featureFlags/{docId} {
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      // CEO Admin Web: toggle the Workers flag for a tenant. Production
+      // migrations already default this to false on creation (see
+      // worker-boundary-migrate.mjs); this only lets the admin flip it once
+      // a businessUnit is CUTOVER_VERIFIED, same effect as
+      // worker-boundary-admin.mjs --action enable-workers, just from the browser.
+      allow update: if isPlatformAdmin()
+        && ownerUid != "demo-click360"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["enabled", "enabledAt", "enabledBy", "updatedBy", "updatedAt", "notes"]);
+      allow create, delete: if false;
+    }
+
+    // Owner-initiated, immutable request log for additional worker seats
+    // ("Trabajadores adicionales" screen), while no self-serve purchase
+    // flow exists yet. The owner can only create their own request record;
+    // fulfillment happens out-of-band via scripts/worker-boundary-admin.mjs
+    // (which bypasses rules), not by writing back to this doc from a client.
+    match /businesses/{ownerUid}/seatRequests/{requestId} {
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      allow create: if request.auth.uid == ownerUid
+        && request.resource.data.ownerUid == ownerUid
+        && request.resource.data.requestedBy == request.auth.uid
+        && request.resource.data.businessId is string
+        && request.resource.data.businessId.size() > 0
+        && request.resource.data.requestedAt == request.time
+        && request.resource.data.status == "pending";
+      allow update, delete: if false;
+    }
+
+    // Commercial MVP: owner-initiated request for more products/storage
+    // capacity, mirroring seatRequests exactly -- an immutable, auditable
+    // record for AIIA, never mutated by the client, no billing automation.
+    match /businesses/{ownerUid}/capacityRequests/{requestId} {
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      allow create: if request.auth.uid == ownerUid
+        && request.resource.data.ownerUid == ownerUid
+        && request.resource.data.requestedBy == request.auth.uid
+        && (request.resource.data.kind == "products" || request.resource.data.kind == "storage")
+        && request.resource.data.requestedAt == request.time
+        && request.resource.data.status == "pending";
+      allow update, delete: if false;
+    }
+
+    // Phase 3.3 activation evidence trail (worker-boundary-activate-tenant.mjs).
+    // Admin-SDK-only, like adminBackups -- written before any mutation and
+    // updated once at the end, never by a client.
+    match /businesses/{ownerUid}/activationLog/{activationId} {
+      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      allow create, update, delete: if false;
+    }
+
+    // P2 modular boundary. The parent document is an administrative cutover
+    // manifest. Public clients cannot create or promote a business unit.
+    match /businesses/{ownerUid}/businessUnits/{businessId} {
+      allow read: if businessUnitOwner(ownerUid, businessId)
+        || activeBusinessUnitMember(ownerUid, businessId)
+        || isPlatformAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/members/{uid} {
+      allow read: if businessUnitOwner(ownerUid, businessId)
+        || (signedIn() && request.auth.uid == uid && (activeBusinessUnitMember(ownerUid, businessId)
+          || (get(sparkControlPath(ownerUid)).data.storageMode == "modular"
+            && businessId in get(sparkControlPath(ownerUid)).data.businessIds
+            && (sparkActiveMember(ownerUid, businessId)
+              // A former worker may GET only their own scoped revocation.
+              // Otherwise a document listener loses access to its very
+              // revocation update. No business data/write permission follows.
+              || (request.method == "get" && resource.data.uid == uid
+                && validBusinessUnitIdentity(resource.data, ownerUid, businessId)
+                && resource.data.status == "revoked")))));
+      // Seat gate: activation (create, or reactivation via update) must
+      // consume exactly one seat in the same write via seatConsumedForSelf,
+      // which independently re-checks capacity from the entitlement doc.
+      allow create: if businessUnitReady(ownerUid, businessId)
+        && request.auth.uid == uid
+        && rootMembershipAfter(ownerUid).uid == request.auth.uid
+        && rootMembershipAfter(ownerUid).status == "active"
+        && supportedMemberRole(rootMembershipAfter(ownerUid).role)
+        && validBoundaryCreate(ownerUid, businessId, "members", uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.role == rootMembershipAfter(ownerUid).role
+        && request.resource.data.permissions == rootMembershipAfter(ownerUid).permissions
+        && request.resource.data.status == "active"
+        && seatConsumedForSelf(ownerUid, businessId);
+      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "members", "manage")
+        && validBoundaryUpdate(ownerUid, businessId, "members", uid)
+        && request.resource.data.uid == uid
+        && supportedMemberRole(request.resource.data.role)
+        && request.resource.data.permissions is map
+        && (request.resource.data.status == "active" || request.resource.data.status == "revoked")
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "role", "permissions", "status", "recordVersion", "updatedBy", "updatedAt", "revokedBy", "revokedAt"
+        ])
+        && (
+          resource.data.status == request.resource.data.status
+          || (resource.data.status == "active" && request.resource.data.status == "revoked" && seatReleased(ownerUid, businessId))
+          || (resource.data.status == "revoked" && request.resource.data.status == "active" && seatConsumedForSelf(ownerUid, businessId))
+        );
+      allow delete: if false;
+    }
+
+    // Seat entitlement counter for the P0 worker-seat commercial rule.
+    // Provisioned only by the trusted migration admin process (bypasses
+    // rules); clients may only move it by exactly +/-1 atomically alongside
+    // the member write that earns/frees the seat (see seatConsumedForSelf
+    // and seatReleased above), or, for the owner, to change the purchased
+    // addOnSeats quota (no price is enforced here; that stays a business
+    // decision made before calling this write).
+    match /businesses/{ownerUid}/businessUnits/{businessId}/entitlement/{docId} {
+      allow read: if businessUnitOwner(ownerUid, businessId)
+        || activeBusinessUnitMember(ownerUid, businessId);
+      allow create: if false;
+      allow update: if docId == "seats" && validSeatEntitlementIdentity(request.resource.data, ownerUid, businessId) && (
+        (businessUnitOwner(ownerUid, businessId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["addOnSeats", "updatedAt", "updatedBy"])
+          && request.resource.data.addOnSeats is int
+          && request.resource.data.addOnSeats >= 0
+          && request.resource.data.activeMembers == resource.data.activeMembers
+          && request.resource.data.updatedBy == request.auth.uid
+          && request.resource.data.updatedAt == request.time)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(["activeMembers", "lastActionUid", "updatedAt", "updatedBy"])
+          && request.resource.data.updatedAt == request.time
+          && (
+            (request.resource.data.updatedBy == request.auth.uid && seatConsumedForSelf(ownerUid, businessId))
+            || (businessUnitPermission(ownerUid, businessId, "members", "manage") && seatReleased(ownerUid, businessId))
+          ))
+      );
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/products/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && (businessUnitPermission(ownerUid, businessId, "products", "read")
+        || businessUnitPermission(ownerUid, businessId, "sales", "read"));
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "products", "create")
+        && validBoundaryCreate(ownerUid, businessId, "products", recordId)
+        && request.resource.data.stock is number
+        && request.resource.data.stock >= 0;
+      allow update: if resource.data.get("boundarySchemaVersion", 0) == 1
+        && request.resource.data.get("boundarySchemaVersion", 0) == 1
+        && validBoundaryUpdate(ownerUid, businessId, "products", recordId)
+        && boundaryProductUpdateAllowed(ownerUid, businessId, recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/sales/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "sales", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "sales", "create")
+        && validBoundaryCreate(ownerUid, businessId, "sales", recordId)
+        && request.resource.data.total is number
+        && request.resource.data.total >= 0
+        && request.resource.data.items is list
+        && request.resource.data.stockDeltas is map
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "sales", "update")
+        && validBoundaryUpdate(ownerUid, businessId, "sales", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/layaways/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "layaways", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "layaways", "create")
+        && validBoundaryCreate(ownerUid, businessId, "layaways", recordId)
+        && request.resource.data.total is number
+        && request.resource.data.total >= 0
+        && request.resource.data.balance is number
+        && request.resource.data.balance >= 0
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && (
+          (businessUnitPermission(ownerUid, businessId, "layaways", "update"))
+          || (businessUnitPermission(ownerUid, businessId, "layaways", "payment")
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              "payments", "paid", "balance", "status", "recordVersion", "updatedBy", "updatedAt"
+            ])
+            && resource.data.payments is list
+            && request.resource.data.payments is list
+            && request.resource.data.payments.size() == resource.data.payments.size() + 1
+            && request.resource.data.payments[resource.data.payments.size()].amount is number
+            && request.resource.data.payments[resource.data.payments.size()].amount > 0
+            && request.resource.data.paid == resource.data.paid + request.resource.data.payments[resource.data.payments.size()].amount
+            && request.resource.data.balance == resource.data.balance - request.resource.data.payments[resource.data.payments.size()].amount
+            && request.resource.data.balance >= 0)
+        ) && validBoundaryUpdate(ownerUid, businessId, "layaways", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/cashSessions/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "cashSessions", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "cashSessions", "create")
+        && validBoundaryCreate(ownerUid, businessId, "cashSessions", recordId)
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && (
+          businessUnitPermission(ownerUid, businessId, "cashSessions", "update")
+          || (businessUnitPermission(ownerUid, businessId, "cashSessions", "close")
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              "status", "closedAt", "closedBy", "countedCash", "expectedCash", "difference",
+              "reportId", "observations", "recordVersion", "updatedBy", "updatedAt"
+            ])
+            && resource.data.status == "open"
+            && request.resource.data.status == "closed"
+            && request.resource.data.closedBy == request.auth.uid
+            && request.resource.data.countedCash is number
+            && request.resource.data.expectedCash is number
+            && request.resource.data.difference == request.resource.data.countedCash - request.resource.data.expectedCash)
+        ) && validBoundaryUpdate(ownerUid, businessId, "cashSessions", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/movements/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "movements", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "movements", "create")
+        && validBoundaryCreate(ownerUid, businessId, "movements", recordId)
+        && request.resource.data.amount is number
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/auditEvents/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "auditEvents", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "auditEvents", "create")
+        && validBoundaryCreate(ownerUid, businessId, "auditEvents", recordId)
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.action is string
+        && request.resource.data.action.size() > 0
+        && request.resource.data.action.size() <= 80;
+      allow update, delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/settings/{recordId} {
+      allow read: if recordId == "main" && businessUnitPermission(ownerUid, businessId, "settings", "read");
+      allow create: if recordId == "main"
+        && businessUnitPermission(ownerUid, businessId, "settings", "create")
+        && validBoundaryCreate(ownerUid, businessId, "settings", recordId);
+      allow update: if recordId == "main"
+        && businessUnitPermission(ownerUid, businessId, "settings", "update")
+        && validBoundaryUpdate(ownerUid, businessId, "settings", recordId);
+      allow delete: if false;
+    }
+
+    // r37.2 (LOGISTICS WORKER PERMISSIONS): logisticsVehicles/logisticsRoutes/
+    // logisticsLoadSheets/logisticsRouteSales/logisticsCollections/
+    // logisticsReturns/logisticsSettlements -- the modular per-record
+    // collections a real Worker actually writes through (mirrors the
+    // products/sales/etc. pattern above). Every write additionally
+    // requires the fine-grained "logistics" module permission
+    // (businessUnitPermission(..., "logistics", "<action>")) AND, for the
+    // three personally-assignable capacities (seller/collector/helper),
+    // that the requester is the exact uid assigned on the real route doc
+    // -- "no basta esconder la tarjeta": a modified client cannot forge
+    // its way around this by simply calling the write directly.
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsVehicles/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsVehicles", recordId);
+      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.write")
+        && validBoundaryUpdate(ownerUid, businessId, "logisticsVehicles", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsRoutes/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "routes.read")
+        || resource.data.sellerId == request.auth.uid
+        || resource.data.collectorId == request.auth.uid
+        || resource.data.helperId == request.auth.uid;
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "routes.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsRoutes", recordId);
+      allow update: if validBoundaryUpdate(ownerUid, businessId, "logisticsRoutes", recordId)
+        && (
+          businessUnitPermission(ownerUid, businessId, "logistics", "routes.write")
+          || (businessUnitPermission(ownerUid, businessId, "logistics", "routes.assign")
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              "vehicleId", "sellerId", "sellerName", "helperId", "helperName", "collectorId", "collectorName",
+              "status", "auditTrail", "recordVersion", "updatedBy", "updatedAt"
+            ]))
+        );
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsLoadSheets/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "helperId");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsLoadSheets", recordId);
+      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.write")
+        && validBoundaryUpdate(ownerUid, businessId, "logisticsLoadSheets", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsRouteSales/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.create")
+        && logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "sellerId")
+        && (request.resource.data.discount == 0 || businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.discount"))
+        && validBoundaryCreate(ownerUid, businessId, "logisticsRouteSales", recordId)
+        && request.resource.data.actorUid == request.auth.uid;
+      // Cancellation is the only post-create mutation, and only for
+      // whoever holds routeSales.cancel (never granted by default to any
+      // preset -- see WORKER_ROLE_PRESETS/ROLE_PERMISSIONS comments).
+      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.cancel")
+        && resource.data.status != "cancelled"
+        && request.resource.data.status == "cancelled"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "auditTrail", "recordVersion", "updatedBy", "updatedAt"
+        ])
+        && validBoundaryUpdate(ownerUid, businessId, "logisticsRouteSales", recordId);
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsCollections/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "collections.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
+      // Collections are append-only (matches the domain's idempotency-key
+      // contract in recordCollection -- a real duplicate submit is a
+      // no-op resolved client-side against the SAME key, never a second
+      // write) -- no update/delete path at all.
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "collections.write")
+        && logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "collectorId")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsCollections", recordId)
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsReturns/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "returns.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "helperId");
+      // "delivery" scope: the assigned SELLER or the assigned HELPER
+      // (repartidor) may record a return on their own route -- the exact
+      // real backend enforcement for the repartidor semantics the client
+      // domain layer also implements (assertRouteAccess(route, actor,
+      // 'delivery')).
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "returns.write")
+        && (logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "sellerId")
+          || logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "helperId"))
+        && validBoundaryCreate(ownerUid, businessId, "logisticsReturns", recordId)
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsSettlements/{recordId} {
+      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "settlements.read")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "settlements.write")
+        && validBoundaryCreate(ownerUid, businessId, "logisticsSettlements", recordId);
+      allow update: if validBoundaryUpdate(ownerUid, businessId, "logisticsSettlements", recordId)
+        && (
+          // Reopening an approved/closed settlement is Owner-only,
+          // unconditionally -- NOT gated by businessUnitPermission at all,
+          // since 'settlements.reopen' is never a real key in any
+          // member's permissions map to begin with (see
+          // worker-data-boundary.js). This is the belt-and-suspenders
+          // rules-layer twin of p2-logistics-domain.js's hard
+          // isRoutePrivileged(actor) check in reopenSettlement().
+          (resource.data.status in ["approved", "closed"]
+            && request.resource.data.status == "reopened"
+            && businessUnitOwner(ownerUid, businessId))
+          || (request.resource.data.status != "reopened"
+            && businessUnitPermission(ownerUid, businessId, "logistics", "settlements.approve"))
+        );
+      allow delete: if false;
+    }
+
+    match /activationRequests/{requestId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          "requestId", "uid", "businessId", "tenantKey", "email", "businessName", "plan",
+          "period", "price", "currency", "requestCode", "status", "notes", "createdAt", "appVersion"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "requestId", "uid", "businessId", "tenantKey", "email", "businessName", "plan",
+          "period", "price", "currency", "requestCode", "status", "notes", "createdAt", "appVersion"
+        ])
+        && request.resource.data.requestId == requestId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.businessId == request.auth.uid
+        && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
+        && (request.resource.data.plan == "base" || request.resource.data.plan == "pro"
+          || request.resource.data.plan == "business" || request.resource.data.plan == "enterprise")
+        && (request.resource.data.period == "month" || request.resource.data.period == "quarter"
+          || request.resource.data.period == "semester" || request.resource.data.period == "year"
+          || request.resource.data.period == "custom"
+          || (request.resource.data.plan == "base" && request.resource.data.period == "lifetime"))
+        && request.resource.data.price is number
+        && request.resource.data.price >= 0
+        && request.resource.data.status == "pending"
+        && request.resource.data.currency == "USD"
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /legalAcceptances/{acceptanceId} {
+      // r37: CEO Admin must be able to see a customer's real legal status
+      // (vigente/pendiente/grace/requiere aceptación) without ever
+      // hand-editing Firestore -- isPlatformAdmin() added for that read.
+      allow read: if (signedIn() && resource.data.uid == request.auth.uid) || isPlatformAdmin();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          "acceptanceId", "uid", "businessId", "tenantKey", "termsVersion", "privacyVersion",
+          "locale", "source", "acceptedAt", "appVersion"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "acceptanceId", "uid", "businessId", "tenantKey", "termsVersion", "privacyVersion",
+          "locale", "source", "acceptedAt", "appVersion"
+        ])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.businessId == request.auth.uid
+        && request.resource.data.tenantKey == "owner:" + request.auth.uid + ":business:" + request.auth.uid
+        && request.resource.data.acceptanceId == acceptanceId
+        && request.resource.data.termsVersion is string
+        && request.resource.data.privacyVersion is string
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.acceptedAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // r37 (legacy consent grace): tracks WHEN the "Términos actualizados"
+    // banner was first presented to an already-onboarded (legacy) account,
+    // separately from legalAcceptances (which only records an actual
+    // acceptance). This is mutable bookkeeping -- re-presenting the banner
+    // updates lastShownAt but must never move termsPresentedAt backward
+    // once set, since that timestamp is what starts the 7-day grace clock.
+    // CEO Admin reads this (isPlatformAdmin()) to compute a customer's
+    // real legal status (vigente/grace/requiere aceptación) without ever
+    // needing to hand-edit Firestore.
+    match /legalGraceStatus/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["uid", "termsPresentedAt", "presentedTermsVersion", "presentedPrivacyVersion", "lastShownAt", "updatedAt"])
+        && request.resource.data.uid == uid
+        && request.resource.data.termsPresentedAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(["uid", "termsPresentedAt", "presentedTermsVersion", "presentedPrivacyVersion", "lastShownAt", "updatedAt"])
+        && request.resource.data.uid == uid
+        // termsPresentedAt is write-once: only the very first presentation
+        // may set it (via create); every subsequent update must carry it
+        // through unchanged so the 7-day grace window can never be reset.
+        && request.resource.data.termsPresentedAt == resource.data.termsPresentedAt
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // r37 (#93): a lightweight, best-effort health beacon the customer's OWN
+    // device writes about itself -- diagnostic-only, never gates the
+    // customer's own app, lets CEO Admin see real device health (version,
+    // sync status, hydration, pending ops, last runtime error) without ever
+    // hand-editing Firestore. Field-allowlisted and size-bounded so this can
+    // never become an arbitrary-data write path.
+    match /customerHealth/{uid} {
+      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly([
+          "appVersion", "buildSha", "assetVersion", "isOnline", "tenantDataHydrated",
+          "pendingOperations", "syncStatus", "syncReason", "localHash", "remoteHash",
+          "lastRuntimeError", "route", "updatedAt"
+        ])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // r37 (worker invite flow, Section 11-16): the invite-acceptance
+    // transaction already grants a technically-active member record (it
+    // must -- server-side seat/security enforcement lives there and is
+    // unrelated to this). This collection is a SEPARATE, additive human
+    // workflow layer on top: the worker's own client withholds the
+    // restricted UI (shows "esperando aprobación" instead) until the
+    // OWNER explicitly approves, giving the owner a real chance to review
+    // the worker's completed profile before they start operating --
+    // without touching the already-audited acceptance transaction/rules.
+    match /workerAccessRequests/{requestId} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || resource.data.ownerId == request.auth.uid || isPlatformAdmin());
+      allow create: if signedIn() && request.auth.uid == request.resource.data.uid
+        && requestId == request.resource.data.ownerId + '_' + request.resource.data.uid
+        && request.resource.data.keys().hasOnly(["requestId", "ownerId", "uid", "email", "name", "phone", "businessUnitId", "status", "requestedAt", "decidedAt", "decidedBy"])
+        && request.resource.data.requestId == requestId
+        && request.resource.data.status == "pending"
+        && request.resource.data.requestedAt == request.time
+        && request.resource.data.decidedAt == null
+        && request.resource.data.decidedBy == "";
+      allow update: if signedIn() && request.auth.uid == resource.data.ownerId
+        && request.resource.data.keys().hasOnly(["requestId", "ownerId", "uid", "email", "name", "phone", "businessUnitId", "status", "requestedAt", "decidedAt", "decidedBy"])
+        && request.resource.data.requestId == resource.data.requestId
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.requestedAt == resource.data.requestedAt
+        && resource.data.status == "pending"
+        && (request.resource.data.status == "approved" || request.resource.data.status == "rejected")
+        && request.resource.data.decidedAt == request.time
+        && request.resource.data.decidedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // ownerId lets a modular Workers session (where businessId is the
+    // business UNIT id, e.g. "biz-p31", not the owner's uid) report
+    // telemetry too: tenantKey must be "owner:{ownerId}:business:{businessId}"
+    // and the requester must be that tenant's owner or an active unit
+    // member. Legacy/owner sessions keep working unchanged: ownerId simply
+    // equals businessId there, same as tenantKey's existing self-referential
+    // shape.
+    function validTelemetryTenant(data) {
+      return data.businessId != "demo-click360"
+        && data.tenantKey == "owner:" + data.ownerId + ":business:" + data.businessId
+        && (
+          (data.ownerId == data.businessId && (data.businessId == request.auth.uid || hasActiveMembership(data.businessId)))
+          || (data.ownerId != data.businessId && (businessUnitOwner(data.ownerId, data.businessId) || activeBusinessUnitMember(data.ownerId, data.businessId)))
+        );
+    }
+
+    // Phase 3.2 diagnostic events fire exactly when membership/permission
+    // checks fail or a tenant hasn't fully activated -- validTelemetryTenant
+    // (which requires proving active membership) would reject the very
+    // report of that failure. These event types only require the reporter
+    // to be signed in; they carry no write access to tenant data, so a
+    // self-reported businessId/tenantKey here is a diagnostics-only signal,
+    // not a trust boundary.
+    function isTelemetryDiagnosticEvent(eventType) {
+      return eventType == "worker_invite_failed" || eventType == "worker_login_failed"
+        || eventType == "worker_permission_denied" || eventType == "worker_stock_error"
+        || eventType == "worker_cross_tenant_denied" || eventType == "worker_seat_exhausted";
+    }
+
+    match /telemetryEvents/{eventId} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasAll([
+          "eventId", "eventType", "uidHash", "ownerId", "businessId", "tenantKey", "appVersion",
+          "requestId", "mode", "errorCode", "deviceIdHash", "createdAt"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "eventId", "eventType", "uidHash", "ownerId", "businessId", "tenantKey", "appVersion",
+          "requestId", "mode", "errorCode", "deviceIdHash", "createdAt"
+        ])
+        && request.resource.data.eventId == eventId
+        && request.resource.data.ownerId is string
+        && (isTelemetryDiagnosticEvent(request.resource.data.eventType) || validTelemetryTenant(request.resource.data))
+        && (request.resource.data.eventType == "login" || request.resource.data.eventType == "bootstrap"
+          || request.resource.data.eventType == "cache_failure" || request.resource.data.eventType == "online_only"
+          || request.resource.data.eventType == "sync" || request.resource.data.eventType == "plan_request"
+          || request.resource.data.eventType == "invitation" || request.resource.data.eventType == "cash_open"
+          || request.resource.data.eventType == "cash_close" || request.resource.data.eventType == "template_save_failure"
+          || isTelemetryDiagnosticEvent(request.resource.data.eventType)
+          || request.resource.data.eventType == "seat_request")
+        && request.resource.data.uidHash is string
+        && request.resource.data.uidHash.size() == 16
+        && request.resource.data.deviceIdHash is string
+        && request.resource.data.deviceIdHash.size() == 16
+        && request.resource.data.requestId is string
+        && request.resource.data.requestId.size() <= 64
+        && request.resource.data.mode is string
+        && request.resource.data.mode.size() <= 40
+        && request.resource.data.errorCode is string
+        && request.resource.data.errorCode.size() <= 80
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.createdAt == request.time;
+      allow read, update, delete: if false;
+    }
+
+    match /businesses/{businessId}/auditEvents/{eventId} {
+      allow read: if businessId != "demo-click360"
+        && ownerReadUser()
+        && request.auth.uid == businessId;
+      allow create: if businessId != "demo-click360"
+        && signedIn()
+        && (request.auth.uid == businessId || hasActiveMembership(businessId))
+        && request.resource.data.keys().hasAll([
+          "eventId", "businessId", "tenantKey", "actorUid", "actorRole", "actorName",
+          "action", "entityType", "entityId", "correlationId", "amount", "status",
+          "before", "after", "appVersion", "createdAt"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "eventId", "businessId", "tenantKey", "actorUid", "actorRole", "actorName",
+          "action", "entityType", "entityId", "correlationId", "amount", "status",
+          "before", "after", "appVersion", "createdAt"
+        ])
+        && request.resource.data.eventId == eventId
+        && request.resource.data.businessId == businessId
+        && request.resource.data.tenantKey == "owner:" + businessId + ":business:" + businessId
+        && request.resource.data.actorUid == request.auth.uid
+        && (request.resource.data.actorRole == "owner" || request.resource.data.actorRole == "worker"
+          || request.resource.data.actorRole == "cashier" || request.resource.data.actorRole == "inventory")
+        && request.resource.data.actorName is string
+        && request.resource.data.actorName.size() <= 120
+        && request.resource.data.action is string
+        && request.resource.data.action.size() > 0
+        && request.resource.data.action.size() <= 80
+        && request.resource.data.entityType is string
+        && request.resource.data.entityType.size() <= 40
+        && request.resource.data.entityId is string
+        && request.resource.data.entityId.size() <= 100
+        && request.resource.data.correlationId is string
+        && request.resource.data.correlationId.size() > 0
+        && request.resource.data.correlationId.size() <= 100
+        && request.resource.data.amount is number
+        && request.resource.data.status is string
+        && request.resource.data.status.size() <= 40
+        && request.resource.data.before is map
+        && request.resource.data.before.keys().hasOnly(["status", "amount", "stock", "role"])
+        && request.resource.data.after is map
+        && request.resource.data.after.keys().hasOnly(["status", "amount", "stock", "role"])
+        && (request.resource.data.appVersion == "16.0.0" || request.resource.data.appVersion == "16.2.0")
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Administrative operations mostly run through IAM-protected Admin SDK
+    // tooling (which bypasses rules entirely) -- these two collections stay
+    // hard-blocked for every ordinary client. The ONE exception is the CEO
+    // Admin Web panel (r36): the platform admin can create (never modify or
+    // delete) a backup/audit entry, and read the audit trail back, exactly
+    // mirroring the backup-before-write / audit-after-write pattern every
+    // CLI admin script already follows.
+    match /adminBackups/{backupId} {
+      allow read: if isPlatformAdmin();
+      allow create: if isPlatformAdmin()
+        && request.resource.data.actorEmail is string
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /adminAuditLogs/{eventId} {
+      allow read: if isPlatformAdmin();
+      allow create: if isPlatformAdmin()
+        && request.resource.data.actorEmail is string
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // The public client may only read/write the tenant state document. Legacy
+    // backups are created by the administrative migrator with Admin SDK.
+    match /businesses/{businessId}/state/{stateId} {
+      allow read: if stateId == "main" && tenantReadable(businessId);
+      allow read: if stateId == "main" && isPlatformAdmin();
+      allow create: if stateId == "main" && request.auth.uid == businessId && ownerUser() && writeMatchesTenant(businessId)
+        && sparkLegacyWritable(businessId);
+      allow update: if stateId == "main"
+        && ownerUser()
+        && request.auth.uid == businessId
+        && writeMatchesTenant(businessId)
+        && sparkLegacyWritable(businessId);
+      allow delete: if false;
+    }
+
+    match /storageRollout/{policyId} {
+      allow read: if policyId == "sparkV1" && signedIn();
+      allow create, update: if policyId == "sparkV1" && isPlatformAdmin()
+        && !request.resource.data.keys().hasAny(["runtimePreparationApprovals", "cutoverApprovals"]);
+      allow delete: if false;
+    }
+
+    // Approval payloads include business identities and financial summaries.
+    // They must NEVER live in the globally readable rollout flag document.
+    match /businesses/{ownerUid}/storageApprovals/{approvalId} {
+      allow read: if approvalId in ["runtimePreparation", "cutover"] && signedIn()
+        && (request.auth.uid == ownerUid || isPlatformAdmin());
+      allow create, update: if approvalId in ["runtimePreparation", "cutover"]
+        && isPlatformAdmin() && request.resource.data.ownerUid == ownerUid;
+      allow delete: if approvalId in ["runtimePreparation", "cutover"] && isPlatformAdmin();
+    }
+
+    // Optional owner-only recovery preservation, NOT operational storage or
+    // independent server verification. It never changes metadata/storage and
+    // therefore cannot fence another legacy business or activate a writer.
+    function sparkRecoveryCopyWriter(_o) {
+      return sparkOwner(_o) && sparkRolloutAllowed(_o)
+        && get(/databases/$(database)/documents/storageRollout/sparkV1).data.get("automaticRecoveryCopy", false) == true;
+    }
+    function sparkRecoveryManifest(_o, captureHash) {
+      let d = request.resource.data;
+      return d.keys().hasAll(["ownerUid", "captureHash", "schemaVersion", "sourceHash", "journalHash", "deviceRevision", "deviceId", "buildSha", "payloadBytes", "partCount", "state", "createdAt", "remoteRevision", "remoteHash"])
+        && d.keys().hasOnly(["ownerUid", "captureHash", "schemaVersion", "sourceHash", "journalHash", "deviceRevision", "deviceId", "buildSha", "payloadBytes", "partCount", "state", "createdAt", "clientVerifiedAt", "remoteRevision", "remoteHash"])
+        && d.ownerUid == _o && d.captureHash == captureHash && d.schemaVersion == 2
+        && captureHash.matches("^[a-f0-9]{64}$") && d.sourceHash.matches("^[a-f0-9]{64}$") && d.journalHash.matches("^[a-f0-9]{64}$")
+        && d.deviceRevision is string && d.deviceRevision.size() > 0 && d.deviceRevision.size() <= 120
+        && d.deviceId is string && d.deviceId.size() > 0 && d.deviceId.size() <= 120
+        && d.buildSha.matches("^[a-f0-9]{12,40}$")
+        && d.remoteRevision is int && d.remoteRevision >= 0 && d.remoteHash.matches("^[a-f0-9]{64}$")
+        && d.payloadBytes is int && d.payloadBytes > 0 && d.payloadBytes <= 16777216
+        && d.partCount is int && d.partCount > 0 && d.partCount <= 1024;
+    }
+    match /businesses/{ownerUid}/recoveryCopies/{captureHash} {
+      allow read: if sparkOwnerRead(ownerUid);
+      allow create: if sparkRecoveryCopyWriter(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
+        && request.resource.data.state == "UPLOADING" && request.resource.data.createdAt == request.time
+        && !request.resource.data.keys().hasAny(["clientVerifiedAt"]);
+      allow update: if sparkRecoveryCopyWriter(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
+        && resource.data.state == "UPLOADING" && request.resource.data.state == "CLIENT_VERIFIED"
+        && request.resource.data.clientVerifiedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "clientVerifiedAt"]);
+      allow delete: if false;
+      match /parts/{partId} {
+        allow read: if sparkOwnerRead(ownerUid);
+        allow create: if sparkRecoveryCopyWriter(ownerUid)
+          && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(captureHash)).data.state == "UPLOADING"
+          && request.resource.data.keys().hasAll(["ownerUid", "captureHash", "schemaVersion", "position", "content", "contentHash"])
+          && request.resource.data.keys().hasOnly(["ownerUid", "captureHash", "schemaVersion", "position", "content", "contentHash"])
+          && request.resource.data.ownerUid == ownerUid && request.resource.data.captureHash == captureHash
+          && request.resource.data.schemaVersion == 2 && request.resource.data.position is int
+          && request.resource.data.position >= 0
+          && request.resource.data.position < get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(captureHash)).data.partCount
+          && partId == "p" + string(request.resource.data.position)
+          && request.resource.data.content is string && request.resource.data.content.size() <= 48000
+          && request.resource.data.contentHash.matches("^[a-f0-9]{64}$");
+        allow update, delete: if false;
+      }
+    }
+
+    match /businesses/{ownerUid}/metadata/{metadataId} {
+      allow read: if metadataId == "storage" && (sparkOwnerRead(ownerUid) || isPlatformAdmin());
+      allow create: if metadataId == "storage" && sparkOwner(ownerUid)
+        && sparkRolloutAllowed(ownerUid) && sparkValidControl(ownerUid)
+        && request.resource.data.phase == "MIGRATION_PREPARING"
+        && request.resource.data.recordVersion == 1
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.remoteRevision
+          == get(/databases/$(database)/documents/businesses/$(ownerUid)/state/main).data.revision;
+      allow update: if metadataId == "storage" && sparkOwner(ownerUid)
+        && sparkValidControl(ownerUid)
+        && request.resource.data.recordVersion == resource.data.recordVersion + 1
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.sourceHash == resource.data.sourceHash
+        && request.resource.data.remoteHash == resource.data.remoteHash
+        && request.resource.data.remoteRevision == resource.data.remoteRevision
+        && request.resource.data.deviceRevision == resource.data.deviceRevision
+        && request.resource.data.sourceDeviceId == resource.data.sourceDeviceId
+        && request.resource.data.businessIds == resource.data.businessIds
+        && request.resource.data.recordCount == resource.data.recordCount
+        && request.resource.data.payloadBytes == resource.data.payloadBytes
+        && request.resource.data.buildSha == resource.data.buildSha
+        && sparkPhaseStep(resource.data.phase, request.resource.data.phase)
+        && (!(resource.data.phase == "READY_TO_CUTOVER" && request.resource.data.phase == "MODULAR")
+          || sparkCutoverApproved(ownerUid));
+      allow delete: if false;
+    }
+
+    match /businesses/{ownerUid}/legacyConfig/{recordId} {
+      allow read: if sparkOwnerRead(ownerUid) || isPlatformAdmin();
+      allow create: if sparkOwner(ownerUid)
+        && get(sparkControlPath(ownerUid)).data.phase == "SHADOW_WRITING"
+        && sparkValidShadow(ownerUid, null, "configEntries", recordId);
+      allow update, delete: if false;
+    }
+
+    // Modular validators belong only to modular paths. Keep legacy scopes
+    // small; predicate bodies and effective document paths are unchanged.
+    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2 {
+    function sparkShadowOwner(_o, _b) {
+      let control = get(sparkControlPath(_o)).data;
+      return control.storageMode == "migrating" && control.phase == "SHADOW_WRITING"
+        && _b in control.businessIds && sparkOwner(_o);
+    }
+
+    function sparkModuleReadable(_o, _b, _m, _r) {
+      let control = get(sparkControlPath(_o)).data;
+      return signedIn() && control.storageMode in ["migrating", "modular", "frozen"]
+        && _b in control.businessIds
+        && (request.auth.uid == _o ? sparkOwnerReadableAccess(_o) : (isPlatformAdmin()
+          || (control.storageMode == "modular"
+            && sparkWorkerRecordRead(_o, _b, _m, _r))));
+    }
+
+    function sparkWorkerRecordRead(_o, _b, _m, _r) {
+      return (_m in ["products", "sales", "layaways", "cashSessions", "dailyReports", "movements", "metadata", "customers", "config", "labelTemplates", "labelProfiles", "reminders"]
+          && !(_m == "metadata" && _r == "storage")
+          && sparkPermission(_o, _b,
+            _m in ["cashSessions", "dailyReports", "metadata"] ? "cashSessions" : (_m in ["config", "labelTemplates", "labelProfiles", "reminders"] ? "settings" : _m), "read"))
+        || (_m in ["operationLedger", "auditEvents"] && sparkActiveMember(_o, _b)
+          && ((request.method == "get" && !exists(request.path)) || resource.data.createdBy == request.auth.uid))
+        // A sale-authorized actor must be able to confirm their own atomic
+        // receipt without gaining general visibility over cash movements.
+        || (_m == "movements" && sparkActiveMember(_o, _b)
+          && ((request.method == "get" && !exists(request.path))
+            || (resource.data.createdBy == request.auth.uid && resource.data.data.operationId == _r
+              && get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(_r)).data.createdBy == request.auth.uid
+              && get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(_r)).data.data.status == "committed")));
+    }
+
+    function sparkScopedEntitlements(_o, data) {
+      // Publish only the owner's existing commercial contract, not private
+      // account fields. Lower Founder overrides still use the shared floor.
+      let account = exists(/databases/$(database)/documents/accountAccess/$(_o))
+        ? get(/databases/$(database)/documents/accountAccess/$(_o)).data
+        : get(/databases/$(database)/documents/approvedUsers/$(_o)).data;
+      let overrides = account.get("manualLimitOverrides", {});
+      return data.accountPlan == account.get("plan", "founder_legacy")
+        && data.accountPlan in ["base", "pro", "business", "enterprise", "founder", "founder_legacy"]
+        && data.manualLimitOverrides is map
+        && data.manualLimitOverrides == (overrides is map ? overrides : {});
+    }
+
+    function sparkWorkerPermission(_o, _b, _m, action) {
+      let member = businessUnitMemberData(_o, _b);
+      return signedIn() && request.auth.uid != _o && workersFeatureFlagEnabled(_o)
+        && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid))
+        && validBusinessUnitIdentity(member, _o, _b)
+        && member.uid == request.auth.uid && member.status == "active"
+        && supportedMemberRole(member.role) && member.permissions is map
+        && member.permissions.get(_m, {}).get(action, false) == true
+        // Owner authorization already checks the account. Keep its fast path
+        // unchanged; staff writes must inherit the same writable contract.
+        && (action == "read" || (exists(/databases/$(database)/documents/accountAccess/$(_o))
+          ? sparkAccountWritable(_o) : sparkApprovedOwnerReadable(_o)));
+    }
+
+    function sparkPermission(_o, _b, _m, action) {
+      return sparkOwner(_o) || sparkWorkerPermission(_o, _b, _m, action);
+    }
+
+    function sparkOperational(_o, _b) {
+      let c = get(sparkControlPath(_o)).data;
+      return c.storageMode == "modular" && c.phase == "MODULAR" && c.schemaVersion == 2
+        && c.semanticEquality == "PASS" && c.reconstructedHash == c.sourceHash
+        && _b in c.businessIds;
+    }
+
+    function sparkAfter(_o, _b, _m, _r) {
+      return getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/$(_m)/$(_r)).data;
+    }
+
+    function sparkLedger(_o, _b, _p) {
+      return getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(_p)).data.data;
+    }
+
+    function sparkNewLedger(_o, _b, _p) {
+      return _p is string && _p.size() > 0
+        && !exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(_p));
+      // Every caller ALSO executes its module mutation proof, which reads
+      // getAfter(ledger).kind/result. An absent post-write ledger fails that
+      // proof. Its CREATE rule certifies status/mode/permissions atomically.
+      // Repeating existsAfter here adds no invariant, only evaluation cost.
+    }
+
+    function sparkValidOperationalRecord(_o, _b, _m, _r) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash",
+          "recordVersion", "createdAt", "updatedAt", "closedAt", "createdBy", "updatedBy", "lastOperationId", "operational", "operationalHash", "saleStockIndex"])
+        && [d.id, d.ownerUid, d.businessId, d.schemaVersion, d.module] == [_r, _o, _b, 2, _m]
+        && [d.data.id, d.data.businessId] == [_r, _b]
+        && d.data is map && d.dataHash is string && d.dataHash.matches("^[a-f0-9]{64}$")
+        && d.recordVersion is int
+        && d.updatedBy == request.auth.uid && d.updatedAt == request.time
+        ;
+    }
+
+    function sparkOperationalCreate(_o, _b, _m, _r) {
+      // The new immutable ledger certifies mode and permissions once for the
+      // entire atomic commit. Related records cannot exist without that ledger.
+      return sparkValidOperationalRecord(_o, _b, _m, _r)
+        && request.resource.data.recordVersion == 1 && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && !request.resource.data.keys().hasAny(["sourceHash", "sourcePath"]);
+    }
+
+    function sparkOperationalUpdate(_o, _b, _m, _r) {
+      let d = request.resource.data;
+      let r = resource.data;
+      let previousVersion = r.get("recordVersion", 1);
+      // History-capable financial modules enforce their fence on their
+      // literal update paths. Products/config/runtime cannot acquire this
+      // metadata at creation, so do not charge them a redundant predicate.
+      return sparkValidOperationalRecord(_o, _b, _m, _r)
+        && previousVersion >= 1
+        && d.recordVersion == previousVersion + 1
+        && d.createdAt == r.get("createdAt", request.time)
+        && d.createdBy == r.get("createdBy", request.auth.uid)
+        && d.get("sourceHash", "") == r.get("sourceHash", "")
+        && d.get("sourcePath", []) == r.get("sourcePath", []);
+    }
+
+    function sparkKindPermission(_o, _b, kind) {
+      // Auth/path establishes the owner without calculating a worker module
+      // and action first. The writable account contract is STILL enforced.
+      return kind in ["sale", "sale_cancel", "product_create", "product_edit", "product_delete", "inventory_adjust", "cash_open", "cash_close", "cash_reopen", "cash_movement", "manual_movement_correct", "customer_create", "customer_edit", "customer_delete", "receivable_payment", "layaway_status", "scoped_settings"]
+        && (request.auth.uid == _o ? sparkOwner(_o)
+          : (!(kind in ["scoped_settings", "manual_movement_correct", "sale_cancel"]) && sparkWorkerPermission(_o, _b,
+          kind in ["receivable_payment", "layaway_status"] ? "layaways" : (kind in ["customer_create", "customer_edit", "customer_delete"] ? "customers" : (kind == "sale" ? "sales" : (kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ? "products" :
+            (kind == "cash_movement" ? "movements" : "cashSessions")))),
+          kind == "receivable_payment" ? "payment" : (kind in ["customer_delete", "product_delete"] ? "delete" : (kind in ["sale", "product_create", "cash_open", "cash_movement", "customer_create"] ? "create" :
+            (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit", "layaway_status"] ? "update" : "close"))))));
+    }
+
+    function sparkBoundOperation(_o, _b) {
+      let op = request.resource.data.lastOperationId;
+      // Permission is certified once by the immutable ledger CREATE rule.
+      // Every related record binds to that NEW ledger in this atomic write;
+      // a denied ledger rejects the entire transaction, not just its receipt.
+      return sparkNewLedger(_o, _b, op);
+    }
+
+    function sparkLedgerProof(_o, _b, _p) {
+      let d = request.resource.data.data;
+      let r = d.result;
+      let kind = d.kind;
+      return sparkOperational(_o, _b)
+        && d.keys().hasOnly(["id", "businessId", "operationId", "kind", "status", "payloadHash", "result"])
+        && d.operationId == _p && d.status == "committed" && d.payloadHash is string && d.payloadHash.matches("^[a-f0-9]{64}$")
+        && sparkKindPermission(_o, _b, kind)
+        && (kind == "scoped_settings" ? (r.keys().hasOnly(["settingsModule", "settingsId"])
+            && r.settingsModule in ["config", "labelTemplates", "labelProfiles"]
+            && (r.settingsModule != "config" || r.settingsId == "main")
+            && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/$(r.settingsModule)/$(r.settingsId)).data.lastOperationId == _p)
+          : kind == "sale_cancel" ? sparkCancellationLedger(_o, _b, _p, r)
+          : kind == "manual_movement_correct" ? sparkManualCorrectionLedger(_o, _b, _p, r)
+          : kind == "layaway_status" ? (r.keys().hasOnly(["saleId", "layawayId"])
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/layaways/$(r.layawayId)).data.lastOperationId == _p
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/layaways/$(r.layawayId)).data.data.saleId == r.saleId
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/layaways/$(r.layawayId)).data.recordVersion
+                == get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/layaways/$(r.layawayId)).data.get("recordVersion", 1) + 1)
+          : kind == "sale" ? sparkSaleLedgerProof(_o, _b, _p, r)
+          : kind in ["customer_create", "customer_edit", "customer_delete"] ? (r.keys().hasOnly(["customerId"])
+            && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/customers/$(r.customerId)).data.lastOperationId == _p)
+          : kind in ["product_create", "product_edit", "product_delete", "inventory_adjust"] ?
+            (getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/products/$(r.productId)).data.lastOperationId == _p
+              && (kind in ["product_edit", "product_delete"] || (kind == "product_create"
+                && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/products/$(r.productId)).data.data.stock == 0)
+                || getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(_p)).data.lastOperationId == _p))
+          : kind in ["cash_open", "cash_close", "cash_reopen", "cash_movement"] ?
+            (getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(r.cashSessionId)).data.lastOperationId == _p
+              && (kind != "cash_close" || (!exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/dailyReports/$(r.reportId))
+                && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/dailyReports/$(r.reportId)).data.data.operationId == _p))
+              && (kind != "cash_reopen" || getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/dailyReports/$(r.reportId)).data.lastOperationId == _p)
+              && (kind != "cash_open" || sparkCashOpeningOrigin(_o, _b, _p, r)))
+          : kind == "receivable_payment" ? sparkPaymentLedgerProof(_o, _b, _p, r) : false);
+    }
+
+    function sparkManualOriginal(d) {
+      return d.kind in ["ingreso", "egreso", "retiro", "compra"] && d.amount is number && d.amount >= 0
+        && !d.keys().hasAny(["saleId", "paymentType", "productId", "compensationSign", "compensatesMovementId", "compensatedByOperationId"])
+        && d.get("status", "") != "cancelled";
+    }
+
+    function sparkManualCorrectionLedger(_o, _b, op, r) {
+      let old = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(r.originalMovementId)).data;
+      let next = sparkAfter(_o, _b, "movements", r.originalMovementId);
+      return request.auth.uid == _o
+        && r.keys().hasOnly(["movementId", "originalMovementId", "replacementMovementId", "cashSessionId"])
+        && r.movementId == op + "-rev" && r.replacementMovementId in ["", op + "-new"]
+        && r.originalMovementId != r.movementId && r.originalMovementId != r.replacementMovementId
+        && next.lastOperationId == op && next.recordVersion == old.get("recordVersion", 1) + 1
+        && next.data.compensatedByOperationId == op && next.data.reversalMovementId == r.movementId
+        && next.data.replacementMovementId == r.replacementMovementId
+        && sparkAfter(_o, _b, "movements", r.movementId).lastOperationId == op
+        && (r.replacementMovementId == "" || sparkAfter(_o, _b, "movements", r.replacementMovementId).lastOperationId == op)
+        && sparkAfter(_o, _b, "cashSessions", r.cashSessionId).lastOperationId == op;
+    }
+
+    function sparkManualOriginalUpdate(_o, _b, _r) {
+      let old = resource.data.data;
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(_o, _b, op);
+      let origin = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(old.operationId)).data.data;
+      return request.auth.uid == _o && ledger.kind == "manual_movement_correct"
+        && ledger.result.originalMovementId == _r && sparkManualOriginal(old)
+        && origin.status == "committed" && ((origin.kind == "cash_movement" && origin.result.movementId == _r)
+          || (origin.kind == "manual_movement_correct" && origin.result.replacementMovementId == _r))
+        && d.diff(old).affectedKeys().hasOnly(["compensatedByOperationId", "reversalMovementId", "replacementMovementId"])
+        && d.compensatedByOperationId == op && d.reversalMovementId == ledger.result.movementId
+        && d.replacementMovementId == ledger.result.replacementMovementId;
+    }
+
+    function sparkManualCorrectionMovement(_o, _b, _r, ledger) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let old = sparkAfter(_o, _b, "movements", ledger.result.originalMovementId).data;
+      return request.auth.uid == _o && d.operationId == op && d.id == _r && d.businessId == _b
+        && d.cashSessionId == ledger.result.cashSessionId && d.cashSessionId == old.cashSessionId && d.date == old.date
+        && d.note is string && d.amount is number && d.amount >= 0
+        && (_r == ledger.result.movementId
+          ? (d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "kind", "amount", "note", "compensationSign", "compensatesMovementId"])
+              && d.compensationSign == -1 && d.compensatesMovementId == ledger.result.originalMovementId
+              && d.kind == old.kind && d.amount == old.amount)
+          : (_r == ledger.result.replacementMovementId && d.kind in ["ingreso", "egreso", "retiro", "compra"]
+              && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "kind", "amount", "note", "replacesMovementId"])
+              && d.replacesMovementId == ledger.result.originalMovementId));
+    }
+
+    function sparkManualCorrectionTotals(_o, _b, op, _n) {
+      let r = sparkLedger(_o, _b, op).result;
+      let old = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(r.originalMovementId)).data.data;
+      let replacement = r.replacementMovementId == "" ? {"kind": "ingreso", "amount": 0}
+        : sparkAfter(_o, _b, "movements", r.replacementMovementId).data;
+      let before = resource.data.operational;
+      let oldIncome = old.kind == "ingreso" ? old.amount : 0;
+      let oldExpense = old.kind == "ingreso" ? 0 : old.amount;
+      let newIncome = replacement.kind == "ingreso" ? replacement.amount : 0;
+      let newExpense = replacement.kind == "ingreso" ? 0 : replacement.amount;
+      return r.cashSessionId == request.resource.data.id && old.cashSessionId == r.cashSessionId
+        && old.date == request.resource.data.data.date
+        && get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == r.cashSessionId
+        && _n.incomeCash >= 0 && _n.expenseCash >= 0
+        && sparkMoneyEqual(_n.incomeCash, before.incomeCash - oldIncome + newIncome)
+        && sparkMoneyEqual(_n.expenseCash, before.expenseCash - oldExpense + newExpense)
+        && sparkMoneyEqual(_n.cashBalance, before.cashBalance - oldIncome + oldExpense + newIncome - newExpense);
+    }
+
+    function sparkCashOpeningOrigin(_o, _b, op, _z) {
+      let session = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(_z.cashSessionId)).data;
+      return _z.get("previousReportId", "") == ""
+        ? (session.data.get("reopened", false) == false
+            && !session.data.keys().hasAny(["previousCashSessionId", "reopenReason"]))
+        : (request.auth.uid == _o
+            && session.data.reopened == true && session.data.reopenReason is string
+            && session.data.reopenReason.size() >= 4
+            && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/dailyReports/$(_z.previousReportId)).data.lastOperationId == op);
+    }
+
+    function sparkPaymentLedgerProof(_o, _b, op, _z) {
+      return request.resource.data.get("module", "") == "operationLedger"
+        && request.resource.data.get("data", {}).get("kind", "") == "receivable_payment"
+        && sparkPaymentLedgerLinks(_o, _b, op, _z);
+    }
+
+    function sparkPaymentLedgerLinks(_o, _b, op, _z) {
+      let sale = sparkAfter(_o, _b, "sales", _z.saleId);
+      let movement = sparkAfter(_o, _b, "movements", op);
+      let session = sparkAfter(_o, _b, "cashSessions", _z.cashSessionId);
+      return _z.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
+        && _z.movementId == op && movement.lastOperationId == op && sale.lastOperationId == op && session.lastOperationId == op
+        && !exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op))
+        && movement.data.saleId == _z.saleId && movement.data.cashSessionId == _z.cashSessionId
+        && (sale.data.method == "Apartado" ? (_z.layawayId == sale.data.layawayId
+          && sparkAfter(_o, _b, "layaways", _z.layawayId).lastOperationId == op) : !_z.keys().hasAny(["layawayId"]));
+    }
+
+    function sparkPaymentSaleMutation(_o, _b, _r) {
+      return resource != null && resource.data is map
+        && resource.data.get("data", {}).get("status", "") in ["layaway", "pending_payment"]
+        && sparkPaymentSaleDelta(_o, _b, _r);
+    }
+
+    function sparkPaymentSaleDelta(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let old = resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let movement = sparkAfter(_o, _b, "movements", op).data;
+      let before = old.get("payments", []);
+      return sparkLedger(_o, _b, op).kind == "receivable_payment"
+        && old.status in ["layaway", "pending_payment"] && old.balance > 0
+        && sparkMoneyEqual(old.received + old.balance, old.total)
+        && d.diff(old).affectedKeys().hasOnly(["received", "balance", "payments", "status", "receiptSummary"])
+        && movement.saleId == _r && movement.paymentType == "receivable_payment" && movement.amount > 0 && movement.amount <= old.balance
+        && sparkMoneyEqual(d.received, old.received + movement.amount) && sparkMoneyEqual(d.balance, old.balance - movement.amount)
+        && d.status == (d.balance == 0 ? "paid" : old.status)
+        && d.payments is list && d.payments.size() == before.size() + 1
+        && d.payments[d.payments.size() - 1] == movement.payment
+        && d.payments.toSet() == before.toSet().union([movement.payment].toSet())
+        && sparkReceiptSummaryPayment(old, d, movement);
+    }
+
+    function sparkReceiptSummaryPayment(old, next, _v) {
+      let before = old.get("receiptSummary", null);
+      return before == null ? !next.keys().hasAny(["receiptSummary"])
+        : next.receiptSummary.keys().hasAll(["version", "cashSessionId", "uniformSession", "cash", "card", "transfer", "receivablePayments"])
+          && next.receiptSummary.keys().hasOnly(["version", "cashSessionId", "uniformSession", "cash", "card", "transfer", "receivablePayments"])
+          && next.receiptSummary.version == 1 && next.receiptSummary.cashSessionId == before.cashSessionId
+          && next.receiptSummary.uniformSession == (before.uniformSession && before.cashSessionId == _v.cashSessionId)
+          && sparkMoneyEqual(next.receiptSummary.cash, before.cash + (_v.paymentMethod == "Efectivo" ? _v.amount : 0))
+          && sparkMoneyEqual(next.receiptSummary.card, before.card + (_v.paymentMethod == "Tarjeta" ? _v.amount : 0))
+          && sparkMoneyEqual(next.receiptSummary.transfer, before.transfer + (_v.paymentMethod == "Transferencia" ? _v.amount : 0))
+          && sparkMoneyEqual(next.receiptSummary.receivablePayments, before.receivablePayments + _v.amount);
+    }
+
+    function sparkCancellationLedger(_o, _b, op, _z) {
+      let sale = sparkAfter(_o, _b, "sales", _z.saleId);
+      return request.auth.uid == _o && _z.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
+        && _z.movementId == op + "-rev" && sale.lastOperationId == op && sale.data.cancelOperationId == op
+        && _z.cashSessionId == sale.data.cashSessionId
+        && sparkAfter(_o, _b, "movements", _z.movementId).lastOperationId == op
+        && sparkAfter(_o, _b, "cashSessions", _z.cashSessionId).lastOperationId == op
+        && (sale.data.method == "Apartado" ? _z.layawayId == sale.data.layawayId
+          && sparkAfter(_o, _b, "layaways", _z.layawayId).lastOperationId == op : !_z.keys().hasAny(["layawayId"]));
+    }
+
+    function sparkCancellationSale(_o, _b, _r) {
+      let old = resource.data.data;
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(_o, _b, op);
+      let origin = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(old.operationId)).data.data;
+      let receipts = old.receiptSummary;
+      return request.auth.uid == _o && ledger.kind == "sale_cancel" && ledger.result.saleId == _r
+        && old.status in ["paid", "layaway", "pending_payment"] && !old.keys().hasAny(["cancelOperationId"])
+        && origin.kind == "sale" && origin.status == "committed" && origin.result.saleId == _r
+        && receipts.version == 1 && receipts.uniformSession == true && receipts.cashSessionId == old.cashSessionId
+        && sparkMoneyEqual(receipts.cash + receipts.card + receipts.transfer, old.received)
+        && d.diff(old).affectedKeys().hasOnly(["status", "cancelOperationId", "cancelReason"])
+        && d.status == "cancelled" && d.cancelOperationId == op && d.cancelReason is string && d.cancelReason.size() > 0
+        && (old.stockOrder.size() == 0 ? true : sparkStockHead(_o, _b, op, old.stockOrder));
+    }
+
+    function sparkCancellationProduct(_o, _b, _r, op) {
+      let ledger = sparkLedger(_o, _b, op);
+      let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(ledger.result.saleId)).data.data;
+      let d = request.resource.data.data;
+      return sparkStockChain(_o, _b, _r, op, sale.stockOrder)
+        && sale.stockDeltas[_r] is int && sale.stockDeltas[_r] > 0
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["stock", "qty", "id", "businessId"])
+        && d.stock == resource.data.data.stock + sale.stockDeltas[_r];
+    }
+
+    function sparkCancellationSession(_o, _b, op, _n) {
+      let ledger = sparkLedger(_o, _b, op);
+      let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(ledger.result.saleId)).data.data;
+      let before = resource.data.operational;
+      let r = sale.receiptSummary;
+      return sale.cashSessionId == request.resource.data.id && sale.date == resource.data.data.date
+        && get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == sale.cashSessionId
+        && _n.diff(before).affectedKeys().hasOnly(["saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "paymentTotals"])
+        && _n.saleCount == before.saleCount - 1 && _n.itemCount == before.itemCount - sale.itemCount
+        && sparkMoneyEqual(_n.salesTotal, before.salesTotal - sale.total)
+        && sparkMoneyEqual(_n.taxTotal, before.taxTotal - sale.iva)
+        && sparkMoneyEqual(_n.cashBalance, before.cashBalance - r.cash)
+        && _n.paymentTotals.keys().hasAll(["cash", "card", "transfer", "receivablePayments"])
+        && _n.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+        && sparkMoneyEqual(_n.paymentTotals.cash, before.paymentTotals.cash - r.cash)
+        && sparkMoneyEqual(_n.paymentTotals.card, before.paymentTotals.card - r.card)
+        && sparkMoneyEqual(_n.paymentTotals.transfer, before.paymentTotals.transfer - r.transfer)
+        && sparkMoneyEqual(_n.paymentTotals.receivablePayments, before.paymentTotals.receivablePayments - r.receivablePayments)
+        && _n.itemCount >= 0 && _n.taxTotal >= 0
+        && _n.paymentTotals.cash >= 0 && _n.paymentTotals.card >= 0 && _n.paymentTotals.transfer >= 0 && _n.paymentTotals.receivablePayments >= 0;
+    }
+
+    function sparkCancellationMovement(_o, _b, _r, ledger) {
+      let d = request.resource.data.data;
+      let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(ledger.result.saleId)).data.data;
+      return _r == ledger.result.movementId && _r == d.operationId + "-rev"
+        && d.keys().hasOnly(["id", "businessId", "operationId", "saleId", "cashSessionId", "date", "kind", "amount", "compensationSign", "paymentTotals", "note"])
+        && d.saleId == ledger.result.saleId && d.cashSessionId == sale.cashSessionId && d.date == sale.date
+        && d.kind == "sale_cancellation" && d.compensationSign == -1 && d.amount == sale.received
+        && d.paymentTotals == sale.receiptSummary && d.note is string && d.note.size() > 0;
+    }
+
+    function sparkCancellationLayaway(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let sale = sparkAfter(_o, _b, "sales", ledger.result.saleId).data;
+      return ledger.kind == "sale_cancel" && ledger.result.layawayId == _r
+        && resource.data.data.status != "picked_up" && resource.data.data.get("pickedUpAt", "") == ""
+        && d.saleId == ledger.result.saleId && sale.status == "cancelled" && sale.layawayId == _r
+        && d.paid == sale.received && d.balance == sale.balance
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "cancelOperationId", "cancelReason"])
+        && d.status == "cancelled" && d.cancelOperationId == sale.cancelOperationId && d.cancelReason == sale.cancelReason;
+    }
+
+    function sparkPaymentMovement(_o, _b, op, _v) {
+      // A denied composite write can evaluate alternate proof branches.
+      // Reject the local non-receipt shape BEFORE entering a helper with
+      // getAfter let bindings. This is a reject-only guard, not permission.
+      return _v.keys().hasAll(["payment"])
+        && sparkPaymentMovementProof(_o, _b, op, _v);
+    }
+
+    function sparkPaymentMovementProof(_o, _b, op, _v) {
+      let session = sparkAfter(_o, _b, "cashSessions", _v.cashSessionId);
+      return _v.keys().hasOnly(["id", "businessId", "operationId", "saleId", "cashSessionId", "date", "kind", "amount", "paymentMethod", "paymentType", "payment"])
+        && _v.kind == "ingreso" && _v.amount > 0 && _v.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"]
+        && _v.paymentType == "receivable_payment" && session.lastOperationId == op && session.data.status == "open" && session.data.date == _v.date
+        && _v.payment == {"id": op, "operationId": op, "date": _v.date, "amount": _v.amount,
+          "method": _v.paymentMethod, "createdBy": request.auth.uid};
+    }
+
+    function sparkPaymentSessionMutation(_o, _b, op, _n) {
+      return request.resource.data.get("module", "") == "cashSessions"
+        && sparkPaymentSessionShape(_o, _b, op, _n);
+    }
+
+    function sparkPaymentSessionShape(_o, _b, op, _n) {
+      let changed = _n.diff(resource.data.operational).affectedKeys();
+      return changed.hasOnly(["cashBalance", "paymentTotals"]) && changed.hasAny(["paymentTotals"])
+        && sparkPaymentSessionDelta(_o, _b, op, _n);
+    }
+
+    function sparkPaymentSessionDelta(_o, _b, op, _n) {
+      let movement = sparkAfter(_o, _b, "movements", op).data;
+      let old = resource.data.operational;
+      let p = _n.paymentTotals;
+      return movement.cashSessionId == request.resource.data.id && movement.date == resource.data.data.date
+        && p.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+        && sparkMoneyEqual(_n.cashBalance, old.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && sparkMoneyEqual(p.cash, old.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && sparkMoneyEqual(p.card, old.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
+        && sparkMoneyEqual(p.transfer, old.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
+        && sparkMoneyEqual(p.receivablePayments, old.paymentTotals.receivablePayments + movement.amount);
+    }
+
+    function sparkLayawayStatusMutation(_o, _b, _r) {
+      let old = resource.data.data;
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(old.saleId)).data;
+      return ledger.kind == "layaway_status" && ledger.result == {"saleId": old.saleId, "layawayId": _r}
+        && sale.data.method == "Apartado" && sale.data.layawayId == _r
+        && sale.data.status in ["paid", "layaway"] && !sale.keys().hasAny(["historyPolicy"])
+        && sale.data.total is number && sale.data.total > 0 && sale.data.received == sale.data.total && sale.data.balance == 0
+        && old.total == sale.data.total && old.paid == sale.data.total && old.balance == 0
+        && old.status in ["active", "partially_paid", "paid", "expired", "ready_for_pickup"]
+        && old.get("pickedUpAt", "") == ""
+        && d.diff(old).affectedKeys().hasOnly(["status", "pickedUpAt"])
+        && ((d.status == "ready_for_pickup" && old.status != "ready_for_pickup"
+              && d.get("pickedUpAt", "") == "")
+          || (d.status == "picked_up" && d.pickedUpAt is string
+              && d.pickedUpAt.matches("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$")));
+    }
+
+    function sparkPaymentLayawayMutation(_o, _b, _r) {
+      return resource != null && resource.data is map
+        && resource.data.get("data", {}).get("saleId", "") != ""
+        && sparkPaymentLayawayDelta(_o, _b, _r);
+    }
+
+    function sparkPaymentLayawayDelta(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let sale = sparkAfter(_o, _b, "sales", d.saleId).data;
+      return ledger.kind == "receivable_payment" && ledger.result.layawayId == _r && sale.layawayId == _r
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["paid", "balance", "payments", "status"])
+        && d.paid == sale.received && d.balance == sale.balance && d.payments == sale.payments
+        && d.status == (d.balance == 0 ? "paid" : "partially_paid");
+    }
+
+    function sparkSaleLedgerProof(_o, _b, _p, _z) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(_p)).data.data;
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(_p)).data.data;
+      return _z.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
+        && [_z.saleId, _z.movementId, _z.cashSessionId] == [_p, _p, sale.cashSessionId]
+        && (sale.method == "Apartado" ? _z.layawayId == sale.layawayId : !_z.keys().hasAny(["layawayId"]))
+        && !exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(_p))
+        && !exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(_p))
+        && [sale.operationId, movement.operationId] == [_p, _p]
+        && (sale.customOrder.size() == 0 ? true : (sparkSaleLine(sale, 0)
+          && (sale.customOrder.size() == 1 ? true : sparkSaleLine(sale, 1))));
+    }
+
+    function sparkMoneyEqual(actual, expected) {
+      // Subtraction itself rejects missing/non-numeric operands in Rules.
+      // Same strict tolerance on BOTH sides, with one native comparison.
+      // This helper is called repeatedly by a single atomic cash update.
+      return math.abs(actual - expected) < 0.000001;
+    }
+
+    function sparkDerivedAudit(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let ledger = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(d.operationId)).data;
+      return sparkOperational(_o, _b)
+        && (sparkOwner(_o) || (ledger.createdBy == request.auth.uid && sparkActiveMember(_o, _b)))
+        && ledger.data.status == "committed" && ledger.data.operationId == d.operationId
+        && _r == "audit-" + d.operationId && request.resource.data.lastOperationId == d.operationId
+        && d.keys().hasOnly(["id", "businessId", "operationId", "action", "actorUid", "payloadHash", "lastOperationId"])
+        && d.action == ledger.data.kind && d.actorUid == ledger.createdBy && d.payloadHash == ledger.data.payloadHash;
+    }
+
+    function sparkSalePayments(_o, _b, op, _n) {
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op)).data.data;
+      let previous = resource.data.operational;
+      return movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia", "Pendiente"]
+        && movement.paymentType in ["sale", "receivable_payment"]
+        && sparkMoneyEqual(_n.cashBalance, previous.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && _n.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
+        && sparkMoneyEqual(_n.paymentTotals.cash, previous.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && sparkMoneyEqual(_n.paymentTotals.card, previous.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
+        && sparkMoneyEqual(_n.paymentTotals.transfer, previous.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
+        && sparkMoneyEqual(_n.paymentTotals.receivablePayments, previous.paymentTotals.receivablePayments + (movement.paymentType == "receivable_payment" ? movement.amount : 0));
+    }
+
+    function sparkCashMovementTotals(_o, _b, op, _n) {
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op)).data.data;
+      let previous = resource.data.operational;
+      return movement.cashSessionId == request.resource.data.id && movement.date == request.resource.data.data.date
+        && sparkMoneyEqual(_n.cashBalance, previous.cashBalance + (movement.kind == "ingreso" ? movement.amount : -movement.amount))
+        && sparkMoneyEqual(_n.incomeCash, previous.incomeCash + (movement.kind == "ingreso" ? movement.amount : 0))
+        && sparkMoneyEqual(_n.expenseCash, previous.expenseCash + (movement.kind == "ingreso" ? 0 : movement.amount));
+    }
+
+    // Every stock-bearing sale points to the first product; each product write
+    // proves the next write with a strictly increasing index. This closes the
+    // omitted-product hole without enumerating a fixed number of cart lines.
+    // A stale product cannot satisfy a NEW operation's lastOperationId.
+    function sparkStockSuccessor(_o, _b, op, _q, index) {
+      let next = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/products/$(_q[index + 1])).data;
+      return next.lastOperationId == op && next.saleStockIndex == index + 1;
+    }
+
+    function sparkStockChain(_o, _b, _r, op, _q) {
+      let index = request.resource.data.saleStockIndex;
+      return index is int && index >= 0 && index < _q.size()
+        && _q[index] == _r
+        && (index == _q.size() - 1 ? true : sparkStockSuccessor(_o, _b, op, _q, index));
+    }
+
+    function sparkStockHead(_o, _b, op, _q) {
+      let first = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/products/$(_q[0])).data;
+      return first.lastOperationId == op && first.saleStockIndex == 0;
+    }
+
+    function sparkProductSaleMutation(_o, _b, _r, op) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(op)).data.data;
+      let itemIndex = sale.stockItemIndices[_r];
+      let line = sale.items[itemIndex];
+      let d = request.resource.data.data;
+      return sparkStockChain(_o, _b, _r, op, sale.stockOrder)
+        && itemIndex is int && itemIndex >= 0 && itemIndex < sale.items.size()
+        && sale.itemOrder[itemIndex] == _r
+        && line.productId == _r && line.get("id", _r) == _r && line.isCustom == false
+        && line.qty is int && line.qty > 0 && line.qty == sale.stockDeltas[_r]
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["stock", "qty", "id", "businessId"])
+        && sale.stockDeltas[_r] > 0 && d.stock == resource.data.data.stock - sale.stockDeltas[_r];
+    }
+
+    function sparkProductStoredIdentity(_b, _r) {
+      let old = resource == null ? null : resource.data.data;
+      return old is map && old.get("id", _r) == _r
+        && old.get("businessId", _b) == _b && old.get("deleted", false) == false;
+    }
+
+    function sparkProductMutation(_o, _b, _r, _c) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(_o, _b, op);
+      let kind = ledger.kind;
+      return d.id == _r && d.businessId == _b && d.stock is number && d.stock >= 0 && d.qty == d.stock
+        && (_c || sparkProductStoredIdentity(_b, _r))
+        && (kind == "product_delete" || d.get("deleted", false) == false)
+        && (kind == "product_create" ? (_c && ledger.result.productId == _r)
+          : kind == "product_delete" ? (!_c && ledger.result.productId == _r && d.deleted == true
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"])
+              && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
+          : kind == "product_edit" ? (!_c && ledger.result.productId == _r
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData"])
+              && d.stock == resource.data.data.stock && d.qty == resource.data.data.qty)
+          : kind == "inventory_adjust" ? (!_c && ledger.result.productId == _r
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["code", "name", "category", "cost", "price", "cardPrice", "taxMode", "notes", "imageData", "stock", "qty"])
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op)).data.data.productId == _r
+              && d.stock == resource.data.data.stock + getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op)).data.data.quantityDelta)
+          : kind == "sale_cancel" ? (!_c && sparkCancellationProduct(_o, _b, _r, op))
+          : kind == "sale" ? (!_c
+              && sparkProductSaleMutation(_o, _b, _r, op)) : false);
+    }
+
+    function sparkSaleLine(d, index) {
+      // Caller dispatches only existing indices. Do not evaluate the same
+      // length guard twice per manual line in a compound financial write.
+      let key = d.customOrder[index];
+      let itemIndex = d.customItemIndices[key];
+      let line = d.items[itemIndex];
+      // Native list indexing rejects non-integer/out-of-range indices. The
+      // tuple binds order, canonical ID, legacy alias and custom provenance
+      // without repeating four equivalent boolean branches per line.
+      return [d.itemOrder[itemIndex], line.productId, line.get("id", key), line.isCustom] == [key, key, key, true]
+        && line.qty is int && line.qty > 0;
+    }
+
+    function sparkSaleLines(d) {
+      // Bind each pure set once. These are identical identity/uniqueness
+      // proofs, not weaker predicates or an additional database read.
+      let n = d.items.size();
+      let order = d.itemOrder.toSet();
+      let custom = d.customOrder.toSet();
+      let stockIndices = d.stockItemIndices.keys().toSet();
+      let customIndices = d.customItemIndices.keys().toSet();
+      return n <= 12 && d.itemOrder is list && d.itemOrder.size() == n
+        && order.size() == n
+        && d.customOrder is list && custom.size() == d.customOrder.size()
+        && d.stockItemIndices is map && d.customItemIndices is map
+        && stockIndices == d.stockDeltas.keys().toSet()
+        && customIndices == custom
+        && !stockIndices.hasAny(d.customOrder)
+        && order == stockIndices.union(customIndices)
+        && n == d.stockItemIndices.size() + d.customItemIndices.size();
+    }
+
+    function sparkCustomSalePart(d, start) {
+      let n = d.customOrder.size();
+      // Mandatory core records share these proofs in the SAME new-ledger
+      // atomic commit. Balance by validator work, not just number of rows:
+      // 0..1 ledger; 2..4 sale; 5..8 movement; 9..10 session; 11 runtime.
+      // Leave ledger headroom for the worker's authoritative account check.
+      return n <= start ? true : sparkSaleLine(d, start)
+        && (n <= start + 1 ? true : sparkSaleLine(d, start + 1)
+          && (n <= start + 2 ? true : sparkSaleLine(d, start + 2)));
+    }
+
+    function sparkCustomSalePart4(d, start) {
+      return sparkCustomSalePart(d, start)
+        && (d.customOrder.size() <= start + 3 ? true : sparkSaleLine(d, start + 3));
+    }
+
+    function sparkSaleQuantity(d) {
+      let items = d.items;
+      let n = items.size();
+      return items[0].qty + (n > 1 ? items[1].qty : 0) + (n > 2 ? items[2].qty : 0)
+        + (n > 3 ? items[3].qty : 0) + (n > 4 ? items[4].qty : 0) + (n > 5 ? items[5].qty : 0)
+        + (n > 6 ? items[6].qty : 0) + (n > 7 ? items[7].qty : 0) + (n > 8 ? items[8].qty : 0)
+        + (n > 9 ? items[9].qty : 0) + (n > 10 ? items[10].qty : 0) + (n > 11 ? items[11].qty : 0);
+    }
+
+    function sparkSaleCounterDelta(_o, _b, op, _n) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(op)).data.data;
+      let previous = resource.data.operational;
+      return sale.cashSessionId == request.resource.data.id && sale.date == request.resource.data.data.date
+        && _n.saleCount == previous.saleCount + 1
+        && _n.itemCount == previous.itemCount + sale.itemCount
+        && sparkMoneyEqual(_n.taxTotal, previous.taxTotal + sale.iva)
+        && sparkMoneyEqual(_n.salesTotal, previous.salesTotal + sale.total)
+        && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.lastOperationId == op
+        && (sale.customOrder.size() <= 9 ? true : (sparkSaleLine(sale, 9)
+          && (sale.customOrder.size() <= 10 ? true : sparkSaleLine(sale, 10))));
+    }
+
+    function sparkSaleMutation(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let session = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(d.cashSessionId)).data;
+      return sparkLedger(_o, _b, _r).kind == "sale"
+        && request.resource.data.lastOperationId == _r
+        && d.operationId == _r && d.cashSessionId is string && d.cashSessionId.size() > 0
+        && d.total is number && d.total >= 0 && d.received is number && d.received >= 0 && d.received <= d.total
+        && sparkMoneyEqual(d.balance, d.total - d.received)
+        && (d.method == "Apartado" ? d.status == "layaway"
+          : (d.method == "Pendiente" ? (d.status == "pending_payment" && d.received == 0)
+            : (d.method in ["Efectivo", "Tarjeta", "Transferencia"] && d.status == "paid" && d.received == d.total)))
+        && (d.method == "Apartado" ? sparkSaleLayaway(_o, _b, _r, d)
+          : !d.keys().hasAny(["layawayId"]))
+        && d.items is list && d.items.size() > 0 && d.stockDeltas is map
+        && sparkSaleLines(d) && sparkCustomSalePart(d, 2)
+        && d.itemCount is int && d.iva is number && d.iva >= 0
+        && d.stockOrder is list && d.stockOrder.toSet() == d.stockDeltas.keys().toSet()
+        && d.stockOrder.size() == d.stockDeltas.size()
+        && (d.stockOrder.size() == 0 ? true : sparkStockHead(_o, _b, _r, d.stockOrder))
+        && session.data.status == "open" && session.data.date == d.date && session.lastOperationId == _r
+        // Require a NEW exact-session update even if a malformed/imported old
+        // record happened to carry this operation ID. Its update rule owns
+        // the final manual-line proof and every authoritative counter delta.
+        && session.recordVersion == get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(d.cashSessionId)).data.get("recordVersion", 1) + 1;
+    }
+
+    function sparkSaleLayaway(_o, _b, _p, sale) {
+      let linked = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/layaways/$(sale.layawayId)).data;
+      // A pre-existing reservation cannot authorize a second sale. The new
+      // linked record's CREATE rule proves amounts and permission atomically.
+      return sale.layawayId is string && sale.layawayId.size() > 0
+        && !exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/layaways/$(sale.layawayId))
+        && linked.lastOperationId == _p && linked.data.saleId == _p;
+    }
+
+    function sparkLayawayMutation(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(_o, _b, op);
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(op)).data.data;
+      return ledger.kind == "sale" && ledger.result.layawayId == _r
+        && sparkPermission(_o, _b, "layaways", "create")
+        && sale.method == "Apartado" && sale.layawayId == _r && d.saleId == op
+        && d.total == sale.total && d.paid == sale.received && d.balance == sale.balance;
+    }
+
+    function sparkCashMutation(_o, _b, _r, _c) {
+      let d = request.resource.data.data;
+      let counters = request.resource.data.operational;
+      let op = request.resource.data.lastOperationId;
+      let kind = sparkLedger(_o, _b, op).kind;
+      return counters.summaryVersion == 1 && counters.saleCount is int && counters.saleCount >= 0
+        && counters.salesTotal is number && counters.salesTotal >= 0 && counters.paymentTotals is map
+        && counters.cashBalance is number && counters.closeCycle is int && counters.closeCycle >= 1
+        && request.resource.data.operationalHash is string && request.resource.data.operationalHash.matches("^[a-f0-9]{64}$")
+        && d.date is string && d.status in ["open", "closed"]
+        && (kind == "cash_open" ? (_c && counters.saleCount == 0 && counters.salesTotal == 0
+              && counters.itemCount == 0 && counters.taxTotal == 0 && counters.incomeCash == 0 && counters.expenseCash == 0 && counters.closeCycle == 1
+              && counters.paymentTotals == {"cash": 0, "card": 0, "transfer": 0, "receivablePayments": 0}
+              && counters.openingAmount is number && counters.openingAmount >= 0
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op)).data.lastOperationId == op
+              && d.status == "open" && counters.cashBalance == counters.openingAmount
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == _r)
+          : kind == "sale" ? (!_c && resource.data.data.status == "open" && d.status == "open"
+              && d.date == resource.data.data.date
+              && d == resource.data.data
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "paymentTotals"])
+              && sparkSaleCounterDelta(_o, _b, op, counters)
+              && sparkSalePayments(_o, _b, op, counters)
+              )
+          : kind == "sale_cancel" ? (!_c && resource.data.data.status == "open" && d == resource.data.data
+              && sparkCancellationSession(_o, _b, op, counters))
+          : kind == "receivable_payment" ? (!_c && resource.data.data.status == "open" && d == resource.data.data
+              && sparkPaymentSessionMutation(_o, _b, op, counters))
+          : kind == "cash_close" ? (!_c && resource.data.data.status == "open" && d.status == "closed"
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reportId"])
+              && counters == resource.data.operational
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/dailyReports/$(d.reportId)).data.data.cashSessionId == _r
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == "")
+          : kind == "cash_reopen" ? (!_c && resource.data.data.status == "closed" && d.status == "open"
+              && d.diff(resource.data.data).affectedKeys().hasOnly(["status"])
+              && counters.closeCycle == resource.data.operational.closeCycle + 1
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["closeCycle"])
+              && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == _r)
+          : kind == "manual_movement_correct" ? (!_c && resource.data.data.status == "open" && d == resource.data.data
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["cashBalance", "incomeCash", "expenseCash"])
+              && sparkManualCorrectionTotals(_o, _b, op, counters))
+          : kind == "cash_movement" ? (!_c && resource.data.data.status == "open" && d.status == "open"
+              && d == resource.data.data
+              && counters.diff(resource.data.operational).affectedKeys().hasOnly(["cashBalance", "incomeCash", "expenseCash"])
+              && sparkCashMovementTotals(_o, _b, op, counters)
+              && counters.saleCount == resource.data.operational.saleCount && counters.salesTotal == resource.data.operational.salesTotal) : false);
+    }
+
+    function sparkMovementMutation(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let kind = ledger.kind;
+      return kind == "sale_cancel" ? sparkCancellationMovement(_o, _b, _r, ledger)
+        : kind == "manual_movement_correct" ? sparkManualCorrectionMovement(_o, _b, _r, ledger)
+        : (request.resource.data.lastOperationId == _r
+        && d.id == _r && d.businessId == _b && d.operationId == _r
+        && d.amount is number && d.amount >= 0 && d.date is string
+        // Dispatch from the immutable ledger, not overlapping OR proofs.
+        // A rejected sale must not evaluate receipt-only cross-record reads.
+        && (kind == "sale" ? (d.saleId == _r
+              && sparkSaleMovement(_o, _b, _r, d))
+          : kind == "inventory_adjust" ? (d.kind == "inventory_adjustment"
+              && d.productId == ledger.result.productId && d.quantityDelta is number && d.quantityDelta != 0 && d.amount == 0)
+          : kind == "product_create" ? (d.kind == "inventory_opening"
+              && d.productId == ledger.result.productId && d.quantityDelta > 0 && d.amount == 0
+              && d.quantityDelta == getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/products/$(d.productId)).data.data.stock)
+          : kind == "cash_open" ? (d.kind == "apertura" && d.cashSessionId == ledger.result.cashSessionId
+              && d.amount == getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(d.cashSessionId)).data.operational.openingAmount)
+          : kind == "cash_movement" ? (d.kind in ["ingreso", "egreso", "retiro", "compra"]
+              && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "kind", "amount", "note"])
+              && d.cashSessionId == ledger.result.cashSessionId)
+          : kind == "receivable_payment" ? sparkPaymentMovement(_o, _b, _r, d) : false));
+    }
+
+    function sparkSaleMovement(_o, _b, _r, _v) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(_r)).data.data;
+      // The ledger requires this NEW movement and sale in the same commit.
+      // Distribute cross-record proofs between their CREATE rules, never
+      // between separate commits: a rejected manual line rejects all writes.
+      return _v.saleId == _r && _v.cashSessionId == sale.cashSessionId && _v.date == sale.date
+        && _v.kind == "ingreso" && _v.amount == sale.received
+        && _v.paymentType == (sale.method == "Apartado" ? "receivable_payment" : "sale")
+        && (sale.received == 0 ? _v.paymentMethod == "Pendiente"
+          : (sale.method == "Apartado" ? _v.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"] : _v.paymentMethod == sale.method))
+        && sale.itemCount == sparkSaleQuantity(sale)
+        && sparkCustomSalePart4(sale, 5);
+    }
+
+    function sparkReportMutation(_o, _b, _r, _c) {
+      let d = request.resource.data.data;
+      let op = request.resource.data.lastOperationId;
+      let ledger = sparkLedger(_o, _b, op);
+      let session = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(d.cashSessionId)).data;
+      return ledger.kind == "cash_open"
+        ? (!_c && request.auth.uid == _o && resource.data.data.status == "closed"
+            && d.id == _r && d.businessId == _b && d.status == "reopened"
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])
+            && ledger.result.previousReportId == _r && ledger.result.cashSessionId != d.cashSessionId
+            && session.data.status == "closed" && session.data.reportId == _r && session.data.date == d.date
+            && sparkSuccessorSession(_o, _b, op, ledger.result.cashSessionId, d))
+        : d.id == _r && d.businessId == _b && ledger.result.reportId == _r
+        && ledger.result.cashSessionId == d.cashSessionId && session.lastOperationId == op
+        && ((_c && ledger.kind == "cash_close" && session.data.status == "closed"
+              && d.keys().hasOnly(["id", "businessId", "operationId", "cashSessionId", "date", "status", "renderVersion", "openingAmount", "closeCash", "declaredCash", "theoreticalCash", "difference", "saleCount", "total", "totalItems", "totalIva", "incomeCash", "expenseCash", "paymentTotals", "observations", "closeCycle", "lastOperationId"])
+              && session.data.reportId == _r && d.status == "closed"
+              && d.total == session.operational.salesTotal && d.saleCount == session.operational.saleCount
+              && d.theoreticalCash == session.operational.cashBalance && d.paymentTotals == session.operational.paymentTotals
+              && d.openingAmount == session.operational.openingAmount && d.incomeCash == session.operational.incomeCash && d.expenseCash == session.operational.expenseCash
+              && d.totalItems == session.operational.itemCount && d.totalIva == session.operational.taxTotal && d.closeCycle == session.operational.closeCycle
+              && d.declaredCash is number && d.declaredCash >= 0 && d.closeCash == d.declaredCash
+              && sparkMoneyEqual(d.difference, d.declaredCash - d.theoreticalCash))
+          || (!_c && ledger.kind == "cash_reopen" && session.data.status == "open"
+              && d.status == "reopened" && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])));
+    }
+
+    function sparkSuccessorSession(_o, _b, op, sessionId, report) {
+      let next = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(sessionId)).data;
+      return next.lastOperationId == op && next.data.status == "open" && next.data.date == report.date
+        && next.data.reopened == true && next.data.previousCashSessionId == report.cashSessionId
+        && next.data.reopenReason == report.reopenReason && report.reopenReason is string && report.reopenReason.size() >= 4
+        && report.declaredCash >= 0 && report.closeCash == report.declaredCash
+        && next.operational.openingAmount == report.declaredCash;
+    }
+
+    function sparkRuntimeInitialSession(_o, _b, sessionId, approval, sourceHash) {
+      let session = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(sessionId)).data;
+      return session.id == sessionId && session.ownerUid == _o && session.businessId == _b
+        && session.schemaVersion == 2 && session.module == "cashSessions" && session.sourceHash == sourceHash
+        && !session.keys().hasAny(["historyPolicy"]) && session.data.status == "open"
+        && session.operational.summaryVersion == 1
+        // Rules cannot calculate SHA-256: compare the COMPLETE summary with
+        // the administrative approval, not an arbitrary client hash alone.
+        && session.operational == approval.openSessionSummaries[_b]
+        && session.operationalHash == approval.openSessionSummaryHashes[_b];
+    }
+
+    function sparkRuntimePreparationApproved(_o, _b) {
+      let policy = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
+      let approval = get(/databases/$(database)/documents/businesses/$(_o)/storageApprovals/$("runtimePreparation")).data;
+      let control = get(sparkControlPath(_o)).data;
+      let data = request.resource.data;
+      return sparkOwner(_o) && policy.enabled == true
+        && policy.get("automaticRuntimePreparation", false) == true && _o in policy.pilotOwnerUids
+        && approval.ownerUid == _o && approval.sourceHash == control.sourceHash
+        && approval.buildSha == control.buildSha && approval.planHash.matches("^[a-f0-9]{64}$")
+        && approval.captureHash.matches("^[a-f0-9]{64}$")
+        && approval.deviceMetadataHash.matches("^[a-f0-9]{64}$") && approval.journalHash.matches("^[a-f0-9]{64}$")
+        && control.storageMode == "migrating" && control.phase == "READY_TO_CUTOVER"
+        && control.semanticEquality == "PASS" && control.sourceHash == control.reconstructedHash
+        && approval.businessIds.size() == control.businessIds.size()
+        && approval.businessIds.toSet() == control.businessIds.toSet() && _b in control.businessIds
+        && approval.runtimeRecords.keys().toSet() == control.businessIds.toSet()
+        && approval.runtimeHashes.keys().toSet() == control.businessIds.toSet()
+        && approval.preparedRuntimeHashes.keys().toSet() == control.businessIds.toSet()
+        && approval.openSessionSummaries.keys().toSet() == control.businessIds.toSet()
+        && approval.openSessionSummaryHashes.keys().toSet() == control.businessIds.toSet()
+        && approval.runtimeHashes[_b].matches("^[a-f0-9]{64}$")
+        && approval.preparedRuntimeHashes[_b].matches("^[a-f0-9]{64}$")
+        && data == approval.runtimeRecords[_b]
+        && data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "recordVersion", "data", "dataHash"])
+        && data.id == "runtime" && data.ownerUid == _o && data.businessId == _b
+        && data.schemaVersion == 2 && data.module == "metadata" && data.recordVersion == 1
+        && data.dataHash.matches("^[a-f0-9]{64}$")
+        && data.data.keys().hasOnly(["id", "businessId", "summaryVersion", "openCashSessionId", "preparation"])
+        && data.data.id == "runtime" && data.data.businessId == _b && data.data.summaryVersion == 1
+        && data.data.preparation.keys().hasOnly(["planHash", "sourceHash", "buildSha", "deviceMetadataHash", "journalHash", "runtimeHash"])
+        && data.data.preparation.planHash == approval.planHash && data.data.preparation.sourceHash == control.sourceHash
+        && data.data.preparation.buildSha == control.buildSha
+        && data.data.preparation.deviceMetadataHash == approval.deviceMetadataHash
+        && data.data.preparation.journalHash == approval.journalHash
+        && data.data.preparation.runtimeHash == approval.runtimeHashes[_b]
+        && data.data.openCashSessionId is string
+        && (data.data.openCashSessionId == ""
+          ? approval.openSessionSummaries[_b] == null && approval.openSessionSummaryHashes[_b] == null
+          : sparkRuntimeInitialSession(_o, _b, data.data.openCashSessionId, approval, control.sourceHash));
+    }
+
+    function sparkRuntimeMutation(_o, _b, _r) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let session = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(ledger.result.cashSessionId)).data;
+      return _r == "runtime" && d.summaryVersion == 1
+        && d.diff(resource.data.data).affectedKeys().hasOnly(["openCashSessionId"])
+        && session.lastOperationId == request.resource.data.lastOperationId
+        && ((ledger.kind in ["cash_open", "cash_reopen"] && resource.data.data.openCashSessionId == ""
+              && d.openCashSessionId == ledger.result.cashSessionId && session.data.status == "open")
+          || (ledger.kind == "cash_close" && resource.data.data.openCashSessionId == ledger.result.cashSessionId
+              && d.openCashSessionId == "" && session.data.status == "closed")
+          || (ledger.kind == "sale" && d == resource.data.data && session.data.status == "open"
+              && d.openCashSessionId == ledger.result.cashSessionId
+              && sparkSaleRuntimeLine(_o, _b, request.resource.data.lastOperationId)));
+    }
+
+    function sparkSaleRuntimeLine(_o, _b, op) {
+      let sale = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(op)).data.data;
+      let movement = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op)).data.data;
+      // Receipt proof belongs to this mandatory atomic core row, away from
+      // the already-heavy four-manual-line movement validator.
+      return (sale.customOrder.size() <= 11 ? true : sparkSaleLine(sale, 11))
+        && sale.receiptSummary == {"version": 1, "cashSessionId": sale.cashSessionId, "uniformSession": true,
+          "cash": movement.paymentMethod == "Efectivo" ? movement.amount : 0,
+          "card": movement.paymentMethod == "Tarjeta" ? movement.amount : 0,
+          "transfer": movement.paymentMethod == "Transferencia" ? movement.amount : 0,
+          "receivablePayments": movement.paymentType == "receivable_payment" ? movement.amount : 0};
+    }
+
+    function sparkCustomerMutation(_o, _b, _r, _c) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      return ledger.result.customerId == _r
+        // Imported rows can lack embedded IDs. Normalize only an absent ID;
+        // an existing foreign ID/scope cannot be rewritten through CRUD.
+        && (_c || sparkCustomerStoredIdentity(_b, _r))
+        && (ledger.kind == "customer_delete" ? (!_c && d.deleted == true
+            && resource.data.data.get("deleted", false) == false
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["deleted", "id", "businessId"]))
+          : (ledger.kind == (_c ? "customer_create" : "customer_edit")
+            && d.name is string && d.name.matches(".*[^\\s].*") && d.phone is string && d.notes is string
+            && (_c ? d.keys().hasOnly(["id", "businessId", "name", "phone", "notes"])
+              : resource.data.data.get("deleted", false) == false
+                && d.diff(resource.data.data).affectedKeys().hasOnly(["name", "phone", "notes", "id", "businessId"]))));
+    }
+
+    function sparkCustomerStoredIdentity(_b, _r) {
+      return resource != null && resource.data is map
+        && [resource.data.data.get("id", _r), resource.data.data.get("businessId", _b)] == [_r, _b];
+    }
+
+    function sparkSettingsMutation(_o, _b, _m, _r, _c) {
+      let d = request.resource.data.data;
+      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      return request.auth.uid == _o && ledger.kind == "scoped_settings"
+        && ledger.result.settingsModule == _m && ledger.result.settingsId == _r
+        && (_m == "config" ? (!_c && _r == "main"
+            && d.name is string && d.name.size() > 0 && d.type is string
+            && d.diff(resource.data.data).affectedKeys().hasOnly(["name", "type", "settings", "id", "businessId"])
+            && d.settings.diff(resource.data.data.get("settings", {})).affectedKeys().hasOnly(["iva", "tax", "policies", "ruc", "phone", "address", "logoUrl"]))
+          : _m in ["labelTemplates", "labelProfiles"] && d.name is string && d.name.size() > 0
+            && d.keys().hasOnly(["id", "businessId", "name", "deleted", "universalDocument", "widthMm", "heightMm", "columns", "rows", "paperType", "dpi", "renderer", "universalProfileId", "schemaVersion", "priceFormat", "isDefault", "status", "universalPaper",
+              "layout", "mediaType", "receiptWidthMm", "receiptHeightMm", "mediaWidthMm", "mediaHeightMm", "marginTopMm", "marginRightMm", "marginBottomMm", "marginLeftMm", "gapXmm", "gapYmm", "contentRotation", "measurementsConfirmed", "showUrl", "showBarcode", "shape", "yOffsetAdj", "nameScale", "priceScale", "createdAt", "updatedAt", "printer", "paper", "design",
+              "bgColor", "qrBgColor", "fgColor", "social", "address", "customText", "taxDisplay", "qrMargin", "outputMode"])
+            && d.get("bgColor", "#ffffff") is string && d.get("bgColor", "#ffffff").matches("^#[a-fA-F0-9]{3}([a-fA-F0-9]{3})?$")
+            && d.get("qrBgColor", "#ffffff") is string && d.get("qrBgColor", "#ffffff").matches("^#[a-fA-F0-9]{3}([a-fA-F0-9]{3})?$")
+            && d.get("fgColor", "#000000") is string && d.get("fgColor", "#000000").matches("^#[a-fA-F0-9]{3}([a-fA-F0-9]{3})?$")
+            && d.get("social", "") is string && d.get("address", "") is string && d.get("customText", "") is string
+            && d.get("taxDisplay", "inherit") in ["inherit", "included", "excluded", "exempt", "hidden"]
+            && d.get("qrMargin", 5) is number && d.get("qrMargin", 5) >= 2 && d.get("qrMargin", 5) <= 12
+            && d.get("outputMode", "pdf") in ["system", "pdf", "certified", "custom"]);
+    }
+
+    function sparkBusinessConfigUpdate(_o, _b) {
+      let d = request.resource.data;
+      // Imported business config keeps its ORIGINAL embedded business ID,
+      // unlike operational record IDs. This exception belongs on config's
+      // literal path, not in every financial record's hot validator.
+      return d.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash",
+          "recordVersion", "createdAt", "updatedAt", "createdBy", "updatedBy", "lastOperationId"])
+        && [d.id, d.ownerUid, d.businessId, d.schemaVersion, d.module] == ["main", _o, _b, 2, "config"]
+        && [d.data.id, d.data.businessId] == [_b, _b]
+        && d.data is map && d.dataHash is string && d.dataHash.matches("^[a-f0-9]{64}$")
+        && (d.recordVersion is int) && resource.data.get("recordVersion", 1) >= 1
+        && d.recordVersion == resource.data.get("recordVersion", 1) + 1
+        && d.updatedBy == request.auth.uid && d.updatedAt == request.time
+        && d.createdAt == resource.data.get("createdAt", request.time)
+        && d.createdBy == resource.data.get("createdBy", request.auth.uid)
+        && d.get("sourceHash", "") == resource.data.get("sourceHash", "")
+        && d.get("sourcePath", []) == resource.data.get("sourcePath", []);
+    }
+
+    // Shadow records remain immutable until the verified control reaches
+    // MODULAR. Operational writes then require an atomic, new ledger entry.
+    match /{moduleName}/{recordId} {
+      allow read: if (sparkShadowModule(moduleName) || moduleName in ["metadata", "operationLedger"])
+        && sparkModuleReadable(ownerUid, businessId, moduleName, recordId);
+      // Mutually exclusive shadow/operational branches. The denial evaluator
+      // must not traverse the full import metadata proof for a modular write.
+      allow create: if request.resource.data.keys().hasAll(["sourceHash", "sourcePath"])
+        ? (sparkShadowModule(moduleName) && sparkShadowOwner(ownerUid, businessId)
+          ? sparkValidShadow(ownerUid, businessId, moduleName, recordId) : false) : false;
+    }
+
+    match /customers/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "customers" && signedIn()
+        && sparkCustomerMutation(ownerUid, businessId, recordId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "customers", recordId);
+      allow update: if request.resource.data.get("module", "") == "customers" && signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkCustomerMutation(ownerUid, businessId, recordId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "customers", recordId);
+      allow delete: if false;
+    }
+
+    // Literal module paths keep these new owner-only settings predicates OUT
+    // of every sale/product/movement write's evaluation budget.
+    match /config/{settingsId} {
+      allow update: if signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkSettingsMutation(ownerUid, businessId, "config", settingsId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && settingsId == "main" && sparkBusinessConfigUpdate(ownerUid, businessId);
+    }
+    match /labelTemplates/{settingsId} {
+      allow create: if signedIn()
+        && sparkSettingsMutation(ownerUid, businessId, "labelTemplates", settingsId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "labelTemplates", settingsId);
+      allow update: if signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkSettingsMutation(ownerUid, businessId, "labelTemplates", settingsId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "labelTemplates", settingsId);
+    }
+    match /labelProfiles/{settingsId} {
+      allow create: if signedIn()
+        && sparkSettingsMutation(ownerUid, businessId, "labelProfiles", settingsId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "labelProfiles", settingsId);
+      allow update: if signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkSettingsMutation(ownerUid, businessId, "labelProfiles", settingsId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "labelProfiles", settingsId);
+    }
+
+    match /products/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "products" && signedIn()
+        && sparkProductMutation(ownerUid, businessId, recordId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "products", recordId);
+      allow update: if request.resource.data.get("module", "") == "products" && signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkProductMutation(ownerUid, businessId, recordId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "products", recordId);
+      allow delete: if false;
+    }
+
+    match /sales/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "sales" && signedIn()
+        && sparkSaleMutation(ownerUid, businessId, recordId)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "sales", recordId);
+      // Only existing records can receive a payment. A denied CREATE must
+      // not enter the UPDATE proof with a missing resource and traverse its
+      // cross-document financial checks during verbose deny evaluation.
+      // Cheap reject only, NOT authorization: the immutable path/identity
+      // tuple is still mandatory in sparkOperationalUpdate below.
+      allow update: if request.resource.data.module == "sales" && signedIn() && resource.data is map
+        && !resource.data.keys().hasAny(["historyPolicy"])
+        && sparkBoundOperation(ownerUid, businessId)
+        && (sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
+          ? sparkCancellationSale(ownerUid, businessId, recordId) : sparkPaymentSaleMutation(ownerUid, businessId, recordId))
+        && sparkOperationalUpdate(ownerUid, businessId, "sales", recordId);
+      allow delete: if false;
+    }
+
+    match /movements/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "movements" && signedIn()
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "movements", recordId)
+        && sparkMovementMutation(ownerUid, businessId, recordId);
+      allow update: if request.resource.data.get("module", "") == "movements" && signedIn()
+        && !resource.data.keys().hasAny(["historyPolicy"])
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkManualOriginalUpdate(ownerUid, businessId, recordId)
+        && sparkOperationalUpdate(ownerUid, businessId, "movements", recordId);
+      allow delete: if false;
+    }
+
+    match /layaways/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "layaways" && signedIn()
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "layaways", recordId)
+        && sparkLayawayMutation(ownerUid, businessId, recordId);
+      allow update: if request.resource.data.module == "layaways" && signedIn() && resource.data is map
+        && !resource.data.keys().hasAny(["historyPolicy"])
+        && sparkBoundOperation(ownerUid, businessId)
+        && (sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "layaway_status"
+          ? sparkLayawayStatusMutation(ownerUid, businessId, recordId)
+          : sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
+            ? sparkCancellationLayaway(ownerUid, businessId, recordId) : sparkPaymentLayawayMutation(ownerUid, businessId, recordId))
+        && sparkOperationalUpdate(ownerUid, businessId, "layaways", recordId);
+      allow delete: if false;
+    }
+
+    match /cashSessions/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "cashSessions" && signedIn()
+        && sparkCashMutation(ownerUid, businessId, recordId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "cashSessions", recordId);
+      allow update: if request.resource.data.get("module", "") == "cashSessions" && signedIn()
+        && !resource.data.keys().hasAny(["historyPolicy"])
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkCashMutation(ownerUid, businessId, recordId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "cashSessions", recordId);
+      allow delete: if false;
+    }
+
+    match /dailyReports/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "dailyReports" && signedIn()
+        && sparkReportMutation(ownerUid, businessId, recordId, true)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalCreate(ownerUid, businessId, "dailyReports", recordId);
+      allow update: if request.resource.data.get("module", "") == "dailyReports" && signedIn()
+        && !resource.data.keys().hasAny(["historyPolicy"])
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkReportMutation(ownerUid, businessId, recordId, false)
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "dailyReports", recordId);
+      allow delete: if false;
+    }
+
+    match /metadata/{recordId} {
+      // Preparation is create-only; it does NOT activate an operational mode.
+      allow create: if recordId == "runtime" && sparkRuntimePreparationApproved(ownerUid, businessId);
+      // A worker sees only the assigned business's cutover proof, not the
+      // owner's global business list. The proof is linked to root authority.
+      allow read: if recordId == "storage" && signedIn()
+        && (businessUnitOwner(ownerUid, businessId) || activeBusinessUnitMember(ownerUid, businessId)
+          || (sparkActiveMember(ownerUid, businessId)
+            && get(sparkControlPath(ownerUid)).data.storageMode == "modular"
+            && businessId in get(sparkControlPath(ownerUid)).data.businessIds
+            && sparkScopedEntitlements(ownerUid, resource.data.data)));
+      allow create, update: if recordId == "storage" && sparkOwner(ownerUid)
+        && request.resource.data.ownerUid == ownerUid && request.resource.data.businessId == businessId
+        && request.resource.data.schemaVersion == 2 && request.resource.data.module == "metadata"
+        && request.resource.data.id == "storage"
+        && request.resource.data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "data", "dataHash", "recordVersion"])
+        && request.resource.data.recordVersion == 1
+        && request.resource.data.data.keys().hasOnly(["id", "businessId", "storageMode", "phase", "semanticEquality", "sourceHash", "reconstructedHash", "accountPlan", "manualLimitOverrides"])
+        && sparkScopedEntitlements(ownerUid, request.resource.data.data)
+        && request.resource.data.data.id == "storage" && request.resource.data.data.businessId == businessId
+        && request.resource.data.data.storageMode == "modular" && request.resource.data.data.phase == "MODULAR"
+        && request.resource.data.data.semanticEquality == "PASS"
+        && getAfter(sparkControlPath(ownerUid)).data.storageMode == "modular"
+        && getAfter(sparkControlPath(ownerUid)).data.phase == "MODULAR"
+        && businessId in getAfter(sparkControlPath(ownerUid)).data.businessIds
+        && request.resource.data.data.sourceHash == getAfter(sparkControlPath(ownerUid)).data.sourceHash
+        && request.resource.data.data.reconstructedHash == getAfter(sparkControlPath(ownerUid)).data.reconstructedHash
+        && request.resource.data.data.sourceHash == request.resource.data.data.reconstructedHash;
+      allow update: if request.resource.data.get("module", "") == "metadata" && signedIn()
+        && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
+        && sparkBoundOperation(ownerUid, businessId)
+        && sparkOperationalUpdate(ownerUid, businessId, "metadata", recordId)
+        && sparkRuntimeMutation(ownerUid, businessId, recordId);
+      allow delete: if false;
+    }
+
+    match /operationLedger/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "operationLedger" && signedIn()
+        && sparkOperationalCreate(ownerUid, businessId, "operationLedger", recordId)
+        && sparkLedgerProof(ownerUid, businessId, recordId);
+      allow delete: if false;
+    }
+
+    match /auditEvents/{recordId} {
+      allow create: if request.resource.data.get("module", "") == "auditEvents" && signedIn()
+        && sparkOperationalCreate(ownerUid, businessId, "auditEvents", recordId)
+        && sparkDerivedAudit(ownerUid, businessId, recordId);
+      allow delete: if false;
+    }
+
+    }
+
+    match /businesses/{businessId}/legacyBackups/{backupId} {
+      allow read, write: if false;
+    }
+  }
+}
