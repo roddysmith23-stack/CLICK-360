@@ -1987,11 +1987,13 @@ service cloud.firestore {
     }
 
     function sparkLayawayLink(_s, _l, _i) {
-      return _s.ownerUid == _l.ownerUid && _s.businessId == _l.businessId
-        && _s.id == _l.data.saleId && _l.id == _i
-        && (_s.data.keys().hasAny(["layawayId"]) ? _s.data.layawayId == _i
-          : _s.get("sourceHash", "").matches("^[a-f0-9]{64}$") && _s.sourceHash == _l.get("sourceHash", "")
-            && _s.get("sourcePath", [""])[0] == "sales" && _l.get("sourcePath", [""])[0] == "layaways");
+      // Existing forward-linked rows already use same-business document paths
+      // and immutable record identity. Charge import provenance only when the
+      // preserved legacy sale actually lacks that forward relationship.
+      return _s.data.keys().hasAny(["layawayId"]) ? _s.data.layawayId == _i
+        : [_s.ownerUid, _s.businessId, _s.id, _l.id] == [_l.ownerUid, _l.businessId, _l.data.saleId, _i]
+          && _s.get("sourceHash", "").matches("^[a-f0-9]{64}$") && _s.sourceHash == _l.get("sourceHash", "")
+          && [_s.get("sourcePath", [""])[0], _l.get("sourcePath", [""])[0]] == ["sales", "layaways"];
     }
 
     function sparkPaymentLedgerLinks(_o, _b, op, _z) {
