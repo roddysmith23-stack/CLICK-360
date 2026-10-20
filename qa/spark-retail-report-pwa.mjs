@@ -35,6 +35,15 @@ export async function certifyRetailReport(page,{ownerUid,businessId,from,to}){
     result.sold/=100;result.collected/=100;return result;
   },{ownerUid,businessId,from,to});
   await page.waitForFunction(()=>!window.click360SparkCoordinator.isBusy()&&!window.click360SparkOperationalSession.isBusy());
+  await page.evaluate(async({from,to})=>{
+    // A projection started before report navigation has no report filters.
+    // Finish that durable projection after editing the visible inputs. This
+    // formerly left correct DOM dates but undefined controller parameters.
+    const candidate=click360GetTenantState();delete candidate.reportsFrom;delete candidate.reportsTo;
+    await click360PersistSparkCandidate(candidate,{operationId:crypto.randomUUID(),pendingRemoteSync:false});
+    const current=click360GetTenantState();
+    if(current.reportsFrom!==from||current.reportsTo!==to)throw Error('RETAIL_REPORT_DURABLE_REFRESH_REWOUND_FILTERS');
+  },{from,to});
   await page.evaluate(()=>{
     const button=document.querySelector('#queryRetailReport');
     // Real background access refresh used to detach the pointer target and

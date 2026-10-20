@@ -35,6 +35,15 @@ and result renders, business switches and authorization gates remain active.
 The shared PWA report test forces this refresh and requires node/handler
 preservation before its real authoritative query, without sleeps or retries.
 
+Real staging WebKit then exposed `SPARK_REPORT_RANGE_INVALID`: an asynchronous
+durable projection could finish after editing the date inputs, replacing the
+controller's UI filters with the older candidate's absent filters while the
+preserved DOM still showed valid dates. A same-business report projection now
+retains the latest UI-only filters at completion. The shared served-PWA test
+finishes a filterless durable projection after editing the dates and requires
+both dates and the full authoritative report to survive. No financial fields,
+Rules, date-range checks, server confirmation, or timeouts are relaxed.
+
 - `qa-spark-imported-receivable-links.mjs` (included by command adapter CI):
   codec provenance, missing-forward compatibility, adversarial links, no
   source rewrite, payment and pickup boundaries.

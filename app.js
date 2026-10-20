@@ -1889,7 +1889,14 @@ function parseMoney(value) {
     });
     if(!durable||context!==activeTenantContext)throw Error('SPARK_UI_DEVICE_COMMIT_FAILED');
     publishSaveFailure();
-    state=cloneState(candidate);rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
+    // A server projection may have cloned candidate before the operator
+    // edited report dates. Those filters are UI-only, not remote material
+    // state: committing the older snapshot must not rewind the visible draft.
+    const next=cloneState(candidate);
+    if(route==='reports'&&next.activeBusinessId===state.activeBusinessId){
+      next.reportsFrom=state.reportsFrom;next.reportsTo=state.reportsTo;
+    }
+    state=next;rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
     return true;
   };
   window.click360ProjectSparkOperation = async function(projection) {
