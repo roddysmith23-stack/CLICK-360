@@ -15,8 +15,8 @@ export async function assertPortsAvailable(ports){
 }
 
 export async function waitForOwnedServices(children,targets,{timeoutMs=90000,readLog=()=>''}={}){
-  const controller=new AbortController(),listeners=[];
-  const deadline=setTimeout(()=>controller.abort(Error('QA_SERVICES_STARTUP_TIMEOUT')),timeoutMs);
+  const controller=new AbortController(),listeners=[],observations=new Map(targets.map(target=>[target,'not_checked']));
+  const deadline=setTimeout(()=>controller.abort(Error(`QA_SERVICES_STARTUP_TIMEOUT:${JSON.stringify(Object.fromEntries(observations))}\n${readLog()}`)),timeoutMs);
   for(const child of children){
     const exited=(code,signal)=>controller.abort(Error(`QA_OWNED_SERVICE_EXIT:${code}:${signal||''}\n${readLog()}`));
     const failed=error=>controller.abort(error);
@@ -26,8 +26,9 @@ export async function waitForOwnedServices(children,targets,{timeoutMs=90000,rea
   try{
     await Promise.all(targets.map(async target=>{
       while(!controller.signal.aborted){
-        try{const response=await fetch(target,{signal:controller.signal});await response.body?.cancel();if(response.ok)return;}
-        catch(error){if(controller.signal.aborted)throw controller.signal.reason;}
+        try{observations.set(target,'request_pending');const response=await fetch(target,{signal:controller.signal});
+          observations.set(target,`HTTP_${response.status}`);await response.body?.cancel();if(response.ok)return;}
+        catch(error){if(controller.signal.aborted)throw controller.signal.reason;observations.set(target,error.cause?.code||error.code||error.name);}
         await delay(500,null,{signal:controller.signal});
       }
       throw controller.signal.reason;

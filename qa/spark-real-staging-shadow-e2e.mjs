@@ -64,6 +64,24 @@ try{
       {id:'local-payment',operationId:'local-sale',businessId:uid,cashSessionId:'historical-session',
         saleId:'local-sale',date:'2026-09-03',kind:'ingreso',paymentType:'sale',paymentMethod:'Transferencia',amount:30});
     if(automaticCutover){
+      // Actual published legacy shape: the reservation points to its sale,
+      // while the sale has NO forward layawayId. Keep both original records.
+      local.products[0].stock--;local.products[0].qty--;
+      const oldPayments=[{id:'legacy-deposit',amount:1,method:'Transferencia'}];
+      local.cashSessions.push({id:'legacy-receivable-session',operationId:'legacy-receivable-opening',businessId:uid,
+        date:'2026-08-01',status:'closed',openingAmount:0,closedAt:'2026-08-02T00:00:00Z',reportId:'legacy-receivable-report'});
+      local.sales.push({id:'legacy-receivable-sale',operationId:'legacy-receivable-sale',businessId:uid,
+        cashSessionId:'legacy-receivable-session',date:'2026-08-01',total:6,received:1,balance:5,iva:0,
+        method:'Apartado',status:'layaway',payments:structuredClone(oldPayments),customer:'Synthetic legacy customer',
+        dueDate:'2026-12-31',items:[{id:local.products[0].id,qty:1,price:6}]});
+      local.layaways.push({id:'legacy-reservation',businessId:uid,saleId:'legacy-receivable-sale',
+        total:6,paid:1,balance:5,status:'partially_paid',payments:structuredClone(oldPayments)});
+      local.movements.push({id:'legacy-receivable-opening',operationId:'legacy-receivable-opening',businessId:uid,
+        cashSessionId:'legacy-receivable-session',date:'2026-08-01',kind:'apertura',amount:0},
+        {id:'legacy-deposit',operationId:'legacy-receivable-sale',businessId:uid,cashSessionId:'legacy-receivable-session',
+          saleId:'legacy-receivable-sale',date:'2026-08-01',kind:'ingreso',paymentType:'receivable_payment',paymentMethod:'Transferencia',amount:1});
+      local.dailyReports.push({id:'legacy-receivable-report',businessId:uid,cashSessionId:'legacy-receivable-session',
+        date:'2026-08-01',status:'closed',total:6,saleCount:1,theoreticalCash:0});
       // Incomplete CLOSED historical counters must stay immutable, never be
       // invented as zero to make a later independent opening possible.
       local.cashSessions.push({id:'immutable-closed-session',businessId:uid,date:'2026-08-30',status:'closed',closedAt:'2026-08-31T00:00:00Z',reportId:'immutable-closed-report'});
@@ -340,6 +358,22 @@ try{
             assert(independent.session?.id&&independent.session.id!=='immutable-closed-session');
             const independentLedger=(await admin.doc(`${historyBase}/operationLedger/${independent.operationId}`).get()).data();
             assert.equal(independentLedger.data.kind,'cash_open');assert.equal(independentLedger.data.result.cashSessionId,independent.session.id);
+            await page.evaluate(()=>{location.hash='#debtors';});
+            await page.locator(`button[onclick*="payLayaway('legacy-receivable-sale')"]`).click();
+            await page.locator('#layawayPaymentAmount').fill('5');await page.locator('#layawayPaymentMethod').selectOption('Transferencia');
+            await page.evaluate(()=>{window.QA_HANDOFF_CLOSE=null;});
+            await page.locator('#confirmLayawayPayment').click();
+            await page.waitForFunction(()=>window.QA_HANDOFF_CLOSE?.status==='CONFIRMED');
+            const importedReceiptId=await page.evaluate(()=>window.QA_HANDOFF_CLOSE.operationId);
+            const paidImport=(await admin.doc(`${historyBase}/sales/legacy-receivable-sale`).get()).data();
+            const reservation=(await admin.doc(`${historyBase}/layaways/legacy-reservation`).get()).data();
+            assert.equal(paidImport.data.balance,0);assert.equal(paidImport.data.received,6);assert.equal(paidImport.data.payments.length,2);
+            assert(!Object.hasOwn(paidImport.data,'layawayId'),'Do not normalize away the original missing forward link');
+            assert.equal(reservation.data.saleId,'legacy-receivable-sale');assert.equal(reservation.data.balance,0);
+            assert.equal((await admin.doc(`${historyBase}/movements/${importedReceiptId}`).get()).data().data.amount,5);
+            assert.equal((await admin.doc(`${historyBase}/operationLedger/${importedReceiptId}`).get()).data().data.kind,'receivable_payment');
+            assert.equal((await admin.doc(`${historyBase}/cashSessions/${independent.session.id}`).get()).data().operational.saleCount,0);
+            assert.equal((await admin.doc(`${historyBase}/products/${local.products[0].id}`).get()).data().data.stock,local.products[0].stock);
             assert.deepEqual(await Promise.all(['cashSessions/immutable-closed-session','dailyReports/immutable-closed-report']
               .map(path=>admin.doc(`${historyBase}/${path}`).get().then(s=>s.data()))),protectedBefore);
             assert.deepEqual((await admin.doc(`businesses/${uid}/state/main`).get()).data(),envelope);
@@ -383,6 +417,7 @@ try{
           handoffEvidence={status:'LOCAL_HANDOFF_VERIFIED',syntheticApprovedTransition:true,
             automaticCoordinator:automaticCutover,
             workerAutomaticAuthority,
+            importedReverseReceivableCollectedExactlyOnce:automaticCutover,
             independentProtectedHistoryOpening:automaticCutover,
             originalSourcePinUnchanged:true,ownerWideBusinesses:2,importedSaleOnce:true,stockPreserved:true,
             importedSessionClosed:true,reportTotal:30,reportSaleCount:1,closeLedgerConfirmed:true,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import './qa-spark-imported-cash-summaries.mjs';
 import './qa-spark-print-settings-contract.mjs';
 import './qa-spark-manual-compensation-view.mjs';
+import './qa-spark-imported-receivable-links.mjs';
 import './modular-ui-adapter.js';
 const api=globalThis.CLICK360_MODULAR_UI_ADAPTER;
 const deletingProduct={id:'catalog-product',businessId:'alpha',recordVersion:3,stock:8,qty:8,name:'Historical product'};

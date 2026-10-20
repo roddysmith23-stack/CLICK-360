@@ -2,6 +2,12 @@
 (function(root){
   'use strict';
   const paidMethods=new Set(['Efectivo','Tarjeta','Transferencia']);
+  function layawayLink(sale,layaway){
+    return !!sale&&!!layaway&&sale.businessId===layaway.businessId&&layaway.saleId===sale.id
+      &&(Object.hasOwn(sale,'layawayId')?sale.layawayId===layaway.id:
+        /^[a-f0-9]{64}$/.test(sale.storageImportedSourceHash||'')
+        &&sale.storageImportedSourceHash===layaway.storageImportedSourceHash);
+  }
   function saleCancellationCommand({sale,identity,actorUid,operationId,cashSessionId,reason}){
     if(actorUid!==identity?.ownerUid||sale?.businessId!==identity.businessId||!operationId||!sale.storageRecordId
       ||sale.storageHistoryReadOnly||!Number.isSafeInteger(sale.recordVersion)||sale.recordVersion<1||!['paid','layaway','pending_payment'].includes(sale.status)
@@ -140,7 +146,7 @@
     if(typeof amount!=='number'||!Number.isFinite(amount)||amount<=0||amount>sale.balance
       ||Math.abs(amount*100-Math.round(amount*100))>0.000001||!paidMethods.has(method))throw Error('MODULAR_PAYMENT_AMOUNT_INVALID');
     if(sale.method==='Apartado'&&(!layaway?.id||layaway.businessId!==identity.businessId||layaway.saleId!==sale.id
-      ||sale.layawayId!==layaway.id))throw Error('MODULAR_PAYMENT_LAYAWAY_CONFLICT');
+      ||!layawayLink(sale,layaway)))throw Error('MODULAR_PAYMENT_LAYAWAY_CONFLICT');
     if(sale.method!=='Apartado'&&layaway)throw Error('MODULAR_PAYMENT_LAYAWAY_CONFLICT');
     return {kind:'receivable_payment',input:{operationId,saleId:sale.storageRecordId,
       expectedRecordVersion:sale.recordVersion,cashSessionId,date:workingDate,amount,method,
@@ -148,7 +154,7 @@
   }
   function layawayStatusCommand({sale,layaway,identity,operationId,nextStatus,changedAt}){
     if(!operationId||!identity?.ownerUid||sale?.businessId!==identity.businessId||layaway?.businessId!==identity.businessId
-      ||!sale.storageRecordId||!layaway.id||layaway.saleId!==sale.id||sale.layawayId!==layaway.id||sale.method!=='Apartado')
+      ||!sale.storageRecordId||!layaway.id||!layawayLink(sale,layaway)||sale.method!=='Apartado')
       throw Error('MODULAR_LAYAWAY_STATUS_CONTEXT_INVALID');
     if(!Number.isSafeInteger(sale.recordVersion)||sale.recordVersion<1
       ||!Number.isSafeInteger(layaway.recordVersion)||layaway.recordVersion<1)throw Error('MODULAR_LAYAWAY_STATUS_REVISION_REQUIRED');

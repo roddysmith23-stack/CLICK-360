@@ -1889,7 +1889,14 @@ function parseMoney(value) {
     });
     if(!durable||context!==activeTenantContext)throw Error('SPARK_UI_DEVICE_COMMIT_FAILED');
     publishSaveFailure();
-    state=cloneState(candidate);rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
+    // A server projection may have cloned candidate before the operator
+    // edited report dates. Those filters are UI-only, not remote material
+    // state: committing the older snapshot must not rewind the visible draft.
+    const next=cloneState(candidate);
+    if(route==='reports'&&next.activeBusinessId===state.activeBusinessId){
+      next.reportsFrom=state.reportsFrom;next.reportsTo=state.reportsTo;
+    }
+    state=next;rememberPersistedState();lastAutoSaveHash=JSON.stringify(state);
     return true;
   };
   window.click360ProjectSparkOperation = async function(projection) {
@@ -3140,6 +3147,17 @@ function parseMoney(value) {
         markAppReady('route:cash');
         return;
       }
+      // A background access refresh must not detach the report query between
+      // pointer-up and click, or replace its in-flight disabled control.
+      // Explicit navigation/filter/query-result renders still replace the
+      // view. Auth/legal/permission gates above always take precedence.
+      const reportQuery = r === 'reports' && route === 'reports' ? $('#queryRetailReport') : null;
+      if (arguments[1]?.preserveActiveModal === true && reportQuery && tenantDataHydrated
+          && window.click360SparkOperationalSession?.identity?.businessId === currentBusiness()?.id
+          && reportQuery.dataset.businessId === currentBusiness()?.id) {
+        markAppReady('route:reports');
+        return;
+      }
       // Access/snapshot refreshes must not destroy the active checkout closure
       // (cart, tender inputs and the in-flight button lock). Auth/legal gates
       // above still take precedence; a different tenant or closed day renders.
@@ -3684,7 +3702,7 @@ function parseMoney(value) {
 	          <button class="btn primary" onclick="window.printReports('image')">Descargar Imagen</button>
         </div>
       </div>
-      ${modular?'<button class="btn primary" id="queryRetailReport">Consultar período completo</button>':sparkHistoryPageControl('sales')}
+      ${modular?`<button class="btn primary" id="queryRetailReport" data-business-id="${escapeHtml(currentBusiness()?.id||'')}">Consultar período completo</button>`:sparkHistoryPageControl('sales')}
       <div class="card sectionCard reportRangeCard">
         <div class="field full" style="margin:0;"><label>Desde</label><input type="date" id="repFrom" value="${safeDateInputValue(state.reportsFrom)}"></div>
         <div class="field full" style="margin:0;"><label>Hasta</label><input type="date" id="repTo" value="${safeDateInputValue(state.reportsTo)}"></div>
@@ -9781,12 +9799,15 @@ function parseMoney(value) {
         const button=event.currentTarget;if(button.disabled)return;button.disabled=true;
         const coordinator=window.click360SparkCoordinator,businessId=currentBusiness()?.id,from=state.reportsFrom,to=state.reportsTo;
         sparkRetailReport=null;sparkRetailReportVisible=100;
+        window.click360LastReportFailure=null;
         try{
           const proof=await coordinator.readRetailReport({from,to});
           if(coordinator!==window.click360SparkCoordinator||currentBusiness()?.id!==businessId||state.reportsFrom!==from||state.reportsTo!==to)return;
           sparkRetailReport=proof;renderApp('reports');
         }catch(error){
           sparkRetailReport=null;
+          const code=String(error.code||error.message||'');
+          window.click360LastReportFailure={code:/^(SPARK_[A-Z0-9_]+|[a-z]+(?:-[a-z]+)*)$/.test(code)?code:'report_query_failed',stage:'read_retail_report'};
           toast(error.message==='SPARK_REPORT_READ_BUDGET'?'El período contiene demasiados registros para una sola consulta. Elige un período más corto.':'No pudimos completar una consulta estable. Tus datos no cambiaron; vuelve a consultar cuando la sincronización esté al día.', 'err');
           if(currentBusiness()?.id===businessId)renderApp('reports');
         }finally{button.disabled=false;}
