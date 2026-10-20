@@ -8,7 +8,7 @@ const api=CLICK360_SPARK_MIGRATION,p0d=CLICK360_SPARK_RECONCILIATION,ownerUid='p
 const snapshot=largeTenantData(ownerUid);snapshot.products=snapshot.products.slice(0,2);
 for(const key of ['sales','movements','cashSessions','dailyReports','auditLogs','layaways'])snapshot[key]=[];
 snapshot.identity=stateDocument(ownerUid,7,snapshot).payload.identity;
-const baseline={ownerUid,deviceId:'original-device',buildSha:'4430b99063c3',record:{snapshot,identity:snapshot.identity,
+const baseline={ownerUid,schemaVersion:2,deviceId:'original-device',buildSha:'4430b99063c3',remoteReference:{source:'server',revision:7,hash:await api.hash(snapshot)},record:{snapshot,identity:snapshot.identity,
  deviceRevision:'persist-old',baseRevision:7,pendingRemoteSync:false,pendingOperations:[]},
  journalCapture:{ownerUid,enumerationComplete:true,recordCount:0,rows:[]}};
 const current=structuredClone(baseline),remote={source:'server',revision:7,identity:snapshot.identity,snapshot:structuredClone(snapshot)};
@@ -47,7 +47,7 @@ const docs=new Map(),writes=[];let cached=false,drift=false,contextValid=true;
 const snap=(data,id)=>({exists:!!data,id,metadata:{fromCache:cached,hasPendingWrites:false},data:()=>structuredClone(data)});
 for(const [key,capture]of [[baselineHash,baseline],[currentHash,current]]){
  const content=api.canonicalJson(capture),path=`businesses/${ownerUid}/recoveryCopies/${key}`;
- docs.set(path,{ownerUid,captureHash:key,state:'CLIENT_VERIFIED',deviceId:capture.deviceId,buildSha:capture.buildSha,
+ docs.set(path,{ownerUid,captureHash:key,state:'CLIENT_VERIFIED',deviceId:capture.deviceId,buildSha:capture.buildSha,deviceRevision:capture.record.deviceRevision,
   sourceHash:await hash(capture.record.snapshot),journalHash:await hash(capture.journalCapture),payloadBytes:api.byteLength(capture),partCount:1,remoteRevision:7,remoteHash:await hash(remote.snapshot)});
  docs.set(path+'/parts/p0',{ownerUid,captureHash:key,position:0,content,contentHash:await hash(content)});
 }

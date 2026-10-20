@@ -178,7 +178,9 @@
       if(pieces.length!==manifest.partCount)throw Error('P0D_PART_COUNT');
       const text=pieces.map(p=>p.content).join(''),value=JSON.parse(text);
       if(api.byteLength(value)!==manifest.payloadBytes||await hash(value)!==captureHash||value.ownerUid!==ownerUid
-        ||value.deviceId!==manifest.deviceId||value.buildSha!==manifest.buildSha
+        ||value.schemaVersion!==2||value.deviceId!==manifest.deviceId||value.buildSha!==manifest.buildSha
+        ||value.record.deviceRevision!==manifest.deviceRevision||value.remoteReference?.source!=='server'
+        ||value.remoteReference.revision!==manifest.remoteRevision||value.remoteReference.hash!==manifest.remoteHash
         ||await hash(value.record.snapshot)!==manifest.sourceHash||await hash(value.journalCapture)!==manifest.journalHash)throw Error('P0D_CAPTURE_INTEGRITY');
       return {manifest,value};
     }
