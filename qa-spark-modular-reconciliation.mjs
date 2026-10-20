@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import './spark-modular-migration.js';
 import './spark-modular-reconciliation.js';
+import './qa-p0d-device-preflight.mjs';
 const api=globalThis.CLICK360_SPARK_RECONCILIATION;
 const identity={ownerUid:'reconcile-owner',businessId:'business-alpha'};
 const operation={...identity,operationId:'sale-1',payloadHash:'a'.repeat(64),state:'unknown'};

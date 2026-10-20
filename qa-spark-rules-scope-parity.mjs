@@ -42,6 +42,12 @@ export function fingerprints(source){
 if(process.argv[1]?.endsWith('qa-spark-rules-scope-parity.mjs')){
   const source=readFileSync('firestore.spark.rules','utf8'),actual=fingerprints(source);
   const expected=JSON.parse(readFileSync('qa/fixtures/spark-rules-scope-parity.json','utf8'));
+  if(expected.p0dAuthorizationChange){
+    const start=source.indexOf('    // P0D policy'),end=source.indexOf('    // Optional owner-only recovery preservation',start);
+    assert(start>0&&end>start);
+    assert.equal(createHash('sha256').update(source.slice(0,start)+source.slice(end)).digest('hex'),
+      '438905930d0f0458ba9687553fb3a6956dc45ccfff1de16e092c2d258da28b14','Every pre-P0D permission must remain byte-identical');
+  }
   assert.deepEqual(actual,expected.fingerprints,'Scope optimization changed an authorization predicate or effective permission path');
   assert.equal(compactBoundParameters(source).replacements,0,'Deployed Rules must retain their certified compact bindings');
   assert.deepEqual(fingerprints(restoreBoundParameters(source).content),expected.alphaEquivalentTo,

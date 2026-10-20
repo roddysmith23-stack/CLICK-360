@@ -4,6 +4,55 @@ import '../qa-spark-migration-progress.mjs';
 import {assert,identity,newAppContext,largeTenantData,stateDocument,accountAccess,seed,url,emulatorOwnerEmail,emulatorPassword} from './r38-emulator-support.mjs';
 // Called inside the existing served-UI suite and emulator lifecycle. No separate
 // runtime injection, financial replay or production project is involved.
+export async function certifyDevicePreflight({browser,env,uid,label}){
+  await env.clearFirestore();
+  const data=largeTenantData(uid);data.products=data.products.slice(0,2);
+  for(const key of ['sales','movements','cashSessions','dailyReports','auditLogs','layaways','notifications','labelPrintHistory'])data[key]=[];
+  const envelope=stateDocument(uid,41,data),local=structuredClone(data);local.identity=identity(uid);
+  for(const p of local.products)p.notes='p'.repeat(460000);
+  await seed(env,async db=>{
+    await setDoc(doc(db,`accountAccess/${uid}`),accountAccess(uid));
+    await setDoc(doc(db,`businesses/${uid}/state/main`),envelope);
+    await setDoc(doc(db,'storageRollout/sparkV1'),{enabled:true,automaticShadow:false,automaticRecoveryCopy:true,pilotOwnerUids:[uid]});
+  });
+  const context=await newAppContext(browser,{width:390,height:844});
+  try{
+    let page=await context.newPage();page.setDefaultTimeout(60000);await page.goto(url,{waitUntil:'domcontentloaded'});
+    await page.waitForFunction(()=>!!window.click360Auth?.signInWithEmailAndPassword&&!!window.CLICK360_V16_STORAGE);
+    const tenant={...identity(uid),authUid:uid};
+    await page.evaluate(async({tenant,local})=>{
+      await CLICK360_V16_STORAGE.putSnapshot(tenant,local,{source:'indexeddb_cache',deviceRevision:'p0d-42',baseRevision:41,revision:41,
+        cloudCapacityBlocked:true,pendingRemoteSync:true,pendingOperations:['legacy-save-preserved']});
+    },{tenant,local});
+    await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email:emulatorOwnerEmail,password:emulatorPassword});
+    await page.waitForFunction(()=>window.click360DevicePreflight?.status==='DISABLED');
+    const before=await page.evaluate(async({tenant})=>{
+      const copy=click360SparkRecoveryCopy,manifest=await click360Db.doc(`businesses/${tenant.ownerUid}/recoveryCopies/${copy.captureHash}`).get({source:'server'});
+      return {copy,buildSha:CLICK360_RELEASE_ASSETS['app.js'],deviceIdHash:await CLICK360_SPARK_MIGRATION.hash(manifest.data().deviceId),
+        local:await CLICK360_V16_STORAGE.getSnapshot(tenant)};
+    },{tenant});
+    await seed(env,db=>setDoc(doc(db,`businesses/${uid}/recoveryPreflightPolicy/main`),{enabled:true,ownerUid:uid,
+      buildSha:before.buildSha,baselineCaptureHash:before.copy.captureHash,baselineSourceHash:before.copy.sourceHash,
+      deviceIdHash:before.deviceIdHash,businessIds:[uid]}));
+    let first;
+    for(let pass=0;pass<2;pass++){
+      await page.close();page=await context.newPage();page.setDefaultTimeout(60000);await page.goto(url,{waitUntil:'domcontentloaded'});
+      await page.waitForFunction(()=>window.click360DevicePreflight?.status==='CLIENT_PREFLIGHT_READY'||window.click360DevicePreflight?.status==='BLOCKED');
+      const proof=await page.evaluate(async({uid,tenant})=>{
+        const result=click360DevicePreflight;if(result.status!=='CLIENT_PREFLIGHT_READY')throw Error(JSON.stringify(result));
+        const report=await click360Db.doc(`businesses/${uid}/recoveryPreflights/${result.reportId}`).get({source:'server'});
+        if(report.metadata.fromCache||report.data().sourceHash!==report.data().reconstructedHash||report.data().changedRecords!==0)throw Error('P0D_TEST_REPORT_INVALID');
+        if(window.click360SparkOperationalSession||(await click360Db.doc(`businesses/${uid}/metadata/storage`).get({source:'server'})).exists)throw Error('P0D_TEST_WRITER_ACTIVATED');
+        return {reportId:result.reportId,report:report.data(),local:await CLICK360_V16_STORAGE.getSnapshot(tenant)};
+      },{uid,tenant});
+      assert(JSON.stringify(proof.local)===JSON.stringify(before.local),'Automatic preflight cannot change the durable source');
+      if(first)assert(JSON.stringify(proof.report)===JSON.stringify(first.report),'Restart reuses the immutable receipt');first=proof;
+    }
+    await seed(env,async db=>assert(JSON.stringify((await getDocFromServer(doc(db,`businesses/${uid}/state/main`))).data())===JSON.stringify(envelope)));
+    console.log(JSON.stringify({stage:'AUTOMATIC_DEVICE_PREFLIGHT_PASS',browser:label,sourceHash:first.report.sourceHash,
+      reconstructedHash:first.report.reconstructedHash,sourceAndJournalPreserved:true,coldRestart:true,idempotent:true,commercialWrites:0,cutover:false}));
+  }finally{await context.close();}
+}
 export async function certifyRecoveryCopy({browser,env,uid,label}){
   await env.clearFirestore();
   const data=largeTenantData(uid);

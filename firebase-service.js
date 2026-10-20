@@ -4160,7 +4160,7 @@
                 if(!navigator.locks?.request)throw Error('SPARK_RECOVERY_DEVICE_LOCK_UNAVAILABLE');
                 await navigator.locks.request(`click360-spark:${sparkProjectId}:${context.ownerUid}:${user.uid}`,{ifAvailable:true},async lock=>{
                   if(!lock)throw Error('SPARK_RECOVERY_DEVICE_ALREADY_ACTIVE');
-                  await window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                  const preserved=await window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
                     productionRecoveryOnly:true,ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),
                     buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,
                     resolveContext:()=>isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context?context:null,
@@ -4172,6 +4172,27 @@
                         window.dispatchEvent(new CustomEvent('click360-sync-status'));
                       }}
                   }).prepare();
+                  // Separate optional P0D preparation. No policy exists by
+                  // default; this never calls a migration or writer factory.
+                  if(preserved?.recoveryCopy?.status==='RECOVERY_COPY_CLIENT_VERIFIED'){
+                    let journal;
+                    try{
+                      journal=await window.CLICK360_P0A_JOURNAL.open();
+                      const result=await window.CLICK360_SPARK_RECONCILIATION.createDevicePreflight({db,firebase,
+                        ownerUid:context.ownerUid,actorUid:user.uid,buildSha:window.CLICK360_RELEASE_ASSETS['app.js'],copy:preserved.recoveryCopy,
+                        assertContext:()=>{if(!lock||!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context||auth.currentUser?.uid!==user.uid)throw Error('P0D_CONTEXT_CHANGED');},
+                        readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),captureJournal:()=>journal.captureOwner(context.ownerUid)
+                      }).prepare();
+                      if(isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context){
+                        window.click360DevicePreflight=result;
+                        window.dispatchEvent(new CustomEvent('click360-device-preflight',{detail:result}));
+                      }
+                    }catch(error){
+                      // Preflight failure cannot downgrade a verified P0A copy.
+                      if(isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context)
+                        window.click360DevicePreflight={status:'BLOCKED',reason:/^P0D_[A-Z_]+$/.test(error.message)?error.message:'P0D_UNAVAILABLE',cutover:false};
+                    }finally{journal?.close();}
+                  }
                 });
               }
             }

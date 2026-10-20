@@ -13,7 +13,7 @@ import {initializeTestEnvironment} from '@firebase/rules-unit-testing';
 import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
 import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
-import {certifyShadowPreparation,certifyRecoveryCopy} from './spark-migration-shadow-pwa.mjs';
+import {certifyShadowPreparation,certifyRecoveryCopy,certifyDevicePreflight} from './spark-migration-shadow-pwa.mjs';
 import {certifyRetailReport} from './spark-retail-report-pwa.mjs';
 import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,createEmulatorUser,
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
@@ -48,6 +48,10 @@ try{
   for(const [i,browser]of browsers.entries()){
     const label=i?'webkit':'chromium';if(diagnosticBrowser&&diagnosticBrowser!==label)continue;
     console.log(`START served Spark UI ${label}`);
+    await certifyDevicePreflight({browser,env,uid,label});
+    if(process.env.CLICK360_SPARK_UI_PREFLIGHT_ONLY==='1'){
+      results.push({browser:label,automaticDevicePreflight:true,commercialWrites:0,cutover:false});continue;
+    }
     await certifyRecoveryCopy({browser,env,uid,label});
     await certifyShadowPreparation({browser,env,uid,label});
     if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'){

@@ -5,6 +5,9 @@ import {readFile, mkdir, writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {connectAdmin} from './lib/firebase-admin-connect.mjs';
 import '../spark-modular-migration.js';
+import '../spark-modular-handoff.js';
+import '../spark-modular-reconciliation.js';
+import '../spark-modular-record-codec.js';
 
 const [project, identityFile, expectedOwnerHash, out] = process.argv.slice(2);
 assert(project && identityFile && /^[a-f0-9]{64}$/.test(expectedOwnerHash || '') && out,
@@ -104,7 +107,31 @@ try {
       historicalReferenceStillMatches:m.remoteRevision===remote.revision&&m.remoteHash===remoteHash,
       modules,migration,operationalCloudConfirmed:false});
   }
+  const preflightReceipts=await db.collection(`businesses/${owner}/recoveryPreflights`).orderBy('createdAt','desc').limit(10).get();
+  await save('preflight-receipts.private.json',preflightReceipts.docs.map(d=>({id:d.id,data:d.data()})));
+  const preflights=[];
+  for(const document of preflightReceipts.docs){
+    const receipt=document.data();assert.equal(receipt.ownerUid,owner);assert.equal(receipt.reportId,document.id);
+    const base=results.find(r=>r.verified&&r.captureHash===receipt.baselineCaptureHash),current=results.find(r=>r.verified&&r.captureHash===receipt.captureHash);
+    let independentlyVerified=false,reason='P0D_BASELINE_OR_CURRENT_NOT_RECONSTRUCTED_IN_THIS_RUN';
+    if(base&&current){
+      try{
+        const baseline=JSON.parse(await readFile(`${out}/${base.captureHash}.capture.private.json`)),capture=JSON.parse(await readFile(`${out}/${current.captureHash}.capture.private.json`));
+        const proof=await CLICK360_SPARK_RECONCILIATION.recoveryPreflight({ownerUid:owner,baseline,current:capture,
+          remote:{source:'server',revision:remote.revision,identity:remote.payload.identity,snapshot:remote.payload.data},
+          lookupOperation:async op=>{
+            assert([op.businessId,op.operationId].every(id=>typeof id==='string'&&id.length<=120&&!/[/.]/.test(id)));
+            const s=await db.doc(`businesses/${owner}/businessUnits/${op.businessId}/storage/v2/operationLedger/${op.operationId}`).get();
+            return {source:'server',exists:s.exists,record:s.exists?await CLICK360_SPARK_RECORD_CODEC.unpack(s.data(),{identity:{ownerUid:owner,businessId:op.businessId},moduleName:'operationLedger',recordId:op.operationId}):null};
+          }});
+        for(const [key,value]of Object.entries(proof))assert.equal(api.canonicalJson(receipt[key]),api.canonicalJson(value));
+        independentlyVerified=true;reason=proof.reason;
+      }catch(error){reason=safeReason(error);}
+    }
+    preflights.push({reportId:document.id,clientStatus:receipt.status,sourceHash:receipt.sourceHash,buildSha:receipt.buildSha,
+      independentlyVerified,reason,operationalCloudConfirmed:false,cutover:false});
+  }
   const report={readOnly:true,commercialWrites:0,project,legacyRevision:remote.revision,
-    physicalDeviceOriginNotAssumed:true,results};
+    physicalDeviceOriginNotAssumed:true,results,preflights};
   await save('report.json',report); console.log(JSON.stringify(report,null,2));
 } finally { await db.terminate(); }

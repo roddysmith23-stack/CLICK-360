@@ -1632,6 +1632,46 @@ service cloud.firestore {
       allow delete: if approvalId in ["runtimePreparation", "cutover"] && isPlatformAdmin();
     }
 
+    // P0D policy is private and IAM/admin-managed only. A preflight receipt is
+    // a CLIENT claim, never an operational approval or source-of-truth switch.
+    match /businesses/{ownerUid}/recoveryPreflightPolicy/{policyId} {
+      allow read: if policyId == "main" && sparkOwnerRead(ownerUid);
+      allow write: if false;
+    }
+    function p0dPolicy(_o) {
+      return get(/databases/$(database)/documents/businesses/$(_o)/recoveryPreflightPolicy/main).data;
+    }
+    match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/operationLedger/{operationId} {
+      // Lookup only, even while operational access remains disabled. No
+      // write grant, membership expansion or cached absence confirmation.
+      allow read: if sparkOwnerRead(ownerUid) && p0dPolicy(ownerUid).get("enabled", false) == true
+        && businessId in p0dPolicy(ownerUid).businessIds;
+    }
+    match /businesses/{ownerUid}/recoveryPreflights/{reportId} {
+      allow read: if sparkOwnerRead(ownerUid);
+      allow create: if sparkRecoveryCopyWriter(ownerUid)
+        && p0dPolicy(ownerUid).get("enabled", false) == true
+        && request.resource.data.ownerUid == ownerUid && request.resource.data.reportId == reportId
+        && reportId.matches("^[a-f0-9]{64}$") && request.resource.data.schemaVersion == 1
+        && request.resource.data.buildSha == p0dPolicy(ownerUid).buildSha
+        && request.resource.data.baselineCaptureHash == p0dPolicy(ownerUid).baselineCaptureHash
+        && request.resource.data.baselineSourceHash == p0dPolicy(ownerUid).baselineSourceHash
+        && request.resource.data.deviceIdHash == p0dPolicy(ownerUid).deviceIdHash
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.replayAllowed == false && request.resource.data.cutover == false
+        && request.resource.data.status in ["CLIENT_PREFLIGHT_READY", "CLIENT_PREFLIGHT_BLOCKED"]
+        && request.resource.data.keys().hasAll(["ownerUid", "reportId", "schemaVersion", "buildSha", "policyHash", "baselineCaptureHash", "baselineSourceHash", "captureHash", "sourceHash", "journalHash", "deviceIdHash", "status", "reason", "operationCount", "unknownCount", "conflictCount", "pendingCount", "confirmedCount", "replayAllowed", "cutover", "createdAt"])
+        && request.resource.data.keys().hasOnly(["ownerUid", "reportId", "schemaVersion", "buildSha", "policyHash", "baselineCaptureHash", "baselineSourceHash", "captureHash", "sourceHash", "journalHash", "deviceIdHash", "status", "reason", "operationCount", "unknownCount", "conflictCount", "pendingCount", "confirmedCount", "replayAllowed", "cutover", "createdAt", "reconstructedHash", "planHash", "differenceHash", "changedRecords", "businessCount", "recordCount", "verifiedSessions", "protectedHistoryRecords"])
+        && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.state == "CLIENT_VERIFIED"
+        && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.baselineCaptureHash)).data.state == "CLIENT_VERIFIED"
+        && request.resource.data.baselineSourceHash == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.baselineCaptureHash)).data.sourceHash
+        && request.resource.data.buildSha == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.buildSha
+        && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.deviceId == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.baselineCaptureHash)).data.deviceId
+        && request.resource.data.sourceHash == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.sourceHash
+        && request.resource.data.journalHash == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.journalHash;
+      allow update, delete: if false;
+    }
+
     // Optional owner-only recovery preservation, NOT operational storage or
     // independent server verification. It never changes metadata/storage and
     // therefore cannot fence another legacy business or activate a writer.
