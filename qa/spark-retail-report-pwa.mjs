@@ -50,6 +50,7 @@ export async function certifyRetailReport(page,{ownerUid,businessId,from,to}){
       route:location.hash,from:document.querySelector('#repFrom')?.value,to:document.querySelector('#repTo')?.value,
       buttonDisabled:document.querySelector('#queryRetailReport')?.disabled,
       bootstrap:window.click360SparkBootstrapState,coordinatorBusy:window.click360SparkCoordinator?.isBusy(),
+      lastReportFailure:window.click360LastReportFailure,
       health:await window.click360SparkOperationalSession?.health(),
       text:document.querySelector('#app')?.textContent.slice(0,600),toast:document.querySelector('#toast')?.textContent
     }));

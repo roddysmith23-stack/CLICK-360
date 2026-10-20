@@ -9792,12 +9792,15 @@ function parseMoney(value) {
         const button=event.currentTarget;if(button.disabled)return;button.disabled=true;
         const coordinator=window.click360SparkCoordinator,businessId=currentBusiness()?.id,from=state.reportsFrom,to=state.reportsTo;
         sparkRetailReport=null;sparkRetailReportVisible=100;
+        window.click360LastReportFailure=null;
         try{
           const proof=await coordinator.readRetailReport({from,to});
           if(coordinator!==window.click360SparkCoordinator||currentBusiness()?.id!==businessId||state.reportsFrom!==from||state.reportsTo!==to)return;
           sparkRetailReport=proof;renderApp('reports');
         }catch(error){
           sparkRetailReport=null;
+          const code=String(error.code||error.message||'');
+          window.click360LastReportFailure={code:/^(SPARK_[A-Z0-9_]+|[a-z]+(?:-[a-z]+)*)$/.test(code)?code:'report_query_failed',stage:'read_retail_report'};
           toast(error.message==='SPARK_REPORT_READ_BUDGET'?'El período contiene demasiados registros para una sola consulta. Elige un período más corto.':'No pudimos completar una consulta estable. Tus datos no cambiaron; vuelve a consultar cuando la sincronización esté al día.', 'err');
           if(currentBusiness()?.id===businessId)renderApp('reports');
         }finally{button.disabled=false;}

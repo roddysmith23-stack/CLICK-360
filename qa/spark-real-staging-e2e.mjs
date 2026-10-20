@@ -70,6 +70,10 @@ try{
     browser=await engine.launch();
     const open=async(existingContext=null,login={email,password})=>{
       const context=existingContext||await browser.newContext({viewport:{width:390,height:844}}),page=await context.newPage();
+      // Library waitForFunction otherwise has no deadline. Use the same
+      // bounded assertion budget as the served emulator journey, never an
+      // indefinite pending confirmation or a larger retry timeout.
+      page.setDefaultTimeout(60000);
       const trace=[];
       page.on('requestfailed',request=>{
         if(request.url().includes('firestore.googleapis.com'))trace.push(JSON.stringify({firestore:'request_failed',error:request.failure()?.errorText}));
