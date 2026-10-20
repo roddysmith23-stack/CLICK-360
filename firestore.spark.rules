@@ -2,7 +2,7 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
+    function _F4() {
       return request.auth != null;
     }
 
@@ -15,8 +15,8 @@ service cloud.firestore {
     // access path (the browser) for the same already-fully-trusted operator.
     // Hiding a menu item is NOT security -- every admin-only read/write below
     // is independently gated by this function, checked on every request.
-    function isPlatformAdmin() {
-      return signedIn()
+    function _F3() {
+      return _F4()
         && request.auth.token.get("email", null) != null
         && request.auth.token.email.lower() == 'roddysmithceo@gmail.com';
     }
@@ -38,7 +38,7 @@ service cloud.firestore {
     }
 
     function hasActiveInvite(email) {
-      return signedIn()
+      return _F4()
         && email != null
         && exists(/databases/$(database)/documents/approvedUsersByEmail/$(email))
         && inviteData(email).status == "active"
@@ -53,13 +53,13 @@ service cloud.firestore {
       return membershipDoc(_b).data;
     }
 
-    function supportedMemberRole(role) {
+    function _F16(role) {
       return role in ["worker", "seller", "cashier", "inventory", "supervisor", "admin"];
     }
 
     function hasActiveMembership(_b) {
       let member = membershipData(_b);
-      return signedIn()
+      return _F4()
         && _b != "demo-click360"
         && exists(/databases/$(database)/documents/businesses/$(_b)/members/$(request.auth.uid))
         && member.uid == request.auth.uid
@@ -67,11 +67,11 @@ service cloud.firestore {
         && member.businessId == _b
         && member.tenantKey == "owner:" + _b + ":business:" + _b
         && member.status == "active"
-        && supportedMemberRole(member.role);
+        && _F16(member.role);
     }
 
     function approvedUser() {
-      return signedIn()
+      return _F4()
         && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
         && (
           (userData().keys().hasAll(["status", "approved"])
@@ -94,7 +94,7 @@ service cloud.firestore {
 
     function legacyOwnerUser() {
       let data = userData();
-      return signedIn()
+      return _F4()
         && exists(/databases/$(database)/documents/approvedUsers/$(request.auth.uid))
         && data.approved == true
         && (!data.keys().hasAny(["status"]) || data.status == "active")
@@ -111,13 +111,13 @@ service cloud.firestore {
     }
 
     function hasAccountAccess() {
-      return signedIn()
+      return _F4()
         && exists(/databases/$(database)/documents/accountAccess/$(request.auth.uid));
     }
 
     function accountAccessReadable() {
       let data = accessData();
-      return signedIn()
+      return _F4()
         && hasAccountAccess()
         && data.uid == request.auth.uid
         && data.businessId == request.auth.uid
@@ -184,7 +184,7 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid));
     }
 
-    function businessUnitMemberData(_o, _b) {
+    function _F19(_o, _b) {
       return businessUnitMemberDoc(_o, _b).data;
     }
 
@@ -192,7 +192,7 @@ service cloud.firestore {
       return getAfter(/databases/$(database)/documents/businesses/$(_o)/members/$(request.auth.uid)).data;
     }
 
-    function validBusinessUnitIdentity(data, _o, _b) {
+    function _F11(data, _o, _b) {
       return _o != "demo-click360"
         && data.ownerUid == _o
         && data.businessId == _b
@@ -216,34 +216,34 @@ service cloud.firestore {
 
     function businessUnitReady(_o, _b) {
       let unit = businessUnitData(_o, _b);
-      return signedIn()
+      return _F4()
         && workersFeatureFlagEnabled(_o)
         && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b))
-        && validBusinessUnitIdentity(unit, _o, _b)
+        && _F11(unit, _o, _b)
         && unit.status == "CUTOVER_VERIFIED";
     }
 
-    function activeBusinessUnitMember(_o, _b) {
-      let member = businessUnitMemberData(_o, _b);
+    function _F14(_o, _b) {
+      let member = _F19(_o, _b);
       return businessUnitReady(_o, _b)
         && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid))
-        && validBusinessUnitIdentity(member, _o, _b)
+        && _F11(member, _o, _b)
         && member.uid == request.auth.uid
         && member.status == "active"
-        && supportedMemberRole(member.role)
+        && _F16(member.role)
         && member.permissions is map;
     }
 
-    function businessUnitOwner(_o, _b) {
+    function _F18(_o, _b) {
       return request.auth.uid == _o
         && ownerUser()
         && businessUnitReady(_o, _b);
     }
 
-    function businessUnitPermission(_o, _b, _m, action) {
-      let member = businessUnitMemberData(_o, _b);
-      return businessUnitOwner(_o, _b)
-        || (signedIn() && request.auth.uid != _o && activeBusinessUnitMember(_o, _b)
+    function _F0(_o, _b, _m, action) {
+      let member = _F19(_o, _b);
+      return _F18(_o, _b)
+        || (_F4() && request.auth.uid != _o && _F14(_o, _b)
           && member.permissions.get(_m, {}).get(action, false) == true);
     }
 
@@ -258,7 +258,7 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/logisticsRoutes/$(routeId)).data;
     }
 
-    function logisticsAssignedTo(_o, _b, routeId, field) {
+    function _F8(_o, _b, routeId, field) {
       return logisticsRouteData(_o, _b, routeId).get(field, "") == request.auth.uid;
     }
 
@@ -336,9 +336,9 @@ service cloud.firestore {
         && getAfter(memberPath).data.status == "revoked";
     }
 
-    function validBoundaryCreate(_o, _b, _m, _r) {
-      return validBusinessUnitIdentity(request.resource.data, _o, _b)
-        && sparkLegacyWritable(_o)
+    function _F5(_o, _b, _m, _r) {
+      return _F11(request.resource.data, _o, _b)
+        && _F13(_o)
         && request.resource.data.id == _r
         && request.resource.data.module == _m
         && request.resource.data.recordVersion == 1
@@ -348,10 +348,10 @@ service cloud.firestore {
         && request.resource.data.updatedAt == request.time;
     }
 
-    function validBoundaryUpdate(_o, _b, _m, _r) {
-      return validBusinessUnitIdentity(resource.data, _o, _b)
-        && sparkLegacyWritable(_o)
-        && validBusinessUnitIdentity(request.resource.data, _o, _b)
+    function _F12(_o, _b, _m, _r) {
+      return _F11(resource.data, _o, _b)
+        && _F13(_o)
+        && _F11(request.resource.data, _o, _b)
         && request.resource.data.id == _r
         && request.resource.data.id == resource.data.id
         && request.resource.data.module == _m
@@ -364,12 +364,12 @@ service cloud.firestore {
     }
 
     function boundaryProductUpdateAllowed(_o, _b, _r) {
-      let member = businessUnitMemberData(_o, _b);
+      let member = _F19(_o, _b);
       let productPermissions = member.permissions.get("products", {});
       let salesPermissions = member.permissions.get("sales", {});
       let operationId = request.resource.data.get("lastOperationId", "");
-      return businessUnitOwner(_o, _b)
-        || (signedIn() && request.auth.uid != _o && activeBusinessUnitMember(_o, _b)
+      return _F18(_o, _b)
+        || (_F4() && request.auth.uid != _o && _F14(_o, _b)
           && (
             productPermissions.get("update", false) == true
             || (productPermissions.get("delete", false) == true
@@ -394,27 +394,27 @@ service cloud.firestore {
 
     // Spark V1 control is owner-wide because legacy state/main contains ALL
     // businesses. A business-only client fence cannot protect this document.
-    function sparkControlPath(_o) {
+    function _F6(_o) {
       return /databases/$(database)/documents/businesses/$(_o)/metadata/storage;
     }
 
-    function sparkLegacyWritable(_o) {
-      return !existsAfter(sparkControlPath(_o))
-        || getAfter(sparkControlPath(_o)).data.storageMode == "legacy";
+    function _F13(_o) {
+      return !existsAfter(_F6(_o))
+        || getAfter(_F6(_o)).data.storageMode == "legacy";
     }
 
-    function sparkLegacyReadable(_o) {
-      return !exists(sparkControlPath(_o)) || get(sparkControlPath(_o)).data.storageMode == "legacy";
+    function _F9(_o) {
+      return !exists(_F6(_o)) || get(_F6(_o)).data.storageMode == "legacy";
     }
 
     function sparkOwner(_o) {
-      return signedIn() && request.auth.uid == _o
+      return _F4() && request.auth.uid == _o
         && (exists(/databases/$(database)/documents/accountAccess/$(_o))
           ? sparkAccountWritable(_o) : sparkApprovedOwnerReadable(_o));
     }
 
     function sparkOwnerRead(_o) {
-      return signedIn() && request.auth.uid == _o && sparkOwnerReadableAccess(_o);
+      return _F4() && request.auth.uid == _o && sparkOwnerReadableAccess(_o);
     }
 
     function sparkOwnerReadableAccess(_o) {
@@ -526,12 +526,12 @@ service cloud.firestore {
 
     // Also used by the business membership path outside operational storage.
     function sparkActiveMember(_o, _b) {
-      let member = businessUnitMemberData(_o, _b);
-      return signedIn() && workersFeatureFlagEnabled(_o)
+      let member = _F19(_o, _b);
+      return _F4() && workersFeatureFlagEnabled(_o)
         && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid))
-        && validBusinessUnitIdentity(member, _o, _b)
+        && _F11(member, _o, _b)
         && member.uid == request.auth.uid && member.status == "active"
-        && supportedMemberRole(member.role) && member.permissions is map;
+        && _F16(member.role) && member.permissions is map;
     }
 
     function sparkValidShadow(_o, _b, _m, _r) {
@@ -539,7 +539,7 @@ service cloud.firestore {
       return data.keys().hasOnly(["id", "ownerUid", "businessId", "schemaVersion", "module", "sourceHash", "sourcePath", "data", "dataHash", "historyPolicy", "operational", "operationalHash"])
         && data.ownerUid == _o && data.businessId == _b
         && data.schemaVersion == 2 && data.module == _m && data.id == _r
-        && data.sourceHash == get(sparkControlPath(_o)).data.sourceHash
+        && data.sourceHash == get(_F6(_o)).data.sourceHash
         && data.sourcePath is list && data.sourcePath.size() > 0
         && data.dataHash is string && data.dataHash.size() == 64
         && (!data.keys().hasAny(["operational", "operationalHash"]) || (
@@ -618,7 +618,7 @@ service cloud.firestore {
     }
 
     function validWorkerUserCreate(uid) {
-      return validV16WorkerUserCreate(uid) || (signedIn()
+      return validV16WorkerUserCreate(uid) || (_F4()
         && uid == request.auth.uid
         && request.auth.token.email != null
         && hasActiveInvite(request.auth.token.email)
@@ -641,7 +641,7 @@ service cloud.firestore {
       let invite = get(/databases/$(database)/documents/businesses/$(ownerId)/invitations/$(inviteHash)).data;
       let inviteAfter = getAfter(/databases/$(database)/documents/businesses/$(ownerId)/invitations/$(inviteHash)).data;
       let memberAfter = getAfter(/databases/$(database)/documents/businesses/$(ownerId)/members/$(uid)).data;
-      return signedIn()
+      return _F4()
         && uid == request.auth.uid
         && ownerId != uid
         && ownerId != "demo-click360"
@@ -718,7 +718,7 @@ service cloud.firestore {
         && request.resource.data.uid == resource.data.uid
         && request.resource.data.email == resource.data.email
         && request.resource.data.isOwner != true
-        && supportedMemberRole(request.resource.data.role)
+        && _F16(request.resource.data.role)
         && request.resource.data.permissions is map
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["role", "permissions", "updatedAt"])
         && request.resource.data.updatedAt == request.time;
@@ -748,7 +748,7 @@ service cloud.firestore {
     }
 
     match /approvedUsers/{uid} {
-      allow read: if signedIn() && (
+      allow read: if _F4() && (
         request.auth.uid == uid
         || (ownerUser() && resource.data.ownerId == request.auth.uid && resource.data.role == "worker")
       );
@@ -759,7 +759,7 @@ service cloud.firestore {
     }
 
     match /approvedUsersByEmail/{email} {
-      allow read: if signedIn() && (
+      allow read: if _F4() && (
         request.auth.token.email == email
         || (ownerUser() && resource.data.ownerId == request.auth.uid)
       );
@@ -769,7 +769,7 @@ service cloud.firestore {
     }
 
     match /accountAccess/{uid} {
-      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
+      allow read: if (_F4() && request.auth.uid == uid) || _F3();
       // CEO Admin Web: activation/plan-change/suspend writes for ANY tenant.
       // The exact field shape (status/planCode/limits/onboardingProfile/etc.)
       // is built by the single canonical activationFields() in
@@ -777,20 +777,20 @@ service cloud.firestore {
       // needs to enforce identity/plan-validity/monotonic-revision, not
       // re-derive the whole shape. app.js additionally writes a backup to
       // adminBackups and an entry to adminAuditLogs around every such write.
-      allow create: if isPlatformAdmin()
+      allow create: if _F3()
         && uid != "demo-click360"
         && request.resource.data.uid == uid
         && request.resource.data.businessId == uid
         && request.resource.data.plan in ["base", "pro", "business", "enterprise", "founder_legacy"]
         && request.resource.data.revision == 1;
-      allow update: if isPlatformAdmin()
+      allow update: if _F3()
         && uid != "demo-click360"
         && request.resource.data.uid == uid
         && request.resource.data.businessId == uid
         && request.resource.data.plan in ["base", "pro", "business", "enterprise", "founder_legacy"]
         && request.resource.data.revision is int
         && request.resource.data.revision > resource.data.revision;
-      allow create: if signedIn()
+      allow create: if _F4()
         && request.auth.uid == uid
         && request.resource.data.keys().hasAll([
           "uid", "ownerId", "businessId", "tenantKey", "email", "name", "photoURL", "status", "plan", "planCode", "trialDays",
@@ -824,7 +824,7 @@ service cloud.firestore {
           || request.resource.data.profileUpdatedAt == request.time)
         && request.resource.data.lastSeenAt == request.time
         && request.resource.data.createdAt == request.time;
-      allow update: if signedIn()
+      allow update: if _F4()
         && request.auth.uid == uid
         && resource.data.uid == request.auth.uid
         && request.resource.data.uid == resource.data.uid
@@ -843,7 +843,7 @@ service cloud.firestore {
     }
 
     match /businesses/{businessId}/invitations/{inviteHash} {
-      allow read: if businessId != "demo-click360" && signedIn() && (
+      allow read: if businessId != "demo-click360" && _F4() && (
         (ownerUser() && request.auth.uid == businessId)
         || (request.auth.token.email != null && resource.data.email == request.auth.token.email)
       );
@@ -869,7 +869,7 @@ service cloud.firestore {
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.email is string
         && request.resource.data.name is string
-        && supportedMemberRole(request.resource.data.role)
+        && _F16(request.resource.data.role)
         && request.resource.data.permissions is map
         && request.resource.data.status == "pending"
         && request.resource.data.expiresAfterDays == 7
@@ -887,9 +887,9 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             "status", "revokedAt", "revokedBy", "role", "permissions", "updatedAt", "updatedBy"
           ])
-          && supportedMemberRole(request.resource.data.role)
+          && _F16(request.resource.data.role)
           && request.resource.data.permissions is map)
-        || (signedIn()
+        || (_F4()
           && request.auth.token.email != null
           && resource.data.email == request.auth.token.email
           && resource.data.status == "pending"
@@ -918,11 +918,11 @@ service cloud.firestore {
     }
 
     match /businesses/{businessId}/members/{uid} {
-      allow read: if businessId != "demo-click360" && signedIn() && (
+      allow read: if businessId != "demo-click360" && _F4() && (
         (ownerReadUser() && request.auth.uid == businessId)
         || request.auth.uid == uid
       );
-      allow create: if businessId != "demo-click360" && signedIn() && (
+      allow create: if businessId != "demo-click360" && _F4() && (
         (ownerUser() && request.auth.uid == businessId
           && request.resource.data.ownerId == businessId
           && request.resource.data.businessId == businessId
@@ -967,13 +967,13 @@ service cloud.firestore {
     // The owner may read their own tenant's flag (e.g. to show rollout status);
     // no client may ever write it.
     match /businesses/{ownerUid}/featureFlags/{docId} {
-      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      allow read: if request.auth.uid == ownerUid || _F3();
       // CEO Admin Web: toggle the Workers flag for a tenant. Production
       // migrations already default this to false on creation (see
       // worker-boundary-migrate.mjs); this only lets the admin flip it once
       // a businessUnit is CUTOVER_VERIFIED, same effect as
       // worker-boundary-admin.mjs --action enable-workers, just from the browser.
-      allow update: if isPlatformAdmin()
+      allow update: if _F3()
         && ownerUid != "demo-click360"
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["enabled", "enabledAt", "enabledBy", "updatedBy", "updatedAt", "notes"]);
       allow create, delete: if false;
@@ -985,7 +985,7 @@ service cloud.firestore {
     // fulfillment happens out-of-band via scripts/worker-boundary-admin.mjs
     // (which bypasses rules), not by writing back to this doc from a client.
     match /businesses/{ownerUid}/seatRequests/{requestId} {
-      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      allow read: if request.auth.uid == ownerUid || _F3();
       allow create: if request.auth.uid == ownerUid
         && request.resource.data.ownerUid == ownerUid
         && request.resource.data.requestedBy == request.auth.uid
@@ -1000,7 +1000,7 @@ service cloud.firestore {
     // capacity, mirroring seatRequests exactly -- an immutable, auditable
     // record for AIIA, never mutated by the client, no billing automation.
     match /businesses/{ownerUid}/capacityRequests/{requestId} {
-      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      allow read: if request.auth.uid == ownerUid || _F3();
       allow create: if request.auth.uid == ownerUid
         && request.resource.data.ownerUid == ownerUid
         && request.resource.data.requestedBy == request.auth.uid
@@ -1014,30 +1014,30 @@ service cloud.firestore {
     // Admin-SDK-only, like adminBackups -- written before any mutation and
     // updated once at the end, never by a client.
     match /businesses/{ownerUid}/activationLog/{activationId} {
-      allow read: if request.auth.uid == ownerUid || isPlatformAdmin();
+      allow read: if request.auth.uid == ownerUid || _F3();
       allow create, update, delete: if false;
     }
 
     // P2 modular boundary. The parent document is an administrative cutover
     // manifest. Public clients cannot create or promote a business unit.
     match /businesses/{ownerUid}/businessUnits/{businessId} {
-      allow read: if businessUnitOwner(ownerUid, businessId)
-        || activeBusinessUnitMember(ownerUid, businessId)
-        || isPlatformAdmin();
+      allow read: if _F18(ownerUid, businessId)
+        || _F14(ownerUid, businessId)
+        || _F3();
       allow create, update, delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/members/{uid} {
-      allow read: if businessUnitOwner(ownerUid, businessId)
-        || (signedIn() && request.auth.uid == uid && (activeBusinessUnitMember(ownerUid, businessId)
-          || (get(sparkControlPath(ownerUid)).data.storageMode == "modular"
-            && businessId in get(sparkControlPath(ownerUid)).data.businessIds
+      allow read: if _F18(ownerUid, businessId)
+        || (_F4() && request.auth.uid == uid && (_F14(ownerUid, businessId)
+          || (get(_F6(ownerUid)).data.storageMode == "modular"
+            && businessId in get(_F6(ownerUid)).data.businessIds
             && (sparkActiveMember(ownerUid, businessId)
               // A former worker may GET only their own scoped revocation.
               // Otherwise a document listener loses access to its very
               // revocation update. No business data/write permission follows.
               || (request.method == "get" && resource.data.uid == uid
-                && validBusinessUnitIdentity(resource.data, ownerUid, businessId)
+                && _F11(resource.data, ownerUid, businessId)
                 && resource.data.status == "revoked")))));
       // Seat gate: activation (create, or reactivation via update) must
       // consume exactly one seat in the same write via seatConsumedForSelf,
@@ -1046,17 +1046,17 @@ service cloud.firestore {
         && request.auth.uid == uid
         && rootMembershipAfter(ownerUid).uid == request.auth.uid
         && rootMembershipAfter(ownerUid).status == "active"
-        && supportedMemberRole(rootMembershipAfter(ownerUid).role)
-        && validBoundaryCreate(ownerUid, businessId, "members", uid)
+        && _F16(rootMembershipAfter(ownerUid).role)
+        && _F5(ownerUid, businessId, "members", uid)
         && request.resource.data.uid == uid
         && request.resource.data.role == rootMembershipAfter(ownerUid).role
         && request.resource.data.permissions == rootMembershipAfter(ownerUid).permissions
         && request.resource.data.status == "active"
         && seatConsumedForSelf(ownerUid, businessId);
-      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "members", "manage")
-        && validBoundaryUpdate(ownerUid, businessId, "members", uid)
+      allow update: if _F13(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "members", "manage")
+        && _F12(ownerUid, businessId, "members", uid)
         && request.resource.data.uid == uid
-        && supportedMemberRole(request.resource.data.role)
+        && _F16(request.resource.data.role)
         && request.resource.data.permissions is map
         && (request.resource.data.status == "active" || request.resource.data.status == "revoked")
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -1078,11 +1078,11 @@ service cloud.firestore {
     // addOnSeats quota (no price is enforced here; that stays a business
     // decision made before calling this write).
     match /businesses/{ownerUid}/businessUnits/{businessId}/entitlement/{docId} {
-      allow read: if businessUnitOwner(ownerUid, businessId)
-        || activeBusinessUnitMember(ownerUid, businessId);
+      allow read: if _F18(ownerUid, businessId)
+        || _F14(ownerUid, businessId);
       allow create: if false;
       allow update: if docId == "seats" && validSeatEntitlementIdentity(request.resource.data, ownerUid, businessId) && (
-        (businessUnitOwner(ownerUid, businessId)
+        (_F18(ownerUid, businessId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["addOnSeats", "updatedAt", "updatedBy"])
           && request.resource.data.addOnSeats is int
           && request.resource.data.addOnSeats >= 0
@@ -1093,52 +1093,52 @@ service cloud.firestore {
           && request.resource.data.updatedAt == request.time
           && (
             (request.resource.data.updatedBy == request.auth.uid && seatConsumedForSelf(ownerUid, businessId))
-            || (businessUnitPermission(ownerUid, businessId, "members", "manage") && seatReleased(ownerUid, businessId))
+            || (_F0(ownerUid, businessId, "members", "manage") && seatReleased(ownerUid, businessId))
           ))
       );
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/products/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && (businessUnitPermission(ownerUid, businessId, "products", "read")
-        || businessUnitPermission(ownerUid, businessId, "sales", "read"));
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "products", "create")
-        && validBoundaryCreate(ownerUid, businessId, "products", recordId)
+      allow read: if _F9(ownerUid) && (_F0(ownerUid, businessId, "products", "read")
+        || _F0(ownerUid, businessId, "sales", "read"));
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "products", "create")
+        && _F5(ownerUid, businessId, "products", recordId)
         && request.resource.data.stock is number
         && request.resource.data.stock >= 0;
       allow update: if resource.data.get("boundarySchemaVersion", 0) == 1
         && request.resource.data.get("boundarySchemaVersion", 0) == 1
-        && validBoundaryUpdate(ownerUid, businessId, "products", recordId)
+        && _F12(ownerUid, businessId, "products", recordId)
         && boundaryProductUpdateAllowed(ownerUid, businessId, recordId);
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/sales/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "sales", "read");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "sales", "create")
-        && validBoundaryCreate(ownerUid, businessId, "sales", recordId)
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "sales", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "sales", "create")
+        && _F5(ownerUid, businessId, "sales", recordId)
         && request.resource.data.total is number
         && request.resource.data.total >= 0
         && request.resource.data.items is list
         && request.resource.data.stockDeltas is map
         && request.resource.data.actorUid == request.auth.uid;
-      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "sales", "update")
-        && validBoundaryUpdate(ownerUid, businessId, "sales", recordId);
+      allow update: if _F13(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "sales", "update")
+        && _F12(ownerUid, businessId, "sales", recordId);
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/layaways/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "layaways", "read");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "layaways", "create")
-        && validBoundaryCreate(ownerUid, businessId, "layaways", recordId)
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "layaways", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "layaways", "create")
+        && _F5(ownerUid, businessId, "layaways", recordId)
         && request.resource.data.total is number
         && request.resource.data.total >= 0
         && request.resource.data.balance is number
         && request.resource.data.balance >= 0
         && request.resource.data.actorUid == request.auth.uid;
-      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && (
-          (businessUnitPermission(ownerUid, businessId, "layaways", "update"))
-          || (businessUnitPermission(ownerUid, businessId, "layaways", "payment")
+      allow update: if _F13(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && (
+          (_F0(ownerUid, businessId, "layaways", "update"))
+          || (_F0(ownerUid, businessId, "layaways", "payment")
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               "payments", "paid", "balance", "status", "recordVersion", "updatedBy", "updatedAt"
             ])
@@ -1150,18 +1150,18 @@ service cloud.firestore {
             && request.resource.data.paid == resource.data.paid + request.resource.data.payments[resource.data.payments.size()].amount
             && request.resource.data.balance == resource.data.balance - request.resource.data.payments[resource.data.payments.size()].amount
             && request.resource.data.balance >= 0)
-        ) && validBoundaryUpdate(ownerUid, businessId, "layaways", recordId);
+        ) && _F12(ownerUid, businessId, "layaways", recordId);
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/cashSessions/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "cashSessions", "read");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "cashSessions", "create")
-        && validBoundaryCreate(ownerUid, businessId, "cashSessions", recordId)
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "cashSessions", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "cashSessions", "create")
+        && _F5(ownerUid, businessId, "cashSessions", recordId)
         && request.resource.data.actorUid == request.auth.uid;
-      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && (
-          businessUnitPermission(ownerUid, businessId, "cashSessions", "update")
-          || (businessUnitPermission(ownerUid, businessId, "cashSessions", "close")
+      allow update: if _F13(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && (
+          _F0(ownerUid, businessId, "cashSessions", "update")
+          || (_F0(ownerUid, businessId, "cashSessions", "close")
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               "status", "closedAt", "closedBy", "countedCash", "expectedCash", "difference",
               "reportId", "observations", "recordVersion", "updatedBy", "updatedAt"
@@ -1172,23 +1172,23 @@ service cloud.firestore {
             && request.resource.data.countedCash is number
             && request.resource.data.expectedCash is number
             && request.resource.data.difference == request.resource.data.countedCash - request.resource.data.expectedCash)
-        ) && validBoundaryUpdate(ownerUid, businessId, "cashSessions", recordId);
+        ) && _F12(ownerUid, businessId, "cashSessions", recordId);
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/movements/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "movements", "read");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "movements", "create")
-        && validBoundaryCreate(ownerUid, businessId, "movements", recordId)
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "movements", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "movements", "create")
+        && _F5(ownerUid, businessId, "movements", recordId)
         && request.resource.data.amount is number
         && request.resource.data.actorUid == request.auth.uid;
       allow update, delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/auditEvents/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "auditEvents", "read");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "auditEvents", "create")
-        && validBoundaryCreate(ownerUid, businessId, "auditEvents", recordId)
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "auditEvents", "read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "auditEvents", "create")
+        && _F5(ownerUid, businessId, "auditEvents", recordId)
         && request.resource.data.actorUid == request.auth.uid
         && request.resource.data.action is string
         && request.resource.data.action.size() > 0
@@ -1197,13 +1197,13 @@ service cloud.firestore {
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/settings/{recordId} {
-      allow read: if recordId == "main" && businessUnitPermission(ownerUid, businessId, "settings", "read");
+      allow read: if recordId == "main" && _F0(ownerUid, businessId, "settings", "read");
       allow create: if recordId == "main"
-        && businessUnitPermission(ownerUid, businessId, "settings", "create")
-        && validBoundaryCreate(ownerUid, businessId, "settings", recordId);
+        && _F0(ownerUid, businessId, "settings", "create")
+        && _F5(ownerUid, businessId, "settings", recordId);
       allow update: if recordId == "main"
-        && businessUnitPermission(ownerUid, businessId, "settings", "update")
-        && validBoundaryUpdate(ownerUid, businessId, "settings", recordId);
+        && _F0(ownerUid, businessId, "settings", "update")
+        && _F12(ownerUid, businessId, "settings", recordId);
       allow delete: if false;
     }
 
@@ -1219,25 +1219,25 @@ service cloud.firestore {
     // -- "no basta esconder la tarjeta": a modified client cannot forge
     // its way around this by simply calling the write directly.
     match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsVehicles/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.read");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.write")
-        && validBoundaryCreate(ownerUid, businessId, "logisticsVehicles", recordId);
-      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "vehicles.write")
-        && validBoundaryUpdate(ownerUid, businessId, "logisticsVehicles", recordId);
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "logistics", "vehicles.read");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "vehicles.write")
+        && _F5(ownerUid, businessId, "logisticsVehicles", recordId);
+      allow update: if _F13(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "vehicles.write")
+        && _F12(ownerUid, businessId, "logisticsVehicles", recordId);
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsRoutes/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "routes.read")
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "logistics", "routes.read")
         || resource.data.sellerId == request.auth.uid
         || resource.data.collectorId == request.auth.uid
         || resource.data.helperId == request.auth.uid;
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "routes.write")
-        && validBoundaryCreate(ownerUid, businessId, "logisticsRoutes", recordId);
-      allow update: if validBoundaryUpdate(ownerUid, businessId, "logisticsRoutes", recordId)
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "routes.write")
+        && _F5(ownerUid, businessId, "logisticsRoutes", recordId);
+      allow update: if _F12(ownerUid, businessId, "logisticsRoutes", recordId)
         && (
-          businessUnitPermission(ownerUid, businessId, "logistics", "routes.write")
-          || (businessUnitPermission(ownerUid, businessId, "logistics", "routes.assign")
+          _F0(ownerUid, businessId, "logistics", "routes.write")
+          || (_F0(ownerUid, businessId, "logistics", "routes.assign")
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
               "vehicleId", "sellerId", "sellerName", "helperId", "helperName", "collectorId", "collectorName",
               "status", "auditTrail", "recordVersion", "updatedBy", "updatedAt"
@@ -1247,76 +1247,76 @@ service cloud.firestore {
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsLoadSheets/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.read")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "helperId");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.write")
-        && validBoundaryCreate(ownerUid, businessId, "logisticsLoadSheets", recordId);
-      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "loadSheets.write")
-        && validBoundaryUpdate(ownerUid, businessId, "logisticsLoadSheets", recordId);
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "logistics", "loadSheets.read")
+        || _F8(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || _F8(ownerUid, businessId, resource.data.routeId, "helperId");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "loadSheets.write")
+        && _F5(ownerUid, businessId, "logisticsLoadSheets", recordId);
+      allow update: if _F13(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "loadSheets.write")
+        && _F12(ownerUid, businessId, "logisticsLoadSheets", recordId);
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsRouteSales/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.read")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.create")
-        && logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "sellerId")
-        && (request.resource.data.discount == 0 || businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.discount"))
-        && validBoundaryCreate(ownerUid, businessId, "logisticsRouteSales", recordId)
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "logistics", "routeSales.read")
+        || _F8(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || _F8(ownerUid, businessId, resource.data.routeId, "collectorId");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "routeSales.create")
+        && _F8(ownerUid, businessId, request.resource.data.routeId, "sellerId")
+        && (request.resource.data.discount == 0 || _F0(ownerUid, businessId, "logistics", "routeSales.discount"))
+        && _F5(ownerUid, businessId, "logisticsRouteSales", recordId)
         && request.resource.data.actorUid == request.auth.uid;
       // Cancellation is the only post-create mutation, and only for
       // whoever holds routeSales.cancel (never granted by default to any
       // preset -- see WORKER_ROLE_PRESETS/ROLE_PERMISSIONS comments).
-      allow update: if sparkLegacyWritable(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "routeSales.cancel")
+      allow update: if _F13(ownerUid) && request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "routeSales.cancel")
         && resource.data.status != "cancelled"
         && request.resource.data.status == "cancelled"
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           "status", "auditTrail", "recordVersion", "updatedBy", "updatedAt"
         ])
-        && validBoundaryUpdate(ownerUid, businessId, "logisticsRouteSales", recordId);
+        && _F12(ownerUid, businessId, "logisticsRouteSales", recordId);
       allow delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsCollections/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "collections.read")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "logistics", "collections.read")
+        || _F8(ownerUid, businessId, resource.data.routeId, "collectorId");
       // Collections are append-only (matches the domain's idempotency-key
       // contract in recordCollection -- a real duplicate submit is a
       // no-op resolved client-side against the SAME key, never a second
       // write) -- no update/delete path at all.
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "collections.write")
-        && logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "collectorId")
-        && validBoundaryCreate(ownerUid, businessId, "logisticsCollections", recordId)
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "collections.write")
+        && _F8(ownerUid, businessId, request.resource.data.routeId, "collectorId")
+        && _F5(ownerUid, businessId, "logisticsCollections", recordId)
         && request.resource.data.actorUid == request.auth.uid;
       allow update, delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsReturns/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "returns.read")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "helperId");
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "logistics", "returns.read")
+        || _F8(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || _F8(ownerUid, businessId, resource.data.routeId, "helperId");
       // "delivery" scope: the assigned SELLER or the assigned HELPER
       // (repartidor) may record a return on their own route -- the exact
       // real backend enforcement for the repartidor semantics the client
       // domain layer also implements (assertRouteAccess(route, actor,
       // 'delivery')).
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "returns.write")
-        && (logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "sellerId")
-          || logisticsAssignedTo(ownerUid, businessId, request.resource.data.routeId, "helperId"))
-        && validBoundaryCreate(ownerUid, businessId, "logisticsReturns", recordId)
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "returns.write")
+        && (_F8(ownerUid, businessId, request.resource.data.routeId, "sellerId")
+          || _F8(ownerUid, businessId, request.resource.data.routeId, "helperId"))
+        && _F5(ownerUid, businessId, "logisticsReturns", recordId)
         && request.resource.data.actorUid == request.auth.uid;
       allow update, delete: if false;
     }
 
     match /businesses/{ownerUid}/businessUnits/{businessId}/logisticsSettlements/{recordId} {
-      allow read: if sparkLegacyReadable(ownerUid) && businessUnitPermission(ownerUid, businessId, "logistics", "settlements.read")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "sellerId")
-        || logisticsAssignedTo(ownerUid, businessId, resource.data.routeId, "collectorId");
-      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && businessUnitPermission(ownerUid, businessId, "logistics", "settlements.write")
-        && validBoundaryCreate(ownerUid, businessId, "logisticsSettlements", recordId);
-      allow update: if validBoundaryUpdate(ownerUid, businessId, "logisticsSettlements", recordId)
+      allow read: if _F9(ownerUid) && _F0(ownerUid, businessId, "logistics", "settlements.read")
+        || _F8(ownerUid, businessId, resource.data.routeId, "sellerId")
+        || _F8(ownerUid, businessId, resource.data.routeId, "collectorId");
+      allow create: if request.resource.data.get("boundarySchemaVersion", 0) == 1 && _F0(ownerUid, businessId, "logistics", "settlements.write")
+        && _F5(ownerUid, businessId, "logisticsSettlements", recordId);
+      allow update: if _F12(ownerUid, businessId, "logisticsSettlements", recordId)
         && (
           // Reopening an approved/closed settlement is Owner-only,
           // unconditionally -- NOT gated by businessUnitPermission at all,
@@ -1327,16 +1327,16 @@ service cloud.firestore {
           // isRoutePrivileged(actor) check in reopenSettlement().
           (resource.data.status in ["approved", "closed"]
             && request.resource.data.status == "reopened"
-            && businessUnitOwner(ownerUid, businessId))
+            && _F18(ownerUid, businessId))
           || (request.resource.data.status != "reopened"
-            && businessUnitPermission(ownerUid, businessId, "logistics", "settlements.approve"))
+            && _F0(ownerUid, businessId, "logistics", "settlements.approve"))
         );
       allow delete: if false;
     }
 
     match /activationRequests/{requestId} {
-      allow read: if signedIn() && resource.data.uid == request.auth.uid;
-      allow create: if signedIn()
+      allow read: if _F4() && resource.data.uid == request.auth.uid;
+      allow create: if _F4()
         && request.resource.data.keys().hasAll([
           "requestId", "uid", "businessId", "tenantKey", "email", "businessName", "plan",
           "period", "price", "currency", "requestCode", "status", "notes", "createdAt", "appVersion"
@@ -1368,8 +1368,8 @@ service cloud.firestore {
       // r37: CEO Admin must be able to see a customer's real legal status
       // (vigente/pendiente/grace/requiere aceptación) without ever
       // hand-editing Firestore -- isPlatformAdmin() added for that read.
-      allow read: if (signedIn() && resource.data.uid == request.auth.uid) || isPlatformAdmin();
-      allow create: if signedIn()
+      allow read: if (_F4() && resource.data.uid == request.auth.uid) || _F3();
+      allow create: if _F4()
         && request.resource.data.keys().hasAll([
           "acceptanceId", "uid", "businessId", "tenantKey", "termsVersion", "privacyVersion",
           "locale", "source", "acceptedAt", "appVersion"
@@ -1399,13 +1399,13 @@ service cloud.firestore {
     // real legal status (vigente/grace/requiere aceptación) without ever
     // needing to hand-edit Firestore.
     match /legalGraceStatus/{uid} {
-      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
-      allow create: if signedIn() && request.auth.uid == uid
+      allow read: if (_F4() && request.auth.uid == uid) || _F3();
+      allow create: if _F4() && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(["uid", "termsPresentedAt", "presentedTermsVersion", "presentedPrivacyVersion", "lastShownAt", "updatedAt"])
         && request.resource.data.uid == uid
         && request.resource.data.termsPresentedAt == request.time
         && request.resource.data.updatedAt == request.time;
-      allow update: if signedIn() && request.auth.uid == uid
+      allow update: if _F4() && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(["uid", "termsPresentedAt", "presentedTermsVersion", "presentedPrivacyVersion", "lastShownAt", "updatedAt"])
         && request.resource.data.uid == uid
         // termsPresentedAt is write-once: only the very first presentation
@@ -1423,8 +1423,8 @@ service cloud.firestore {
     // hand-editing Firestore. Field-allowlisted and size-bounded so this can
     // never become an arbitrary-data write path.
     match /customerHealth/{uid} {
-      allow read: if (signedIn() && request.auth.uid == uid) || isPlatformAdmin();
-      allow create, update: if signedIn() && request.auth.uid == uid
+      allow read: if (_F4() && request.auth.uid == uid) || _F3();
+      allow create, update: if _F4() && request.auth.uid == uid
         && request.resource.data.keys().hasOnly([
           "appVersion", "buildSha", "assetVersion", "isOnline", "tenantDataHydrated",
           "pendingOperations", "syncStatus", "syncReason", "localHash", "remoteHash",
@@ -1444,8 +1444,8 @@ service cloud.firestore {
     // the worker's completed profile before they start operating --
     // without touching the already-audited acceptance transaction/rules.
     match /workerAccessRequests/{requestId} {
-      allow read: if signedIn() && (resource.data.uid == request.auth.uid || resource.data.ownerId == request.auth.uid || isPlatformAdmin());
-      allow create: if signedIn() && request.auth.uid == request.resource.data.uid
+      allow read: if _F4() && (resource.data.uid == request.auth.uid || resource.data.ownerId == request.auth.uid || _F3());
+      allow create: if _F4() && request.auth.uid == request.resource.data.uid
         && requestId == request.resource.data.ownerId + '_' + request.resource.data.uid
         && request.resource.data.keys().hasOnly(["requestId", "ownerId", "uid", "email", "name", "phone", "businessUnitId", "status", "requestedAt", "decidedAt", "decidedBy"])
         && request.resource.data.requestId == requestId
@@ -1453,7 +1453,7 @@ service cloud.firestore {
         && request.resource.data.requestedAt == request.time
         && request.resource.data.decidedAt == null
         && request.resource.data.decidedBy == "";
-      allow update: if signedIn() && request.auth.uid == resource.data.ownerId
+      allow update: if _F4() && request.auth.uid == resource.data.ownerId
         && request.resource.data.keys().hasOnly(["requestId", "ownerId", "uid", "email", "name", "phone", "businessUnitId", "status", "requestedAt", "decidedAt", "decidedBy"])
         && request.resource.data.requestId == resource.data.requestId
         && request.resource.data.ownerId == resource.data.ownerId
@@ -1478,7 +1478,7 @@ service cloud.firestore {
         && data.tenantKey == "owner:" + data.ownerId + ":business:" + data.businessId
         && (
           (data.ownerId == data.businessId && (data.businessId == request.auth.uid || hasActiveMembership(data.businessId)))
-          || (data.ownerId != data.businessId && (businessUnitOwner(data.ownerId, data.businessId) || activeBusinessUnitMember(data.ownerId, data.businessId)))
+          || (data.ownerId != data.businessId && (_F18(data.ownerId, data.businessId) || _F14(data.ownerId, data.businessId)))
         );
     }
 
@@ -1496,7 +1496,7 @@ service cloud.firestore {
     }
 
     match /telemetryEvents/{eventId} {
-      allow create: if signedIn()
+      allow create: if _F4()
         && request.resource.data.keys().hasAll([
           "eventId", "eventType", "uidHash", "ownerId", "businessId", "tenantKey", "appVersion",
           "requestId", "mode", "errorCode", "deviceIdHash", "createdAt"
@@ -1535,7 +1535,7 @@ service cloud.firestore {
         && ownerReadUser()
         && request.auth.uid == businessId;
       allow create: if businessId != "demo-click360"
-        && signedIn()
+        && _F4()
         && (request.auth.uid == businessId || hasActiveMembership(businessId))
         && request.resource.data.keys().hasAll([
           "eventId", "businessId", "tenantKey", "actorUid", "actorRole", "actorName",
@@ -1585,16 +1585,16 @@ service cloud.firestore {
     // mirroring the backup-before-write / audit-after-write pattern every
     // CLI admin script already follows.
     match /adminBackups/{backupId} {
-      allow read: if isPlatformAdmin();
-      allow create: if isPlatformAdmin()
+      allow read: if _F3();
+      allow create: if _F3()
         && request.resource.data.actorEmail is string
         && request.resource.data.createdAt == request.time;
       allow update, delete: if false;
     }
 
     match /adminAuditLogs/{eventId} {
-      allow read: if isPlatformAdmin();
-      allow create: if isPlatformAdmin()
+      allow read: if _F3();
+      allow create: if _F3()
         && request.resource.data.actorEmail is string
         && request.resource.data.createdAt == request.time;
       allow update, delete: if false;
@@ -1604,20 +1604,20 @@ service cloud.firestore {
     // backups are created by the administrative migrator with Admin SDK.
     match /businesses/{businessId}/state/{stateId} {
       allow read: if stateId == "main" && tenantReadable(businessId);
-      allow read: if stateId == "main" && isPlatformAdmin();
+      allow read: if stateId == "main" && _F3();
       allow create: if stateId == "main" && request.auth.uid == businessId && ownerUser() && writeMatchesTenant(businessId)
-        && sparkLegacyWritable(businessId);
+        && _F13(businessId);
       allow update: if stateId == "main"
         && ownerUser()
         && request.auth.uid == businessId
         && writeMatchesTenant(businessId)
-        && sparkLegacyWritable(businessId);
+        && _F13(businessId);
       allow delete: if false;
     }
 
     match /storageRollout/{policyId} {
-      allow read: if policyId == "sparkV1" && signedIn();
-      allow create, update: if policyId == "sparkV1" && isPlatformAdmin()
+      allow read: if policyId == "sparkV1" && _F4();
+      allow create, update: if policyId == "sparkV1" && _F3()
         && !request.resource.data.keys().hasAny(["runtimePreparationApprovals", "cutoverApprovals"]);
       allow delete: if false;
     }
@@ -1625,11 +1625,11 @@ service cloud.firestore {
     // Approval payloads include business identities and financial summaries.
     // They must NEVER live in the globally readable rollout flag document.
     match /businesses/{ownerUid}/storageApprovals/{approvalId} {
-      allow read: if approvalId in ["runtimePreparation", "cutover"] && signedIn()
-        && (request.auth.uid == ownerUid || isPlatformAdmin());
+      allow read: if approvalId in ["runtimePreparation", "cutover"] && _F4()
+        && (request.auth.uid == ownerUid || _F3());
       allow create, update: if approvalId in ["runtimePreparation", "cutover"]
-        && isPlatformAdmin() && request.resource.data.ownerUid == ownerUid;
-      allow delete: if approvalId in ["runtimePreparation", "cutover"] && isPlatformAdmin();
+        && _F3() && request.resource.data.ownerUid == ownerUid;
+      allow delete: if approvalId in ["runtimePreparation", "cutover"] && _F3();
     }
 
     // P0D policy is private and IAM/admin-managed only. A preflight receipt is
@@ -1648,27 +1648,33 @@ service cloud.firestore {
         && businessId in p0dPolicy(ownerUid).businessIds;
     }
     match /businesses/{ownerUid}/recoveryPreflights/{reportId} {
+      // Bind each immutable document once. Repeating the full expressions
+      // exceeds Firebase's compiled Rules executable limit, despite passing
+      // emulator evaluation. Predicates and effective permissions stay equal.
+      function p0dReceipt(_o, _r) {
+        let d = request.resource.data;
+        let p = p0dPolicy(_o);
+        let c = get(/databases/$(database)/documents/businesses/$(_o)/recoveryCopies/$(d.captureHash)).data;
+        let b = get(/databases/$(database)/documents/businesses/$(_o)/recoveryCopies/$(d.baselineCaptureHash)).data;
+        return p.get("enabled", false) == true
+          && d.ownerUid == _o && d.reportId == _r
+          && _r.matches("^[a-f0-9]{64}$") && d.schemaVersion == 1
+          && d.buildSha == p.buildSha
+          && d.baselineCaptureHash == p.baselineCaptureHash
+          && d.baselineSourceHash == p.baselineSourceHash
+          && d.deviceIdHash == p.deviceIdHash
+          && d.createdAt == request.time
+          && d.replayAllowed == false && d.cutover == false
+          && d.status in ["CLIENT_PREFLIGHT_READY", "CLIENT_PREFLIGHT_BLOCKED"]
+          && d.keys().hasAll(["ownerUid", "reportId", "schemaVersion", "buildSha", "policyHash", "baselineCaptureHash", "baselineSourceHash", "captureHash", "sourceHash", "journalHash", "deviceIdHash", "status", "reason", "operationCount", "unknownCount", "conflictCount", "pendingCount", "confirmedCount", "replayAllowed", "cutover", "createdAt"])
+          && d.keys().hasOnly(["ownerUid", "reportId", "schemaVersion", "buildSha", "policyHash", "baselineCaptureHash", "baselineSourceHash", "captureHash", "sourceHash", "journalHash", "deviceIdHash", "status", "reason", "operationCount", "unknownCount", "conflictCount", "pendingCount", "confirmedCount", "replayAllowed", "cutover", "createdAt", "reconstructedHash", "planHash", "differenceHash", "changedRecords", "businessCount", "recordCount", "verifiedSessions", "protectedHistoryRecords"])
+          && c.state == "CLIENT_VERIFIED" && b.state == "CLIENT_VERIFIED"
+          && d.baselineSourceHash == b.sourceHash
+          && d.buildSha == c.buildSha && c.deviceId == b.deviceId
+          && d.sourceHash == c.sourceHash && d.journalHash == c.journalHash;
+      }
       allow read: if sparkOwnerRead(ownerUid);
-      allow create: if sparkRecoveryCopyWriter(ownerUid)
-        && p0dPolicy(ownerUid).get("enabled", false) == true
-        && request.resource.data.ownerUid == ownerUid && request.resource.data.reportId == reportId
-        && reportId.matches("^[a-f0-9]{64}$") && request.resource.data.schemaVersion == 1
-        && request.resource.data.buildSha == p0dPolicy(ownerUid).buildSha
-        && request.resource.data.baselineCaptureHash == p0dPolicy(ownerUid).baselineCaptureHash
-        && request.resource.data.baselineSourceHash == p0dPolicy(ownerUid).baselineSourceHash
-        && request.resource.data.deviceIdHash == p0dPolicy(ownerUid).deviceIdHash
-        && request.resource.data.createdAt == request.time
-        && request.resource.data.replayAllowed == false && request.resource.data.cutover == false
-        && request.resource.data.status in ["CLIENT_PREFLIGHT_READY", "CLIENT_PREFLIGHT_BLOCKED"]
-        && request.resource.data.keys().hasAll(["ownerUid", "reportId", "schemaVersion", "buildSha", "policyHash", "baselineCaptureHash", "baselineSourceHash", "captureHash", "sourceHash", "journalHash", "deviceIdHash", "status", "reason", "operationCount", "unknownCount", "conflictCount", "pendingCount", "confirmedCount", "replayAllowed", "cutover", "createdAt"])
-        && request.resource.data.keys().hasOnly(["ownerUid", "reportId", "schemaVersion", "buildSha", "policyHash", "baselineCaptureHash", "baselineSourceHash", "captureHash", "sourceHash", "journalHash", "deviceIdHash", "status", "reason", "operationCount", "unknownCount", "conflictCount", "pendingCount", "confirmedCount", "replayAllowed", "cutover", "createdAt", "reconstructedHash", "planHash", "differenceHash", "changedRecords", "businessCount", "recordCount", "verifiedSessions", "protectedHistoryRecords"])
-        && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.state == "CLIENT_VERIFIED"
-        && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.baselineCaptureHash)).data.state == "CLIENT_VERIFIED"
-        && request.resource.data.baselineSourceHash == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.baselineCaptureHash)).data.sourceHash
-        && request.resource.data.buildSha == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.buildSha
-        && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.deviceId == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.baselineCaptureHash)).data.deviceId
-        && request.resource.data.sourceHash == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.sourceHash
-        && request.resource.data.journalHash == get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(request.resource.data.captureHash)).data.journalHash;
+      allow create: if sparkRecoveryCopyWriter(ownerUid) && p0dReceipt(ownerUid, reportId);
       allow update, delete: if false;
     }
 
@@ -1720,7 +1726,7 @@ service cloud.firestore {
     }
 
     match /businesses/{ownerUid}/metadata/{metadataId} {
-      allow read: if metadataId == "storage" && (sparkOwnerRead(ownerUid) || isPlatformAdmin());
+      allow read: if metadataId == "storage" && (sparkOwnerRead(ownerUid) || _F3());
       allow create: if metadataId == "storage" && sparkOwner(ownerUid)
         && sparkRolloutAllowed(ownerUid) && sparkValidControl(ownerUid)
         && request.resource.data.phase == "MIGRATION_PREPARING"
@@ -1749,9 +1755,9 @@ service cloud.firestore {
     }
 
     match /businesses/{ownerUid}/legacyConfig/{recordId} {
-      allow read: if sparkOwnerRead(ownerUid) || isPlatformAdmin();
+      allow read: if sparkOwnerRead(ownerUid) || _F3();
       allow create: if sparkOwner(ownerUid)
-        && get(sparkControlPath(ownerUid)).data.phase == "SHADOW_WRITING"
+        && get(_F6(ownerUid)).data.phase == "SHADOW_WRITING"
         && sparkValidShadow(ownerUid, null, "configEntries", recordId);
       allow update, delete: if false;
     }
@@ -1760,16 +1766,16 @@ service cloud.firestore {
     // small; predicate bodies and effective document paths are unchanged.
     match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2 {
     function sparkShadowOwner(_o, _b) {
-      let control = get(sparkControlPath(_o)).data;
+      let control = get(_F6(_o)).data;
       return control.storageMode == "migrating" && control.phase == "SHADOW_WRITING"
         && _b in control.businessIds && sparkOwner(_o);
     }
 
     function sparkModuleReadable(_o, _b, _m, _r) {
-      let control = get(sparkControlPath(_o)).data;
-      return signedIn() && control.storageMode in ["migrating", "modular", "frozen"]
+      let control = get(_F6(_o)).data;
+      return _F4() && control.storageMode in ["migrating", "modular", "frozen"]
         && _b in control.businessIds
-        && (request.auth.uid == _o ? sparkOwnerReadableAccess(_o) : (isPlatformAdmin()
+        && (request.auth.uid == _o ? sparkOwnerReadableAccess(_o) : (_F3()
           || (control.storageMode == "modular"
             && sparkWorkerRecordRead(_o, _b, _m, _r))));
     }
@@ -1804,12 +1810,12 @@ service cloud.firestore {
     }
 
     function sparkWorkerPermission(_o, _b, _m, action) {
-      let member = businessUnitMemberData(_o, _b);
-      return signedIn() && request.auth.uid != _o && workersFeatureFlagEnabled(_o)
+      let member = _F19(_o, _b);
+      return _F4() && request.auth.uid != _o && workersFeatureFlagEnabled(_o)
         && exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/members/$(request.auth.uid))
-        && validBusinessUnitIdentity(member, _o, _b)
+        && _F11(member, _o, _b)
         && member.uid == request.auth.uid && member.status == "active"
-        && supportedMemberRole(member.role) && member.permissions is map
+        && _F16(member.role) && member.permissions is map
         && member.permissions.get(_m, {}).get(action, false) == true
         // Owner authorization already checks the account. Keep its fast path
         // unchanged; staff writes must inherit the same writable contract.
@@ -1822,17 +1828,17 @@ service cloud.firestore {
     }
 
     function sparkOperational(_o, _b) {
-      let c = get(sparkControlPath(_o)).data;
+      let c = get(_F6(_o)).data;
       return c.storageMode == "modular" && c.phase == "MODULAR" && c.schemaVersion == 2
         && c.semanticEquality == "PASS" && c.reconstructedHash == c.sourceHash
         && _b in c.businessIds;
     }
 
-    function sparkAfter(_o, _b, _m, _r) {
+    function _F17(_o, _b, _m, _r) {
       return getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/$(_m)/$(_r)).data;
     }
 
-    function sparkLedger(_o, _b, _p) {
+    function _F15(_o, _b, _p) {
       return getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(_p)).data.data;
     }
 
@@ -1857,7 +1863,7 @@ service cloud.firestore {
         ;
     }
 
-    function sparkOperationalCreate(_o, _b, _m, _r) {
+    function _F7(_o, _b, _m, _r) {
       // The new immutable ledger certifies mode and permissions once for the
       // entire atomic commit. Related records cannot exist without that ledger.
       return sparkValidOperationalRecord(_o, _b, _m, _r)
@@ -1866,7 +1872,7 @@ service cloud.firestore {
         && !request.resource.data.keys().hasAny(["sourceHash", "sourcePath"]);
     }
 
-    function sparkOperationalUpdate(_o, _b, _m, _r) {
+    function _F10(_o, _b, _m, _r) {
       let d = request.resource.data;
       let r = resource.data;
       let previousVersion = r.get("recordVersion", 1);
@@ -1894,7 +1900,7 @@ service cloud.firestore {
             (kind in ["product_edit", "inventory_adjust", "cash_reopen", "customer_edit", "layaway_status"] ? "update" : "close"))))));
     }
 
-    function sparkBoundOperation(_o, _b) {
+    function _F2(_o, _b) {
       let op = request.resource.data.lastOperationId;
       // Permission is certified once by the immutable ledger CREATE rule.
       // Every related record binds to that NEW ledger in this atomic write;
@@ -1946,7 +1952,7 @@ service cloud.firestore {
 
     function sparkManualCorrectionLedger(_o, _b, op, r) {
       let old = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(r.originalMovementId)).data;
-      let next = sparkAfter(_o, _b, "movements", r.originalMovementId);
+      let next = _F17(_o, _b, "movements", r.originalMovementId);
       return request.auth.uid == _o
         && r.keys().hasOnly(["movementId", "originalMovementId", "replacementMovementId", "cashSessionId"])
         && r.movementId == op + "-rev" && r.replacementMovementId in ["", op + "-new"]
@@ -1954,16 +1960,16 @@ service cloud.firestore {
         && next.lastOperationId == op && next.recordVersion == old.get("recordVersion", 1) + 1
         && next.data.compensatedByOperationId == op && next.data.reversalMovementId == r.movementId
         && next.data.replacementMovementId == r.replacementMovementId
-        && sparkAfter(_o, _b, "movements", r.movementId).lastOperationId == op
-        && (r.replacementMovementId == "" || sparkAfter(_o, _b, "movements", r.replacementMovementId).lastOperationId == op)
-        && sparkAfter(_o, _b, "cashSessions", r.cashSessionId).lastOperationId == op;
+        && _F17(_o, _b, "movements", r.movementId).lastOperationId == op
+        && (r.replacementMovementId == "" || _F17(_o, _b, "movements", r.replacementMovementId).lastOperationId == op)
+        && _F17(_o, _b, "cashSessions", r.cashSessionId).lastOperationId == op;
     }
 
     function sparkManualOriginalUpdate(_o, _b, _r) {
       let old = resource.data.data;
       let d = request.resource.data.data;
       let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(_o, _b, op);
+      let ledger = _F15(_o, _b, op);
       let origin = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(old.operationId)).data.data;
       return request.auth.uid == _o && ledger.kind == "manual_movement_correct"
         && ledger.result.originalMovementId == _r && sparkManualOriginal(old)
@@ -1977,7 +1983,7 @@ service cloud.firestore {
     function sparkManualCorrectionMovement(_o, _b, _r, ledger) {
       let d = request.resource.data.data;
       let op = request.resource.data.lastOperationId;
-      let old = sparkAfter(_o, _b, "movements", ledger.result.originalMovementId).data;
+      let old = _F17(_o, _b, "movements", ledger.result.originalMovementId).data;
       return request.auth.uid == _o && d.operationId == op && d.id == _r && d.businessId == _b
         && d.cashSessionId == ledger.result.cashSessionId && d.cashSessionId == old.cashSessionId && d.date == old.date
         && d.note is string && d.amount is number && d.amount >= 0
@@ -1991,10 +1997,10 @@ service cloud.firestore {
     }
 
     function sparkManualCorrectionTotals(_o, _b, op, _n) {
-      let r = sparkLedger(_o, _b, op).result;
+      let r = _F15(_o, _b, op).result;
       let old = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(r.originalMovementId)).data.data;
       let replacement = r.replacementMovementId == "" ? {"kind": "ingreso", "amount": 0}
-        : sparkAfter(_o, _b, "movements", r.replacementMovementId).data;
+        : _F17(_o, _b, "movements", r.replacementMovementId).data;
       let before = resource.data.operational;
       let oldIncome = old.kind == "ingreso" ? old.amount : 0;
       let oldExpense = old.kind == "ingreso" ? 0 : old.amount;
@@ -2004,9 +2010,9 @@ service cloud.firestore {
         && old.date == request.resource.data.data.date
         && get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == r.cashSessionId
         && _n.incomeCash >= 0 && _n.expenseCash >= 0
-        && sparkMoneyEqual(_n.incomeCash, before.incomeCash - oldIncome + newIncome)
-        && sparkMoneyEqual(_n.expenseCash, before.expenseCash - oldExpense + newExpense)
-        && sparkMoneyEqual(_n.cashBalance, before.cashBalance - oldIncome + oldExpense + newIncome - newExpense);
+        && _F1(_n.incomeCash, before.incomeCash - oldIncome + newIncome)
+        && _F1(_n.expenseCash, before.expenseCash - oldExpense + newExpense)
+        && _F1(_n.cashBalance, before.cashBalance - oldIncome + oldExpense + newIncome - newExpense);
     }
 
     function sparkCashOpeningOrigin(_o, _b, op, _z) {
@@ -2037,15 +2043,15 @@ service cloud.firestore {
     }
 
     function sparkPaymentLedgerLinks(_o, _b, op, _z) {
-      let sale = sparkAfter(_o, _b, "sales", _z.saleId);
-      let movement = sparkAfter(_o, _b, "movements", op);
-      let session = sparkAfter(_o, _b, "cashSessions", _z.cashSessionId);
+      let sale = _F17(_o, _b, "sales", _z.saleId);
+      let movement = _F17(_o, _b, "movements", op);
+      let session = _F17(_o, _b, "cashSessions", _z.cashSessionId);
       return _z.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
         && _z.movementId == op && movement.lastOperationId == op && sale.lastOperationId == op && session.lastOperationId == op
         && !exists(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op))
         && movement.data.saleId == _z.saleId && movement.data.cashSessionId == _z.cashSessionId
-        && (sale.data.method == "Apartado" ? (sparkLayawayLink(sale, sparkAfter(_o, _b, "layaways", _z.layawayId), _z.layawayId)
-          && sparkAfter(_o, _b, "layaways", _z.layawayId).lastOperationId == op) : !_z.keys().hasAny(["layawayId"]));
+        && (sale.data.method == "Apartado" ? (sparkLayawayLink(sale, _F17(_o, _b, "layaways", _z.layawayId), _z.layawayId)
+          && _F17(_o, _b, "layaways", _z.layawayId).lastOperationId == op) : !_z.keys().hasAny(["layawayId"]));
     }
 
     function sparkPaymentSaleMutation(_o, _b, _r) {
@@ -2058,14 +2064,14 @@ service cloud.firestore {
       let d = request.resource.data.data;
       let old = resource.data.data;
       let op = request.resource.data.lastOperationId;
-      let movement = sparkAfter(_o, _b, "movements", op).data;
+      let movement = _F17(_o, _b, "movements", op).data;
       let before = old.get("payments", []);
-      return sparkLedger(_o, _b, op).kind == "receivable_payment"
+      return _F15(_o, _b, op).kind == "receivable_payment"
         && old.status in ["layaway", "pending_payment"] && old.balance > 0
-        && sparkMoneyEqual(old.received + old.balance, old.total)
+        && _F1(old.received + old.balance, old.total)
         && d.diff(old).affectedKeys().hasOnly(["received", "balance", "payments", "status", "receiptSummary"])
         && movement.saleId == _r && movement.paymentType == "receivable_payment" && movement.amount > 0 && movement.amount <= old.balance
-        && sparkMoneyEqual(d.received, old.received + movement.amount) && sparkMoneyEqual(d.balance, old.balance - movement.amount)
+        && _F1(d.received, old.received + movement.amount) && _F1(d.balance, old.balance - movement.amount)
         && d.status == (d.balance == 0 ? "paid" : old.status)
         && d.payments is list && d.payments.size() == before.size() + 1
         && d.payments[d.payments.size() - 1] == movement.payment
@@ -2080,42 +2086,42 @@ service cloud.firestore {
           && next.receiptSummary.keys().hasOnly(["version", "cashSessionId", "uniformSession", "cash", "card", "transfer", "receivablePayments"])
           && next.receiptSummary.version == 1 && next.receiptSummary.cashSessionId == before.cashSessionId
           && next.receiptSummary.uniformSession == (before.uniformSession && before.cashSessionId == _v.cashSessionId)
-          && sparkMoneyEqual(next.receiptSummary.cash, before.cash + (_v.paymentMethod == "Efectivo" ? _v.amount : 0))
-          && sparkMoneyEqual(next.receiptSummary.card, before.card + (_v.paymentMethod == "Tarjeta" ? _v.amount : 0))
-          && sparkMoneyEqual(next.receiptSummary.transfer, before.transfer + (_v.paymentMethod == "Transferencia" ? _v.amount : 0))
-          && sparkMoneyEqual(next.receiptSummary.receivablePayments, before.receivablePayments + _v.amount);
+          && _F1(next.receiptSummary.cash, before.cash + (_v.paymentMethod == "Efectivo" ? _v.amount : 0))
+          && _F1(next.receiptSummary.card, before.card + (_v.paymentMethod == "Tarjeta" ? _v.amount : 0))
+          && _F1(next.receiptSummary.transfer, before.transfer + (_v.paymentMethod == "Transferencia" ? _v.amount : 0))
+          && _F1(next.receiptSummary.receivablePayments, before.receivablePayments + _v.amount);
     }
 
     function sparkCancellationLedger(_o, _b, op, _z) {
-      let sale = sparkAfter(_o, _b, "sales", _z.saleId);
+      let sale = _F17(_o, _b, "sales", _z.saleId);
       return request.auth.uid == _o && _z.keys().hasOnly(["saleId", "movementId", "cashSessionId", "layawayId"])
         && _z.movementId == op + "-rev" && sale.lastOperationId == op && sale.data.cancelOperationId == op
         && _z.cashSessionId == sale.data.cashSessionId
-        && sparkAfter(_o, _b, "movements", _z.movementId).lastOperationId == op
-        && sparkAfter(_o, _b, "cashSessions", _z.cashSessionId).lastOperationId == op
+        && _F17(_o, _b, "movements", _z.movementId).lastOperationId == op
+        && _F17(_o, _b, "cashSessions", _z.cashSessionId).lastOperationId == op
         && (sale.data.method == "Apartado" ? _z.layawayId == sale.data.layawayId
-          && sparkAfter(_o, _b, "layaways", _z.layawayId).lastOperationId == op : !_z.keys().hasAny(["layawayId"]));
+          && _F17(_o, _b, "layaways", _z.layawayId).lastOperationId == op : !_z.keys().hasAny(["layawayId"]));
     }
 
     function sparkCancellationSale(_o, _b, _r) {
       let old = resource.data.data;
       let d = request.resource.data.data;
       let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(_o, _b, op);
+      let ledger = _F15(_o, _b, op);
       let origin = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/operationLedger/$(old.operationId)).data.data;
       let receipts = old.receiptSummary;
       return request.auth.uid == _o && ledger.kind == "sale_cancel" && ledger.result.saleId == _r
         && old.status in ["paid", "layaway", "pending_payment"] && !old.keys().hasAny(["cancelOperationId"])
         && origin.kind == "sale" && origin.status == "committed" && origin.result.saleId == _r
         && receipts.version == 1 && receipts.uniformSession == true && receipts.cashSessionId == old.cashSessionId
-        && sparkMoneyEqual(receipts.cash + receipts.card + receipts.transfer, old.received)
+        && _F1(receipts.cash + receipts.card + receipts.transfer, old.received)
         && d.diff(old).affectedKeys().hasOnly(["status", "cancelOperationId", "cancelReason"])
         && d.status == "cancelled" && d.cancelOperationId == op && d.cancelReason is string && d.cancelReason.size() > 0
         && (old.stockOrder.size() == 0 ? true : sparkStockHead(_o, _b, op, old.stockOrder));
     }
 
     function sparkCancellationProduct(_o, _b, _r, op) {
-      let ledger = sparkLedger(_o, _b, op);
+      let ledger = _F15(_o, _b, op);
       let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(ledger.result.saleId)).data.data;
       let d = request.resource.data.data;
       return sparkStockChain(_o, _b, _r, op, sale.stockOrder)
@@ -2125,7 +2131,7 @@ service cloud.firestore {
     }
 
     function sparkCancellationSession(_o, _b, op, _n) {
-      let ledger = sparkLedger(_o, _b, op);
+      let ledger = _F15(_o, _b, op);
       let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(ledger.result.saleId)).data.data;
       let before = resource.data.operational;
       let r = sale.receiptSummary;
@@ -2133,15 +2139,15 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.data.openCashSessionId == sale.cashSessionId
         && _n.diff(before).affectedKeys().hasOnly(["saleCount", "salesTotal", "itemCount", "taxTotal", "cashBalance", "paymentTotals"])
         && _n.saleCount == before.saleCount - 1 && _n.itemCount == before.itemCount - sale.itemCount
-        && sparkMoneyEqual(_n.salesTotal, before.salesTotal - sale.total)
-        && sparkMoneyEqual(_n.taxTotal, before.taxTotal - sale.iva)
-        && sparkMoneyEqual(_n.cashBalance, before.cashBalance - r.cash)
+        && _F1(_n.salesTotal, before.salesTotal - sale.total)
+        && _F1(_n.taxTotal, before.taxTotal - sale.iva)
+        && _F1(_n.cashBalance, before.cashBalance - r.cash)
         && _n.paymentTotals.keys().hasAll(["cash", "card", "transfer", "receivablePayments"])
         && _n.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
-        && sparkMoneyEqual(_n.paymentTotals.cash, before.paymentTotals.cash - r.cash)
-        && sparkMoneyEqual(_n.paymentTotals.card, before.paymentTotals.card - r.card)
-        && sparkMoneyEqual(_n.paymentTotals.transfer, before.paymentTotals.transfer - r.transfer)
-        && sparkMoneyEqual(_n.paymentTotals.receivablePayments, before.paymentTotals.receivablePayments - r.receivablePayments)
+        && _F1(_n.paymentTotals.cash, before.paymentTotals.cash - r.cash)
+        && _F1(_n.paymentTotals.card, before.paymentTotals.card - r.card)
+        && _F1(_n.paymentTotals.transfer, before.paymentTotals.transfer - r.transfer)
+        && _F1(_n.paymentTotals.receivablePayments, before.paymentTotals.receivablePayments - r.receivablePayments)
         && _n.itemCount >= 0 && _n.taxTotal >= 0
         && _n.paymentTotals.cash >= 0 && _n.paymentTotals.card >= 0 && _n.paymentTotals.transfer >= 0 && _n.paymentTotals.receivablePayments >= 0;
     }
@@ -2158,8 +2164,8 @@ service cloud.firestore {
 
     function sparkCancellationLayaway(_o, _b, _r) {
       let d = request.resource.data.data;
-      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
-      let sale = sparkAfter(_o, _b, "sales", ledger.result.saleId).data;
+      let ledger = _F15(_o, _b, request.resource.data.lastOperationId);
+      let sale = _F17(_o, _b, "sales", ledger.result.saleId).data;
       return ledger.kind == "sale_cancel" && ledger.result.layawayId == _r
         && resource.data.data.status != "picked_up" && resource.data.data.get("pickedUpAt", "") == ""
         && d.saleId == ledger.result.saleId && sale.status == "cancelled" && sale.layawayId == _r
@@ -2177,7 +2183,7 @@ service cloud.firestore {
     }
 
     function sparkPaymentMovementProof(_o, _b, op, _v) {
-      let session = sparkAfter(_o, _b, "cashSessions", _v.cashSessionId);
+      let session = _F17(_o, _b, "cashSessions", _v.cashSessionId);
       return _v.keys().hasOnly(["id", "businessId", "operationId", "saleId", "cashSessionId", "date", "kind", "amount", "paymentMethod", "paymentType", "payment"])
         && _v.kind == "ingreso" && _v.amount > 0 && _v.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia"]
         && _v.paymentType == "receivable_payment" && session.lastOperationId == op && session.data.status == "open" && session.data.date == _v.date
@@ -2197,22 +2203,22 @@ service cloud.firestore {
     }
 
     function sparkPaymentSessionDelta(_o, _b, op, _n) {
-      let movement = sparkAfter(_o, _b, "movements", op).data;
+      let movement = _F17(_o, _b, "movements", op).data;
       let old = resource.data.operational;
       let p = _n.paymentTotals;
       return movement.cashSessionId == request.resource.data.id && movement.date == resource.data.data.date
         && p.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
-        && sparkMoneyEqual(_n.cashBalance, old.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
-        && sparkMoneyEqual(p.cash, old.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
-        && sparkMoneyEqual(p.card, old.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
-        && sparkMoneyEqual(p.transfer, old.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
-        && sparkMoneyEqual(p.receivablePayments, old.paymentTotals.receivablePayments + movement.amount);
+        && _F1(_n.cashBalance, old.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && _F1(p.cash, old.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && _F1(p.card, old.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
+        && _F1(p.transfer, old.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
+        && _F1(p.receivablePayments, old.paymentTotals.receivablePayments + movement.amount);
     }
 
     function sparkLayawayStatusMutation(_o, _b, _r) {
       let old = resource.data.data;
       let d = request.resource.data.data;
-      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let ledger = _F15(_o, _b, request.resource.data.lastOperationId);
       let sale = get(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(old.saleId)).data;
       return ledger.kind == "layaway_status" && ledger.result == {"saleId": old.saleId, "layawayId": _r}
         && sale.data.method == "Apartado" && sparkLayawayLink(sale, resource.data, _r)
@@ -2236,14 +2242,14 @@ service cloud.firestore {
 
     function sparkPaymentLayawayDelta(_o, _b, _r) {
       let d = request.resource.data.data;
-      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
-      let sale = sparkAfter(_o, _b, "sales", d.saleId);
-      let movement = sparkAfter(_o, _b, "movements", request.resource.data.lastOperationId).data;
+      let ledger = _F15(_o, _b, request.resource.data.lastOperationId);
+      let sale = _F17(_o, _b, "sales", d.saleId);
+      let movement = _F17(_o, _b, "movements", request.resource.data.lastOperationId).data;
       return ledger.kind == "receivable_payment" && ledger.result.layawayId == _r && sparkLayawayLink(sale, request.resource.data, _r)
         && d.diff(resource.data.data).affectedKeys().hasOnly(["paid", "balance", "payments", "status"])
         && d.paid == sale.data.received && d.balance == sale.data.balance && d.payments == sale.data.payments
-        && sparkMoneyEqual(d.paid, resource.data.data.paid + movement.amount)
-        && sparkMoneyEqual(d.balance, resource.data.data.balance - movement.amount)
+        && _F1(d.paid, resource.data.data.paid + movement.amount)
+        && _F1(d.balance, resource.data.data.balance - movement.amount)
         && d.status == (d.balance == 0 ? "paid" : "partially_paid");
     }
 
@@ -2260,7 +2266,7 @@ service cloud.firestore {
           && (sale.customOrder.size() == 1 ? true : sparkSaleLine(sale, 1))));
     }
 
-    function sparkMoneyEqual(actual, expected) {
+    function _F1(actual, expected) {
       // Subtraction itself rejects missing/non-numeric operands in Rules.
       // Same strict tolerance on BOTH sides, with one native comparison.
       // This helper is called repeatedly by a single atomic cash update.
@@ -2283,21 +2289,21 @@ service cloud.firestore {
       let previous = resource.data.operational;
       return movement.paymentMethod in ["Efectivo", "Tarjeta", "Transferencia", "Pendiente"]
         && movement.paymentType in ["sale", "receivable_payment"]
-        && sparkMoneyEqual(_n.cashBalance, previous.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && _F1(_n.cashBalance, previous.cashBalance + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
         && _n.paymentTotals.keys().hasOnly(["cash", "card", "transfer", "receivablePayments"])
-        && sparkMoneyEqual(_n.paymentTotals.cash, previous.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
-        && sparkMoneyEqual(_n.paymentTotals.card, previous.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
-        && sparkMoneyEqual(_n.paymentTotals.transfer, previous.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
-        && sparkMoneyEqual(_n.paymentTotals.receivablePayments, previous.paymentTotals.receivablePayments + (movement.paymentType == "receivable_payment" ? movement.amount : 0));
+        && _F1(_n.paymentTotals.cash, previous.paymentTotals.cash + (movement.paymentMethod == "Efectivo" ? movement.amount : 0))
+        && _F1(_n.paymentTotals.card, previous.paymentTotals.card + (movement.paymentMethod == "Tarjeta" ? movement.amount : 0))
+        && _F1(_n.paymentTotals.transfer, previous.paymentTotals.transfer + (movement.paymentMethod == "Transferencia" ? movement.amount : 0))
+        && _F1(_n.paymentTotals.receivablePayments, previous.paymentTotals.receivablePayments + (movement.paymentType == "receivable_payment" ? movement.amount : 0));
     }
 
     function sparkCashMovementTotals(_o, _b, op, _n) {
       let movement = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/movements/$(op)).data.data;
       let previous = resource.data.operational;
       return movement.cashSessionId == request.resource.data.id && movement.date == request.resource.data.data.date
-        && sparkMoneyEqual(_n.cashBalance, previous.cashBalance + (movement.kind == "ingreso" ? movement.amount : -movement.amount))
-        && sparkMoneyEqual(_n.incomeCash, previous.incomeCash + (movement.kind == "ingreso" ? movement.amount : 0))
-        && sparkMoneyEqual(_n.expenseCash, previous.expenseCash + (movement.kind == "ingreso" ? 0 : movement.amount));
+        && _F1(_n.cashBalance, previous.cashBalance + (movement.kind == "ingreso" ? movement.amount : -movement.amount))
+        && _F1(_n.incomeCash, previous.incomeCash + (movement.kind == "ingreso" ? movement.amount : 0))
+        && _F1(_n.expenseCash, previous.expenseCash + (movement.kind == "ingreso" ? 0 : movement.amount));
     }
 
     // Every stock-bearing sale points to the first product; each product write
@@ -2344,7 +2350,7 @@ service cloud.firestore {
     function sparkProductMutation(_o, _b, _r, _c) {
       let d = request.resource.data.data;
       let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(_o, _b, op);
+      let ledger = _F15(_o, _b, op);
       let kind = ledger.kind;
       return d.id == _r && d.businessId == _b && d.stock is number && d.stock >= 0 && d.qty == d.stock
         && (_c || sparkProductStoredIdentity(_b, _r))
@@ -2428,8 +2434,8 @@ service cloud.firestore {
       return sale.cashSessionId == request.resource.data.id && sale.date == request.resource.data.data.date
         && _n.saleCount == previous.saleCount + 1
         && _n.itemCount == previous.itemCount + sale.itemCount
-        && sparkMoneyEqual(_n.taxTotal, previous.taxTotal + sale.iva)
-        && sparkMoneyEqual(_n.salesTotal, previous.salesTotal + sale.total)
+        && _F1(_n.taxTotal, previous.taxTotal + sale.iva)
+        && _F1(_n.salesTotal, previous.salesTotal + sale.total)
         && getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/metadata/$("runtime")).data.lastOperationId == op
         && (sale.customOrder.size() <= 9 ? true : (sparkSaleLine(sale, 9)
           && (sale.customOrder.size() <= 10 ? true : sparkSaleLine(sale, 10))));
@@ -2438,11 +2444,11 @@ service cloud.firestore {
     function sparkSaleMutation(_o, _b, _r) {
       let d = request.resource.data.data;
       let session = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(d.cashSessionId)).data;
-      return sparkLedger(_o, _b, _r).kind == "sale"
+      return _F15(_o, _b, _r).kind == "sale"
         && request.resource.data.lastOperationId == _r
         && d.operationId == _r && d.cashSessionId is string && d.cashSessionId.size() > 0
         && d.total is number && d.total >= 0 && d.received is number && d.received >= 0 && d.received <= d.total
-        && sparkMoneyEqual(d.balance, d.total - d.received)
+        && _F1(d.balance, d.total - d.received)
         && (d.method == "Apartado" ? d.status == "layaway"
           : (d.method == "Pendiente" ? (d.status == "pending_payment" && d.received == 0)
             : (d.method in ["Efectivo", "Tarjeta", "Transferencia"] && d.status == "paid" && d.received == d.total)))
@@ -2473,7 +2479,7 @@ service cloud.firestore {
     function sparkLayawayMutation(_o, _b, _r) {
       let d = request.resource.data.data;
       let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(_o, _b, op);
+      let ledger = _F15(_o, _b, op);
       let sale = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/sales/$(op)).data.data;
       return ledger.kind == "sale" && ledger.result.layawayId == _r
         && sparkPermission(_o, _b, "layaways", "create")
@@ -2485,7 +2491,7 @@ service cloud.firestore {
       let d = request.resource.data.data;
       let counters = request.resource.data.operational;
       let op = request.resource.data.lastOperationId;
-      let kind = sparkLedger(_o, _b, op).kind;
+      let kind = _F15(_o, _b, op).kind;
       return counters.summaryVersion == 1 && counters.saleCount is int && counters.saleCount >= 0
         && counters.salesTotal is number && counters.salesTotal >= 0 && counters.paymentTotals is map
         && counters.cashBalance is number && counters.closeCycle is int && counters.closeCycle >= 1
@@ -2531,7 +2537,7 @@ service cloud.firestore {
 
     function sparkMovementMutation(_o, _b, _r) {
       let d = request.resource.data.data;
-      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let ledger = _F15(_o, _b, request.resource.data.lastOperationId);
       let kind = ledger.kind;
       return kind == "sale_cancel" ? sparkCancellationMovement(_o, _b, _r, ledger)
         : kind == "manual_movement_correct" ? sparkManualCorrectionMovement(_o, _b, _r, ledger)
@@ -2572,7 +2578,7 @@ service cloud.firestore {
     function sparkReportMutation(_o, _b, _r, _c) {
       let d = request.resource.data.data;
       let op = request.resource.data.lastOperationId;
-      let ledger = sparkLedger(_o, _b, op);
+      let ledger = _F15(_o, _b, op);
       let session = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(d.cashSessionId)).data;
       return ledger.kind == "cash_open"
         ? (!_c && request.auth.uid == _o && resource.data.data.status == "closed"
@@ -2591,7 +2597,7 @@ service cloud.firestore {
               && d.openingAmount == session.operational.openingAmount && d.incomeCash == session.operational.incomeCash && d.expenseCash == session.operational.expenseCash
               && d.totalItems == session.operational.itemCount && d.totalIva == session.operational.taxTotal && d.closeCycle == session.operational.closeCycle
               && d.declaredCash is number && d.declaredCash >= 0 && d.closeCash == d.declaredCash
-              && sparkMoneyEqual(d.difference, d.declaredCash - d.theoreticalCash))
+              && _F1(d.difference, d.declaredCash - d.theoreticalCash))
           || (!_c && ledger.kind == "cash_reopen" && session.data.status == "open"
               && d.status == "reopened" && d.diff(resource.data.data).affectedKeys().hasOnly(["status", "reopenReason"])));
     }
@@ -2620,7 +2626,7 @@ service cloud.firestore {
     function sparkRuntimePreparationApproved(_o, _b) {
       let policy = get(/databases/$(database)/documents/storageRollout/sparkV1).data;
       let approval = get(/databases/$(database)/documents/businesses/$(_o)/storageApprovals/$("runtimePreparation")).data;
-      let control = get(sparkControlPath(_o)).data;
+      let control = get(_F6(_o)).data;
       let data = request.resource.data;
       return sparkOwner(_o) && policy.enabled == true
         && policy.get("automaticRuntimePreparation", false) == true && _o in policy.pilotOwnerUids
@@ -2660,7 +2666,7 @@ service cloud.firestore {
 
     function sparkRuntimeMutation(_o, _b, _r) {
       let d = request.resource.data.data;
-      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let ledger = _F15(_o, _b, request.resource.data.lastOperationId);
       let session = getAfter(/databases/$(database)/documents/businesses/$(_o)/businessUnits/$(_b)/storage/v2/cashSessions/$(ledger.result.cashSessionId)).data;
       return _r == "runtime" && d.summaryVersion == 1
         && d.diff(resource.data.data).affectedKeys().hasOnly(["openCashSessionId"])
@@ -2689,7 +2695,7 @@ service cloud.firestore {
 
     function sparkCustomerMutation(_o, _b, _r, _c) {
       let d = request.resource.data.data;
-      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let ledger = _F15(_o, _b, request.resource.data.lastOperationId);
       return ledger.result.customerId == _r
         // Imported rows can lack embedded IDs. Normalize only an absent ID;
         // an existing foreign ID/scope cannot be rewritten through CRUD.
@@ -2709,9 +2715,9 @@ service cloud.firestore {
         && [resource.data.data.get("id", _r), resource.data.data.get("businessId", _b)] == [_r, _b];
     }
 
-    function sparkSettingsMutation(_o, _b, _m, _r, _c) {
+    function _F21(_o, _b, _m, _r, _c) {
       let d = request.resource.data.data;
-      let ledger = sparkLedger(_o, _b, request.resource.data.lastOperationId);
+      let ledger = _F15(_o, _b, request.resource.data.lastOperationId);
       return request.auth.uid == _o && ledger.kind == "scoped_settings"
         && ledger.result.settingsModule == _m && ledger.result.settingsId == _r
         && (_m == "config" ? (!_c && _r == "main"
@@ -2763,136 +2769,136 @@ service cloud.firestore {
     }
 
     match /customers/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "customers" && signedIn()
+      allow create: if request.resource.data.get("module", "") == "customers" && _F4()
         && sparkCustomerMutation(ownerUid, businessId, recordId, true)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "customers", recordId);
-      allow update: if request.resource.data.get("module", "") == "customers" && signedIn()
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "customers", recordId);
+      allow update: if request.resource.data.get("module", "") == "customers" && _F4()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
         && sparkCustomerMutation(ownerUid, businessId, recordId, false)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalUpdate(ownerUid, businessId, "customers", recordId);
+        && _F2(ownerUid, businessId)
+        && _F10(ownerUid, businessId, "customers", recordId);
       allow delete: if false;
     }
 
     // Literal module paths keep these new owner-only settings predicates OUT
     // of every sale/product/movement write's evaluation budget.
     match /config/{settingsId} {
-      allow update: if signedIn()
+      allow update: if _F4()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
-        && sparkSettingsMutation(ownerUid, businessId, "config", settingsId, false)
-        && sparkBoundOperation(ownerUid, businessId)
+        && _F21(ownerUid, businessId, "config", settingsId, false)
+        && _F2(ownerUid, businessId)
         && settingsId == "main" && sparkBusinessConfigUpdate(ownerUid, businessId);
     }
     match /labelTemplates/{settingsId} {
-      allow create: if signedIn()
-        && sparkSettingsMutation(ownerUid, businessId, "labelTemplates", settingsId, true)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "labelTemplates", settingsId);
-      allow update: if signedIn()
+      allow create: if _F4()
+        && _F21(ownerUid, businessId, "labelTemplates", settingsId, true)
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "labelTemplates", settingsId);
+      allow update: if _F4()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
-        && sparkSettingsMutation(ownerUid, businessId, "labelTemplates", settingsId, false)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalUpdate(ownerUid, businessId, "labelTemplates", settingsId);
+        && _F21(ownerUid, businessId, "labelTemplates", settingsId, false)
+        && _F2(ownerUid, businessId)
+        && _F10(ownerUid, businessId, "labelTemplates", settingsId);
     }
     match /labelProfiles/{settingsId} {
-      allow create: if signedIn()
-        && sparkSettingsMutation(ownerUid, businessId, "labelProfiles", settingsId, true)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "labelProfiles", settingsId);
-      allow update: if signedIn()
+      allow create: if _F4()
+        && _F21(ownerUid, businessId, "labelProfiles", settingsId, true)
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "labelProfiles", settingsId);
+      allow update: if _F4()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
-        && sparkSettingsMutation(ownerUid, businessId, "labelProfiles", settingsId, false)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalUpdate(ownerUid, businessId, "labelProfiles", settingsId);
+        && _F21(ownerUid, businessId, "labelProfiles", settingsId, false)
+        && _F2(ownerUid, businessId)
+        && _F10(ownerUid, businessId, "labelProfiles", settingsId);
     }
 
     match /products/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "products" && signedIn()
+      allow create: if request.resource.data.get("module", "") == "products" && _F4()
         && sparkProductMutation(ownerUid, businessId, recordId, true)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "products", recordId);
-      allow update: if request.resource.data.get("module", "") == "products" && signedIn()
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "products", recordId);
+      allow update: if request.resource.data.get("module", "") == "products" && _F4()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
         && sparkProductMutation(ownerUid, businessId, recordId, false)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalUpdate(ownerUid, businessId, "products", recordId);
+        && _F2(ownerUid, businessId)
+        && _F10(ownerUid, businessId, "products", recordId);
       allow delete: if false;
     }
 
     match /sales/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "sales" && signedIn()
+      allow create: if request.resource.data.get("module", "") == "sales" && _F4()
         && sparkSaleMutation(ownerUid, businessId, recordId)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "sales", recordId);
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "sales", recordId);
       // Only existing records can receive a payment. A denied CREATE must
       // not enter the UPDATE proof with a missing resource and traverse its
       // cross-document financial checks during verbose deny evaluation.
       // Cheap reject only, NOT authorization: the immutable path/identity
       // tuple is still mandatory in sparkOperationalUpdate below.
-      allow update: if request.resource.data.module == "sales" && signedIn() && resource.data is map
+      allow update: if request.resource.data.module == "sales" && _F4() && resource.data is map
         && !resource.data.keys().hasAny(["historyPolicy"])
-        && sparkBoundOperation(ownerUid, businessId)
-        && (sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
+        && _F2(ownerUid, businessId)
+        && (_F15(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
           ? sparkCancellationSale(ownerUid, businessId, recordId) : sparkPaymentSaleMutation(ownerUid, businessId, recordId))
-        && sparkOperationalUpdate(ownerUid, businessId, "sales", recordId);
+        && _F10(ownerUid, businessId, "sales", recordId);
       allow delete: if false;
     }
 
     match /movements/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "movements" && signedIn()
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "movements", recordId)
+      allow create: if request.resource.data.get("module", "") == "movements" && _F4()
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "movements", recordId)
         && sparkMovementMutation(ownerUid, businessId, recordId);
-      allow update: if request.resource.data.get("module", "") == "movements" && signedIn()
+      allow update: if request.resource.data.get("module", "") == "movements" && _F4()
         && !resource.data.keys().hasAny(["historyPolicy"])
-        && sparkBoundOperation(ownerUid, businessId)
+        && _F2(ownerUid, businessId)
         && sparkManualOriginalUpdate(ownerUid, businessId, recordId)
-        && sparkOperationalUpdate(ownerUid, businessId, "movements", recordId);
+        && _F10(ownerUid, businessId, "movements", recordId);
       allow delete: if false;
     }
 
     match /layaways/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "layaways" && signedIn()
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "layaways", recordId)
+      allow create: if request.resource.data.get("module", "") == "layaways" && _F4()
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "layaways", recordId)
         && sparkLayawayMutation(ownerUid, businessId, recordId);
-      allow update: if request.resource.data.module == "layaways" && signedIn() && resource.data is map
+      allow update: if request.resource.data.module == "layaways" && _F4() && resource.data is map
         && !resource.data.keys().hasAny(["historyPolicy"])
-        && sparkBoundOperation(ownerUid, businessId)
-        && (sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "layaway_status"
+        && _F2(ownerUid, businessId)
+        && (_F15(ownerUid, businessId, request.resource.data.lastOperationId).kind == "layaway_status"
           ? sparkLayawayStatusMutation(ownerUid, businessId, recordId)
-          : sparkLedger(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
+          : _F15(ownerUid, businessId, request.resource.data.lastOperationId).kind == "sale_cancel"
             ? sparkCancellationLayaway(ownerUid, businessId, recordId) : sparkPaymentLayawayMutation(ownerUid, businessId, recordId))
-        && sparkOperationalUpdate(ownerUid, businessId, "layaways", recordId);
+        && _F10(ownerUid, businessId, "layaways", recordId);
       allow delete: if false;
     }
 
     match /cashSessions/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "cashSessions" && signedIn()
+      allow create: if request.resource.data.get("module", "") == "cashSessions" && _F4()
         && sparkCashMutation(ownerUid, businessId, recordId, true)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "cashSessions", recordId);
-      allow update: if request.resource.data.get("module", "") == "cashSessions" && signedIn()
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "cashSessions", recordId);
+      allow update: if request.resource.data.get("module", "") == "cashSessions" && _F4()
         && !resource.data.keys().hasAny(["historyPolicy"])
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
         && sparkCashMutation(ownerUid, businessId, recordId, false)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalUpdate(ownerUid, businessId, "cashSessions", recordId);
+        && _F2(ownerUid, businessId)
+        && _F10(ownerUid, businessId, "cashSessions", recordId);
       allow delete: if false;
     }
 
     match /dailyReports/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "dailyReports" && signedIn()
+      allow create: if request.resource.data.get("module", "") == "dailyReports" && _F4()
         && sparkReportMutation(ownerUid, businessId, recordId, true)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalCreate(ownerUid, businessId, "dailyReports", recordId);
-      allow update: if request.resource.data.get("module", "") == "dailyReports" && signedIn()
+        && _F2(ownerUid, businessId)
+        && _F7(ownerUid, businessId, "dailyReports", recordId);
+      allow update: if request.resource.data.get("module", "") == "dailyReports" && _F4()
         && !resource.data.keys().hasAny(["historyPolicy"])
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
         && sparkReportMutation(ownerUid, businessId, recordId, false)
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalUpdate(ownerUid, businessId, "dailyReports", recordId);
+        && _F2(ownerUid, businessId)
+        && _F10(ownerUid, businessId, "dailyReports", recordId);
       allow delete: if false;
     }
 
@@ -2901,11 +2907,11 @@ service cloud.firestore {
       allow create: if recordId == "runtime" && sparkRuntimePreparationApproved(ownerUid, businessId);
       // A worker sees only the assigned business's cutover proof, not the
       // owner's global business list. The proof is linked to root authority.
-      allow read: if recordId == "storage" && signedIn()
-        && (businessUnitOwner(ownerUid, businessId) || activeBusinessUnitMember(ownerUid, businessId)
+      allow read: if recordId == "storage" && _F4()
+        && (_F18(ownerUid, businessId) || _F14(ownerUid, businessId)
           || (sparkActiveMember(ownerUid, businessId)
-            && get(sparkControlPath(ownerUid)).data.storageMode == "modular"
-            && businessId in get(sparkControlPath(ownerUid)).data.businessIds
+            && get(_F6(ownerUid)).data.storageMode == "modular"
+            && businessId in get(_F6(ownerUid)).data.businessIds
             && sparkScopedEntitlements(ownerUid, resource.data.data)));
       allow create, update: if recordId == "storage" && sparkOwner(ownerUid)
         && request.resource.data.ownerUid == ownerUid && request.resource.data.businessId == businessId
@@ -2918,30 +2924,30 @@ service cloud.firestore {
         && request.resource.data.data.id == "storage" && request.resource.data.data.businessId == businessId
         && request.resource.data.data.storageMode == "modular" && request.resource.data.data.phase == "MODULAR"
         && request.resource.data.data.semanticEquality == "PASS"
-        && getAfter(sparkControlPath(ownerUid)).data.storageMode == "modular"
-        && getAfter(sparkControlPath(ownerUid)).data.phase == "MODULAR"
-        && businessId in getAfter(sparkControlPath(ownerUid)).data.businessIds
-        && request.resource.data.data.sourceHash == getAfter(sparkControlPath(ownerUid)).data.sourceHash
-        && request.resource.data.data.reconstructedHash == getAfter(sparkControlPath(ownerUid)).data.reconstructedHash
+        && getAfter(_F6(ownerUid)).data.storageMode == "modular"
+        && getAfter(_F6(ownerUid)).data.phase == "MODULAR"
+        && businessId in getAfter(_F6(ownerUid)).data.businessIds
+        && request.resource.data.data.sourceHash == getAfter(_F6(ownerUid)).data.sourceHash
+        && request.resource.data.data.reconstructedHash == getAfter(_F6(ownerUid)).data.reconstructedHash
         && request.resource.data.data.sourceHash == request.resource.data.data.reconstructedHash;
-      allow update: if request.resource.data.get("module", "") == "metadata" && signedIn()
+      allow update: if request.resource.data.get("module", "") == "metadata" && _F4()
         && request.resource.data.lastOperationId != resource.data.get("lastOperationId", "")
-        && sparkBoundOperation(ownerUid, businessId)
-        && sparkOperationalUpdate(ownerUid, businessId, "metadata", recordId)
+        && _F2(ownerUid, businessId)
+        && _F10(ownerUid, businessId, "metadata", recordId)
         && sparkRuntimeMutation(ownerUid, businessId, recordId);
       allow delete: if false;
     }
 
     match /operationLedger/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "operationLedger" && signedIn()
-        && sparkOperationalCreate(ownerUid, businessId, "operationLedger", recordId)
+      allow create: if request.resource.data.get("module", "") == "operationLedger" && _F4()
+        && _F7(ownerUid, businessId, "operationLedger", recordId)
         && sparkLedgerProof(ownerUid, businessId, recordId);
       allow delete: if false;
     }
 
     match /auditEvents/{recordId} {
-      allow create: if request.resource.data.get("module", "") == "auditEvents" && signedIn()
-        && sparkOperationalCreate(ownerUid, businessId, "auditEvents", recordId)
+      allow create: if request.resource.data.get("module", "") == "auditEvents" && _F4()
+        && _F7(ownerUid, businessId, "auditEvents", recordId)
         && sparkDerivedAudit(ownerUid, businessId, recordId);
       allow delete: if false;
     }

@@ -5,15 +5,15 @@
   "authorizationChange": "Retain all commercial legacy and P0A permissions. Modular owner-only manual corrections require immutable original amounts, atomic compensation/replacement, exact session counters and new ledger; workers cannot correct. Runtime preparation is create-only in migrating READY_TO_CUTOVER and requires exact administrative source/build/plan/device/journal/business/record/summary approval; never activates a writer. Runtime and cutover approvals are private per-owner records, never globally readable policy payloads; only platform administrators write them. Operational cutover still requires its separate administrative approval. Scoped worker authority validates the same exact owner contract and root identity against getAfter(root), allowing root activation and all business proofs in one atomic transaction; this does not require every owner client to publish every proof, and missing proof remains fail-closed for workers. Extension reviewed against 3abdb839: sale_cancel is owner-only and requires an operational original sale ledger, immutable source receipt summary, exact still-open original session, reciprocal new cancellation ledger, append-only aggregate compensation, exact stock successor chain and exact session counter reversal. Source payments/amounts/items remain unchanged. New sale and subsequent receipt transactions enforce receiptSummary atomically; imported rows without that proof cannot acquire it via payment. Closed/protected history and cross-session receipts remain non-cancellable.",
   "originalPermissionsHash": "347596035d8c026af71db1cdcc4a0ab19038bf49832208244dadfff1f0b68fb5",
   "alphaEquivalentTo": {
-    "functionsHash": "05aac26154f60e08183a5f2f5257286dcec15c268fb0ea663e50016ad57f6f78",
-    "permissionsHash": "67737457d05129c5f298f8630d2a8f89c75ae35195e145eed39a2dc0752ece1d",
-    "functions": 152,
+    "functionsHash": "6192281a180f653c4c2948bacaa8399133723e7b15924d7e759e17ce23ddc7fc",
+    "permissionsHash": "f8d46dd2bbfe241940e9742288c76c7c90a5cc39ad88a9e87f251baff93ffed9",
+    "functions": 153,
     "permissions": 195
   },
   "fingerprints": {
-    "functionsHash": "ab7f670a157a6d717898e4421f73828d3f1cf35d344ed270d32265decf91f6dd",
-    "permissionsHash": "67737457d05129c5f298f8630d2a8f89c75ae35195e145eed39a2dc0752ece1d",
-    "functions": 152,
+    "functionsHash": "db4f8da33a24525905b12334ecc11243cb48ded2c97245afc5b57f66df4719ad",
+    "permissionsHash": "f8d46dd2bbfe241940e9742288c76c7c90a5cc39ad88a9e87f251baff93ffed9",
+    "functions": 153,
     "permissions": 195
   }
 }

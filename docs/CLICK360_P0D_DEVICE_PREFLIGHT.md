@@ -72,3 +72,14 @@ Permanent regressions: `qa-p0d-device-preflight.mjs`, recovery Web SDK Rules
 suite, and `certifyDevicePreflight` in the existing served PWA suite, Chromium
 and WebKit. Large datasets remain in emulators; private customer data never
 enters staging or GitHub. No physical device recovery is claimed synthetically.
+
+## Firebase compiled Rules ceiling
+
+Staging rejected the initial P0D executable at 261771 bytes (backend maximum
+256000), although the emulator and compilation test endpoint accepted it.
+Receipt bindings reduce repeated expressions; reversible function-symbol
+alpha-renaming reduces the compiled namespace footprint. No permission or
+financial predicate is removed. Scope parity restores the names and proves
+every pre-P0D byte unchanged; a second regression inlines receipt bindings
+and checks the original predicate token hash. Deployment to staging remains
+mandatory: the compilation-only endpoint does not certify executable size.
