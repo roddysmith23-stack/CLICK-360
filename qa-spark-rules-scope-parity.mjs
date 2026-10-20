@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {compactBoundParameters,restoreBoundParameters} from './scripts/spark-rules-bound-parameters.mjs';
+import {compactBoundParameters,restoreBoundParameters,compactFunctionSymbols,restoreFunctionSymbols} from './scripts/spark-rules-bound-parameters.mjs';
 export function fingerprints(source){
   const tokens=[...source.matchAll(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/[^\n]*|\/\*[\s\S]*?\*\/|[A-Za-z_][A-Za-z_0-9]*|\d+(?:\.\d+)?|[^\s]/g)]
     .map(m=>m[0]).filter(t=>!t.startsWith('//')&&!t.startsWith('/*'));
@@ -40,8 +40,27 @@ export function fingerprints(source){
   return {functionsHash:hash(functions.sort((a,b)=>a.name.localeCompare(b.name))),permissionsHash:hash(permissions.sort((a,b)=>JSON.stringify(a).localeCompare(JSON.stringify(b)))),functions:functions.length,permissions:permissions.length};
 }
 if(process.argv[1]?.endsWith('qa-spark-rules-scope-parity.mjs')){
-  const source=readFileSync('firestore.spark.rules','utf8'),actual=fingerprints(source);
+  const deployed=readFileSync('firestore.spark.rules','utf8'),source=restoreFunctionSymbols(deployed).content,actual=fingerprints(source);
+  assert.equal(compactFunctionSymbols(deployed).replacements,0,'Keep the certified backend executable symbol budget');
+  assert.equal(compactFunctionSymbols(source).content,deployed,'Function alpha-renaming must be exactly reversible');
   const expected=JSON.parse(readFileSync('qa/fixtures/spark-rules-scope-parity.json','utf8'));
+  if(expected.p0dAuthorizationChange){
+    const start=source.indexOf('    // P0D policy'),end=source.indexOf('    // Optional owner-only recovery preservation',start);
+    assert(start>0&&end>start);
+    assert.equal(createHash('sha256').update(source.slice(0,start)+source.slice(end)).digest('hex'),
+      '438905930d0f0458ba9687553fb3a6956dc45ccfff1de16e092c2d258da28b14','Every pre-P0D permission must remain byte-identical');
+    // Independently inline only the new pure let bindings and verify the
+    // original 6300064 receipt predicate token-for-token. No get/permission
+    // or field validation can disappear to solve the compiled size ceiling.
+    const block=source.slice(source.indexOf('function p0dReceipt('),source.indexOf('allow read: if sparkOwnerRead(ownerUid);',source.indexOf('function p0dReceipt(')));
+    const tokenize=s=>[...s.matchAll(/"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z_0-9]*|\d+|[^\s]/g)].map(m=>m[0]);
+    const bindings=Object.fromEntries([...block.matchAll(/let (\w+) = ([\s\S]*?);/g)].map(m=>[m[1],tokenize(m[2])]));
+    const expand=tokens=>tokens.flatMap((t,i)=>bindings[t]&&tokens[i-1]!=='.'?expand(bindings[t]):[t]);
+    const expression=block.match(/return ([\s\S]*?);/)[1];
+    const tokens=expand(tokenize('sparkRecoveryCopyWriter(_o) && '+expression)).map(t=>t==='_o'?'ownerUid':t==='_r'?'reportId':t);
+    assert.equal(createHash('sha256').update(JSON.stringify(tokens)).digest('hex'),
+      'fe25c2fdd2eef5c380c0caa3875a40131a5124375fdbb59f7c1c1ea1771c98d0','P0D receipt factoring must preserve the original predicate');
+  }
   assert.deepEqual(actual,expected.fingerprints,'Scope optimization changed an authorization predicate or effective permission path');
   assert.equal(compactBoundParameters(source).replacements,0,'Deployed Rules must retain their certified compact bindings');
   assert.deepEqual(fingerprints(restoreBoundParameters(source).content),expected.alphaEquivalentTo,

@@ -35,6 +35,30 @@ try{
   assert.equal((await getDocFromServer(doc(db,path))).data().state,'CLIENT_VERIFIED');
   await assertFails(updateDoc(doc(db,path),{state:'UPLOADING'}));
   await assertFails(deleteDoc(doc(db,path)));
+  const policyPath=`businesses/${owner}/recoveryPreflightPolicy/main`,reportId='1'.repeat(64),reportPath=`businesses/${owner}/recoveryPreflights/${reportId}`;
+  const p0dPolicy={enabled:true,ownerUid:owner,buildSha:manifest.buildSha,baselineCaptureHash:hash,
+    baselineSourceHash:manifest.sourceHash,deviceIdHash:'2'.repeat(64),businessIds:['business-one']};
+  await assertFails(setDoc(doc(db,policyPath),p0dPolicy));
+  const receipt={ownerUid:owner,reportId,schemaVersion:1,buildSha:manifest.buildSha,policyHash:'3'.repeat(64),
+    baselineCaptureHash:hash,baselineSourceHash:manifest.sourceHash,captureHash:hash,sourceHash:manifest.sourceHash,
+    journalHash:manifest.journalHash,deviceIdHash:p0dPolicy.deviceIdHash,status:'CLIENT_PREFLIGHT_READY',reason:'P0D_OWNER_REVIEW_REQUIRED',
+    operationCount:0,unknownCount:0,conflictCount:0,pendingCount:0,confirmedCount:0,replayAllowed:false,cutover:false,createdAt:serverTimestamp()};
+  await assertFails(setDoc(doc(db,reportPath),receipt));
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),policyPath),p0dPolicy));
+  await setDoc(doc(db,reportPath),receipt);
+  for(const actor of [foreign,worker,env.unauthenticatedContext().firestore()]){
+    await assertFails(getDocFromServer(doc(actor,policyPath)));await assertFails(getDocFromServer(doc(actor,reportPath)));
+  }
+  await assertFails(updateDoc(doc(db,reportPath),{status:'CLIENT_PREFLIGHT_BLOCKED'}));
+  await assertFails(deleteDoc(doc(db,reportPath)));
+  await assertFails(setDoc(doc(db,`businesses/${owner}/recoveryPreflights/${'4'.repeat(64)}`),{...receipt,reportId:'4'.repeat(64),cutover:true}));
+  await assertFails(setDoc(doc(db,`businesses/${owner}/recoveryPreflights/${'4'.repeat(64)}`),{...receipt,reportId:'4'.repeat(64),sourceHash:'5'.repeat(64)}));
+  // Read-only UNKNOWN lookup works without enabling operational access.
+  await getDocFromServer(doc(db,`businesses/${owner}/businessUnits/business-one/storage/v2/operationLedger/absent`));
+  await assertFails(getDocFromServer(doc(db,`businesses/${owner}/businessUnits/foreign-business/storage/v2/operationLedger/absent`)));
+  await assertFails(setDoc(doc(db,`businesses/${owner}/storageApprovals/cutover`),{ownerUid:owner}));
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),policyPath),{enabled:false}));
+  await assertFails(getDocFromServer(doc(db,`businesses/${owner}/businessUnits/business-one/storage/v2/operationLedger/absent`)));
   const notPiloted=`businesses/${other}/recoveryCopies/${hash}`;
   await assertFails(setDoc(doc(foreign,notPiloted),{...manifest,ownerUid:other}));
   await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),'storageRollout/sparkV1'),{automaticRecoveryCopy:false}));

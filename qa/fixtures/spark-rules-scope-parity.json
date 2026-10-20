@@ -1,18 +1,19 @@
 {
   "baseline": "32ed65c78032b37acae3bb81ce4becbdddbb2e88",
+  "p0dAuthorizationChange": "Six additive effective permissions only: owner-private IAM-managed preflight policy read, client policy writes denied, owner-scoped ledger read under enabled individual preflight policy/business allowlist, private immutable CLIENT preflight receipt create/read, update/delete denied. No operational approval, legacy, recovery, membership or commercial write predicate changes. Removing this extension reproduces Rules SHA256 438905930d0f0458ba9687553fb3a6956dc45ccfff1de16e092c2d258da28b14 exactly. Receipt is not an independent server attestation and never authorizes cutover.",
   "p0cAuthorizationChange": "Imported Apartado may retain only its original reverse saleId. Payment/pickup requires exact same owner/business, reciprocal record IDs and either the explicit forward ID or matching immutable sourceHash plus sales/layaways sourcePath provenance. Missing forward IDs are never manufactured in commercial data. Payment deltas remain atomic with sale, linked reservation, movement, exact session and ledger. Duplicate or inconsistent active legacy relationships block handoff. New operational records cannot manufacture sourceHash/sourcePath. All 189 effective allow paths and legacy/P0A permission statements remain unchanged.",
   "authorizationChange": "Retain all commercial legacy and P0A permissions. Modular owner-only manual corrections require immutable original amounts, atomic compensation/replacement, exact session counters and new ledger; workers cannot correct. Runtime preparation is create-only in migrating READY_TO_CUTOVER and requires exact administrative source/build/plan/device/journal/business/record/summary approval; never activates a writer. Runtime and cutover approvals are private per-owner records, never globally readable policy payloads; only platform administrators write them. Operational cutover still requires its separate administrative approval. Scoped worker authority validates the same exact owner contract and root identity against getAfter(root), allowing root activation and all business proofs in one atomic transaction; this does not require every owner client to publish every proof, and missing proof remains fail-closed for workers. Extension reviewed against 3abdb839: sale_cancel is owner-only and requires an operational original sale ledger, immutable source receipt summary, exact still-open original session, reciprocal new cancellation ledger, append-only aggregate compensation, exact stock successor chain and exact session counter reversal. Source payments/amounts/items remain unchanged. New sale and subsequent receipt transactions enforce receiptSummary atomically; imported rows without that proof cannot acquire it via payment. Closed/protected history and cross-session receipts remain non-cancellable.",
   "originalPermissionsHash": "347596035d8c026af71db1cdcc4a0ab19038bf49832208244dadfff1f0b68fb5",
   "alphaEquivalentTo": {
-    "functionsHash": "030aa8884ad2bdfb1c5b9586beb967eb4510685d0bc165d33d80330ec65d2200",
-    "permissionsHash": "ddfd8814051c9f2f6beb4eeda52d781e47e16cfcb9fe631a786fda8bf5f4254d",
-    "functions": 151,
-    "permissions": 189
+    "functionsHash": "6192281a180f653c4c2948bacaa8399133723e7b15924d7e759e17ce23ddc7fc",
+    "permissionsHash": "f8d46dd2bbfe241940e9742288c76c7c90a5cc39ad88a9e87f251baff93ffed9",
+    "functions": 153,
+    "permissions": 195
   },
   "fingerprints": {
-    "functionsHash": "aaf001ff9672b330831d72378dec64bd9931089a365098caf89303ba10ed239d",
-    "permissionsHash": "ddfd8814051c9f2f6beb4eeda52d781e47e16cfcb9fe631a786fda8bf5f4254d",
-    "functions": 151,
-    "permissions": 189
+    "functionsHash": "db4f8da33a24525905b12334ecc11243cb48ded2c97245afc5b57f66df4719ad",
+    "permissionsHash": "f8d46dd2bbfe241940e9742288c76c7c90a5cc39ad88a9e87f251baff93ffed9",
+    "functions": 153,
+    "permissions": 195
   }
 }
