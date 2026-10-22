@@ -47,7 +47,19 @@ if(process.argv[1]?.endsWith('qa-spark-rules-scope-parity.mjs')){
   if(expected.p0dAuthorizationChange){
     const start=source.indexOf('    // P0D policy'),end=source.indexOf('    // Optional owner-only recovery preservation',start);
     assert(start>0&&end>start);
-    assert.equal(createHash('sha256').update(source.slice(0,start)+source.slice(end)).digest('hex'),
+    let retained=source.slice(0,start)+source.slice(end);
+    if(expected.initialSourceClaimAuthorizationChange){
+      const extension=retained.match(/    \/\/ Optional administrative tightening for an unattended pilot\.[\s\S]*?\n    match \/businesses\/\{ownerUid\}\/metadata\/\{metadataId\} \{/);
+      assert(extension,'Exact initial-claim extension boundary required');
+      retained=retained.replace(extension[0],'    match /businesses/{ownerUid}/metadata/{metadataId} {');
+      const guard='        && (get(/databases/$(database)/documents/storageRollout/sparkV1).data.get("sourceBoundPreparation", false) != true\n          || sparkInitialSourceClaim(ownerUid))\n';
+      assert(retained.includes(guard),'Only the reviewed optional create guard may be removed for baseline parity');
+      retained=retained.replace(guard,'');
+      const helper=source.match(/function sparkInitialSourceClaim\(_o\) \{[\s\S]*?\n    \}/)[0];
+      assert.equal(createHash('sha256').update(helper).digest('hex'),expected.initialSourceClaimPredicateSha256,
+        'Initial claim predicate must match the independently reviewed source/build/business/device guard');
+    }
+    assert.equal(createHash('sha256').update(retained).digest('hex'),
       '438905930d0f0458ba9687553fb3a6956dc45ccfff1de16e092c2d258da28b14','Every pre-P0D permission must remain byte-identical');
     // Independently inline only the new pure let bindings and verify the
     // original 6300064 receipt predicate token-for-token. No get/permission

@@ -42,6 +42,31 @@ try{
   mixedBatch.update(doc(ownerDb,`businesses/${owner}/state/main`),{revision:13});
   await assertFails(mixedBatch.commit());
   assert.equal((await getDoc(doc(ownerDb,`businesses/${owner}/state/main`))).data().revision,12);
+  // A previous PWA must not install the migration fence for an approved
+  // newer build, even before any operational writer is activated.
+  const initialApproval={ownerUid:owner,sourceHash:manifest.sourceHash,buildSha:'0123456789ab',businessIds:[business]};
+  await env.withSecurityRulesDisabled(async c=>{
+    await setDoc(doc(c.firestore(),'storageRollout/sparkV1'),{enabled:true,pilotOwnerUids:[owner],sourceBoundPreparation:true});
+    await setDoc(doc(c.firestore(),`businesses/${owner}/storageApprovals/cutover`),initialApproval);
+    await setDoc(doc(c.firestore(),`businesses/${owner}/recoveryPreflightPolicy/main`),{
+      ownerUid:owner,enabled:true,buildSha:initialApproval.buildSha,sourceDeviceId:'synthetic-device'});
+  });
+  await assertFails(setDoc(doc(ownerDb,controlPath),{...newControl(),buildSha:'aaaaaaaaaaaa'}));
+  await assertFails(setDoc(doc(ownerDb,controlPath),{...newControl(),sourceHash:'f'.repeat(64)}));
+  await assertFails(setDoc(doc(ownerDb,controlPath),{...newControl(),sourceDeviceId:'different-device'}));
+  await assertFails(setDoc(doc(ownerDb,controlPath),{...newControl(),businessIds:[business,'unapproved-business']}));
+  await env.withSecurityRulesDisabled(c=>deleteDoc(doc(c.firestore(),`businesses/${owner}/storageApprovals/cutover`)));
+  await assertFails(setDoc(doc(ownerDb,controlPath),newControl()));
+  await env.withSecurityRulesDisabled(c=>setDoc(doc(c.firestore(),`businesses/${owner}/storageApprovals/cutover`),initialApproval));
+  await assertSucceeds(setDoc(doc(ownerDb,controlPath),newControl()));
+  await assertFails(updateDoc(doc(ownerDb,`businesses/${owner}/state/main`),{revision:13}));
+  await env.withSecurityRulesDisabled(async c=>{
+    await deleteDoc(doc(c.firestore(),controlPath));
+    await deleteDoc(doc(c.firestore(),`businesses/${owner}/storageApprovals/cutover`));
+    await deleteDoc(doc(c.firestore(),`businesses/${owner}/recoveryPreflightPolicy/main`));
+    await setDoc(doc(c.firestore(),'storageRollout/sparkV1'),{enabled:true,pilotOwnerUids:[owner]});
+  });
+  console.log('PASS initial source-bound claim: old build, foreign device, changed source/businesses and missing approval denied by client Rules; exact claim accepted');
   await assertSucceeds(setDoc(doc(ownerDb,controlPath),newControl()));
   await assertFails(updateDoc(doc(ownerDb,`businesses/${owner}/state/main`),{revision:13}));
   await assertFails(updateDoc(doc(ownerDb,controlPath),{phase:'MODULAR',storageMode:'modular',recordVersion:2,updatedAt:serverTimestamp()}));

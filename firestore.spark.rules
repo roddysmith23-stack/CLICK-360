@@ -413,7 +413,7 @@ service cloud.firestore {
           ? sparkAccountWritable(_o) : sparkApprovedOwnerReadable(_o));
     }
 
-    function sparkOwnerRead(_o) {
+    function _F23(_o) {
       return _F4() && request.auth.uid == _o && sparkOwnerReadableAccess(_o);
     }
 
@@ -1635,7 +1635,7 @@ service cloud.firestore {
     // P0D policy is private and IAM/admin-managed only. A preflight receipt is
     // a CLIENT claim, never an operational approval or source-of-truth switch.
     match /businesses/{ownerUid}/recoveryPreflightPolicy/{policyId} {
-      allow read: if policyId == "main" && sparkOwnerRead(ownerUid);
+      allow read: if policyId == "main" && _F23(ownerUid);
       allow write: if false;
     }
     function p0dPolicy(_o) {
@@ -1644,7 +1644,7 @@ service cloud.firestore {
     match /businesses/{ownerUid}/businessUnits/{businessId}/storage/v2/operationLedger/{operationId} {
       // Lookup only, even while operational access remains disabled. No
       // write grant, membership expansion or cached absence confirmation.
-      allow read: if sparkOwnerRead(ownerUid) && p0dPolicy(ownerUid).get("enabled", false) == true
+      allow read: if _F23(ownerUid) && p0dPolicy(ownerUid).get("enabled", false) == true
         && businessId in p0dPolicy(ownerUid).businessIds;
     }
     match /businesses/{ownerUid}/recoveryPreflights/{reportId} {
@@ -1673,15 +1673,15 @@ service cloud.firestore {
           && d.buildSha == c.buildSha && c.deviceId == b.deviceId
           && d.sourceHash == c.sourceHash && d.journalHash == c.journalHash;
       }
-      allow read: if sparkOwnerRead(ownerUid);
-      allow create: if sparkRecoveryCopyWriter(ownerUid) && p0dReceipt(ownerUid, reportId);
+      allow read: if _F23(ownerUid);
+      allow create: if _F24(ownerUid) && p0dReceipt(ownerUid, reportId);
       allow update, delete: if false;
     }
 
     // Optional owner-only recovery preservation, NOT operational storage or
     // independent server verification. It never changes metadata/storage and
     // therefore cannot fence another legacy business or activate a writer.
-    function sparkRecoveryCopyWriter(_o) {
+    function _F24(_o) {
       return sparkOwner(_o) && sparkRolloutAllowed(_o)
         && get(/databases/$(database)/documents/storageRollout/sparkV1).data.get("automaticRecoveryCopy", false) == true;
     }
@@ -1699,18 +1699,18 @@ service cloud.firestore {
         && d.partCount is int && d.partCount > 0 && d.partCount <= 1024;
     }
     match /businesses/{ownerUid}/recoveryCopies/{captureHash} {
-      allow read: if sparkOwnerRead(ownerUid);
-      allow create: if sparkRecoveryCopyWriter(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
+      allow read: if _F23(ownerUid);
+      allow create: if _F24(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
         && request.resource.data.state == "UPLOADING" && request.resource.data.createdAt == request.time
         && !request.resource.data.keys().hasAny(["clientVerifiedAt"]);
-      allow update: if sparkRecoveryCopyWriter(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
+      allow update: if _F24(ownerUid) && sparkRecoveryManifest(ownerUid, captureHash)
         && resource.data.state == "UPLOADING" && request.resource.data.state == "CLIENT_VERIFIED"
         && request.resource.data.clientVerifiedAt == request.time
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "clientVerifiedAt"]);
       allow delete: if false;
       match /parts/{partId} {
-        allow read: if sparkOwnerRead(ownerUid);
-        allow create: if sparkRecoveryCopyWriter(ownerUid)
+        allow read: if _F23(ownerUid);
+        allow create: if _F24(ownerUid)
           && get(/databases/$(database)/documents/businesses/$(ownerUid)/recoveryCopies/$(captureHash)).data.state == "UPLOADING"
           && request.resource.data.keys().hasAll(["ownerUid", "captureHash", "schemaVersion", "position", "content", "contentHash"])
           && request.resource.data.keys().hasOnly(["ownerUid", "captureHash", "schemaVersion", "position", "content", "contentHash"])
@@ -1725,10 +1725,25 @@ service cloud.firestore {
       }
     }
 
+    // Optional administrative tightening for an unattended pilot. It applies
+    // BEFORE the migration fence exists, including requests from old PWAs.
+    function _F22(_o) {
+      let d = request.resource.data;
+      let a = get(/databases/$(database)/documents/businesses/$(_o)/storageApprovals/cutover).data;
+      let p = get(/databases/$(database)/documents/businesses/$(_o)/recoveryPreflightPolicy/main).data;
+      return a.keys().hasOnly(["ownerUid", "sourceHash", "buildSha", "businessIds"])
+        && a.ownerUid == _o && a.sourceHash == d.sourceHash
+        && a.buildSha == d.buildSha && a.businessIds == d.businessIds
+        && p.ownerUid == _o && p.enabled == true && p.buildSha == d.buildSha
+        && p.get("sourceDeviceId", "") == d.sourceDeviceId;
+    }
+
     match /businesses/{ownerUid}/metadata/{metadataId} {
-      allow read: if metadataId == "storage" && (sparkOwnerRead(ownerUid) || _F3());
+      allow read: if metadataId == "storage" && (_F23(ownerUid) || _F3());
       allow create: if metadataId == "storage" && sparkOwner(ownerUid)
         && sparkRolloutAllowed(ownerUid) && sparkValidControl(ownerUid)
+        && (get(/databases/$(database)/documents/storageRollout/sparkV1).data.get("sourceBoundPreparation", false) != true
+          || _F22(ownerUid))
         && request.resource.data.phase == "MIGRATION_PREPARING"
         && request.resource.data.recordVersion == 1
         && request.resource.data.createdAt == request.time
@@ -1755,7 +1770,7 @@ service cloud.firestore {
     }
 
     match /businesses/{ownerUid}/legacyConfig/{recordId} {
-      allow read: if sparkOwnerRead(ownerUid) || _F3();
+      allow read: if _F23(ownerUid) || _F3();
       allow create: if sparkOwner(ownerUid)
         && get(_F6(ownerUid)).data.phase == "SHADOW_WRITING"
         && sparkValidShadow(ownerUid, null, "configEntries", recordId);

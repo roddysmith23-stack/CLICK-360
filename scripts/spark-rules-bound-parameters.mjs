@@ -9,7 +9,8 @@ const functionNames=Object.fromEntries(['businessUnitPermission','sparkMoneyEqua
   'logisticsAssignedTo','sparkLegacyReadable','sparkOperationalUpdate','validBusinessUnitIdentity',
   'validBoundaryUpdate','sparkLegacyWritable','activeBusinessUnitMember','sparkLedger',
   'supportedMemberRole','sparkAfter','businessUnitOwner','businessUnitMemberData',
-  'workersFeatureFlagEnabled','sparkSettingsMutation'].map((name,i)=>[name,`_F${i}`])
+  'workersFeatureFlagEnabled','sparkSettingsMutation','sparkInitialSourceClaim',
+  'sparkOwnerRead','sparkRecoveryCopyWriter'].map((name,i)=>[name,`_F${i}`])
   .filter(([name])=>name!=='workersFeatureFlagEnabled')); // retained deployment compatibility marker
 export const compactFunctionSymbols=source=>renameFunctions(source,functionNames);
 export const restoreFunctionSymbols=source=>renameFunctions(source,
