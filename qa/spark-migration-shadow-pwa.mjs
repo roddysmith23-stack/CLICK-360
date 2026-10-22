@@ -34,6 +34,21 @@ export async function certifyDevicePreflight({browser,env,uid,label}){
     await seed(env,db=>setDoc(doc(db,`businesses/${uid}/recoveryPreflightPolicy/main`),{enabled:true,ownerUid:uid,
       buildSha:before.buildSha,baselineCaptureHash:before.copy.captureHash,baselineSourceHash:before.copy.sourceHash,
       deviceIdHash:before.deviceIdHash,businessIds:[uid]}));
+    // An installed PWA can resume while Auth and connectivity stay unchanged.
+    // Exercise the real lifecycle listener, not reload or a direct coordinator.
+    await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForFunction(()=>window.click360DevicePreflight?.status==='CLIENT_PREFLIGHT_READY');
+    before.local=await page.evaluate(async({tenant})=>{
+      const record=await CLICK360_V16_STORAGE.getSnapshot(tenant),snapshot=structuredClone(record.snapshot);
+      snapshot.products[0].name='Cambio local después de la copia inicial';
+      const {snapshot:ignored,...metadata}=record;
+      await CLICK360_V16_STORAGE.putSnapshot(tenant,snapshot,{...metadata,
+        expectedDeviceRevision:record.deviceRevision,deviceRevision:'p0d-foreground-43'});
+      window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
+      return CLICK360_V16_STORAGE.getSnapshot(tenant);
+    },{tenant});
+    await page.waitForFunction(old=>window.click360DevicePreflight?.status==='CLIENT_PREFLIGHT_READY'
+      &&window.click360DevicePreflight.sourceHash!==old,before.copy.sourceHash);
     let first;
     for(let pass=0;pass<2;pass++){
       await page.close();page=await context.newPage();page.setDefaultTimeout(60000);await page.goto(url,{waitUntil:'domcontentloaded'});
@@ -41,7 +56,7 @@ export async function certifyDevicePreflight({browser,env,uid,label}){
       const proof=await page.evaluate(async({uid,tenant})=>{
         const result=click360DevicePreflight;if(result.status!=='CLIENT_PREFLIGHT_READY')throw Error(JSON.stringify(result));
         const report=await click360Db.doc(`businesses/${uid}/recoveryPreflights/${result.reportId}`).get({source:'server'});
-        if(report.metadata.fromCache||report.data().sourceHash!==report.data().reconstructedHash||report.data().changedRecords!==0)throw Error('P0D_TEST_REPORT_INVALID');
+        if(report.metadata.fromCache||report.data().sourceHash!==report.data().reconstructedHash||report.data().changedRecords!==1)throw Error('P0D_TEST_REPORT_INVALID');
         if(window.click360SparkOperationalSession||(await click360Db.doc(`businesses/${uid}/metadata/storage`).get({source:'server'})).exists)throw Error('P0D_TEST_WRITER_ACTIVATED');
         return {reportId:result.reportId,report:report.data(),local:await CLICK360_V16_STORAGE.getSnapshot(tenant)};
       },{uid,tenant});

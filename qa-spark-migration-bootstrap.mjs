@@ -300,7 +300,27 @@ for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:f
 {
   const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
   const policy={enabled:true,operationalAccess:true,automaticShadow:true,automaticMigration:true,pilotOwnerUids:[ownerUid]};
-  f.serverDocs.set('storageRollout/sparkV1',policy);await f.run();const token=f.authority();
+  f.serverDocs.set('storageRollout/sparkV1',policy);
+  const before=structuredClone(f.record),deferred=await f.run();
+  assert.equal(deferred.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
+  assert.equal(deferred.prepared,false);assert.equal(deferred.cutoverPerformed,false);
+  assert.equal(f.counts().imports,0);assert.deepEqual(f.record,before);
+  const source=await api.selectSource({ownerUid,remote:{source:'server',revision:1,identity,snapshot:remote},local:{...f.record,durable:true},unknownOperations:0});
+  const {snapshot:ignored,...metadata}=f.record;
+  const journalCapture={ownerUid,rows:[],recordCount:0,enumerationComplete:true};
+  const financialProofs=await Promise.all(source.businessIds.map(async businessId=>({businessId,...await api.deriveCashSummaries({snapshot:source.snapshot,businessId})})));
+  const plan=await CLICK360_SPARK_HANDOFF.plan({ownerUid,snapshot:source.snapshot,sourceHash:source.sourceHash,
+    deviceMetadataHash:await api.hash(metadata),journalHash:await api.hash(journalCapture),journalCapture,
+    businessIds:source.businessIds,financialProofs,unknownCount:0,conflictCount:0});
+  const approval=await CLICK360_SPARK_HANDOFF.runtimeApproval(plan,f.options.buildSha);
+  f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/runtimePreparation`,approval);
+  f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/cutover`,{ownerUid,sourceHash:plan.sourceHash,buildSha:f.options.buildSha,businessIds:source.businessIds});
+  assert.equal((await f.run()).prepared,true);assert.equal(f.counts().imports,1);
+  f.record.pendingOperations.push('newer-normal-use-save');
+  const changed=await f.run();assert.equal(changed.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
+  assert.equal(f.counts().imports,1,'A stale approval cannot claim a changed device source or fence legacy');
+  f.record.pendingOperations.pop();
+  const token=f.authority();
   const scope={projectId:'click-360',ownerUid,buildSha:f.options.buildSha,deviceId:'durable-device'};
   assert.equal(CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority(token,scope,{write:true}),true);
   assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority({verified:true},scope),/AUTHORITY_REQUIRED/);
@@ -312,3 +332,24 @@ for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:f
 }
 console.log(JSON.stringify({status:'PASS',scope:'migration_bootstrap_callback_contract',ownerWideCensus:true,
   localSourcePreserved:true,foreignActorBlocked:true,productionActivation:false,cutover:false}));
+
+// A normal-use attempt cannot fence an untouched legacy owner just because
+// financial/outbox evidence is unavailable. Once a fence exists, strict
+// recovery is mandatory: no silent return to a legacy commercial writer.
+for(const fenced of [false,true]){
+  const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
+  f.serverDocs.set('storageRollout/sparkV1',{enabled:true,operationalAccess:true,automaticShadow:true,
+    automaticMigration:true,pilotOwnerUids:[ownerUid]});
+  f.record.snapshot=structuredClone(f.record.snapshot);
+  f.record.snapshot.cashSessions.push({id:'unverified-unattended-session',businessId:businessIds[0],
+    operationId:'unverified-opening',date:'2026-09-03',status:'open',openingAmount:0});
+  if(fenced)f.serverDocs.set(`businesses/${ownerUid}/metadata/storage`,{ownerUid,storageMode:'migrating'});
+  const before=structuredClone(f.record);
+  if(fenced)await assert.rejects(f.run(),/SPARK_MIGRATION_CASH_PROOF_REQUIRED/);
+  else{
+    const r=await f.run();assert.equal(r.prepared,false);assert.equal(r.reason,'SPARK_MIGRATION_CASH_PROOF_REQUIRED');
+    assert.equal(r.cutoverPerformed,false);
+  }
+  assert.equal(f.counts().imports,0);assert.deepEqual(f.record,before);
+}
+console.log('PASS unattended source-bound approvals precede shadow; absent/stale approval and unverified financial source preserve untouched legacy; existing fences never downgrade');

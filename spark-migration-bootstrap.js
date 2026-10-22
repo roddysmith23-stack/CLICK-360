@@ -284,7 +284,7 @@
       if(productionRecoveryOnly&&policy.automaticRecoveryCopy!==true)return {prepared:false};
       if(projectId==='click-360'&&!productionRecoveryOnly
         &&(policy.operationalAccess!==true||policy.automaticShadow!==true||policy.automaticMigration!==true))return {prepared:false};
-      let journal,recovery;
+      let journal,recovery,shadowStarted=false;
       try{
         const local=await readLocal();context();
         if(local?.source==='spark_operational_candidate')throw Error('SPARK_MIGRATION_OPERATIONAL_SOURCE_STOP');
@@ -390,6 +390,30 @@
           if(!proof.canProceed)throw Error('SPARK_MIGRATION_CASH_PROOF_REQUIRED');
           cashProofs.push({businessId,...proof});
         }
+        // Unattended production enrollment is not source approval. Before
+        // claiming/fencing an untouched legacy owner, require the existing
+        // administrative approvals to match THIS device's complete plan.
+        // Missing/old approvals leave legacy usable, with no shadow writes.
+        // An already-claimed migration must use strict recovery, never fall
+        // back to a legacy writer after its server fence has been installed.
+        if(projectId==='click-360'){
+          const control=await server(db.doc(`businesses/${ownerUid}/metadata/storage`));
+          if(!control.exists){
+            const plan=await root.CLICK360_SPARK_HANDOFF.plan({ownerUid,snapshot:selected.snapshot,
+              sourceHash:selected.sourceHash,deviceMetadataHash:pinnedMetadataHash,journalHash:await api.hash(journalCapture),
+              journalCapture,businessIds:selected.businessIds,financialProofs:cashProofs,unknownCount:0,conflictCount:0,historicalReadOnly});
+            const expected=await root.CLICK360_SPARK_HANDOFF.runtimeApproval(plan,buildSha);
+            const runtime=(await server(db.doc(`businesses/${ownerUid}/storageApprovals/runtimePreparation`))).data();
+            const cutover=(await server(db.doc(`businesses/${ownerUid}/storageApprovals/cutover`))).data();
+            await assertStable();
+            if(await api.hash(await journal.captureOwner(ownerUid))!==await api.hash(journalCapture))
+              throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
+            const same=(a,b)=>api.canonicalJson(a??null)===api.canonicalJson(b??null);
+            if(!same(runtime,expected)||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha,businessIds:selected.businessIds}))
+              return {prepared:false,reason:'SPARK_SOURCE_BOUND_APPROVAL_PENDING',sourceHash:plan.sourceHash,
+                planHash:plan.planHash,operationalCloudConfirmed:false,cutoverPerformed:false};
+          }
+        }
         const {snapshot:preservedSnapshot,...deviceRecordMetadata}=local;
         const preservedRecovery={read:hash=>recovery.read(hash),readHandoff:hash=>recovery.readHandoff(hash),pin:input=>recovery.pin({...input,
           remoteSourceHash:selected.remoteHash,businessIds:selected.businessIds,sourceDeviceId:device.deviceId,
@@ -410,6 +434,7 @@
             return {ownerUid,deviceRevision,unknownOperations:0,mutationLockHeld:leaseHeld(),
               deviceMetadataHash:pinnedMetadataHash,journalCapture:await journal.captureOwner(ownerUid)};
           }});
+        shadowStarted=true;
         const shadow=await importer.prepareShadow();context();await assertStable();
         if(shadow.phase!=='READY_TO_CUTOVER'||shadow.cutoverPerformed!==false
           ||shadow.equality?.status!=='SEMANTIC_EQUALITY_PASS'
@@ -443,6 +468,20 @@
         return {...shadow,...(activation||{}),prepared:true,reconciliations,handoffPrepared:true,handoff:preserved,
           runtimePreparation,
           operationalCloudConfirmed:false};
+      }catch(error){
+        // An unattended attempt must not take a still-legacy business out of
+        // service for a source/outbox uncertainty discovered BEFORE claiming
+        // any shadow. Prove the server fence is still absent; never downgrade
+        // an existing migration, swallow identity revocation, or mask a write
+        // response whose result might already have installed the fence.
+        const defer=new Set(['SPARK_MIGRATION_DEVICE_METADATA_DRIFT_STOP','SPARK_MIGRATION_DEVICE_DRIFT_STOP',
+          'SPARK_MIGRATION_OUTBOX_RECONCILIATION_STOP','SPARK_MIGRATION_COMMAND_HANDOFF_REQUIRED',
+          'SPARK_MIGRATION_OUTBOX_CHANGED_STOP','SPARK_MIGRATION_CASH_PROOF_REQUIRED']);
+        if(projectId==='click-360'&&!productionRecoveryOnly&&!shadowStarted&&defer.has(error.message)){
+          const control=await server(db.doc(`businesses/${ownerUid}/metadata/storage`));
+          if(!control.exists)return {prepared:false,reason:error.message,operationalCloudConfirmed:false,cutoverPerformed:false};
+        }
+        throw error;
       }finally{journal?.close();recovery?.close();}
     }
     return Object.freeze({prepare,verifyLocalHandoff,activateApproved});

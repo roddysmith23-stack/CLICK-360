@@ -4211,8 +4211,20 @@
     P0A_RECOVERY_EPOCH=expectedEpoch;
     try{return await run;}finally{if(P0A_RECOVERY_RUN===run)P0A_RECOVERY_RUN=null;}
   }
-  window.addEventListener('online',()=>{
-    if(AUTH_APPROVED&&auth.currentUser)runP0ARecovery(auth.currentUser,AUTH_EPOCH).catch(()=>{});
+  function resumeP0ARecovery(){
+    const user=auth.currentUser;
+    // Returning to an installed PWA need not produce Auth or online events.
+    // Wake preservation only; never re-enter operational bootstrap or suspend
+    // a live commercial writer. The existing single-flight, epoch, device
+    // lease and source/journal drift checks remain authoritative.
+    if(!AUTH_APPROVED||!user||navigator.onLine===false
+      ||window.click360User?.ownerId!==user.uid||window.click360SparkOperationalSession)return;
+    runP0ARecovery(user,AUTH_EPOCH).catch(()=>{});
+  }
+  window.addEventListener('online',resumeP0ARecovery);
+  window.addEventListener('pageshow',event=>{if(event.persisted)resumeP0ARecovery();});
+  window.document?.addEventListener('visibilitychange',()=>{
+    if(window.document.visibilityState==='visible')resumeP0ARecovery();
   });
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
         SPARK_APPROVAL_SUPERVISOR?.close();SPARK_APPROVAL_SUPERVISOR=null;
