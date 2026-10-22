@@ -396,7 +396,7 @@
         // Missing/old approvals leave legacy usable, with no shadow writes.
         // An already-claimed migration must use strict recovery, never fall
         // back to a legacy writer after its server fence has been installed.
-        if(projectId==='click-360'){
+        if(projectId==='click-360'||policy.sourceBoundPreparation===true){
           const control=await server(db.doc(`businesses/${ownerUid}/metadata/storage`));
           if(!control.exists){
             const plan=await root.CLICK360_SPARK_HANDOFF.plan({ownerUid,snapshot:selected.snapshot,
@@ -477,7 +477,7 @@
         const defer=new Set(['SPARK_MIGRATION_DEVICE_METADATA_DRIFT_STOP','SPARK_MIGRATION_DEVICE_DRIFT_STOP',
           'SPARK_MIGRATION_OUTBOX_RECONCILIATION_STOP','SPARK_MIGRATION_COMMAND_HANDOFF_REQUIRED',
           'SPARK_MIGRATION_OUTBOX_CHANGED_STOP','SPARK_MIGRATION_CASH_PROOF_REQUIRED']);
-        if(projectId==='click-360'&&!productionRecoveryOnly&&!shadowStarted&&defer.has(error.message)){
+        if((projectId==='click-360'||policy.sourceBoundPreparation===true)&&!productionRecoveryOnly&&!shadowStarted&&defer.has(error.message)){
           const control=await server(db.doc(`businesses/${ownerUid}/metadata/storage`));
           if(!control.exists)return {prepared:false,reason:error.message,operationalCloudConfirmed:false,cutoverPerformed:false};
         }
