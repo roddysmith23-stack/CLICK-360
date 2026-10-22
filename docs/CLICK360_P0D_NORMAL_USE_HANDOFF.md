@@ -1,6 +1,8 @@
 # P0D: uso normal y handoff condicionado
 
-Este cambio no activa ningún tenant, no publica aprobaciones y no modifica Rules.
+Este cambio no activa ningún tenant ni publica aprobaciones. La protección
+inicial de Rules descrita abajo solo añade una denegación source-bound opcional;
+no amplía permisos legacy, P0A ni comerciales.
 
 ## Despertar sin intervención del cliente
 
@@ -36,6 +38,28 @@ el recibo actual y publicar exclusivamente las autorizaciones source-bound
 comprendidas por el permiso del owner. La aplicación comprobará de nuevo la
 fuente en el arranque normal. Una fuente diferente no adquiere permiso implícito.
 
+## Fence antes del shadow, también para una PWA anterior
+
+La política administrativa `sourceBoundPreparation=true` hace que Rules
+verifique ANTES de crear `metadata/storage`: propietario, SHA de fuente, build,
+cobertura completa de negocios y dispositivo durable autorizado. La fuente/build/
+negocios vienen de la aprobación privada de cutover existente; el build y el ID
+durable original también deben coincidir con la política privada P0D habilitada.
+El campo `sourceDeviceId` de esa política es administrativo y privado, no una
+atestación criptográfica del hardware ni un permiso que el cliente pueda crear.
+
+Sin aprobación exacta, la solicitud inicial se rechaza antes de instalar un
+fence. Esto protege frente a un cliente anterior que no contiene la nueva
+comprobación JS. Habilitar este guard NO habilita shadow, migración, runtime,
+operationalAccess ni cutover. Esas autorizaciones separadas siguen apagadas.
+
+Presupuesto de lecturas únicas de Rules para el claim inicial: autorización
+owner (hasta dos), rollout (una, reutilizada), aprobación privada (una), política
+P0D privada (una), revisión legacy (una): hasta seis de diez por escritura.
+No se añaden lecturas a ventas, caja, inventario ni transacciones multilinea.
+La paridad elimina solo el helper y su conjunción opcional y recupera todos los
+predicados/bytes anteriores. El renombrado adicional de símbolos es reversible.
+
 ## Regresiones
 
 - `qa-p0d-normal-resume.mjs`: falla antes del listener; foreground/BFCache,
@@ -46,5 +70,10 @@ fuente en el arranque normal. Una fuente diferente no adquiere permiso implícit
 - `qa-spark-migration-bootstrap.mjs`: producción sin aprobación/antigua no llama
   importer; aprobación exacta permite la preparación; finanzas no verificadas
   mantienen legacy solo cuando el fence sigue ausente.
+- `qa-spark-modular-rules.mjs`: cliente Web SDK real demuestra que la versión
+  anterior podía reclamar el shadow con otro build; el nuevo guard rechaza build,
+  dispositivo, source, negocios incorrectos y aprobación ausente, pero acepta
+  el claim exacto y conserva el fence legacy. Staging repite estos casos con
+  Web SDK en Chromium y WebKit, sin migrar un negocio real.
 
 No existe aceptación física nueva ni cutover real como consecuencia del release.

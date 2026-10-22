@@ -396,7 +396,7 @@
         // Missing/old approvals leave legacy usable, with no shadow writes.
         // An already-claimed migration must use strict recovery, never fall
         // back to a legacy writer after its server fence has been installed.
-        if(projectId==='click-360'){
+        if(projectId==='click-360'||policy.sourceBoundPreparation===true){
           const control=await server(db.doc(`businesses/${ownerUid}/metadata/storage`));
           if(!control.exists){
             const plan=await root.CLICK360_SPARK_HANDOFF.plan({ownerUid,snapshot:selected.snapshot,
@@ -405,11 +405,16 @@
             const expected=await root.CLICK360_SPARK_HANDOFF.runtimeApproval(plan,buildSha);
             const runtime=(await server(db.doc(`businesses/${ownerUid}/storageApprovals/runtimePreparation`))).data();
             const cutover=(await server(db.doc(`businesses/${ownerUid}/storageApprovals/cutover`))).data();
+            const originalDevicePolicy=policy.sourceBoundPreparation===true
+              ?(await server(db.doc(`businesses/${ownerUid}/recoveryPreflightPolicy/main`))).data():null;
             await assertStable();
             if(await api.hash(await journal.captureOwner(ownerUid))!==await api.hash(journalCapture))
               throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
             const same=(a,b)=>api.canonicalJson(a??null)===api.canonicalJson(b??null);
-            if(!same(runtime,expected)||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha,businessIds:selected.businessIds}))
+            const originalDeviceApproved=policy.sourceBoundPreparation!==true
+              ||(originalDevicePolicy?.enabled===true&&originalDevicePolicy.ownerUid===ownerUid
+                &&originalDevicePolicy.buildSha===buildSha&&originalDevicePolicy.sourceDeviceId===device.deviceId);
+            if(!originalDeviceApproved||!same(runtime,expected)||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha,businessIds:selected.businessIds}))
               return {prepared:false,reason:'SPARK_SOURCE_BOUND_APPROVAL_PENDING',sourceHash:plan.sourceHash,
                 planHash:plan.planHash,operationalCloudConfirmed:false,cutoverPerformed:false};
           }
@@ -477,7 +482,7 @@
         const defer=new Set(['SPARK_MIGRATION_DEVICE_METADATA_DRIFT_STOP','SPARK_MIGRATION_DEVICE_DRIFT_STOP',
           'SPARK_MIGRATION_OUTBOX_RECONCILIATION_STOP','SPARK_MIGRATION_COMMAND_HANDOFF_REQUIRED',
           'SPARK_MIGRATION_OUTBOX_CHANGED_STOP','SPARK_MIGRATION_CASH_PROOF_REQUIRED']);
-        if(projectId==='click-360'&&!productionRecoveryOnly&&!shadowStarted&&defer.has(error.message)){
+        if((projectId==='click-360'||policy.sourceBoundPreparation===true)&&!productionRecoveryOnly&&!shadowStarted&&defer.has(error.message)){
           const control=await server(db.doc(`businesses/${ownerUid}/metadata/storage`));
           if(!control.exists)return {prepared:false,reason:error.message,operationalCloudConfirmed:false,cutoverPerformed:false};
         }

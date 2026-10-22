@@ -297,9 +297,11 @@ for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:f
   const before=structuredClone(f.record);assert.equal((await f.run()).prepared,false);
   assert.deepEqual(f.record,before);assert.equal(f.counts().imports,0);assert.equal(f.captures.size,0);
 }
-{
-  const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
-  const policy={enabled:true,operationalAccess:true,automaticShadow:true,automaticMigration:true,pilotOwnerUids:[ownerUid]};
+for(const target of ['click-360','click360-staging-7620168025']){
+  const f=fixture();f.options.projectId=target;f.options.db.app.options.projectId=target;
+  const policy={enabled:true,operationalAccess:true,automaticShadow:true,automaticMigration:true,sourceBoundPreparation:true,pilotOwnerUids:[ownerUid]};
+  const devicePolicy={ownerUid,enabled:true,buildSha:f.options.buildSha,sourceDeviceId:'durable-device'};
+  f.serverDocs.set(`businesses/${ownerUid}/recoveryPreflightPolicy/main`,devicePolicy);
   f.serverDocs.set('storageRollout/sparkV1',policy);
   const before=structuredClone(f.record),deferred=await f.run();
   assert.equal(deferred.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
@@ -316,12 +318,16 @@ for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:f
   f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/runtimePreparation`,approval);
   f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/cutover`,{ownerUid,sourceHash:plan.sourceHash,buildSha:f.options.buildSha,businessIds:source.businessIds});
   assert.equal((await f.run()).prepared,true);assert.equal(f.counts().imports,1);
+  f.serverDocs.set(`businesses/${ownerUid}/recoveryPreflightPolicy/main`,{...devicePolicy,sourceDeviceId:'different-device'});
+  const foreignDevice=await f.run();assert.equal(foreignDevice.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
+  assert.equal(f.counts().imports,1,'Device identity mismatch must defer before any shadow claim');
+  f.serverDocs.set(`businesses/${ownerUid}/recoveryPreflightPolicy/main`,devicePolicy);
   f.record.pendingOperations.push('newer-normal-use-save');
   const changed=await f.run();assert.equal(changed.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
   assert.equal(f.counts().imports,1,'A stale approval cannot claim a changed device source or fence legacy');
   f.record.pendingOperations.pop();
   const token=f.authority();
-  const scope={projectId:'click-360',ownerUid,buildSha:f.options.buildSha,deviceId:'durable-device'};
+  const scope={projectId:target,ownerUid,buildSha:f.options.buildSha,deviceId:'durable-device'};
   assert.equal(CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority(token,scope,{write:true}),true);
   assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority({verified:true},scope),/AUTHORITY_REQUIRED/);
   assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertPreparationAuthority(token,{...scope,ownerUid:'other'}),/AUTHORITY_REQUIRED/);
@@ -336,10 +342,10 @@ console.log(JSON.stringify({status:'PASS',scope:'migration_bootstrap_callback_co
 // A normal-use attempt cannot fence an untouched legacy owner just because
 // financial/outbox evidence is unavailable. Once a fence exists, strict
 // recovery is mandatory: no silent return to a legacy commercial writer.
-for(const fenced of [false,true]){
-  const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
+for(const target of ['click-360','click360-staging-7620168025'])for(const fenced of [false,true]){
+  const f=fixture();f.options.projectId=target;f.options.db.app.options.projectId=target;
   f.serverDocs.set('storageRollout/sparkV1',{enabled:true,operationalAccess:true,automaticShadow:true,
-    automaticMigration:true,pilotOwnerUids:[ownerUid]});
+    automaticMigration:true,sourceBoundPreparation:true,pilotOwnerUids:[ownerUid]});
   f.record.snapshot=structuredClone(f.record.snapshot);
   f.record.snapshot.cashSessions.push({id:'unverified-unattended-session',businessId:businessIds[0],
     operationId:'unverified-opening',date:'2026-09-03',status:'open',openingAmount:0});
