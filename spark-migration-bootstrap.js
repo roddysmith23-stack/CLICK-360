@@ -405,11 +405,16 @@
             const expected=await root.CLICK360_SPARK_HANDOFF.runtimeApproval(plan,buildSha);
             const runtime=(await server(db.doc(`businesses/${ownerUid}/storageApprovals/runtimePreparation`))).data();
             const cutover=(await server(db.doc(`businesses/${ownerUid}/storageApprovals/cutover`))).data();
+            const originalDevicePolicy=policy.sourceBoundPreparation===true
+              ?(await server(db.doc(`businesses/${ownerUid}/recoveryPreflightPolicy/main`))).data():null;
             await assertStable();
             if(await api.hash(await journal.captureOwner(ownerUid))!==await api.hash(journalCapture))
               throw Error('SPARK_MIGRATION_OUTBOX_CHANGED_STOP');
             const same=(a,b)=>api.canonicalJson(a??null)===api.canonicalJson(b??null);
-            if(!same(runtime,expected)||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha,businessIds:selected.businessIds}))
+            const originalDeviceApproved=policy.sourceBoundPreparation!==true
+              ||(originalDevicePolicy?.enabled===true&&originalDevicePolicy.ownerUid===ownerUid
+                &&originalDevicePolicy.buildSha===buildSha&&originalDevicePolicy.sourceDeviceId===device.deviceId);
+            if(!originalDeviceApproved||!same(runtime,expected)||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha,businessIds:selected.businessIds}))
               return {prepared:false,reason:'SPARK_SOURCE_BOUND_APPROVAL_PENDING',sourceHash:plan.sourceHash,
                 planHash:plan.planHash,operationalCloudConfirmed:false,cutoverPerformed:false};
           }

@@ -300,6 +300,8 @@ for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:f
 for(const target of ['click-360','click360-staging-7620168025']){
   const f=fixture();f.options.projectId=target;f.options.db.app.options.projectId=target;
   const policy={enabled:true,operationalAccess:true,automaticShadow:true,automaticMigration:true,sourceBoundPreparation:true,pilotOwnerUids:[ownerUid]};
+  const devicePolicy={ownerUid,enabled:true,buildSha:f.options.buildSha,sourceDeviceId:'durable-device'};
+  f.serverDocs.set(`businesses/${ownerUid}/recoveryPreflightPolicy/main`,devicePolicy);
   f.serverDocs.set('storageRollout/sparkV1',policy);
   const before=structuredClone(f.record),deferred=await f.run();
   assert.equal(deferred.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
@@ -316,6 +318,10 @@ for(const target of ['click-360','click360-staging-7620168025']){
   f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/runtimePreparation`,approval);
   f.serverDocs.set(`businesses/${ownerUid}/storageApprovals/cutover`,{ownerUid,sourceHash:plan.sourceHash,buildSha:f.options.buildSha,businessIds:source.businessIds});
   assert.equal((await f.run()).prepared,true);assert.equal(f.counts().imports,1);
+  f.serverDocs.set(`businesses/${ownerUid}/recoveryPreflightPolicy/main`,{...devicePolicy,sourceDeviceId:'different-device'});
+  const foreignDevice=await f.run();assert.equal(foreignDevice.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
+  assert.equal(f.counts().imports,1,'Device identity mismatch must defer before any shadow claim');
+  f.serverDocs.set(`businesses/${ownerUid}/recoveryPreflightPolicy/main`,devicePolicy);
   f.record.pendingOperations.push('newer-normal-use-save');
   const changed=await f.run();assert.equal(changed.reason,'SPARK_SOURCE_BOUND_APPROVAL_PENDING');
   assert.equal(f.counts().imports,1,'A stale approval cannot claim a changed device source or fence legacy');
