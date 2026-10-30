@@ -35,6 +35,9 @@ assert.equal(typeof windowEvents.get('pageshow'),'function','BFCache restoration
 const settle=async()=>{while(vm.runInContext('P0A_RECOVERY_RUN !== null',scope))await new Promise(r=>setImmediate(r));};
 const visible=()=>{scope.window.document.visibilityState='visible';documentEvents.get('visibilitychange')();};
 documentEvents.get('visibilitychange')();await settle();assert.equal(runs.length,0,'Hidden page must not wake recovery');
+scope.AUTH_APPROVED=false;visible();await settle();
+assert.equal(runs.length,0,'A capture/preflight result published during login is not approval to handle normal-use foreground events');
+scope.AUTH_APPROVED=true;
 visible();await settle();assert.equal(runs.length,1);assert.equal(scope.window.click360DevicePreflight.status,'CLIENT_PREFLIGHT_READY');
 snapshot.snapshot.sales.push({id:'new-local-sale'});snapshot.deviceRevision='durable-new';
 blocked=true;visible();windowEvents.get('pageshow')({persisted:true});windowEvents.get('online')();

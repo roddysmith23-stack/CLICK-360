@@ -1,7 +1,7 @@
 import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
 import {waitForMigrationOutcome} from './spark-migration-progress.mjs';
 import '../qa-spark-migration-progress.mjs';
-import {assert,identity,newAppContext,largeTenantData,stateDocument,accountAccess,seed,url,emulatorOwnerEmail,emulatorPassword} from './r38-emulator-support.mjs';
+import {assert,identity,newAppContext,largeTenantData,stateDocument,accountAccess,seed,url,emulatorOwnerEmail,emulatorPassword,projectId} from './r38-emulator-support.mjs';
 // Called inside the existing served-UI suite and emulator lifecycle. No separate
 // runtime injection, financial replay or production project is involved.
 export async function certifyDevicePreflight({browser,env,uid,label}){
@@ -18,6 +18,22 @@ export async function certifyDevicePreflight({browser,env,uid,label}){
   const context=await newAppContext(browser,{width:390,height:844});
   try{
     let page=await context.newPage();page.setDefaultTimeout(60000);await page.goto(url,{waitUntil:'domcontentloaded'});
+    const authReady=()=>page.waitForFunction(()=>{
+      const diagnostic=window.click360StartupDiagnostic;
+      if(diagnostic?.phase==='FAILED')throw Error(diagnostic.errorCode);
+      return diagnostic?.phase==='READY'&&window.click360DebugAuth?.().approved===true;
+    });
+    const preflightReady=previousHash=>page.waitForFunction(previousHash=>{
+      const r=window.click360DevicePreflight;
+      if(['BLOCKED','CLIENT_PREFLIGHT_BLOCKED'].includes(r?.status))throw Error(r.reason||r.status);
+      return r?.status==='CLIENT_PREFLIGHT_READY'&&(!previousHash||r.sourceHash!==previousHash);
+    },previousHash);
+    const recoveryIdle=()=>page.evaluate(async key=>{
+      if(window.click360SparkOperationalSession)throw Error('P0D_TEST_UNEXPECTED_OPERATIONAL_WRITER');
+      // Queue behind the actual recovery lease, rather than sleeping after
+      // a receipt published inside its callback. Returning proves release.
+      await navigator.locks.request(key,()=>{});
+    },`click360-spark:${projectId}:${uid}:${uid}`);
     await page.waitForFunction(()=>!!window.click360Auth?.signInWithEmailAndPassword&&!!window.CLICK360_V16_STORAGE);
     const tenant={...identity(uid),authUid:uid};
     await page.evaluate(async({tenant,local})=>{
@@ -26,6 +42,10 @@ export async function certifyDevicePreflight({browser,env,uid,label}){
     },{tenant,local});
     await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),{email:emulatorOwnerEmail,password:emulatorPassword});
     await page.waitForFunction(()=>window.click360DevicePreflight?.status==='DISABLED');
+    // DISABLED is emitted INSIDE the initial Auth capture, before unlock.
+    // A foreground event then is correctly ignored by the AUTH_APPROVED
+    // guard. Simulate normal foreground use only after the app is ready.
+    await authReady();
     const before=await page.evaluate(async({tenant})=>{
       const copy=click360SparkRecoveryCopy,manifest=await click360Db.doc(`businesses/${tenant.ownerUid}/recoveryCopies/${copy.captureHash}`).get({source:'server'});
       return {copy,buildSha:CLICK360_RELEASE_ASSETS['app.js'],deviceIdHash:await CLICK360_SPARK_MIGRATION.hash(manifest.data().deviceId),
@@ -37,7 +57,7 @@ export async function certifyDevicePreflight({browser,env,uid,label}){
     // An installed PWA can resume while Auth and connectivity stay unchanged.
     // Exercise the real lifecycle listener, not reload or a direct coordinator.
     await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
-    await page.waitForFunction(()=>window.click360DevicePreflight?.status==='CLIENT_PREFLIGHT_READY');
+    await preflightReady();await recoveryIdle();
     before.local=await page.evaluate(async({tenant})=>{
       const record=await CLICK360_V16_STORAGE.getSnapshot(tenant),snapshot=structuredClone(record.snapshot);
       snapshot.products[0].name='Cambio local después de la copia inicial';
@@ -47,12 +67,11 @@ export async function certifyDevicePreflight({browser,env,uid,label}){
       window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true}));
       return CLICK360_V16_STORAGE.getSnapshot(tenant);
     },{tenant});
-    await page.waitForFunction(old=>window.click360DevicePreflight?.status==='CLIENT_PREFLIGHT_READY'
-      &&window.click360DevicePreflight.sourceHash!==old,before.copy.sourceHash);
+    await preflightReady(before.copy.sourceHash);await recoveryIdle();
     let first;
     for(let pass=0;pass<2;pass++){
       await page.close();page=await context.newPage();page.setDefaultTimeout(60000);await page.goto(url,{waitUntil:'domcontentloaded'});
-      await page.waitForFunction(()=>window.click360DevicePreflight?.status==='CLIENT_PREFLIGHT_READY'||window.click360DevicePreflight?.status==='BLOCKED');
+      await preflightReady();await authReady();await recoveryIdle();
       const proof=await page.evaluate(async({uid,tenant})=>{
         const result=click360DevicePreflight;if(result.status!=='CLIENT_PREFLIGHT_READY')throw Error(JSON.stringify(result));
         const report=await click360Db.doc(`businesses/${uid}/recoveryPreflights/${result.reportId}`).get({source:'server'});
@@ -66,6 +85,13 @@ export async function certifyDevicePreflight({browser,env,uid,label}){
     await seed(env,async db=>assert(JSON.stringify((await getDocFromServer(doc(db,`businesses/${uid}/state/main`))).data())===JSON.stringify(envelope)));
     console.log(JSON.stringify({stage:'AUTOMATIC_DEVICE_PREFLIGHT_PASS',browser:label,sourceHash:first.report.sourceHash,
       reconstructedHash:first.report.reconstructedHash,sourceAndJournalPreserved:true,coldRestart:true,idempotent:true,commercialWrites:0,cutover:false}));
+  }catch(error){
+    const page=context.pages().at(-1);
+    console.log(JSON.stringify({stage:'DEVICE_PREFLIGHT_FAILURE',browser:label,diagnostic:await page?.evaluate(()=>({
+      startup:window.click360StartupDiagnostic,approved:window.click360DebugAuth?.().approved,
+      preflight:window.click360DevicePreflight,visible:document.visibilityState,online:navigator.onLine
+    })).catch(()=>null)}));
+    throw error;
   }finally{await context.close();}
 }
 export async function certifyRecoveryCopy({browser,env,uid,label}){
