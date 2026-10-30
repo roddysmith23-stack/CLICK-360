@@ -29,7 +29,7 @@ export async function certifyStartupAuth({browser,uid,label,output}){
    await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),
     {email:emulatorOwnerEmail,password:emulatorPassword});
    if(scenario==='pending_account_read'){
-    await page.waitForFunction(()=>click360StartupDiagnostic?.phase==='WAITING',null,{timeout:25000});
+    await page.waitForFunction(()=>window.click360StartupDiagnostic?.phase==='WAITING',null,{timeout:25000});
     assert.match(await page.locator('#c360-startup-support').innerText(),/STARTUP_WAIT_ACCOUNT_SERVER_READ/);
     assert.equal(await page.evaluate(()=>!!window.click360SparkOperationalSession),false);
     assert.equal(await page.evaluate(()=>QA_ACCOUNT_READS),1,'No retry/polling while the original read is pending');

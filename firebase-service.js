@@ -171,6 +171,7 @@
           node.style.cssText='font-size:13px;overflow-wrap:anywhere;color:#f4cf63';
           document.getElementById('c360-auth-msg')?.insertAdjacentElement('afterend',node);}
         node.textContent=phase==='READY'?'':phase==='FAILED'?`Código de soporte: ${errorCode}`
+          :phase==='STOPPED'?`Comprobación detenida. Código: STARTUP_STOPPED_${lastCompleted||'ACCESS'}`
           :waiting?`Estamos esperando ${labels[stage]||'una comprobación segura'}. Tus datos siguen protegidos. Código: STARTUP_WAIT_${stage}`
           :`Comprobando ${labels[stage]||'el acceso seguro'}. Código: STARTUP_${stage||'ACCESS'}`;
       }

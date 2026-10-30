@@ -218,7 +218,7 @@
           assertStable:async()=>{const currentJournal=await root.CLICK360_MODULAR_JOURNAL.open();
             try{await localStable(currentJournal);await authorizationsStable();context();}finally{currentJournal.close();}}};
         if(!preCutover)localHandoffAuthorities.set(result,{projectId,ownerUid,buildSha,assertCurrent:context});
-        return result;
+        return Object.freeze(result);
       }finally{journal?.close();recovery?.close();}
     }
     async function activateApproved(){
