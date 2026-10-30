@@ -104,10 +104,11 @@
         throw Error('SPARK_BOOTSTRAP_CONTEXT_CHANGED');
     }
     function publish(value,reason=null){context();phase=value;onPhase({phase:value,reason,operationalCloudConfirmed:value==='READY'});}
+    const awaitStage=(stage,run)=>typeof options.awaitStage==='function'?options.awaitStage(stage,run):run();
     async function acquireLease(){
       if(releaseLease)return;
       if(!root.navigator.locks?.request)throw Error('SPARK_BOOTSTRAP_DEVICE_LOCK_UNAVAILABLE');
-      await new Promise((resolve,reject)=>{
+      await awaitStage('DEVICE_LOCK',()=>new Promise((resolve,reject)=>{
         // Web Locks are already scoped to this browser storage partition.
         // Do not depend on a localStorage device ID: full/disabled LS can
         // generate a different ID in every tab while IndexedDB remains shared.
@@ -117,12 +118,12 @@
           const held=new Promise(release=>releaseLease=release);
           resolve();await held;
         }).catch(reject);
-      });
+      }));
       context();
     }
     async function server(ref,stage='server_read'){
       context();let snap;
-      try{snap=await ref.get({source:'server'});}catch(error){error.sparkStage=stage;throw error;}
+      try{snap=await awaitStage(stage.toUpperCase(),()=>ref.get({source:'server'}));}catch(error){error.sparkStage=stage;throw error;}
       context();
       if(snap.metadata?.fromCache!==false||snap.metadata?.hasPendingWrites!==false)throw Error('SPARK_BOOTSTRAP_SERVER_REQUIRED');
       return snap;
@@ -256,7 +257,7 @@
         if(actorUid!==ownerUid||typeof options.verifyLocalHandoff!=='function')
           throw Error('SPARK_BOOTSTRAP_LEGACY_LOCAL_RECONCILIATION_REQUIRED');
         await acquireLease();context();
-        localHandoff=await options.verifyLocalHandoff({leaseHeld:()=>!!releaseLease&&!closed});context();
+        localHandoff=await awaitStage('VERIFY_LOCAL_HANDOFF',()=>options.verifyLocalHandoff({leaseHeld:()=>!!releaseLease&&!closed}));context();
         if(localHandoff?.verified!==true||localHandoff.status!=='LOCAL_HANDOFF_VERIFIED'
           ||localHandoff.sourceHash!==control.sourceHash||typeof localHandoff.assertStable!=='function'
           ||api.canonicalJson(localHandoff.businessIds)!==api.canonicalJson(control.businessIds))
@@ -296,13 +297,13 @@
             throw Error('SPARK_OPERATIONAL_AUTHORITY_REVOKED');}});
         operationalAuthority=token;
       }
-      session=await root.CLICK360_SPARK_OPERATIONAL_UI.create({projectId,db,ownerUid,businessId,actorUid,deviceId,
+      session=await awaitStage('INSTALL_WRITER',()=>root.CLICK360_SPARK_OPERATIONAL_UI.create({projectId,db,ownerUid,businessId,actorUid,deviceId,
         onReadProgress:detail=>{context();onProgress({phase:'VERIFYING_CURRENT_CASH',transaction:detail});},
         ...(projectId==='click-360'?{operationalAuthority}:{syntheticCertification:true}),
         resolveUser,resolveIdentity:()=>root.CLICK360_MODULAR_PERSISTENCE.identity(ownerUid,resolveBusiness()),
         isOnline:()=>root.navigator.onLine,serverTimestamp:()=>root.firebase.firestore.FieldValue.serverTimestamp(),
-        persistCandidate:root.click360PersistSparkCandidate,projectConfirmed:root.click360ProjectSparkOperation});
-      context();root.click360SparkOperationalSession=session;publish('RECOVERING');await drain();context();
+        persistCandidate:root.click360PersistSparkCandidate,projectConfirmed:root.click360ProjectSparkOperation}));
+      context();root.click360SparkOperationalSession=session;publish('RECOVERING');await awaitStage('RECONCILE_JOURNAL',()=>drain());context();
       const records={};cursors.clear();
       publish('LOADING_SERVER_VIEW');
       // Independent bounded views do not need one serialized network round
@@ -334,7 +335,7 @@
         onProgress({phase:'VERIFYING_CURRENT_CASH',completedModules,totalModules:modules.length,activeModules:[]});
         // The active session is not a history page. Read its exact runtime
         // pointer and summary in one server transaction, even beyond row 100.
-        const current=await session.currentCash();context();
+        const current=await awaitStage('CURRENT_CASH',()=>session.currentCash());context();
         if(current.source!=='server'||current.identity?.ownerUid!==ownerUid||current.identity.businessId!==businessId)
           throw Error('SPARK_BOOTSTRAP_CURRENT_CASH_NOT_VERIFIED');
         if(current.session){

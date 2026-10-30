@@ -7,6 +7,7 @@ let finishFirst,firstReached;const reached=new Promise(r=>firstReached=r),blocke
 const user={uid:'owner'},identity={authUid:'owner',ownerUid:'owner',ownerId:'owner'};
 const runs=[],events=[],context={...identity};
 const sandbox={AUTH_EPOCH:1,ACTIVE_CONTEXT:context,AUTH_APPROVED:false,auth:{currentUser:user},
+  startupStep:(_stage,run)=>run(),
   CustomEvent:class {constructor(type){this.type=type;}},
   db:{app:{options:{projectId:'click-360'}},doc:()=>({get:async()=>({metadata:{fromCache:false,hasPendingWrites:false},
     data:()=>({enabled:true,automaticRecoveryCopy:true,automaticShadow:false,pilotOwnerUids:['owner']})})})},

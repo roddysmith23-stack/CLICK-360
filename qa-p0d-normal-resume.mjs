@@ -9,6 +9,7 @@ const user={uid:'normal-resume-owner'},context={authUid:user.uid,ownerUid:user.u
 let release,blocked=false,drift=false;
 const snapshot={snapshot:{sales:[{id:'preserved-sale'}]},deviceRevision:'durable-original'};
 const scope={AUTH_EPOCH:1,AUTH_APPROVED:true,ACTIVE_CONTEXT:context,auth:{currentUser:user},
+  startupStep:(_stage,run)=>run(),
   navigator:{onLine:true,locks:{request:async(name,options,fn)=>fn({name})}},
   CustomEvent:class {constructor(type,options){this.type=type;this.detail=options?.detail;}},
   isCurrentAuthEpoch:(u,e)=>u===scope.auth.currentUser&&e===scope.AUTH_EPOCH,activeIdentityIsValid:()=>true,

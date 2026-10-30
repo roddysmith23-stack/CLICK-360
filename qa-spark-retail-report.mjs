@@ -39,6 +39,7 @@ function fixture({cache=false,pending=0,concurrent=false,changeActor=false}={}){
       }};return q;
     }};
   const scope=vm.createContext({db,ownerUid:'owner',actorUid:'owner',resolveBusiness:()=> 'business',
+    awaitStage:(_stage,run)=>run(),
     context:()=>{if(actor!=='owner')throw Error('SPARK_BOOTSTRAP_CONTEXT_CHANGED');},
     session:{isBusy:()=>false,health:async()=>({pendingCount:pending,unknownCount:0,projectionPendingCount:0})},
     codec:{unpack:async raw=>raw.data},api:{hash:async value=>createHash('sha256').update(JSON.stringify(value)).digest('hex')},

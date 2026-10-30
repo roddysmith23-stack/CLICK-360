@@ -80,6 +80,7 @@ const firebaseSource=await readFile('firebase-service.js','utf8');
         return {metadata:{fromCache:false,hasPendingWrites:false},data:()=>({enabled:scenario!=='disabled',operationalAccess:scenario==='operational_access',automaticRecoveryCopy:true,automaticShadow:scenario==='shadow_enabled',
           pilotOwnerUids:scenario==='not_pilot'?[]:['owner']})};
       }})}});
+    scope.startupStep=(_stage,run)=>run();
     vm.runInContext(firebaseSource.slice(start,end),scope);
     assert.equal(await scope.runP0ARecovery(user,1),['pilot','no_source','locked'].includes(scenario));
     assert.equal(calls.length,scenario==='pilot'?1:0);

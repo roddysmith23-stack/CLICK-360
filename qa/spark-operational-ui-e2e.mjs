@@ -15,6 +15,7 @@ import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
 import {certifyShadowPreparation,certifyRecoveryCopy,certifyDevicePreflight} from './spark-migration-shadow-pwa.mjs';
 import {certifyRetailReport} from './spark-retail-report-pwa.mjs';
+import {certifyStartupAuth} from './startup-auth-pwa.mjs';
 import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,createEmulatorUser,
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
@@ -85,6 +86,7 @@ try{
     assert(workerProof.controlled&&workerProof.sameRelease,'Actual installed worker must match the served app before signing in');
     assert(await page.evaluate(()=>window.click360FirestoreTransport==='long_polling'),'Use the real app SDK transport, never a harness-only override');
     assert(await page.evaluate(()=>!!window.click360SparkOperationalSession&&window.click360SparkBootstrapState?.phase==='READY'),'Authentication automatically connects the modular PWA before any commercial action');
+    await certifyStartupAuth({browser,uid,label,output});
     assert(await page.evaluate(()=>click360GetTenantState().legalAcceptances?.some(a=>a.id==='legal-qa')),
       'Restore existing consent from its actual configuration source path; do not waive the legal gate');
     const legacyBefore=await readCloud(env,uid);

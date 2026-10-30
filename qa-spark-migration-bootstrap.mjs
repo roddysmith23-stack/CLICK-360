@@ -16,7 +16,7 @@ local.movements.push({id:'local-opening',operationId:'local-opening',cashSession
   date:'2026-09-03',kind:'apertura',amount:0},
   {id:'local-receipt',operationId:'local-sale',saleId:'local-sale',cashSessionId:'local-session',businessId:businessIds[0],
     date:'2026-09-03',kind:'ingreso',amount:30,paymentType:'sale',paymentMethod:'Transferencia'});
-function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,rows=[],cache=false}={}){
+function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,rows=[],cache=false,buildSha='21409a1d2dc7'}={}){
   let actor=ownerUid,lease=true,revision='device-2',closed=0,imports=0;
   const calls=[],pins=new Map(),captures=new Map(),handoffs=new Map(),serverDocs=new Map();
   let afterShadow=()=>{},readHandoffCorrupt=false,serverRecords=[],afterServerRecords=()=>{},importerAuthority=null;
@@ -55,7 +55,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
       equality:{status:'SEMANTIC_EQUALITY_PASS',sourceHash:selected.sourceHash,reconstructedHash:selected.sourceHash}};
     afterShadow(shadow);return shadow;
   }};}};
-  const options={db,projectId:db.app.options.projectId,firebase:{},ownerUid,actorUid:ownerUid,deviceId:'device',buildSha:'21409a1d2dc7',
+  const options={db,projectId:db.app.options.projectId,firebase:{},ownerUid,actorUid:ownerUid,deviceId:'device',buildSha,
     resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid}),leaseHeld:()=>lease,
     readLocal:async()=>({...record,deviceRevision:revision})};
   return {options,record,calls,pins,captures,handoffs,serverDocs,transport,setServerRecords:rows=>serverRecords=rows,
@@ -197,8 +197,8 @@ for(const delta of [{baseRevision:2},{pendingOperations:['new-save-reference']},
   const f=fixture({cache:true});await assert.rejects(f.run(),/SERVER_REQUIRED/);
   assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({...f.options,projectId:'click-360'}),/NONPRODUCTION_ONLY/);
 }
-async function localHandoffFixture(){
-  const rows=[],f=fixture({rows}),prepared=await f.run(),plan=prepared.handoff.plan;
+async function localHandoffFixture(buildSha){
+  const rows=[],f=fixture({rows,buildSha}),prepared=await f.run(),plan=prepared.handoff.plan;
   const approval=await CLICK360_SPARK_HANDOFF.runtimeApproval(plan,f.options.buildSha);
   const pin=f.pins.get(plan.sourceHash),control={ownerUid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',
     semanticEquality:'PASS',sourceHash:plan.sourceHash,reconstructedHash:plan.sourceHash,
@@ -230,6 +230,23 @@ async function localHandoffFixture(){
   }
   f.setServerRecords(records);
   return {...f,rows,plan,approval,control,records};
+}
+{
+  const f=await localHandoffFixture('2875f6e7496f');f.options.buildSha='a'.repeat(12);
+  f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
+  const proof=await f.verify(),scope={projectId:'click-360',ownerUid,buildSha:f.options.buildSha};
+  assert.equal(proof.sourceBuildSha,'2875f6e7496f');assert.equal(proof.buildSha,f.options.buildSha);
+  assert.equal(CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertLocalHandoffAuthority(proof,scope),true);
+  assert.throws(()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertLocalHandoffAuthority({...proof},scope),/AUTHORITY_REQUIRED/);
+  assert.equal(f.counts().imports,1,'Finishing a committed handoff must not import again');
+  f.serverDocs.get('storageRollout/sparkV1').automaticMigration=true;
+  f.control.storageMode='migrating';f.control.phase='READY_TO_CUTOVER';
+  await assert.rejects(CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(f.options).verifyLocalHandoff({preCutover:true}),/CONTROL_REQUIRED/,
+    'Compatibility never authorizes a new cutover with old approvals');
+}
+{
+  const f=await localHandoffFixture();f.options.buildSha='a'.repeat(12);
+  await assert.rejects(f.verify(),/CONTROL_REQUIRED/,'Unknown old builds are not automatically accepted');
 }
 for(const plan of ['normal','',null,'lifetime']){
   const f=await localHandoffFixture();
