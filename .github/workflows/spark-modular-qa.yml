@@ -12,6 +12,8 @@ jobs:
       CLICK360_QA_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -21,7 +23,9 @@ jobs:
           distribution: temurin
           java-version: '21'
       - run: npm ci
+      - run: node qa-startup-progress.mjs
       - run: npx playwright install --with-deps chromium firefox webkit
+      - run: node qa/spark-production-local-handoff-e2e.mjs
       - run: npm run qa:spark
       - run: npm run qa:spark:rules
       - run: npm run qa:spark:legacy-rules

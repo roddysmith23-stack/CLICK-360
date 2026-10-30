@@ -62,7 +62,8 @@ const firebaseSource=await readFile('firebase-service.js','utf8');
   const end=firebaseSource.indexOf('async function enterApprovedApp',start);
   assert(start>0&&end>start);
   assert(firebaseSource.includes("if(!p0aRecoveryOnly&&['demo-click360-spark-modular'"),'Recovery-only must not open the operational coordinator/journal');
-  for(const scenario of ['disabled','pilot','not_pilot','worker','no_source','network_failure','locked','shadow_enabled','operational_access']){
+  for(const scenario of ['disabled','pilot','not_pilot','worker','no_source','network_failure','locked','shadow_enabled','operational_access',
+    'server_modular','server_migrating','server_frozen']){
     const context={ownerUid:'owner',authUid:scenario==='worker'?'worker':'owner'},user={uid:context.authUid};
     const calls=[],record={snapshot:{sales:[{id:'retained'}]},deviceRevision:'device-42'};
     const window={addEventListener:()=>{},dispatchEvent:()=>{},click360User:{ownerId:'owner'},CLICK360_RELEASE_ASSETS:{'app.js':'5c1c657a7f99'},
@@ -75,11 +76,15 @@ const firebaseSource=await readFile('firebase-service.js','utf8');
       getDeviceId:()=> 'device',isCurrentAuthEpoch:()=>true,activeIdentityIsValid:()=>true,
       navigator:{locks:{request:async(_name,_options,fn)=>fn(scenario==='locked'?null:{})}},
       db:{app:{options:{projectId:'click-360'}},doc:path=>({get:async options=>{
-        assert.equal(path,'storageRollout/sparkV1');assert.equal(options.source,'server');
+        assert.equal(options.source,'server');
+        if(path==='businesses/owner/metadata/storage')return {exists:['server_modular','server_migrating','server_frozen'].includes(scenario),
+          metadata:{fromCache:false,hasPendingWrites:false},data:()=>({storageMode:scenario.replace('server_','')})};
+        assert.equal(path,'storageRollout/sparkV1');
         if(scenario==='network_failure')throw Object.assign(Error('offline'),{code:'unavailable'});
         return {metadata:{fromCache:false,hasPendingWrites:false},data:()=>({enabled:scenario!=='disabled',operationalAccess:scenario==='operational_access',automaticRecoveryCopy:true,automaticShadow:scenario==='shadow_enabled',
           pilotOwnerUids:scenario==='not_pilot'?[]:['owner']})};
       }})}});
+    scope.startupStep=(_stage,run)=>run();
     vm.runInContext(firebaseSource.slice(start,end),scope);
     assert.equal(await scope.runP0ARecovery(user,1),['pilot','no_source','locked'].includes(scenario));
     assert.equal(calls.length,scenario==='pilot'?1:0);

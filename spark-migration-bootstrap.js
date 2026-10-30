@@ -5,6 +5,17 @@
   // still requires the same exact private source/build approvals. No path
   // confirms/replays journal rows or publishes its own authorization.
   const preparationAuthorities=new WeakMap();
+  const localHandoffAuthorities=new WeakMap();
+  // Only this release's unchanged source codec/financial verifier is certified
+  // to finish a handoff committed by the previous production release. This
+  // does not authorize a new migration, a different source or changed data.
+  const compatibleCommittedHandoffBuilds=new Set(['2875f6e7496f']);
+  function assertLocalHandoffAuthority(proof,scope){
+    const authority=proof&&localHandoffAuthorities.get(proof);
+    if(!authority||Object.entries(scope).some(([key,value])=>authority[key]!==value))
+      throw Error('SPARK_LOCAL_HANDOFF_AUTHORITY_REQUIRED');
+    authority.assertCurrent();return true;
+  }
   function assertPreparationAuthority(token,scope,{write=false}={}){
     const proof=token&&preparationAuthorities.get(token);
     if(!proof||!/^[a-f0-9]{12,40}$/.test(proof.buildSha||'')||Object.entries(scope).some(([key,value])=>proof[key]!==value)||(write&&!proof.writable))
@@ -16,7 +27,7 @@
     await preparationAuthorities.get(token).verify(options);assertPreparationAuthority(token,scope,options);
   }
   function create({db,firebase,projectId,ownerUid,actorUid,deviceId,buildSha,
-    resolveUser,resolveContext,readLocal,leaseHeld,onProgress=()=>{},productionRecoveryOnly=false}){
+    resolveUser,resolveContext,readLocal,leaseHeld,onProgress=()=>{},awaitStage=(_stage,run)=>run(),productionRecoveryOnly=false}){
     if((!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId))
       ||db.app?.options?.projectId!==projectId)throw Error('SPARK_MIGRATION_BOOTSTRAP_NONPRODUCTION_ONLY');
     const api=root.CLICK360_SPARK_MIGRATION;
@@ -27,17 +38,19 @@
         throw Error('SPARK_MIGRATION_BOOTSTRAP_CONTEXT_CHANGED');
     }
     async function server(ref){
-      context();const s=await ref.get({source:'server'});context();
+      context();const s=await awaitStage('HANDOFF_SERVER_READ',()=>ref.get({source:'server'}));context();
       if(s.metadata?.fromCache!==false||s.metadata?.hasPendingWrites!==false)
         throw Error('SPARK_MIGRATION_BOOTSTRAP_SERVER_REQUIRED');
       return s;
     }
-    function issuePreparationAuthority(sourceDeviceId,{writable=false}={}){
+    function issuePreparationAuthority(sourceDeviceId,{writable=false,approvedBuild=buildSha}={}){
       context();if(productionRecoveryOnly)throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
       if(!/^[a-f0-9]{12,40}$/.test(buildSha||'')||typeof sourceDeviceId!=='string'||!sourceDeviceId)
         throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
+      if(approvedBuild!==buildSha&&(writable||!compatibleCommittedHandoffBuilds.has(approvedBuild)))
+        throw Error('SPARK_PREPARATION_AUTHORITY_REQUIRED');
       const token=Object.freeze({});
-      preparationAuthorities.set(token,{projectId,ownerUid,buildSha,deviceId:sourceDeviceId,writable,assertCurrent:context,
+      preparationAuthorities.set(token,{projectId,ownerUid,buildSha:approvedBuild,deviceId:sourceDeviceId,writable,assertCurrent:context,
         verify:async({write=false}={})=>{
           const p=(await server(db.doc('storageRollout/sparkV1'))).data();
           if(p?.enabled!==true||p.operationalAccess!==true||!Array.isArray(p.pilotOwnerUids)||!p.pilotOwnerUids.includes(ownerUid)
@@ -99,22 +112,25 @@
         if(policy?.enabled!==true||policy.automaticCutover!==true||!Array.isArray(policy.pilotOwnerUids)||!policy.pilotOwnerUids.includes(ownerUid))
           throw Error('SPARK_LOCAL_HANDOFF_ADMIN_APPROVAL_REQUIRED');
         if(preCutover&&policy.automaticMigration!==true)throw Error('SPARK_AUTOMATIC_ACTIVATION_DISABLED');
+        const sourceBuildSha=control?.buildSha;
+        if(sourceBuildSha!==buildSha&&(preCutover||!compatibleCommittedHandoffBuilds.has(sourceBuildSha)))
+          throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
         if(control?.ownerUid!==ownerUid||control.schemaVersion!==2||control.storageMode!==(preCutover?'migrating':'modular')
           ||control.phase!==(preCutover?'READY_TO_CUTOVER':'MODULAR')||control.semanticEquality!=='PASS'||control.sourceHash!==control.reconstructedHash
-          ||control.buildSha!==buildSha)throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
+          )throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
         const authorization=(await server(runtimeRef)).data(),cutover=(await server(cutoverRef)).data();
         const contract=await scopedContract(server),contractHash=await api.hash(contract);context();
-        recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});context();
-        const preserved=await recovery.readHandoff(authorization?.captureHash);context();
+        recovery=await awaitStage('HANDOFF_LOCAL_PINS',()=>root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser}));context();
+        const preserved=await awaitStage('HANDOFF_LOCAL_PINS',()=>recovery.readHandoff(authorization?.captureHash));context();
         if(preserved?.durable!==true||!preserved.plan)throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
-        const plan=preserved.plan,pin=await recovery.read(plan.sourceHash);context();
-        if(pin?.durable!==true||pin.buildSha!==buildSha||!pin.deviceRecordMetadata
+        const plan=preserved.plan,pin=await awaitStage('HANDOFF_LOCAL_PINS',()=>recovery.read(plan.sourceHash));context();
+        if(pin?.durable!==true||pin.buildSha!==sourceBuildSha||!pin.deviceRecordMetadata
           ||pin.deviceRevision!==control.deviceRevision||pin.sourceDeviceId!==control.sourceDeviceId
           ||pin.remoteSourceHash!==control.remoteHash||pin.remoteRevision!==control.remoteRevision)
           throw Error('SPARK_LOCAL_HANDOFF_SOURCE_PIN_REQUIRED');
-        const approval=await root.CLICK360_SPARK_HANDOFF.runtimeApproval(plan,buildSha);context();
+        const approval=await root.CLICK360_SPARK_HANDOFF.runtimeApproval(plan,sourceBuildSha);context();
         if(!same(authorization,approval)||approval.captureHash!==preserved.captureHash
-          ||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha,businessIds:control.businessIds})
+          ||!same(cutover,{ownerUid,sourceHash:plan.sourceHash,buildSha:sourceBuildSha,businessIds:control.businessIds})
           ||!sameBusinesses(control.businessIds,plan.businessIds)||!sameBusinesses(pin.businessIds,plan.businessIds)
           ||control.sourceHash!==plan.sourceHash)throw Error('SPARK_LOCAL_HANDOFF_APPROVAL_MISMATCH');
         const metadataHash=await api.hash(pin.deviceRecordMetadata);
@@ -131,7 +147,7 @@
             throw Error('SPARK_LOCAL_HANDOFF_OUTBOX_DRIFT_STOP');
           return current;
         }
-        journal=await root.CLICK360_MODULAR_JOURNAL.open();context();
+        journal=await awaitStage('HANDOFF_JOURNAL',()=>root.CLICK360_MODULAR_JOURNAL.open());context();
         const local=await localStable(journal),legacy=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
         const selected=await api.selectSource({ownerUid,remote:{source:'server',revision:legacy?.revision,
           identity:legacy?.payload?.identity,snapshot:legacy?.payload?.data},local:{durable:true,snapshot:local.snapshot,
@@ -160,11 +176,11 @@
             c.operational=structuredClone(proof.verified[c.id].summary);c.operationalHash=proof.verified[c.id].summaryHash;
           }
         }
-        const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,buildSha,deviceId:pin.sourceDeviceId,
-          preparationAuthority:issuePreparationAuthority(pin.sourceDeviceId),
+        const importer=root.CLICK360_SPARK_IMPORTER.create({db,firebase,projectId,ownerUid,buildSha:sourceBuildSha,deviceId:pin.sourceDeviceId,
+          preparationAuthority:issuePreparationAuthority(pin.sourceDeviceId,{approvedBuild:sourceBuildSha}),
           resolveUser,readSource:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},
           readGuard:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},recovery});
-        const records=await importer.readServerRecords(manifest);context();
+        const records=await awaitStage('HANDOFF_MODULES',()=>importer.readServerRecords(manifest));context();
         const expected=new Map(manifest.records.map(row=>[row.path,row.content]));
         for(const row of plan.runtimes)expected.set(row.path,approval.runtimeRecords[row.content.businessId]);
         // Only exact, independently derived per-business authority is allowed
@@ -190,7 +206,7 @@
           context();
         }
         await localStable(journal);await authorizationsStable();context();
-        return {verified:true,status:preCutover?'PRE_CUTOVER_VERIFIED':'LOCAL_HANDOFF_VERIFIED',buildSha,
+        const result={verified:true,status:preCutover?'PRE_CUTOVER_VERIFIED':'LOCAL_HANDOFF_VERIFIED',buildSha,sourceBuildSha,
           controlVersion:control.recordVersion,remoteHash:control.remoteHash,remoteRevision:control.remoteRevision,
           sourceDeviceId:control.sourceDeviceId,runtimeApprovalHash:await api.hash(authorization),
           contractHash,
@@ -201,6 +217,8 @@
           // Pins, journal and legacy remain intact; no write is done here.
           assertStable:async()=>{const currentJournal=await root.CLICK360_MODULAR_JOURNAL.open();
             try{await localStable(currentJournal);await authorizationsStable();context();}finally{currentJournal.close();}}};
+        if(!preCutover)localHandoffAuthorities.set(result,{projectId,ownerUid,buildSha,assertCurrent:context});
+        return Object.freeze(result);
       }finally{journal?.close();recovery?.close();}
     }
     async function activateApproved(){
@@ -491,5 +509,5 @@
     }
     return Object.freeze({prepare,verifyLocalHandoff,activateApproved});
   }
-  root.CLICK360_SPARK_MIGRATION_BOOTSTRAP=Object.freeze({create,assertPreparationAuthority,verifyPreparationAuthority});
+  root.CLICK360_SPARK_MIGRATION_BOOTSTRAP=Object.freeze({create,assertPreparationAuthority,verifyPreparationAuthority,assertLocalHandoffAuthority});
 })(typeof window==='undefined'?globalThis:window);

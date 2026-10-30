@@ -141,6 +141,80 @@
 			  });
 			  const ACCESS_UI_STATE_VALUES = new Set(Object.values(ACCESS_UI_STATES));
 			  let ACCESS_UI_STATE = ACCESS_UI_STATES.LOADING;
+  let STARTUP_ATTEMPT=null,AUTH_RESOLVING=null;
+  // A slow transport/IDB operation is not permission to unlock or cancel a
+  // transaction. Report its exact waiting stage, and continue ONLY when the
+  // original operation completes. No retry timer, reload or parallel writer.
+  function createStartupAttempt(user,epoch){
+    const labels={ACCOUNT_ACCESS:'el permiso de la cuenta',ACCOUNT_SERVER_READ:'el permiso desde el servidor',
+      ACCOUNT_CLOCK:'la vigencia del acceso',APPLY_IDENTITY:'la identidad del negocio',
+      ENTER_APP:'la apertura del negocio',P0A_RECOVERY:'la protección del dispositivo',
+      RECOVERY_COPY:'la copia de recuperación',RECOVERY_JOURNAL:'el journal preservado',DEVICE_PREFLIGHT:'la conciliación del dispositivo',
+      STORAGE_MODE:'el acceso al almacenamiento del negocio',
+      RECOVERY_POLICY:'la política de recuperación',LOCAL_PREPARE:'el almacenamiento local',
+      LOCAL_READ:'la copia local',LOCAL_RESTORE:'la recuperación local',DEVICE_LOCK:'el bloqueo seguro del dispositivo',
+      HANDOFF_SERVER_READ:'la verificación de la fuente preservada',MODULAR_BOOTSTRAP:'la apertura de los datos en nube',
+      INSTALL_BUSINESS:'la instalación del negocio',INSTALL_VIEW:'la carga de la información',UNLOCK_APP:'la apertura de la interfaz',
+      COMPATIBILITY_ACCESS:'el acceso existente'};
+    let active=true,timer=null,pending=null,lastCompleted=null,waiting=false;
+    const work=new Set();
+    const current=()=>active&&STARTUP_ATTEMPT===attempt&&isCurrentAuthEpoch(user,epoch);
+    const safe=value=>String(value||'UNKNOWN').replace(/[^a-zA-Z0-9_/:.-]/g,'_').slice(0,100);
+    function publish(phase,errorCode=null){
+      if(!current())return;
+      const stage=pending?.stage||null;
+      const value=Object.freeze({phase,pendingStage:stage,lastCompletedStage:lastCompleted,errorCode,
+        buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js']||window.CLICK360_RELEASE_ASSETS?.['firebase-service.js']||null,updatedAt:new Date().toISOString()});
+      window.click360StartupDiagnostic=value;
+      const gate=document.getElementById('click360-auth-gate');
+      if(gate){
+        let node=document.getElementById('c360-startup-support');
+        if(!node){node=document.createElement('p');node.id='c360-startup-support';node.setAttribute('role','status');
+          node.style.cssText='font-size:13px;overflow-wrap:anywhere;color:#f4cf63';
+          document.getElementById('c360-auth-msg')?.insertAdjacentElement('afterend',node);}
+        node.textContent=phase==='READY'?'':phase==='FAILED'?`Código de soporte: ${errorCode}`
+          :phase==='STOPPED'?`Comprobación detenida. Código: STARTUP_STOPPED_${lastCompleted||'ACCESS'}`
+          :waiting?`Estamos esperando ${labels[stage]||'una comprobación segura'}. Tus datos siguen protegidos. Código: STARTUP_WAIT_${stage}`
+          :`Comprobando ${labels[stage]||'el acceso seguro'}. Código: STARTUP_${stage||'ACCESS'}`;
+        if(node.textContent&&value.buildSha)node.textContent+=` · ${value.buildSha}`;
+      }
+    }
+    function arm(){
+      clearTimeout(timer);waiting=false;publish('RUNNING');
+      if(!pending)return;
+      timer=setTimeout(()=>{if(!current()||!pending)return;waiting=true;publish('WAITING');
+        recordTelemetryOnce(`startup-wait:${epoch}:${pending.stage}`,'bootstrap',
+          {mode:'startup_waiting',errorCode:`STARTUP_WAIT_${pending.stage}`});},15000);
+    }
+    const attempt={
+      current,
+      async run(stage,run){
+        if(!current())return run();
+        const token={stage:safe(stage).toUpperCase()};work.add(token);pending=token;arm();
+        try{const result=await run();if(current())lastCompleted=token.stage;return result;}
+        catch(error){if(error&&typeof error==='object'&&!error.startupStage){try{error.startupStage=token.stage;}catch{}}
+          throw error;}
+        finally{work.delete(token);pending=[...work].at(-1)||null;
+          if(current()&&window.click360StartupDiagnostic?.phase!=='FAILED')arm();}
+      },
+      fail(error){
+        if(!current())return;
+        clearTimeout(timer);const stage=safe(error.startupStage||pending?.stage||lastCompleted||'ACCESS');
+        const raw=String(error.code||error.message||'');
+        const detail=/^(?:[A-Z][A-Z0-9_]{0,90}|(?:auth\/|firestore\/)?[a-z][a-z0-9-]{0,60})$/.test(raw)?raw:'UNEXPECTED_ERROR';
+        const errorCode=`STARTUP_${stage}_${detail}`.slice(0,140);
+        publish('FAILED',errorCode);
+        recordTelemetryOnce(`startup-failure:${epoch}:${errorCode}`,'bootstrap',{mode:'startup_failed',errorCode});
+        return errorCode;
+      },
+      finish(){if(!current())return;clearTimeout(timer);
+        if(AUTH_APPROVED&&PULL_COMPLETE)publish('READY');else if(window.click360StartupDiagnostic?.phase!=='FAILED')publish('STOPPED');
+        active=false;},
+      close(){clearTimeout(timer);active=false;}
+    };
+    return attempt;
+  }
+  function startupStep(stage,run){return STARTUP_ATTEMPT?.current()?STARTUP_ATTEMPT.run(stage,run):run();}
 		  const SCHEMA_VERSION = 10;
 	  const OFFLINE_APPROVAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 	  const MAX_CLOUD_PAYLOAD_BYTES = window.CLICK360_P0_TENANT_GUARD.MAX_CLOUD_PAYLOAD_BYTES;
@@ -1963,7 +2037,7 @@
 	    if (!ref) return { status: 'recoverable_error', errorCode: 'missing_ref' };
 	    try {
 	      let createdNow = false;
-	      let snap = await ref.get({ source: 'server' });
+	      let snap = await startupStep('ACCOUNT_SERVER_READ',()=>ref.get({ source: 'server' }));
 	      if (!isCurrentAuthEpoch(user, expectedEpoch)) return { status: 'stale_auth' };
 		      if (!snap.exists && options.allowCreate !== true) return { status: 'not_found', exists: false };
 		      if (!snap.exists) {
@@ -2004,7 +2078,7 @@
 	        return { status: 'identity_invalid', exists: true, errorCode: 'account_identity_mismatch' };
 	      }
 	      const trustedServerNowMs = requiresFreshEntitlementClock(data)
-	        ? (createdNow ? serverTimestampMs(data.lastSeenAt) : await trustedAuthServerNowMs(user))
+	        ? (createdNow ? serverTimestampMs(data.lastSeenAt) : await startupStep('ACCOUNT_CLOCK',()=>trustedAuthServerNowMs(user)))
 	        : 0;
 	      if (!isCurrentAuthEpoch(user, expectedEpoch)) return { status: 'stale_auth' };
 	      const clockVerified = !requiresFreshEntitlementClock(data) || trustedServerNowMs > 0;
@@ -4149,18 +4223,26 @@
           &&window.CLICK360_P0A_BOOTSTRAP){
           const context=ACTIVE_CONTEXT;
           try{
-            const policy=await db.doc('storageRollout/sparkV1').get({source:'server'}),p=policy.data();
+            const policy=await startupStep('RECOVERY_POLICY',()=>db.doc('storageRollout/sparkV1').get({source:'server'})),p=policy.data();
             if(policy.metadata.fromCache===false&&policy.metadata.hasPendingWrites===false&&p?.enabled===true
               &&p.automaticRecoveryCopy===true&&p.automaticShadow===false&&p.operationalAccess!==true
               &&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
+              // Preservation-only enrollment is a LEGACY path, never an
+              // exemption from a fence already installed in the server.
+              // Let the authoritative coordinator handle modular/migrating/
+              // frozen states (and production enrollment revocation).
+              const storage=await startupStep('STORAGE_MODE',()=>db.doc(`businesses/${context.ownerUid}/metadata/storage`).get({source:'server'}));
+              if(storage.metadata.fromCache!==false||storage.metadata.hasPendingWrites!==false)
+                throw Error('SPARK_RECOVERY_STORAGE_MODE_UNCONFIRMED');
+              if(storage.exists&&storage.data()?.storageMode!=='legacy')return false;
               recoveryOnly=true;
-              await window.click360PrepareTenantStorage?.(context);
-              const source=await window.CLICK360_V16_STORAGE.getSnapshot(context);
+              await startupStep('LOCAL_PREPARE',()=>window.click360PrepareTenantStorage?.(context));
+              const source=await startupStep('LOCAL_READ',()=>window.CLICK360_V16_STORAGE.getSnapshot(context));
               if(source?.snapshot&&source.deviceRevision){
                 if(!navigator.locks?.request)throw Error('SPARK_RECOVERY_DEVICE_LOCK_UNAVAILABLE');
-                await navigator.locks.request(`click360-spark:${sparkProjectId}:${context.ownerUid}:${user.uid}`,{ifAvailable:true},async lock=>{
+                await startupStep('DEVICE_LOCK',()=>navigator.locks.request(`click360-spark:${sparkProjectId}:${context.ownerUid}:${user.uid}`,{ifAvailable:true},async lock=>{
                   if(!lock)throw Error('SPARK_RECOVERY_DEVICE_ALREADY_ACTIVE');
-                  const preserved=await window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                  const preserved=await startupStep('RECOVERY_COPY',()=>window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
                     productionRecoveryOnly:true,ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),
                     buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,
                     resolveContext:()=>isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context?context:null,
@@ -4171,18 +4253,18 @@
                         window.click360SparkRecoveryCopy={...detail};
                         window.dispatchEvent(new CustomEvent('click360-sync-status'));
                       }}
-                  }).prepare();
+                  }).prepare());
                   // Separate optional P0D preparation. No policy exists by
                   // default; this never calls a migration or writer factory.
                   if(preserved?.recoveryCopy?.status==='RECOVERY_COPY_CLIENT_VERIFIED'){
                     let journal;
                     try{
-                      journal=await window.CLICK360_P0A_JOURNAL.open();
-                      const result=await window.CLICK360_SPARK_RECONCILIATION.createDevicePreflight({db,firebase,
+                      journal=await startupStep('RECOVERY_JOURNAL',()=>window.CLICK360_P0A_JOURNAL.open());
+                      const result=await startupStep('DEVICE_PREFLIGHT',()=>window.CLICK360_SPARK_RECONCILIATION.createDevicePreflight({db,firebase,
                         ownerUid:context.ownerUid,actorUid:user.uid,buildSha:window.CLICK360_RELEASE_ASSETS['app.js'],copy:preserved.recoveryCopy,
                         assertContext:()=>{if(!lock||!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context||auth.currentUser?.uid!==user.uid)throw Error('P0D_CONTEXT_CHANGED');},
                         readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),captureJournal:()=>journal.captureOwner(context.ownerUid)
-                      }).prepare();
+                      }).prepare());
                       if(isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context){
                         window.click360DevicePreflight=result;
                         window.dispatchEvent(new CustomEvent('click360-device-preflight',{detail:result}));
@@ -4193,7 +4275,7 @@
                         window.click360DevicePreflight={status:'BLOCKED',reason:/^P0D_[A-Z_]+$/.test(error.message)?error.message:'P0D_UNAVAILABLE',cutover:false};
                     }finally{journal?.close();}
                   }
-                });
+                }));
               }
             }
           }catch(error){
@@ -4229,30 +4311,32 @@
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
         SPARK_APPROVAL_SUPERVISOR?.close();SPARK_APPROVAL_SUPERVISOR=null;
 		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
-        const p0aRecoveryOnly=await runP0ARecovery(user,expectedEpoch);
+        const p0aRecoveryOnly=await startupStep('P0A_RECOVERY',()=>runP0ARecovery(user,expectedEpoch));
         if (!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user)) return false;
         const sparkProjectId=db.app.options.projectId;
         if(!p0aRecoveryOnly&&['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(sparkProjectId)
-          && window.CLICK360_SPARK_BOOTSTRAP && (window.click360User?.ownerId===user.uid || SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT)){
+          && (window.click360User?.ownerId===user.uid || SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT)){
           let sparkCoordinator=null;
           try{
+            if(typeof window.CLICK360_SPARK_BOOTSTRAP?.create!=='function')throw Error('SPARK_BOOTSTRAP_MODULE_UNAVAILABLE');
             const context=ACTIVE_CONTEXT;
-            await window.click360PrepareTenantStorage?.(context);
+            await startupStep('LOCAL_PREPARE',()=>window.click360PrepareTenantStorage?.(context));
             const coordinator=window.CLICK360_SPARK_BOOTSTRAP.create({projectId:sparkProjectId,db,ownerUid:context.ownerUid,actorUid:user.uid,
               deviceId:getDeviceId(),resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
               // Workers are assigned by authenticated membership, not by the
               // pre-hydration UI seed or a preceding user's business picker.
               resolveBusiness:()=>SPARK_WORKER_CONTEXT===context ? context.businessId : window.click360GetActiveBusinessId?.(),
-              restoreLocal:async()=>{
+              awaitStage:startupStep,
+              restoreLocal:()=>startupStep('LOCAL_RESTORE',async()=>{
                 const record=await window.CLICK360_V16_STORAGE.getSnapshot(context);
                 if(record&&!await window.click360LoadIndexedTenantCache(context))throw Error('SPARK_BOOTSTRAP_INVALID_DEVICE_STATE');
-              },readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),
+              }),readLocal:()=>startupStep('LOCAL_READ',()=>window.CLICK360_V16_STORAGE.getSnapshot(context)),
               prepareMigration:async({leaseHeld})=>{
                 if(user.uid!==context.ownerUid)return {prepared:false};
                 return window.CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
                   ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],
                   resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
-                  readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld,
+                  readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld,awaitStage:startupStep,
                   onProgress:detail=>{
                     window.click360SparkMigrationState=detail;
                     if(detail.phase==='RECOVERY_COPY_CLIENT_VERIFIED'){
@@ -4267,10 +4351,11 @@
                 return window.CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
                   ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],
                   resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
-                  readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld
+                  readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld,awaitStage:startupStep
                 }).verifyLocalHandoff();
               },
-              installBusiness:window.click360InstallSparkBusiness,installView:window.click360InstallSparkView,
+              installBusiness:args=>startupStep('INSTALL_BUSINESS',()=>window.click360InstallSparkBusiness(args)),
+              installView:args=>startupStep('INSTALL_VIEW',()=>window.click360InstallSparkView(args)),
               onProgress:detail=>{window.click360SparkBootstrapProgress=detail;},
               onPhase:detail=>{
                 // Source verification finishes before the caller installs the
@@ -4283,13 +4368,13 @@
                   ?'Guardado y respaldado en nube':'Estamos actualizando CLICK 360 y protegiendo tu información.',verified);
               }});
             sparkCoordinator=coordinator;
-            const result=await coordinator.recover();
+            const result=await startupStep('MODULAR_BOOTSTRAP',()=>coordinator.recover());
             if(!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context){coordinator.close();return false;}
             if(result.handled){
               window.click360SparkCoordinator=coordinator;AUTH_APPROVED=true;PULL_COMPLETE=true;
               INITIAL_TENANT_SEED_REQUIRED=false;tenantGuard.allow(context);
               window.click360SetSession?.({username:window.click360User.name||'Usuario',role:window.click360User.role||'owner'});
-              if(!unlockApp())return false;
+              if(!await startupStep('UNLOCK_APP',()=>unlockApp()))return false;
               clearPublicAuthIntent();
               // Observe the authority that actually approved this identity.
               // Self-service accountAccess owners need not have approvedUsers.
@@ -4328,6 +4413,7 @@
             setSyncStatus('modular_pending','No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.');
             showGate('No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.',ACCESS_UI_STATES.RECOVERABLE_ERROR,
               {reason:String(error.code||error.message||'spark_bootstrap_failed')});
+            STARTUP_ATTEMPT?.fail(error);
             const waiting=new Set(['SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED','SPARK_RUNTIME_ADMIN_APPROVAL_REQUIRED',
               'SPARK_LOCAL_HANDOFF_APPROVAL_MISMATCH','SPARK_ACTIVATION_ADMIN_APPROVAL_CHANGED']);
             if(user.uid===ACTIVE_CONTEXT?.ownerUid&&waiting.has(String(error.code||error.message))
@@ -4503,8 +4589,13 @@
 	      // verificando"). A redundant re-fire for the same uid, while
 	      // already approved, is a no-op.
 	      if (user && AUTH_APPROVED && window.click360User?.uid === user.uid) return;
+          if(user&&AUTH_RESOLVING?.uid===user.uid&&AUTH_RESOLVING.epoch===AUTH_EPOCH)return;
 	      const epoch = AUTH_EPOCH + 1;
+          const resolving={uid:user?.uid||null,epoch};AUTH_RESOLVING=resolving;
+          STARTUP_ATTEMPT?.close();
 	      deactivateActiveAccount();
+          STARTUP_ATTEMPT=createStartupAttempt(user,epoch);
+          try{
 	      if (!user) {
 	        const pendingRedirect = readAuthRedirectPending();
 	        if (pendingRedirect) {
@@ -4528,15 +4619,15 @@
 	      setSyncStatus(navigator.onLine ? "checking" : "offline", navigator.onLine ? "Verificando acceso." : "Sin internet. Buscando una aprobación propia y guardada.");
 
 	      // Primary path: an entitlement is resolved by immutable Firebase UID.
-	      const account = await resolveAccountAccess(user, epoch, { allowCreate: false, intent: publicIntent });
+	      const account = await startupStep('ACCOUNT_ACCESS',()=>resolveAccountAccess(user, epoch, { allowCreate: false, intent: publicIntent }));
 	      if (!isCurrentAuthEpoch(user, epoch)) return;
 	      if (account.status === 'ready' && account.state?.allowed) {
 	        clearInvitationIntent({ cleanUrl: true });
-	        if (!applyAccountAccessIdentity(user, account, epoch)) {
+	        if (!await startupStep('APPLY_IDENTITY',()=>applyAccountAccessIdentity(user, account, epoch))) {
 	          loginGateMessage('La identidad de esta cuenta no coincide con su negocio. No se cargó ni modificó información.', 'AUTH_ACCESS_REJECTED', ACCESS_UI_STATES.BLOCKED, { accountStatus: account.status });
 	          return;
 	        }
-	        await enterApprovedApp(user, epoch);
+	        await startupStep('ENTER_APP',()=>enterApprovedApp(user, epoch));
 	        return;
 	      }
 	      if (account.status === 'identity_invalid') {
@@ -4551,7 +4642,7 @@
 	      }
 
 	      // Compatibility path for founders and existing workers.
-	      let approved = await isApprovedUser(user, epoch);
+	      let approved = await startupStep('COMPATIBILITY_ACCESS',()=>isApprovedUser(user, epoch));
 	      if (!isCurrentAuthEpoch(user, epoch)) return;
 	      if (approved) {
 	        clearInvitationIntent({ cleanUrl: true });
@@ -4652,6 +4743,16 @@
 	      } else {
 	        loginGateMessage('No encontramos una cuenta activa con este Google. Puedes probar gratis, registrarte o cambiar de cuenta.', 'AUTH_ACCOUNT_NOT_FOUND', ACCESS_UI_STATES.AUTHENTICATED_NO_ACCESS, { accountStatus: account.status });
 	      }
+          }catch(error){
+            if(!isCurrentAuthEpoch(user,epoch))return;
+            AUTH_APPROVED=false;PULL_COMPLETE=false;tenantGuard.block();
+            window.click360SparkCoordinator?.close();window.click360SparkOperationalSession?.close();
+            window.click360SparkCoordinator=null;window.click360SparkOperationalSession=null;
+            showGate('No pudimos completar la apertura. Tu información permanece protegida.',ACCESS_UI_STATES.RECOVERABLE_ERROR);
+            STARTUP_ATTEMPT?.fail(error);
+          }finally{
+            if(AUTH_RESOLVING===resolving){AUTH_RESOLVING=null;STARTUP_ATTEMPT?.finish();}
+          }
 	    });
   }
 
