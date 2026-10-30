@@ -3,7 +3,7 @@ import {newAppContext,url,emulatorOwnerEmail,emulatorPassword} from './r38-emula
 // Existing served PWA, Auth SDK, Firestore SDK and Rules. Faults are confined
 // to this synthetic browser's read/identity boundary, never server data.
 export async function certifyStartupAuth({browser,uid,label,output}){
- for(const scenario of ['pending_account_read','identity_exception']){
+ for(const scenario of ['pending_account_read','identity_exception','missing_bootstrap_module']){
   const context=await newAppContext(browser,{width:390,height:844});
   try{
    const page=await context.newPage();await page.goto(url,{waitUntil:'domcontentloaded'});
@@ -18,12 +18,16 @@ export async function certifyStartupAuth({browser,uid,label,output}){
        window.QA_RELEASE_ACCOUNT=()=>{held=false;get.call(this,options).then(resolve,reject);};});}
       return get.call(this,options);
      };
-    }else{
+    }else if(scenario==='identity_exception'){
      const original=click360SetTenantContext;
      window.click360SetTenantContext=(context,...args)=>{
       if(context?.authUid===uid)throw Object.assign(Error('synthetic-identity-failed'),{code:'identity-setup-failed'});
       return original(context,...args);
      };
+    }else{
+     window.CLICK360_SPARK_BOOTSTRAP=undefined;window.QA_LEGACY_READS=0;
+     const ref=click360Db.doc(`businesses/${uid}/state/main`),proto=Object.getPrototypeOf(ref),get=proto.get;
+     proto.get=function(options){if(this.path===ref.path)QA_LEGACY_READS++;return get.call(this,options);};
     }
    },{uid,scenario});
    await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),
@@ -41,9 +45,11 @@ export async function certifyStartupAuth({browser,uid,label,output}){
     assert(await page.evaluate(()=>click360GetTenantState().products.length>0));
    }else{
     await page.waitForFunction(()=>window.click360StartupDiagnostic?.phase==='FAILED');
-    assert.match(await page.locator('#c360-startup-support').innerText(),/STARTUP_APPLY_IDENTITY_identity-setup-failed/);
+    const expected=scenario==='identity_exception'?/STARTUP_APPLY_IDENTITY_identity-setup-failed/:/SPARK_BOOTSTRAP_MODULE_UNAVAILABLE/;
+    assert.match(await page.locator('#c360-startup-support').innerText(),expected);
     assert.equal(await page.evaluate(()=>click360AccessUiState.state),'recoverable_error');
     assert.equal(await page.evaluate(()=>!!window.click360SparkOperationalSession),false);
+    if(scenario==='missing_bootstrap_module')assert.equal(await page.evaluate(()=>QA_LEGACY_READS),0,'A missing component cannot read the old monolith after cutover');
     await page.screenshot({path:`${output}/startup-${label}-identity-failed.png`});
    }
    console.log(JSON.stringify({status:'AUTHENTICATED_STARTUP_DIAGNOSTIC_PASS',browser:label,scenario,

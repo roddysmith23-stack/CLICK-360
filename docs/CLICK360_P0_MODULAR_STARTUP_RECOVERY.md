@@ -24,6 +24,13 @@ first reads authoritative storage mode; migrating, modular and frozen controls
 are always handled by the operational coordinator, including its production
 enrollment/revocation checks. This does not enable a new migration.
 
+Withholding the bootstrap module also reproduced a legacy fallthrough in real
+staging: authenticated access was allowed without a modular writer and showed
+the old source's 9 sales instead of the modular 11. The module is now required
+inside the caught startup boundary; absence produces
+`SPARK_BOOTSTRAP_MODULE_UNAVAILABLE` without reading legacy. The support code
+includes the loaded build so a partial update is distinguishable on-screen.
+
 ## Repair and boundaries
 
 - Production local promotion requires an opaque proof issued by the complete

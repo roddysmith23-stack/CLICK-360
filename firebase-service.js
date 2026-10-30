@@ -164,7 +164,7 @@
       if(!current())return;
       const stage=pending?.stage||null;
       const value=Object.freeze({phase,pendingStage:stage,lastCompletedStage:lastCompleted,errorCode,
-        buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js']||null,updatedAt:new Date().toISOString()});
+        buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js']||window.CLICK360_RELEASE_ASSETS?.['firebase-service.js']||null,updatedAt:new Date().toISOString()});
       window.click360StartupDiagnostic=value;
       const gate=document.getElementById('click360-auth-gate');
       if(gate){
@@ -176,6 +176,7 @@
           :phase==='STOPPED'?`Comprobación detenida. Código: STARTUP_STOPPED_${lastCompleted||'ACCESS'}`
           :waiting?`Estamos esperando ${labels[stage]||'una comprobación segura'}. Tus datos siguen protegidos. Código: STARTUP_WAIT_${stage}`
           :`Comprobando ${labels[stage]||'el acceso seguro'}. Código: STARTUP_${stage||'ACCESS'}`;
+        if(node.textContent&&value.buildSha)node.textContent+=` · ${value.buildSha}`;
       }
     }
     function arm(){
@@ -4314,9 +4315,10 @@
         if (!isCurrentAuthEpoch(user,expectedEpoch)||!activeIdentityIsValid(user)) return false;
         const sparkProjectId=db.app.options.projectId;
         if(!p0aRecoveryOnly&&['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(sparkProjectId)
-          && window.CLICK360_SPARK_BOOTSTRAP && (window.click360User?.ownerId===user.uid || SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT)){
+          && (window.click360User?.ownerId===user.uid || SPARK_WORKER_CONTEXT===ACTIVE_CONTEXT)){
           let sparkCoordinator=null;
           try{
+            if(typeof window.CLICK360_SPARK_BOOTSTRAP?.create!=='function')throw Error('SPARK_BOOTSTRAP_MODULE_UNAVAILABLE');
             const context=ACTIVE_CONTEXT;
             await startupStep('LOCAL_PREPARE',()=>window.click360PrepareTenantStorage?.(context));
             const coordinator=window.CLICK360_SPARK_BOOTSTRAP.create({projectId:sparkProjectId,db,ownerUid:context.ownerUid,actorUid:user.uid,
