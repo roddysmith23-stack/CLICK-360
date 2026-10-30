@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { chromium, webkit, devices } from 'playwright';
+import {observeWorkerUpdate} from './service-worker-update-observer.mjs';
+import '../qa-service-worker-update-observer.mjs';
+import {createEmulatorIsolation} from './emulator-network-isolation.mjs';
 
 const root=path.resolve(import.meta.dirname,'..');
 const oldRoot=process.env.CLICK360_OLD_BUILD_DIR;
@@ -27,11 +31,17 @@ const results=[];
 try {
   for(const [name,engine,options] of [['Chromium PWA',chromium,devices['Pixel 7']],['WebKit PWA',webkit,devices['iPhone 15']]]){
     active=oldRoot; corrupt=false;
-    const browser=await engine.launch();
+    const profile=await mkdtemp(path.join(os.tmpdir(),'click360-upgrade-profile-'));
+    let isolation,context;
     try{
-      const context=await browser.newContext(options);
-      await context.route(/googleapis\.com|firebaseio\.com|\/__\/auth\//,route=>route.abort());
-      let page=await context.newPage();
+      isolation=await createEmulatorIsolation([new URL(url).origin]);
+      // The historical worker itself forwards cross-origin fetches. Page
+      // routing cannot intercept that traffic; an external WebChannel can
+      // retain the old worker while the new worker waits to activate. Reuse
+      // the process-owned proxy so BOTH page and worker remain loopback-only.
+      const launch=()=>engine.launchPersistentContext(profile,{...options,proxy:{server:isolation.server}});
+      context=await launch();
+      let page=context.pages()[0]||await context.newPage();
       await page.goto(url,{waitUntil:'domcontentloaded'});
       await page.waitForFunction(()=>window.CLICK360_V16_STORAGE);
       await page.evaluate(async()=>{await navigator.serviceWorker.ready;});
@@ -46,23 +56,26 @@ try {
         return window.CLICK360_V16_STORAGE.getSnapshot(ctx);
       },identity);
       active=path.join(root,'dist'); corrupt=true;
-      const first=await page.evaluate(async()=>{const reg=await navigator.serviceWorker.getRegistration();return new Promise(resolve=>{
-        const timeout=setTimeout(()=>resolve('timeout'),30000);
-        reg.addEventListener('updatefound',()=>{const worker=reg.installing;worker.addEventListener('statechange',()=>{if(worker.state==='redundant'){clearTimeout(timeout);resolve('rejected');}});},{once:true});
-        reg.update().catch(()=>{clearTimeout(timeout);resolve('rejected');});
-      });});
-      assert.equal(first,'rejected','mixed release must fail installation, preserving old worker');
+      const first=await page.evaluate(observeWorkerUpdate,{mode:'rejected',expectedBuild:manifest.buildSha});
+      assert.equal(first.status,'rejected','mixed release must fail installation, preserving old worker');
       assert.equal(await page.evaluate(()=>localStorage.getItem('qa-valid-local')),'retain-me');
       corrupt=false;
-      await page.evaluate(async()=>{
-        const reg=await navigator.serviceWorker.getRegistration();
-        await new Promise((resolve,reject)=>{
-          const timer=setTimeout(()=>reject(Error('activation timeout')),30000);
-          reg.addEventListener('updatefound',()=>{const worker=reg.installing;worker.addEventListener('statechange',()=>{if(worker.state==='activated'){clearTimeout(timer);resolve();}});},{once:true});
-          reg.update().catch(reject);
-        });
-      });
+      const installed=await page.evaluate(observeWorkerUpdate,{mode:'installed',expectedBuild:manifest.buildSha});
+      assert.equal(installed.buildSha,manifest.buildSha);
+      assert(['installed','activated'].includes(installed.status),'Only a fully installed verified release can proceed to normal reopen');
       assert.equal(await page.evaluate(()=>location.hash),'#cash');
+      // Preserve the original cash document while its replacement installs.
+      // Then exercise an actual browser/PWA close and reopen of the SAME
+      // native profile, not a timer or forced worker activation over a form.
+      await context.close();context=await launch();
+      page=context.pages()[0]||await context.newPage();await page.goto(url,{waitUntil:'domcontentloaded'});
+      await page.waitForFunction(()=>window.click360GetClientReadiness);
+      const activated=await page.evaluate(observeWorkerUpdate,{mode:'activated',expectedBuild:manifest.buildSha});
+      assert.equal(activated.status,'activated');assert.equal(activated.buildSha,manifest.buildSha);
+      // Repeat only observation of an already-current registration: there is
+      // no new updatefound event, yet the ACTIVE worker must prove its build.
+      const current=await page.evaluate(observeWorkerUpdate,{mode:'activated',expectedBuild:manifest.buildSha});
+      assert.equal(current.buildSha,manifest.buildSha);
       await page.close();
       page=await context.newPage(); await page.goto(url,{waitUntil:'domcontentloaded'});
       await page.waitForFunction(()=>window.click360GetClientReadiness);
@@ -78,9 +91,9 @@ try {
       assert.equal(evidence.records.pendingRemoteSync,true);
       assert.equal(evidence.records.operationId,'pending-opening');
       assert(evidence.cacheKeys.some(key=>key.endsWith(manifest.buildSha)));
-      results.push({name,from:JSON.parse(await readFile(path.join(oldRoot,'release-manifest.json'))).buildSha,to:manifest.buildSha,result:'PASS'});
+      results.push({name,from:JSON.parse(await readFile(path.join(oldRoot,'release-manifest.json'))).buildSha,to:manifest.buildSha,nativeProfileRestart:true,result:'PASS'});
       console.log(`PASS ${name}: real old build -> certified release, mixed install rejected, IDB/LS/outbox retained`);
-    }finally{await browser.close();}
+    }finally{await context?.close();await isolation?.close();}
   }
   await mkdir(path.join(root,'output/playwright'),{recursive:true});
   await writeFile(path.join(root,'output/playwright/founder-pwa-upgrade.json'),JSON.stringify(results,null,2));
