@@ -427,8 +427,7 @@ try{
     await restarted.goto(url,{waitUntil:'domcontentloaded'});
     await restarted.waitForFunction(()=>{
       if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason);
-      // Repository READY precedes Auth installing the coordinator/cursors
-      // and unlocking the view. Do not navigate during that internal phase.
+      // Require the complete authenticated attempt, not just its data view.
       return window.click360SparkBootstrapState?.phase==='READY'&&!!window.click360SparkOperationalSession
         &&window.click360StartupDiagnostic?.phase==='READY'&&window.click360SparkAccessGate?.().allowed===true
         &&!!window.click360SparkCoordinator&&!window.click360SparkCoordinator.isBusy();
@@ -442,7 +441,11 @@ try{
     assert(await restarted.evaluate(()=>click360SparkAccessGate().allowed===true),'Actual authorization remains valid after restart');
     assert(await restarted.evaluate(id=>click360GetTenantState().cashSessions.some(s=>s.id===id&&s.status==='open'),activeBeforeRestart),
       'Exact active cash session survives outside the first hundred historical rows');
-    await restarted.evaluate(()=>{location.hash='#cash';});
+    assert(await restarted.evaluate(()=>click360SparkCoordinator.hasMore('dailyReports')),
+      'Authoritative restart installs a next-page cursor for the 104 reports');
+    await restarted.locator('.bottomNav [data-route="cash"]').click();
+    await restarted.locator('#app h1').filter({hasText:'Caja'}).waitFor({state:'visible'});
+    assert(await restarted.evaluate(()=>location.hash==='#cash'),'The real navigation control enters the cash route');
     assert(await restarted.locator('#workingDateInput').inputValue()==='2026-09-04','Historical working date survives document restart');
     const reportPage=restarted.locator('[data-spark-history="dailyReports"]');
     await reportPage.waitFor({state:'visible'});

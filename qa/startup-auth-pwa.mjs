@@ -57,10 +57,10 @@ export async function certifyStartupAuth({browser,uid,label,output}){
     assert(await page.evaluate(()=>click360GetTenantState().products.length>0));
    }else if(scenario==='pending_bootstrap_completion'){
     await page.waitForFunction(()=>window.QA_INTERNAL_BOOTSTRAP_READY);
-    assert.equal(await page.evaluate(()=>click360SparkBootstrapState.phase),'READY');
+    assert.equal(await page.evaluate(()=>click360SparkBootstrapState.phase),'INSTALLING_UI');
     assert.equal(await page.evaluate(()=>!!window.click360SparkOperationalSession),true);
-    // The old cold-restart assertion passed at this point, before Auth had
-    // published the coordinator/cursors and unlocked the application.
+    // Repository completion must stay INSTALLING_UI until Auth publishes
+    // the coordinator/cursors and unlocks the application.
     assert.equal(await page.evaluate(()=>!!window.click360SparkCoordinator),false);
     assert.equal(await page.evaluate(()=>click360SparkAccessGate().allowed),false);
     assert.notEqual(await page.evaluate(()=>click360StartupDiagnostic.phase),'READY');
