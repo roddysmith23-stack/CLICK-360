@@ -415,10 +415,22 @@ try{
     });
     await page.close();
     restarted=await device.context.newPage();device.page=restarted;
+    await restarted.addInitScript(()=>{
+      window.QA_RESTART_ROUTES=[];
+      window.addEventListener('click360:ready',event=>{
+        QA_RESTART_ROUTES.push({stage:event.detail?.stage,hash:location.hash,
+          startup:window.click360StartupDiagnostic?.phase,coordinator:!!window.click360SparkCoordinator,
+          reports:window.click360SparkCoordinator?.hasMore('dailyReports')});
+        if(QA_RESTART_ROUTES.length>20)QA_RESTART_ROUTES.shift();
+      });
+    });
     await restarted.goto(url,{waitUntil:'domcontentloaded'});
     await restarted.waitForFunction(()=>{
       if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason);
-      return window.click360SparkBootstrapState?.phase==='READY'&&!!window.click360SparkOperationalSession;
+      // Require the complete authenticated attempt, not just its data view.
+      return window.click360SparkBootstrapState?.phase==='READY'&&!!window.click360SparkOperationalSession
+        &&window.click360StartupDiagnostic?.phase==='READY'&&window.click360SparkAccessGate?.().allowed===true
+        &&!!window.click360SparkCoordinator&&!window.click360SparkCoordinator.isBusy();
     });
     const durableAfter=await restarted.evaluate(()=>{
       const state=click360GetTenantState();
@@ -429,7 +441,11 @@ try{
     assert(await restarted.evaluate(()=>click360SparkAccessGate().allowed===true),'Actual authorization remains valid after restart');
     assert(await restarted.evaluate(id=>click360GetTenantState().cashSessions.some(s=>s.id===id&&s.status==='open'),activeBeforeRestart),
       'Exact active cash session survives outside the first hundred historical rows');
-    await restarted.evaluate(()=>{location.hash='#cash';});
+    assert(await restarted.evaluate(()=>click360SparkCoordinator.hasMore('dailyReports')),
+      'Authoritative restart installs a next-page cursor for the 104 reports');
+    await restarted.locator('.bottomNav [data-route="cash"]').click();
+    await restarted.locator('#app h1').filter({hasText:'Caja'}).waitFor({state:'visible'});
+    assert(await restarted.evaluate(()=>location.hash==='#cash'),'The real navigation control enters the cash route');
     assert(await restarted.locator('#workingDateInput').inputValue()==='2026-09-04','Historical working date survives document restart');
     const reportPage=restarted.locator('[data-spark-history="dailyReports"]');
     await reportPage.waitFor({state:'visible'});
@@ -704,10 +720,20 @@ try{
     sourceDirty:!!execFileSync('git',['status','--porcelain','--untracked-files=no'],{cwd:root,encoding:'utf8'}).trim(),rulesBudgetErrors:0,results},null,2);
   writeFileSync(path.join(output,'results.json'),text);writeFileSync(path.join(output,`results-${Date.now()}.json`),text);console.log(text);
 }catch(error){
+  if(device?.page)console.log(JSON.stringify({view:await device.page.evaluate(()=>({hash:location.hash,
+    ready:window.click360StartupDiagnostic,coordinator:window.click360SparkCoordinator?.phase(),
+    busy:window.click360SparkCoordinator?.isBusy(),moreReports:window.click360SparkCoordinator?.hasMore('dailyReports'),
+    routes:window.QA_RESTART_ROUTES,
+    reportCount:window.click360GetTenantState?.()?.dailyReports?.length,
+    focus:document.activeElement?.id,heading:document.querySelector('#app h1,#app h2')?.textContent,
+    reportButtons:document.querySelectorAll('[data-spark-history="dailyReports"]').length,
+    appText:document.querySelector('#app')?.innerText?.slice(-2500)})).catch(()=>null)}));
+  if(device?.page)await device.page.screenshot({path:path.join(output,'failure.png'),fullPage:true}).catch(()=>{});
   if(device?.page)console.log(JSON.stringify(await device.page.evaluate(()=>({status:window.SPARK_UI_STATUS,toast:document.querySelector('#toast')?.textContent,
     commit:window.SPARK_UI_COMMIT,lastFailure:window.click360LastSaveFailure,gate:window.click360WriteGate?.(),
     bootstrap:window.click360SparkBootstrapState,accessGate:window.click360SparkAccessGate?.(),
-    gateText:document.querySelector('#click360-auth-gate')?.textContent,state:click360GetTenantState()?.cashSessions})).catch(()=>null)));
+    gateText:document.querySelector('#click360-auth-gate')?.textContent,
+    cashCount:click360GetTenantState()?.cashSessions?.length})).catch(()=>null)));
   if(device)console.log(JSON.stringify({pageErrors:device.pageErrors,workerLifecycle:device.workerLifecycle||[]}));
   throw error;
 }finally{
