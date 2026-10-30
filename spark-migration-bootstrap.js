@@ -120,10 +120,10 @@
           )throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
         const authorization=(await server(runtimeRef)).data(),cutover=(await server(cutoverRef)).data();
         const contract=await scopedContract(server),contractHash=await api.hash(contract);context();
-        recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser});context();
-        const preserved=await recovery.readHandoff(authorization?.captureHash);context();
+        recovery=await awaitStage('HANDOFF_LOCAL_PINS',()=>root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser}));context();
+        const preserved=await awaitStage('HANDOFF_LOCAL_PINS',()=>recovery.readHandoff(authorization?.captureHash));context();
         if(preserved?.durable!==true||!preserved.plan)throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
-        const plan=preserved.plan,pin=await recovery.read(plan.sourceHash);context();
+        const plan=preserved.plan,pin=await awaitStage('HANDOFF_LOCAL_PINS',()=>recovery.read(plan.sourceHash));context();
         if(pin?.durable!==true||pin.buildSha!==sourceBuildSha||!pin.deviceRecordMetadata
           ||pin.deviceRevision!==control.deviceRevision||pin.sourceDeviceId!==control.sourceDeviceId
           ||pin.remoteSourceHash!==control.remoteHash||pin.remoteRevision!==control.remoteRevision)
@@ -147,7 +147,7 @@
             throw Error('SPARK_LOCAL_HANDOFF_OUTBOX_DRIFT_STOP');
           return current;
         }
-        journal=await root.CLICK360_MODULAR_JOURNAL.open();context();
+        journal=await awaitStage('HANDOFF_JOURNAL',()=>root.CLICK360_MODULAR_JOURNAL.open());context();
         const local=await localStable(journal),legacy=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
         const selected=await api.selectSource({ownerUid,remote:{source:'server',revision:legacy?.revision,
           identity:legacy?.payload?.identity,snapshot:legacy?.payload?.data},local:{durable:true,snapshot:local.snapshot,
@@ -180,7 +180,7 @@
           preparationAuthority:issuePreparationAuthority(pin.sourceDeviceId,{approvedBuild:sourceBuildSha}),
           resolveUser,readSource:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},
           readGuard:async()=>{throw Error('SPARK_LOCAL_HANDOFF_READ_ONLY');},recovery});
-        const records=await importer.readServerRecords(manifest);context();
+        const records=await awaitStage('HANDOFF_MODULES',()=>importer.readServerRecords(manifest));context();
         const expected=new Map(manifest.records.map(row=>[row.path,row.content]));
         for(const row of plan.runtimes)expected.set(row.path,approval.runtimeRecords[row.content.businessId]);
         // Only exact, independently derived per-business authority is allowed

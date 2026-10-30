@@ -149,6 +149,7 @@
     const labels={ACCOUNT_ACCESS:'el permiso de la cuenta',ACCOUNT_SERVER_READ:'el permiso desde el servidor',
       ACCOUNT_CLOCK:'la vigencia del acceso',APPLY_IDENTITY:'la identidad del negocio',
       ENTER_APP:'la apertura del negocio',P0A_RECOVERY:'la protección del dispositivo',
+      RECOVERY_COPY:'la copia de recuperación',RECOVERY_JOURNAL:'el journal preservado',DEVICE_PREFLIGHT:'la conciliación del dispositivo',
       RECOVERY_POLICY:'la política de recuperación',LOCAL_PREPARE:'el almacenamiento local',
       LOCAL_READ:'la copia local',LOCAL_RESTORE:'la recuperación local',DEVICE_LOCK:'el bloqueo seguro del dispositivo',
       HANDOFF_SERVER_READ:'la verificación de la fuente preservada',MODULAR_BOOTSTRAP:'la apertura de los datos en nube',
@@ -4231,7 +4232,7 @@
                 if(!navigator.locks?.request)throw Error('SPARK_RECOVERY_DEVICE_LOCK_UNAVAILABLE');
                 await startupStep('DEVICE_LOCK',()=>navigator.locks.request(`click360-spark:${sparkProjectId}:${context.ownerUid}:${user.uid}`,{ifAvailable:true},async lock=>{
                   if(!lock)throw Error('SPARK_RECOVERY_DEVICE_ALREADY_ACTIVE');
-                  const preserved=await window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
+                  const preserved=await startupStep('RECOVERY_COPY',()=>window.CLICK360_P0A_BOOTSTRAP.create({db,firebase,projectId:sparkProjectId,
                     productionRecoveryOnly:true,ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),
                     buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],resolveUser:()=>auth.currentUser,
                     resolveContext:()=>isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context?context:null,
@@ -4242,18 +4243,18 @@
                         window.click360SparkRecoveryCopy={...detail};
                         window.dispatchEvent(new CustomEvent('click360-sync-status'));
                       }}
-                  }).prepare();
+                  }).prepare());
                   // Separate optional P0D preparation. No policy exists by
                   // default; this never calls a migration or writer factory.
                   if(preserved?.recoveryCopy?.status==='RECOVERY_COPY_CLIENT_VERIFIED'){
                     let journal;
                     try{
-                      journal=await window.CLICK360_P0A_JOURNAL.open();
-                      const result=await window.CLICK360_SPARK_RECONCILIATION.createDevicePreflight({db,firebase,
+                      journal=await startupStep('RECOVERY_JOURNAL',()=>window.CLICK360_P0A_JOURNAL.open());
+                      const result=await startupStep('DEVICE_PREFLIGHT',()=>window.CLICK360_SPARK_RECONCILIATION.createDevicePreflight({db,firebase,
                         ownerUid:context.ownerUid,actorUid:user.uid,buildSha:window.CLICK360_RELEASE_ASSETS['app.js'],copy:preserved.recoveryCopy,
                         assertContext:()=>{if(!lock||!isCurrentAuthEpoch(user,expectedEpoch)||ACTIVE_CONTEXT!==context||auth.currentUser?.uid!==user.uid)throw Error('P0D_CONTEXT_CHANGED');},
                         readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),captureJournal:()=>journal.captureOwner(context.ownerUid)
-                      }).prepare();
+                      }).prepare());
                       if(isCurrentAuthEpoch(user,expectedEpoch)&&ACTIVE_CONTEXT===context){
                         window.click360DevicePreflight=result;
                         window.dispatchEvent(new CustomEvent('click360-device-preflight',{detail:result}));
