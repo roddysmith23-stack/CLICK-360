@@ -43,13 +43,13 @@ assert.deepEqual(Array.from(flow.RESOLUTION_ORDER), [
   'approved_user_compatibility', 'explicit_invitation'
 ]);
 
-const primaryAccount = firebase.indexOf('const account = await resolveAccountAccess(user, epoch, { allowCreate: false');
-const compatibilityAccount = firebase.indexOf('let approved = await isApprovedUser(user, epoch)');
+const primaryAccount = firebase.indexOf("startupStep('ACCOUNT_ACCESS',()=>resolveAccountAccess(user, epoch, { allowCreate: false");
+const compatibilityAccount = firebase.indexOf("startupStep('COMPATIBILITY_ACCESS',()=>isApprovedUser(user, epoch)");
 const explicitInvitation = firebase.indexOf('const invitation = await acceptInvitationFromUrl(user, epoch)');
 assert(primaryAccount > 0 && primaryAccount < compatibilityAccount && compatibilityAccount < explicitInvitation, 'UID account access is resolved before compatibility and explicit invitations');
 assert(firebase.includes("if (account.status === 'ready' && account.state?.allowed)"));
 assert(firebase.includes('getIdTokenResult?.(true)'), 'time-limited access uses a fresh Google server-issued token clock');
-assert(firebase.includes('createdNow ? serverTimestampMs(data.lastSeenAt) : await trustedAuthServerNowMs(user)'));
+assert(firebase.includes("createdNow ? serverTimestampMs(data.lastSeenAt) : await startupStep('ACCOUNT_CLOCK',()=>trustedAuthServerNowMs(user))"));
 assert(firebase.indexOf('if (!unlockApp()) return false') < firebase.indexOf('touchAccountAccessActivity(user, expectedEpoch)'), 'lastSeen activity is secondary to successful entry');
 assert(!firebase.includes('message.includes('), 'gate actions never depend on customer-facing wording');
 assert(!firebase.toLowerCase().includes('shary10mmvv@gmail.com'), 'no customer email is hard-coded into access logic');
