@@ -3,7 +3,7 @@ import {newAppContext,url,emulatorOwnerEmail,emulatorPassword} from './r38-emula
 // Existing served PWA, Auth SDK, Firestore SDK and Rules. Faults are confined
 // to this synthetic browser's read/identity boundary, never server data.
 export async function certifyStartupAuth({browser,uid,label,output}){
- for(const scenario of ['pending_account_read','identity_exception','missing_bootstrap_module']){
+ for(const scenario of ['pending_account_read','pending_bootstrap_completion','identity_exception','missing_bootstrap_module']){
   const context=await newAppContext(browser,{width:390,height:844});
   try{
    const page=await context.newPage();await page.goto(url,{waitUntil:'domcontentloaded'});
@@ -18,6 +18,17 @@ export async function certifyStartupAuth({browser,uid,label,output}){
        window.QA_RELEASE_ACCOUNT=()=>{held=false;get.call(this,options).then(resolve,reject);};});}
       return get.call(this,options);
      };
+    }else if(scenario==='pending_bootstrap_completion'){
+     const api=CLICK360_SPARK_BOOTSTRAP;
+     window.CLICK360_SPARK_BOOTSTRAP={...api,create(options){
+      const coordinator=api.create(options);
+      return {...coordinator,async recover(...args){
+       const result=await coordinator.recover(...args);
+       window.QA_INTERNAL_BOOTSTRAP_READY=true;
+       await new Promise(resolve=>window.QA_RELEASE_BOOTSTRAP=resolve);
+       return result;
+      }};
+     }};
     }else if(scenario==='identity_exception'){
      const original=click360SetTenantContext;
      window.click360SetTenantContext=(context,...args)=>{
@@ -39,10 +50,24 @@ export async function certifyStartupAuth({browser,uid,label,output}){
     assert.equal(await page.evaluate(()=>QA_ACCOUNT_READS),1,'No retry/polling while the original read is pending');
     await page.screenshot({path:`${output}/startup-${label}-waiting.png`});
     await page.evaluate(()=>QA_RELEASE_ACCOUNT());
-    await page.waitForFunction(()=>click360SparkBootstrapState?.phase==='READY'&&window.click360SparkOperationalSession);
+    await page.waitForFunction(()=>click360SparkBootstrapState?.phase==='READY'&&window.click360SparkOperationalSession
+      &&window.click360StartupDiagnostic?.phase==='READY'&&window.click360SparkAccessGate?.().allowed===true);
     assert.equal(await page.evaluate(()=>click360StartupDiagnostic.phase),'READY');
     assert.equal(await page.evaluate(()=>click360SparkBootstrapState.operationalCloudConfirmed),true);
     assert(await page.evaluate(()=>click360GetTenantState().products.length>0));
+   }else if(scenario==='pending_bootstrap_completion'){
+    await page.waitForFunction(()=>window.QA_INTERNAL_BOOTSTRAP_READY);
+    assert.equal(await page.evaluate(()=>click360SparkBootstrapState.phase),'READY');
+    assert.equal(await page.evaluate(()=>!!window.click360SparkOperationalSession),true);
+    // The old cold-restart assertion passed at this point, before Auth had
+    // published the coordinator/cursors and unlocked the application.
+    assert.equal(await page.evaluate(()=>!!window.click360SparkCoordinator),false);
+    assert.equal(await page.evaluate(()=>click360SparkAccessGate().allowed),false);
+    assert.notEqual(await page.evaluate(()=>click360StartupDiagnostic.phase),'READY');
+    await page.evaluate(()=>QA_RELEASE_BOOTSTRAP());
+    await page.waitForFunction(()=>window.click360StartupDiagnostic?.phase==='READY'
+      &&window.click360SparkAccessGate?.().allowed===true&&!!window.click360SparkCoordinator);
+    assert.equal(await page.locator('#click360-auth-gate').count(),0);
    }else{
     await page.waitForFunction(()=>window.click360StartupDiagnostic?.phase==='FAILED');
     const expected=scenario==='identity_exception'?/STARTUP_APPLY_IDENTITY_identity-setup-failed/:/SPARK_BOOTSTRAP_MODULE_UNAVAILABLE/;
