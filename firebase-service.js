@@ -150,6 +150,7 @@
       ACCOUNT_CLOCK:'la vigencia del acceso',APPLY_IDENTITY:'la identidad del negocio',
       ENTER_APP:'la apertura del negocio',P0A_RECOVERY:'la protección del dispositivo',
       RECOVERY_COPY:'la copia de recuperación',RECOVERY_JOURNAL:'el journal preservado',DEVICE_PREFLIGHT:'la conciliación del dispositivo',
+      STORAGE_MODE:'el acceso al almacenamiento del negocio',
       RECOVERY_POLICY:'la política de recuperación',LOCAL_PREPARE:'el almacenamiento local',
       LOCAL_READ:'la copia local',LOCAL_RESTORE:'la recuperación local',DEVICE_LOCK:'el bloqueo seguro del dispositivo',
       HANDOFF_SERVER_READ:'la verificación de la fuente preservada',MODULAR_BOOTSTRAP:'la apertura de los datos en nube',
@@ -4225,6 +4226,14 @@
             if(policy.metadata.fromCache===false&&policy.metadata.hasPendingWrites===false&&p?.enabled===true
               &&p.automaticRecoveryCopy===true&&p.automaticShadow===false&&p.operationalAccess!==true
               &&Array.isArray(p.pilotOwnerUids)&&p.pilotOwnerUids.includes(user.uid)){
+              // Preservation-only enrollment is a LEGACY path, never an
+              // exemption from a fence already installed in the server.
+              // Let the authoritative coordinator handle modular/migrating/
+              // frozen states (and production enrollment revocation).
+              const storage=await startupStep('STORAGE_MODE',()=>db.doc(`businesses/${context.ownerUid}/metadata/storage`).get({source:'server'}));
+              if(storage.metadata.fromCache!==false||storage.metadata.hasPendingWrites!==false)
+                throw Error('SPARK_RECOVERY_STORAGE_MODE_UNCONFIRMED');
+              if(storage.exists&&storage.data()?.storageMode!=='legacy')return false;
               recoveryOnly=true;
               await startupStep('LOCAL_PREPARE',()=>window.click360PrepareTenantStorage?.(context));
               const source=await startupStep('LOCAL_READ',()=>window.CLICK360_V16_STORAGE.getSnapshot(context));

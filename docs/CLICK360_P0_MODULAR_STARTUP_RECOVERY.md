@@ -17,6 +17,13 @@ and checks that the corrected observer displays a failure code instead.
 Neither reproduction establishes the exact last stage reached by a particular
 physical phone; that requires the newly observable client result.
 
+The exact-head staging check additionally demonstrated a preservation-only
+policy bypass: after an existing cutover, P0A-only enrollment could skip the
+modular coordinator and load legacy instead. The preservation-only branch now
+first reads authoritative storage mode; migrating, modular and frozen controls
+are always handled by the operational coordinator, including its production
+enrollment/revocation checks. This does not enable a new migration.
+
 ## Repair and boundaries
 
 - Production local promotion requires an opaque proof issued by the complete
