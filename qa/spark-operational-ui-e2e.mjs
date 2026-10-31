@@ -16,6 +16,7 @@ import '../spark-modular-record-codec.js';
 import {certifyShadowPreparation,certifyRecoveryCopy,certifyDevicePreflight} from './spark-migration-shadow-pwa.mjs';
 import {certifyRetailReport} from './spark-retail-report-pwa.mjs';
 import {certifyStartupAuth} from './startup-auth-pwa.mjs';
+import {certifyDeviceHealthUI} from './device-health-pwa.mjs';
 import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,createEmulatorUser,
   seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
@@ -106,10 +107,15 @@ try{
     assert(await page.evaluate(()=>window.click360FirestoreTransport==='long_polling'),'Use the real app SDK transport, never a harness-only override');
     assert(await page.evaluate(()=>!!window.click360SparkOperationalSession&&window.click360SparkBootstrapState?.phase==='READY'),'Authentication automatically connects the modular PWA before any commercial action');
     await certifyStartupAuth({browser,uid,label,output});
+    device.lifecycle=[];
+    page.on('crash',()=>device?.lifecycle?.push({event:'page_crash',at:Date.now()}));
+    page.on('close',()=>device?.lifecycle?.push({event:'page_close',at:Date.now()}));
+    browser.on('disconnected',()=>console.error(JSON.stringify({browser:label,event:'browser_disconnected',at:Date.now()})));
     assert(await page.evaluate(()=>click360GetTenantState().legalAcceptances?.some(a=>a.id==='legal-qa')),
       'Restore existing consent from its actual configuration source path; do not waive the legal gate');
     const legacyBefore=await readCloud(env,uid);
     await retainLegacyConflict(page);
+    await certifyDeviceHealthUI({page,label,output});
     let restarted=page;
     if(process.env.CLICK360_SPARK_UI_WORKER_ONLY!=='1'){
     await page.evaluate(async({projectId,uid})=>{
@@ -529,7 +535,7 @@ try{
       'Business switching preserves the authoritative single cancellation ledger');
     assert(await restarted.locator('#workingDateInput').inputValue()==='2026-09-04','Returning restores this business own historical date');
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Both business switches leave the shared legacy document intact');
-    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',productCreate:true,productEdit:true,productDeletePreservesHistory:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
+    results.push({browser:label,source:'served-built-PWA+Web-SDK+Auth/Firestore-emulators',deviceReadonlyHealthUI:true,productCreate:true,productEdit:true,productDeletePreservesHistory:true,compoundProductAndStock:true,inventoryAdjust:true,cashOpeningZero:true,cashClose:true,lostCloseResponseRecovered:true,authoritativeReport:true,sale:true,historicalSaleAndClose:true,initialLayaway:true,pendingPaymentSale:true,subsequentReceipts:true,cashMovement:true,stockOnce:true,legacyUnchanged:true,
       automaticAuthBootstrap:true,automaticColdRestart:true,secondDeviceAuthoritativeRead:true,twoBusinessRepositorySwitch:true,
       duplicateTabCoordinatorDenied:true,
       exactActiveCashBeyondHistoryPage:true,
@@ -757,7 +763,7 @@ try{
     bootstrap:window.click360SparkBootstrapState,accessGate:window.click360SparkAccessGate?.(),
     gateText:document.querySelector('#click360-auth-gate')?.textContent,
     cashCount:click360GetTenantState()?.cashSessions?.length})).catch(()=>null)));
-  if(device)console.log(JSON.stringify({pageErrors:device.pageErrors,workerLifecycle:device.workerLifecycle||[]}));
+  if(device)console.log(JSON.stringify({pageErrors:device.pageErrors,workerLifecycle:device.workerLifecycle||[],ownerLifecycle:device.lifecycle||[]}));
   throw error;
 }finally{
   try{await device?.context.close();for(const browser of browsers)await browser.close();await env?.cleanup();}

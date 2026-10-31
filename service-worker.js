@@ -18,6 +18,7 @@ const ASSETS = [
   './runtime-guard.js',
   './safe-update.js',
   './app.js',
+  './device-health-readonly.js',
   './spark-modular-migration.js',
   './spark-modular-reconciliation.js',
   './spark-modular-recovery.js',
