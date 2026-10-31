@@ -28,9 +28,12 @@
     const build=root.CLICK360_RELEASE_ASSETS&&root.CLICK360_RELEASE_ASSETS['app.js']||null;
     const scope=writer&&writer.identity||null;
     const phase=text(state.phase||'UNKNOWN');
+    const activeBusinessId=typeof root.click360GetActiveBusinessId==='function'
+      ?root.click360GetActiveBusinessId():null;
     const scopeMatches=!!scope&&scope.ownerUid===ownerUid
-      &&root.click360TenantContext&&root.click360TenantContext.tenantKey===scope.tenantKey
-      &&scope.businessId===root.click360TenantContext.businessId;
+      &&root.click360TenantContext?.authUid===ownerUid
+      &&scope.businessId===activeBusinessId
+      &&scope.tenantKey==='owner:'+ownerUid+':business:'+activeBusinessId;
     const beforeBusy=!!(writer&&writer.isBusy&&writer.isBusy());
     const readerModule=root.CLICK360_P0A_JOURNAL;
     if(!readerModule||typeof readerModule.open!=='function')throw Error('JOURNAL_READER_UNAVAILABLE');
@@ -59,6 +62,7 @@
     const afterBusy=!!(writer&&writer.isBusy&&writer.isBusy());
     const sameSession=sessionScope()===ownerUid
       &&writer===root.click360SparkOperationalSession
+      &&activeBusinessId===root.click360GetActiveBusinessId?.()
       &&root.click360SparkBootstrapState&&root.click360SparkBootstrapState.phase===phase;
     const health={
       pending:runtimeHealth&&runtimeHealth.pendingCount,
