@@ -6,7 +6,7 @@
   const PANEL_ID='c360-device-health-readonly';
   const BUTTON_ID='c360-device-health-check';
   const COPY_ID='c360-device-health-copy';
-  let running=false,lastReport=null;
+  let running=false,lastReport=null,lastScope=null;
   const text=value=>String(value==null?'':value);
   const cleanCode=error=>{
     const code=text(error&&error.code||error&&error.message||'READ_FAILED');
@@ -21,78 +21,168 @@
     return user.uid;
   }
   async function inspect(){
-    const ownerUid=sessionScope();
-    const state=root.click360SparkBootstrapState||{};
-    const writer=root.click360SparkOperationalSession||null;
-    const status=root.click360GetSyncStatus&&root.click360GetSyncStatus()||{};
-    const build=root.CLICK360_RELEASE_ASSETS&&root.CLICK360_RELEASE_ASSETS['app.js']||null;
-    const scope=writer&&writer.identity||null;
-    const phase=text(state.phase||'UNKNOWN');
-    const activeBusinessId=typeof root.click360GetActiveBusinessId==='function'
-      ?root.click360GetActiveBusinessId():null;
-    const scopeMatches=!!scope&&scope.ownerUid===ownerUid
-      &&root.click360TenantContext?.authUid===ownerUid
-      &&scope.businessId===activeBusinessId
-      &&scope.tenantKey==='owner:'+ownerUid+':business:'+activeBusinessId;
-    const beforeBusy=!!(writer&&writer.isBusy&&writer.isBusy());
-    const readerModule=root.CLICK360_P0A_JOURNAL;
-    if(!readerModule||typeof readerModule.open!=='function')throw Error('JOURNAL_READER_UNAVAILABLE');
-    const reader=await readerModule.open();
-    let census;
-    try{census=await reader.captureOwner(ownerUid);}
-    finally{reader.close();}
-    if(!census||census.enumerationComplete!==true||!Array.isArray(census.rows)
-      ||census.recordCount!==census.rows.length)throw Error('JOURNAL_CENSUS_INCOMPLETE');
-    const counts={total:census.recordCount,confirmed:0,queued:0,inflight:0,unknown:0,
-      projectionPending:0,unexpectedState:0,missingProof:0,unattributedActive:0};
-    for(const row of census.rows){
-      if(row.state==='confirmed')counts.confirmed++;
-      else if(row.state==='queued')counts.queued++;
-      else if(row.state==='inflight')counts.inflight++;
-      else if(row.state==='unknown')counts.unknown++;
-      else counts.unexpectedState++;
-      if(row.state==='confirmed'&&row.projectionState!=='complete')counts.projectionPending++;
-      if(!/^[a-f0-9]{64}$/.test(text(row.payloadHash)))counts.missingProof++;
-      if(row.state!=='confirmed'&&(!row.payload||!row.payload.actorUid
-        ||row.actorUid!==row.payload.actorUid))counts.unattributedActive++;
-    }
-    // The runtime's actor-scoped counters are readonly, but the owner-wide
-    // primary-key scan above is the authority for COMPLETE journal coverage.
-    const runtimeHealth=writer&&typeof writer.health==='function'?await writer.health():null;
-    const afterBusy=!!(writer&&writer.isBusy&&writer.isBusy());
-    // This is an existing pure precheck: it does not queue a sale or call Firebase.
-    const saleGate=typeof root.click360SparkMutationGate==='function'
-      ?root.click360SparkMutationGate({kind:'sale'}):null;
-    const sameSession=sessionScope()===ownerUid
-      &&writer===root.click360SparkOperationalSession
-      &&activeBusinessId===root.click360GetActiveBusinessId?.()
-      &&root.click360SparkBootstrapState&&root.click360SparkBootstrapState.phase===phase;
-    const health={
-      pending:runtimeHealth&&runtimeHealth.pendingCount,
-      unknown:runtimeHealth&&runtimeHealth.unknownCount,
-      projectionPending:runtimeHealth&&runtimeHealth.projectionPendingCount,
-      complete:runtimeHealth&&runtimeHealth.countIsBounded===false,
-      activeRequests:runtimeHealth&&runtimeHealth.activeRequests
+
+    const w = root;
+    sessionScope();
+    const databaseName = 'click360-modular-outbox-v1';
+    const reviewedBuild = w.CLICK360_RELEASE_ASSETS?.['device-health-readonly.js'];
+    const knownKinds = new Set(['sale','sale_cancel','product_create','product_edit','product_delete','inventory_adjust','cash_open','cash_close','cash_movement','manual_movement_correct','customer_create','customer_edit','customer_delete','receivable_payment','layaway_status','scoped_settings']);
+    const build = v => typeof v === 'string' && /^[a-f0-9]{12,40}$/.test(v) ? v : null;
+    const safeGateReasons = new Set(['modular_access_verified','auth_not_ready','read_only','legal_acceptance_required','permission_required','client_data_protection','device_save_pending']);
+    const code = v => safeGateReasons.has(v) ? v : 'UNRECOGNIZED_GATE_REASON';
+    const canonical = v => {
+      if (v === null || typeof v === 'string' || typeof v === 'boolean') return v;
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      if (Array.isArray(v)) return v.map(canonical);
+      if (v && Object.getPrototypeOf(v) === Object.prototype)
+        return Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical(v[k])]));
+      throw Error('NON_JSON_JOURNAL_PAYLOAD');
     };
-    const safe=saleGate?.allowed===true&&phase==='READY'&&!!build&&!!writer&&scopeMatches
-      &&status.status==='modular_confirmed'&&root.navigator.onLine===true
-      &&!beforeBusy&&!afterBusy&&sameSession&&health.complete===true
-      &&health.pending===0&&health.unknown===0&&health.projectionPending===0
-      &&health.activeRequests===0&&counts.queued===0&&counts.inflight===0
-      &&counts.unknown===0&&counts.projectionPending===0
-      &&counts.unexpectedState===0&&counts.missingProof===0&&counts.unattributedActive===0;
-    return Object.freeze({
-      version:1,checkedAt:new Date().toISOString(),
-      build:build?text(build).slice(0,12):'UNKNOWN',
-      bootstrapPhase:phase,writerInstalled:!!writer,writerScopeVerified:!!scopeMatches,
-      cloudStatus:text(status.status||'UNKNOWN'),online:root.navigator.onLine===true,
-      salePrecheckAllowed:saleGate?.allowed===true,
-      activeWriterBusy:beforeBusy||afterBusy,sessionUnchanged:!!sameSession,
-      journal:{enumerationComplete:true,...counts},
-      runtimeHealth:health,
-      result:safe?'SUPERVISED_GO_CANDIDATE':'NO_GO_REVIEW_REQUIRED',
-      notice:'No confirma ventas nuevas ni sustituye la verificacion del ledger en Firebase.'
-    });
+    const digest = async v => [...new Uint8Array(await w.crypto.subtle.digest('SHA-256',
+      new w.TextEncoder().encode(JSON.stringify(canonical(v)))))].map(b => b.toString(16).padStart(2, '0')).join('');
+    let db;
+    const result = {version:1,observedAt:new Date().toISOString(),readOnly:true,networkRequests:0,
+      scope:'CURRENT_AUTHENTICATED_PWA_NOT_HARDWARE_ATTESTATION',reviewedBuild,localPreflightReady:false};
+    try {
+      const auth = w.click360Auth?.currentUser, session = w.click360SparkOperationalSession;
+      const profile = w.click360User, tenant = w.click360TenantContext;
+      const activeBusiness = w.click360GetActiveBusinessId?.();
+      const owner = session?.identity?.ownerUid, business = session?.identity?.businessId;
+      const coordinator = w.click360SparkCoordinator;
+      const unchanged = () => !!auth && w.click360Auth?.currentUser === auth
+        && w.click360User === profile && w.click360TenantContext === tenant
+        && w.click360GetActiveBusinessId?.() === activeBusiness
+        && w.click360SparkOperationalSession === session && session?.identity?.ownerUid === owner
+        && session?.identity?.businessId === business && w.click360SparkCoordinator === coordinator;
+      const snapshot = () => ({
+        build:build(w.CLICK360_RELEASE_ASSETS?.['app.js']),workerBuild:build(w.click360ServiceWorkerRelease?.buildSha),
+        startupReady:w.click360StartupDiagnostic?.phase === 'READY',bootstrapReady:w.click360SparkBootstrapState?.phase === 'READY',
+        accessReady:w.click360AccessUiState?.state === 'ready',writerInstalled:!!session,
+        coordinatorReady:coordinator?.phase?.() === 'READY',writerBusy:session?.isBusy?.() !== false,
+        coordinatorBusy:coordinator?.isBusy?.() !== false,online:w.navigator?.onLine === true,
+        mixedBuild:w.click360IsMixedBuild?.() !== false,
+        standalone:w.navigator?.standalone === true || w.matchMedia?.('(display-mode: standalone)')?.matches === true,
+        operationalCloudConfirmed:w.click360SparkBootstrapState?.operationalCloudConfirmed === true,
+        syncConfirmed:w.click360GetSyncStatus?.()?.status === 'modular_confirmed'
+          && w.click360GetSyncStatus?.()?.operationalCloudConfirmed === true
+      });
+      result.runtime = snapshot();
+      result.reviewedBuild = build(reviewedBuild);
+      if (!result.reviewedBuild) throw Error('RELEASE_IDENTITY_UNAVAILABLE');
+      // Hash existing identifiers only; never call a getter that creates a device ID.
+      result.identityFingerprintFormat = 'sha256-canonical-json';
+      if (owner) result.ownerFingerprint = await digest(owner);
+      const observedDevice = w.click360GetSyncStatus?.()?.deviceId;
+      result.deviceFingerprint = typeof observedDevice === 'string' && observedDevice ? await digest(observedDevice) : null;
+      if (!auth || !session || !owner || !business || w.click360User?.uid !== auth.uid
+        || w.click360User?.ownerId !== owner || auth.uid !== owner
+        || business !== activeBusiness || tenant?.authUid !== owner
+        || session.identity.tenantKey !== `owner:${owner}:business:${business}`) throw Error('ORIGINAL_OWNER_CONTEXT_REQUIRED');
+      // This modular gate only reads readiness/access/permissions/legal state.
+      // NEVER use click360WriteGate/getSyncState(cleanup:true) in this inspection.
+      if (typeof w.click360SparkMutationGate !== 'function') throw Error('MODULAR_GATE_UNAVAILABLE');
+      const gate = w.click360SparkMutationGate({kind:'sale'});
+      result.saleGate = {allowed:gate?.allowed === true,reason:code(gate?.reason)};
+      if (typeof w.indexedDB?.databases !== 'function') throw Error('SAFE_DATABASE_INVENTORY_UNAVAILABLE');
+      const databases = await w.indexedDB.databases();
+      const known = databases.find(d => d.name === databaseName);
+      if (!known) throw Error('EXISTING_JOURNAL_NOT_FOUND');
+      if (known.version !== 5) throw Error('JOURNAL_VERSION_NOT_CERTIFIED');
+      db = await new Promise((resolve,reject) => {
+        const request = w.indexedDB.open(databaseName); // Never request a version.
+        let refused = false;
+        const fail = reason => {refused = true;reject(Error(reason));};
+        request.onupgradeneeded = () => { request.transaction.abort();fail('DATABASE_CREATION_OR_UPGRADE_REFUSED'); };
+        request.onerror = () => fail('JOURNAL_READ_OPEN_FAILED');
+        request.onblocked = () => fail('JOURNAL_READ_OPEN_BLOCKED');
+        request.onsuccess = () => {if (refused) request.result.close();else resolve(request.result);};
+      });
+      db.onversionchange = () => db.close();
+      if (db.version !== 5 || !db.objectStoreNames.contains('operations')) throw Error('JOURNAL_SCHEMA_NOT_CERTIFIED');
+      const capture = () => new Promise((resolve,reject) => {
+        const tx = db.transaction('operations','readonly'), rows = [];
+        const request = tx.objectStore('operations').openCursor(w.IDBKeyRange.bound(`${owner}:`,`${owner};`,false,true));
+        request.onsuccess = () => { const cursor = request.result;if (!cursor) return;
+          rows.push(w.structuredClone(cursor.value));cursor.continue(); };
+        request.onerror = () => tx.abort();
+        tx.oncomplete = () => resolve(rows);
+        tx.onabort = () => reject(Error('COMPLETE_JOURNAL_READ_FAILED'));
+      });
+      const inspect = async rows => {
+        const count = {total:rows.length,queued:0,unknown:0,inflight:0,confirmed:0,projectionPending:0,
+          malformed:0,payloadHashErrors:0,unattributed:0,otherActorsPending:0};
+        const unique = new Set(), marks = [];
+        for (const row of rows) {
+          const validIds = [row.ownerUid,row.businessId,row.operationId].every(v => typeof v === 'string'
+            && v.length > 0 && v.length <= 120 && !/[/:.]/.test(v));
+          const validState = ['queued','unknown','inflight','confirmed'].includes(row.state);
+          if (!validIds || row.ownerUid !== owner || row.key !== `${owner}:${row.businessId}:${row.operationId}`
+            || unique.has(row.key) || !validState || row.schemaVersion !== 1 || !knownKinds.has(row.payload?.kind)
+            || typeof row.actorUid !== 'string' || !row.actorUid || row.actorUid !== row.payload?.actorUid
+            || !Number.isSafeInteger(row.revision) || row.revision < 1) count.malformed++;
+          unique.add(row.key);
+          if (validState) count[row.state]++;
+          const projection = row.state === 'confirmed' && row.projectionState !== 'complete';
+          if (projection) count.projectionPending++;
+          if (row.state !== 'confirmed' || projection) {
+            if (!row.actorUid || row.actorUid !== row.payload?.actorUid) count.unattributed++;
+            if (row.actorUid && row.actorUid !== auth.uid) count.otherActorsPending++;
+          }
+          let actualHash = null;
+          try { actualHash = await digest(row.payload); } catch { count.payloadHashErrors++; }
+          if (actualHash && actualHash !== row.payloadHash) count.payloadHashErrors++;
+          marks.push([row.key,row.actorUid ?? null,row.revision,row.state,row.projectionState ?? null,row.createdAt ?? null,row.attempts ?? null,row.payloadHash ?? null,actualHash]);
+        }
+        return {count,fingerprint:await digest(marks)};
+      };
+      const first = await inspect(await capture());
+      const scoped = await session.health(); // Existing read-only counts; no replay.
+      const secondRows = await capture();
+      const second = await inspect(secondRows);
+      const last = secondRows.filter(row => row.actorUid === auth.uid && row.businessId === business
+        && row.state === 'confirmed' && row.projectionState === 'complete').sort((a,b) => (b.createdAt||0)-(a.createdAt||0))[0];
+      result.lastConfirmedOperation = last ? {operationFingerprint:await digest(last.operationId),
+        payloadHash:/^[a-f0-9]{64}$/.test(last.payloadHash) ? last.payloadHash : null,
+        kind:knownKinds.has(last.payload?.kind) ? last.payload.kind : null,projectionComplete:true} : null;
+      result.journal = {...second.count,enumerationComplete:true,allOwnerBusinessesAndActors:true,
+        stable:first.fingerprint === second.fingerprint,fingerprint:second.fingerprint};
+      result.session = {pending:scoped.pendingCount,unknown:scoped.unknownCount,
+        projectionPending:scoped.projectionPendingCount,activeRequests:scoped.activeRequests,
+        complete:scoped.countIsBounded === false};
+      result.runtimeAfter = snapshot();
+      result.contextStable = unchanged();
+      const r = result.runtimeAfter, j = result.journal;
+      const runtimeReady = r.startupReady && r.bootstrapReady && r.accessReady && r.writerInstalled
+        && r.coordinatorReady && !r.writerBusy && !r.coordinatorBusy && r.online && !r.mixedBuild
+        && r.standalone && r.operationalCloudConfirmed && r.syncConfirmed && r.build === reviewedBuild && r.workerBuild === r.build;
+      result.localPreflightReady = result.contextStable && runtimeReady && result.saleGate.allowed
+        && !!result.deviceFingerprint && j.stable && j.queued+j.unknown+j.inflight+j.projectionPending+j.malformed+j.payloadHashErrors+j.unattributed+j.otherActorsPending === 0
+        && result.session.complete && scoped.pendingCount === 0 && scoped.unknownCount === 0
+        && scoped.projectionPendingCount === 0 && scoped.activeRequests === 0;
+      result.reason = result.localPreflightReady ? 'LOCAL_READONLY_PREFLIGHT_PASS'
+        : !result.deviceFingerprint ? 'EXISTING_DEVICE_IDENTITY_UNAVAILABLE'
+        : !result.contextStable ? 'CONTEXT_CHANGED_DURING_READ'
+        : !j.stable ? 'JOURNAL_CHANGED_DURING_READ'
+        : j.malformed > 0 ? 'JOURNAL_FORMAT_INVALID'
+        : j.payloadHashErrors > 0 ? 'JOURNAL_PAYLOAD_HASH_MISMATCH'
+        : j.unknown+j.inflight > 0 ? 'UNKNOWN_REQUIRES_AUTHORITATIVE_RECONCILIATION'
+        : j.projectionPending > 0 ? 'LOCAL_PROJECTION_PENDING'
+        : j.queued > 0 ? 'LOCAL_OPERATIONS_PENDING'
+        : r.build !== reviewedBuild ? 'APP_BUILD_NOT_REVIEWED'
+        : r.workerBuild !== r.build || r.mixedBuild ? 'MIXED_RELEASE'
+        : !r.standalone ? 'ORIGINAL_INSTALLED_PWA_CONTEXT_REQUIRED'
+        : !runtimeReady ? 'RUNTIME_NOT_READY'
+        : !result.saleGate.allowed ? 'SALE_GATE_DENIED' : 'JOURNAL_NOT_SETTLED_OR_INVALID';
+    } catch (error) {
+      const known = new Set(['ORIGINAL_OWNER_CONTEXT_REQUIRED','MODULAR_GATE_UNAVAILABLE','SAFE_DATABASE_INVENTORY_UNAVAILABLE',
+        'RELEASE_IDENTITY_UNAVAILABLE','EXISTING_JOURNAL_NOT_FOUND','JOURNAL_VERSION_NOT_CERTIFIED','DATABASE_CREATION_OR_UPGRADE_REFUSED',
+        'JOURNAL_READ_OPEN_FAILED','JOURNAL_READ_OPEN_BLOCKED','JOURNAL_SCHEMA_NOT_CERTIFIED','COMPLETE_JOURNAL_READ_FAILED']);
+      result.reason = known.has(error.message) ? error.message : 'LOCAL_READONLY_INSPECTION_FAILED';
+    } finally { db?.close(); }
+    result.result=result.localPreflightReady?'SUPERVISED_GO_CANDIDATE':'NO_GO_REVIEW_REQUIRED';
+    result.notice='No confirma ventas nuevas ni sustituye la verificación del ledger en Firebase.';
+    return Object.freeze(result); // No record contents, IDs, tokens or business amounts.
+
   }
   function attach(){
     const anchor=root.document.getElementById('copySyncDiagnosticBtn');
@@ -113,19 +203,25 @@
     button.textContent='Verificar este iPhone (solo lectura)';
     const output=root.document.createElement('pre');
     output.id='c360-device-health-output';
-    output.setAttribute('role','status');
+    const message=root.document.createElement('p');
+    message.id='c360-device-health-message';message.className='fieldHint';message.setAttribute('role','status');
+    const details=root.document.createElement('details'),summary=root.document.createElement('summary');
+    summary.textContent='Detalles técnicos para soporte';details.append(summary,output);
     output.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:360px;overflow:auto';
     const copy=root.document.createElement('button');
     copy.id=COPY_ID;copy.type='button';copy.className='btn silver block';
     copy.textContent='Copiar resultado para soporte';copy.hidden=true;
-    panel.append(heading,description,button,output,copy);
+    panel.append(heading,description,button,message,details,copy);
     parent.insertAdjacentElement('afterend',panel);
   }
   root.CLICK360_DEVICE_READONLY_SUPPORT=Object.freeze({inspect});
   async function handleClick(event){
     const id=event.target&&event.target.id;
     if(id===COPY_ID){
-      if(!lastReport)return;
+      if(!lastReport||!lastScope)return;
+      try{if(sessionScope()!==lastScope.ownerUid||root.click360Auth.currentUser!==lastScope.auth
+        ||root.click360SparkOperationalSession!==lastScope.writer)throw Error('OWNER_SESSION_REQUIRED');}
+      catch{lastReport=null;lastScope=null;return;}
       const output=root.document.getElementById('c360-device-health-output');
       try{await root.navigator.clipboard.writeText(JSON.stringify(lastReport,null,2));
         if(output)output.textContent='Resultado copiado. Compártelo únicamente con soporte de CLICK 360.\n'+JSON.stringify(lastReport,null,2);
@@ -136,14 +232,24 @@
     const button=root.document.getElementById(BUTTON_ID);
     const output=root.document.getElementById('c360-device-health-output');
     const copy=root.document.getElementById(COPY_ID);
+    const message=root.document.getElementById('c360-device-health-message');
     running=true;if(button)button.disabled=true;
-    if(output)output.textContent='Leyendo el estado local sin modificar información...';
+    if(message)message.textContent='Leyendo el estado local sin modificar información...';
+    if(output)output.textContent='';
+    if(copy)copy.hidden=true;
     try{
-      lastReport=await inspect();
+      const auth=root.click360Auth?.currentUser,ownerUid=sessionScope(),writer=root.click360SparkOperationalSession;
+      const report=await inspect();
+      if(root.click360Auth?.currentUser!==auth||sessionScope()!==ownerUid
+        ||root.click360SparkOperationalSession!==writer)throw Error('OWNER_SESSION_CHANGED');
+      lastReport=report;lastScope={auth,ownerUid,writer};
     }catch(error){
       lastReport={version:1,checkedAt:new Date().toISOString(),result:'NO_GO_READ_FAILED',
         errorCode:cleanCode(error),notice:'No reintentar operaciones ni borrar datos; contactar a soporte.'};
     }finally{running=false;if(button)button.disabled=false;}
+    if(message)message.textContent=lastReport.result==='SUPERVISED_GO_CANDIDATE'
+      ?'Comprobación completada. Comparte el resultado con soporte para verificar tu próxima operación real.'
+      :'La comprobación necesita revisión de soporte. Tu información no se ha modificado.';
     if(output)output.textContent=JSON.stringify(lastReport,null,2);
     if(copy)copy.hidden=false;
   }
@@ -151,10 +257,9 @@
     root.document.addEventListener('click',handleClick);
     const start=()=>{
       attach();
-      if(root.MutationObserver&&root.document.body){
-        const observer=new root.MutationObserver(attach);
-        observer.observe(root.document.body,{childList:true,subtree:true});
-      }
+      // The existing app publishes this event after each completed view render.
+      // No whole-document observer or background polling is needed.
+      root.addEventListener('click360:ready',attach);
     };
     if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',start,{once:true});
     else start();
