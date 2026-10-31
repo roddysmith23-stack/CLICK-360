@@ -207,6 +207,14 @@
     // reads, exports, navigation, #legal, or logout, none of which call
     // save()/writeGateStatus() in the first place.
     if (legalMutationGateActive()) return { allowed: false, reason: 'legal_acceptance_required' };
+    // A verified Spark session has its own Auth/repository authority. The
+    // legacy revision marker belongs to state/main and must not block its
+    // customer/payment/cash prechecks or be cleaned as a side effect here.
+    // Each command still passes its scoped gate and atomic server Rules.
+    if (window.click360SparkOperationalSession) {
+      const spark = window.click360SparkAccessGate?.();
+      return spark?.allowed === true ? spark : { allowed:false, reason:spark?.reason || 'auth_not_ready' };
+    }
     const external = typeof window.click360WriteGate === 'function' ? window.click360WriteGate() : null;
     if (external && external.allowed === false) {
       const access = accessInfo();

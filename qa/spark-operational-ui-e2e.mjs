@@ -25,6 +25,25 @@ if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'&&process.env.CI==='true')thro
 const diagnosticBrowser=process.env.CLICK360_SPARK_SHADOW_BROWSER;
 if(diagnosticBrowser&&(!['chromium','webkit'].includes(diagnosticBrowser)||process.env.CI==='true'
   ||process.env.CLICK360_SPARK_UI_SHADOW_ONLY!=='1'))throw Error('SHADOW_BROWSER_DIAGNOSTIC_ONLY');
+// Keep the real incident's legacy revision marker throughout Spark UI writes.
+async function retainLegacyConflict(page){
+  return page.evaluate(()=>{
+    const identity=click360DebugSyncIdentity();
+    const key=`CLICK360_TENANT:${identity.tenantKey}:SYNC_CONFLICT`;
+    const value=JSON.stringify({schemaVersion:2,createdAtMs:Date.now(),source:'synthetic_commercial_conflict',
+      reason:'synthetic_legacy_revision',remoteRevision:99,baseRevision:98,localRevision:98});
+    localStorage.setItem(`CLICK360_TENANT:${identity.tenantKey}:LAST_APPLIED_REMOTE_MATERIAL_HASH`,'synthetic-divergent-legacy-baseline');
+    localStorage.setItem(key,value);window.QA_RETAINED_LEGACY_CONFLICT={key,value};
+    if(click360GetSyncState({cleanup:false}).status!=='real_conflict')throw Error('SYNTHETIC_LEGACY_CONFLICT_NOT_REPRODUCED');
+    if(click360WriteGate().allowed!==false)throw Error('LEGACY_WRITER_CONFLICT_BYPASSED');
+    if(click360SparkAccessGate().allowed!==true)throw Error('VERIFIED_SPARK_ACCESS_NOT_READY');
+    return true;
+  });
+}
+async function legacyConflictRetained(page){
+  assert(await page.evaluate(()=>localStorage.getItem(QA_RETAINED_LEGACY_CONFLICT.key)===QA_RETAINED_LEGACY_CONFLICT.value),
+    'Successful modular commands must not clear the original legacy conflict marker');
+}
 const output=path.join(root,'output/playwright/spark-operational-ui');mkdirSync(output,{recursive:true});
 let ephemeralRange=null;try{ephemeralRange=readFileSync('/proc/sys/net/ipv4/ip_local_port_range','utf8').trim();}catch{}
 console.log(JSON.stringify({stage:'SPARK_UI_LISTENER_PREFLIGHT',http:port,firestore:firestorePort,auth:authPort,ephemeralRange}));
@@ -90,6 +109,7 @@ try{
     assert(await page.evaluate(()=>click360GetTenantState().legalAcceptances?.some(a=>a.id==='legal-qa')),
       'Restore existing consent from its actual configuration source path; do not waive the legal gate');
     const legacyBefore=await readCloud(env,uid);
+    await retainLegacyConflict(page);
     let restarted=page;
     if(process.env.CLICK360_SPARK_UI_WORKER_ONLY!=='1'){
     await page.evaluate(async({projectId,uid})=>{
@@ -114,6 +134,7 @@ try{
     await page.evaluate(()=>{location.hash='#crm';});await page.locator('#newCustomerBtn').click();
     await page.locator('#customerName').fill('Cliente modular sintético');await page.locator('#customerPhoneCrm').fill('000');
     await page.locator('#customerNotes').fill('Solo fixture');await resetStatus();await page.locator('#customerForm button[type="submit"]').click();await confirmed();
+    await legacyConflictRetained(page);
     const customer=await page.evaluate(()=>click360GetTenantState().settings.customers.find(c=>c.name==='Cliente modular sintético'));
     assert((await record('customers',customer.id)).name===customer.name,'Real customer form persists individual record');
     await page.locator(`[data-customer-edit="${customer.id}"]`).click();await page.locator('#customerNotes').fill('Edición sintética');
@@ -367,6 +388,7 @@ try{
       &&click360GetTenantState().deletedProducts.some(p=>p.id===id&&p.deleted===true),created.id),'Existing catalog hides the deleted record and durably retains its tombstone');
     const health=await page.evaluate(()=>window.click360SparkOperationalSession.health());
     assert(health.pendingCount===0&&health.unknownCount===0&&health.projectionPendingCount===0,'Durable local projection completed');
+    await legacyConflictRetained(page);
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'No legacy overwrite');
     await page.evaluate(()=>{location.hash='#cash';});
     await page.locator('#workingDateInput').fill('2026-09-04');await page.locator('#workingDateInput').dispatchEvent('change');
@@ -563,6 +585,7 @@ try{
       p.on('crash',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'page_crash'}));
       p.on('close',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'page_close'}));
     };
+    await retainLegacyConflict(wp);
     observeWorkerPage(wp);
     device.context.on('close',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'context_close'}));
     browser.on('disconnected',()=>workerLifecycle.push({at:Date.now(),stage:workerStage,event:'browser_disconnected'}));
