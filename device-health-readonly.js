@@ -60,6 +60,9 @@
     // primary-key scan above is the authority for COMPLETE journal coverage.
     const runtimeHealth=writer&&typeof writer.health==='function'?await writer.health():null;
     const afterBusy=!!(writer&&writer.isBusy&&writer.isBusy());
+    // This is an existing pure precheck: it does not queue a sale or call Firebase.
+    const saleGate=typeof root.click360SparkMutationGate==='function'
+      ?root.click360SparkMutationGate({kind:'sale'}):null;
     const sameSession=sessionScope()===ownerUid
       &&writer===root.click360SparkOperationalSession
       &&activeBusinessId===root.click360GetActiveBusinessId?.()
@@ -71,7 +74,7 @@
       complete:runtimeHealth&&runtimeHealth.countIsBounded===false,
       activeRequests:runtimeHealth&&runtimeHealth.activeRequests
     };
-    const safe=phase==='READY'&&!!build&&!!writer&&scopeMatches
+    const safe=saleGate?.allowed===true&&phase==='READY'&&!!build&&!!writer&&scopeMatches
       &&status.status==='modular_confirmed'&&root.navigator.onLine===true
       &&!beforeBusy&&!afterBusy&&sameSession&&health.complete===true
       &&health.pending===0&&health.unknown===0&&health.projectionPending===0
@@ -83,6 +86,7 @@
       build:build?text(build).slice(0,12):'UNKNOWN',
       bootstrapPhase:phase,writerInstalled:!!writer,writerScopeVerified:!!scopeMatches,
       cloudStatus:text(status.status||'UNKNOWN'),online:root.navigator.onLine===true,
+      salePrecheckAllowed:saleGate?.allowed===true,
       activeWriterBusy:beforeBusy||afterBusy,sessionUnchanged:!!sameSession,
       journal:{enumerationComplete:true,...counts},
       runtimeHealth:health,
