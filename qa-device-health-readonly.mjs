@@ -13,7 +13,8 @@ function client(rows=[],options={}){
   const root={
     click360Auth:{currentUser:{uid:'owner-shary'}},
     click360User:{uid:'owner-shary',ownerId:'owner-shary',role:'owner'},
-    click360TenantContext:{businessId:identity.businessId,tenantKey:identity.tenantKey},
+    click360TenantContext:{authUid:'owner-shary',businessId:'owner-shary',tenantKey:'owner:owner-shary:business:owner-shary'},
+    click360GetActiveBusinessId:()=>identity.businessId,
     click360SparkBootstrapState:{phase:options.phase||'READY'},
     click360SparkOperationalSession:options.noWriter?null:writer,
     click360GetSyncStatus:()=>({status:'modular_confirmed'}),
