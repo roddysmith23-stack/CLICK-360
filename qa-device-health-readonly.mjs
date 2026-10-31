@@ -18,6 +18,7 @@ function client(rows=[],options={}){
     click360SparkBootstrapState:{phase:options.phase||'READY'},
     click360SparkOperationalSession:options.noWriter?null:writer,
     click360GetSyncStatus:()=>({status:'modular_confirmed'}),
+    click360SparkMutationGate:()=>({allowed:options.saleBlocked!==true}),
     CLICK360_RELEASE_ASSETS:{'app.js':'a'.repeat(12)},
     CLICK360_P0A_JOURNAL:{open:async()=>{
       opened++;
@@ -63,6 +64,12 @@ for(const [row,kind] of [
   const value=await root.CLICK360_DEVICE_READONLY_SUPPORT.inspect();
   assert.equal(value.result,'NO_GO_REVIEW_REQUIRED');
   assert.equal(value.runtimeHealth.complete,false);
+}
+{
+  const {root}=client([confirmed],{saleBlocked:true});
+  const value=await root.CLICK360_DEVICE_READONLY_SUPPORT.inspect();
+  assert.equal(value.result,'NO_GO_REVIEW_REQUIRED');
+  assert.equal(value.salePrecheckAllowed,false);
 }
 {
   const {root}=client([confirmed],{noWriter:true});
