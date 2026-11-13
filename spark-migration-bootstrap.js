@@ -149,10 +149,12 @@
       let journal,recovery;
       try{
         const control=(await server(controlRef)).data();
-        if(control?.ownerUid!==ownerUid||control.schemaVersion!==2||control.storageMode!==(preCutover?'migrating':'modular')
-          ||control.phase!==(preCutover?'READY_TO_CUTOVER':'MODULAR')||control.semanticEquality!=='PASS'||control.sourceHash!==control.reconstructedHash
-          )throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
-        if(!preCutover&&Array.isArray(control.businessIds)&&control.businessIds.length&&/^[a-f0-9]{64}$/.test(control.sourceHash||'')){
+        const controlMatches=control?.ownerUid===ownerUid&&control.schemaVersion===2
+          &&control.storageMode===(preCutover?'migrating':'modular')
+          &&control.phase===(preCutover?'READY_TO_CUTOVER':'MODULAR')
+          &&control.semanticEquality==='PASS'&&control.sourceHash===control.reconstructedHash;
+        if(!preCutover&&controlMatches&&Array.isArray(control.businessIds)&&control.businessIds.length
+          &&/^[a-f0-9]{64}$/.test(control.sourceHash||'')){
           const mirror=await verifyServerMirror(control,controlRef,await readLocal());
           if(mirror)return mirror;
         }
@@ -160,8 +162,8 @@
         if(policy?.enabled!==true||policy.automaticCutover!==true||!Array.isArray(policy.pilotOwnerUids)||!policy.pilotOwnerUids.includes(ownerUid))
           throw Error('SPARK_LOCAL_HANDOFF_ADMIN_APPROVAL_REQUIRED');
         if(preCutover&&policy.automaticMigration!==true)throw Error('SPARK_AUTOMATIC_ACTIVATION_DISABLED');
-        const sourceBuildSha=control.buildSha;
-        if(sourceBuildSha!==buildSha&&(preCutover||!compatibleCommittedHandoffBuilds.has(sourceBuildSha)))
+        const sourceBuildSha=control?.buildSha;
+        if(!controlMatches||sourceBuildSha!==buildSha&&(preCutover||!compatibleCommittedHandoffBuilds.has(sourceBuildSha)))
           throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
         const authorization=(await server(runtimeRef)).data(),cutover=(await server(cutoverRef)).data();
         const contract=await scopedContract(server),contractHash=await api.hash(contract);context();
