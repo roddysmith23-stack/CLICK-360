@@ -4352,7 +4352,8 @@
                   ownerUid:context.ownerUid,actorUid:user.uid,deviceId:getDeviceId(),buildSha:window.CLICK360_RELEASE_ASSETS?.['app.js'],
                   resolveUser:()=>auth.currentUser,resolveContext:()=>ACTIVE_CONTEXT,
                   readLocal:()=>window.CLICK360_V16_STORAGE.getSnapshot(context),leaseHeld,awaitStage:startupStep,
-                  matchesLegacyCache:window.click360MatchesFrozenLegacyCache
+                  matchesLegacyCache:window.click360MatchesFrozenLegacyCache,
+                  readSecondaryCache:window.click360ReadSecondaryLegacyCache
                 }).verifyLocalHandoff();
               },
               installBusiness:args=>startupStep('INSTALL_BUSINESS',()=>window.click360InstallSparkBusiness(args)),

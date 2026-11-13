@@ -896,6 +896,7 @@ function parseMoney(value) {
     return write(context, cloneState(snapshot), metadata).then((saved) => {
       if (activeTenantContext !== context) return false;
       indexedTenantCacheMeta = {
+        legacyArchiveHash:saved?.legacyArchiveHash||'',
         uiWorkingDates:saved?.uiWorkingDates||{},
         cloudCapacityBlocked: metadata.cloudCapacityBlocked === true,
         pendingOperations: metadata.pendingOperations || [],
@@ -909,7 +910,7 @@ function parseMoney(value) {
         source: String(metadata.source || 'local_snapshot')
       };
       publishStorageState({ mode: 'indexeddb_cache', indexedDbReady: true, message: 'Copia sin conexion disponible en este dispositivo.' });
-      writeCacheMeta('indexeddb', stateSizeBytes(snapshot), indexedTenantCacheMeta);
+      if(!saved?.legacyArchiveHash)writeCacheMeta('indexeddb', stateSizeBytes(snapshot), indexedTenantCacheMeta);
       return true;
     }).catch((error) => {
       if (activeTenantContext === context) {
@@ -1776,6 +1777,7 @@ function parseMoney(value) {
       state.identity = tenantIdentity();
       indexedTenantCacheMeta = {
         uiWorkingDates:record.uiWorkingDates||{},
+        legacyArchiveHash:record.legacyArchiveHash||'',
         cloudCapacityBlocked: record.cloudCapacityBlocked === true,
         pendingOperations: record.pendingOperations || [],
         payloadBytes: stateSizeBytes(candidate),
@@ -1849,9 +1851,29 @@ function parseMoney(value) {
       return raw===null||matches(JSON.parse(raw));
     });
   };
+  window.click360ReadSecondaryLegacyCache=function(){
+    const context=activeTenantContext;
+    if(!context||context.authUid!==context.ownerId)return null;
+    const primary=localStorage.getItem(stateStorageKey());
+    const older=localStorage.getItem(legacyStateStorageKey(context));
+    const metadata=localStorage.getItem(cacheMetaKey(context));
+    const meta=JSON.parse(metadata||'null');
+    if(meta?.pendingRemoteSync===true||meta?.cloudCapacityBlocked===true||meta?.pendingOperations?.length
+      ||(meta&&meta.tenantKey!==context.tenantKey)
+      ||localStorage.getItem(`CLICK360_TENANT:${context.tenantKey}:CORRUPT`)
+      ||localStorage.getItem(pendingProfileKey(context.authUid))
+      ||localStorage.getItem(`${LEGACY_PROFILE_PENDING_PREFIX}${context.authUid}`))return null;
+    for(const raw of [primary,older]){
+      if(raw===null)continue;
+      const data=JSON.parse(raw);
+      if(!tenantRuntime?.validBusinessPayload({identity:data?.identity,data},context))return null;
+    }
+    return {primary,older,metadata};
+  };
   window.click360InstallSparkBusiness=async function({businessId,configuration,verifiedLocalHandoff=null}){
     if(!activeTenantContext||!configuration.businesses.some(b=>b.id===businessId))throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_INVALID');
-    const next=verifiedLocalHandoff?.status==='SERVER_MIRROR_VERIFIED'?seed():cloneState(state);
+    const fromServer=['SERVER_MIRROR_VERIFIED','SECONDARY_CACHE_PRESERVED'].includes(verifiedLocalHandoff?.status);
+    const next=fromServer?seed():cloneState(state);
     next.businesses=cloneState(configuration.businesses);next.activeBusinessId=businessId;
     next.identity=tenantIdentity();
     // Restore global configuration leaves only. Record arrays are loaded from
@@ -6940,6 +6962,7 @@ function parseMoney(value) {
 	        <h3>Nube CLICK 360</h3>
 	        <p id="cloudStatusDynamic" class="cloudStatus" style="margin-bottom:10px; color:var(--gold);">\u2605 ${escapeHtml(cloud.title)}</p>
 	        <p id="cloudStatusDetail" class="cloudStatus">${escapeHtml(cloud.detail)}</p>
+            ${indexedTenantCacheMeta?.legacyArchiveHash?'<p class="fieldHint" role="status">La copia anterior de este equipo está conservada aparte. La app trabaja con los datos actuales de la nube.</p>':''}
             <div id="recoveryCopyStatus" ${recoveryCopy?'':'hidden'} role="status"><p id="recoveryCopyTitle" class="cloudStatus">${escapeHtml(recoveryCopy?.title||'')}</p><p id="recoveryCopyDetail" class="fieldHint">${escapeHtml(recoveryCopy?.detail||'')}</p></div>
 		        <div class="split" style="gap:10px;margin-top:12px;"><button type="button" class="btn silver" id="refreshCloudBtn">Actualizar desde nube</button><button type="button" class="btn primary" id="forceSyncCloud">Guardar ahora en nube</button></div>
 		        <div class="syncRecoveryCard">

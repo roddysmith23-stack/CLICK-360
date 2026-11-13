@@ -27,7 +27,7 @@
     await preparationAuthorities.get(token).verify(options);assertPreparationAuthority(token,scope,options);
   }
   function create({db,firebase,projectId,ownerUid,actorUid,deviceId,buildSha,
-    resolveUser,resolveContext,readLocal,matchesLegacyCache,leaseHeld,onProgress=()=>{},awaitStage=(_stage,run)=>run(),productionRecoveryOnly=false}){
+    resolveUser,resolveContext,readLocal,matchesLegacyCache,readSecondaryCache,leaseHeld,onProgress=()=>{},awaitStage=(_stage,run)=>run(),productionRecoveryOnly=false}){
     if((!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId))
       ||db.app?.options?.projectId!==projectId)throw Error('SPARK_MIGRATION_BOOTSTRAP_NONPRODUCTION_ONLY');
     const api=root.CLICK360_SPARK_MIGRATION;
@@ -87,28 +87,44 @@
       }
       return rows;
     }
-    async function verifyServerMirror(control,controlRef,local){
-      // Once cutover is committed, a second device can discard a verified
-      // mirror of the frozen legacy state without the source device's pins.
-      const clean=record=>record?.snapshot&&['remote_applied','cloud_confirmed'].includes(record.source)
-        &&record.pendingRemoteSync===false&&record.cloudCapacityBlocked===false
-        &&Array.isArray(record.pendingOperations)&&record.pendingOperations.length===0;
-      if(typeof matchesLegacyCache!=='function'||!clean(local))return null;
+    const cleanLegacyCache=record=>record?.snapshot&&['remote_applied','cloud_confirmed'].includes(record.source)
+      &&record.pendingRemoteSync===false&&record.cloudCapacityBlocked===false
+      &&Array.isArray(record.pendingOperations)&&record.pendingOperations.length===0;
+
+    async function verifyServerMirror(control,controlRef,local,{preserveSecondary=false}={}){
+      // Post-cutover only. Exact mirrors can be replaced; older clean
+      // device copies must be archived before the modular writer starts.
+      if(!cleanLegacyCache(local)||(preserveSecondary?typeof readSecondaryCache!=='function':typeof matchesLegacyCache!=='function'))return null;
+      const secondaryCache=preserveSecondary?readSecondaryCache():null;
+      if(preserveSecondary&&!secondaryCache)return null;
+      // A historic sync receipt is device evidence. Keep all its bytes even
+      // if the frozen cloud snapshot no longer matches that older revision.
+      if(preserveSecondary&&local.source==='cloud_confirmed'
+        &&(!Number.isSafeInteger(local.revision)||local.revision<1||local.revision>control.remoteRevision
+          ||local.baseRevision!==local.revision))return null;
       const frozen=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
       if(frozen?.revision!==control.remoteRevision||!frozen.payload?.data
         ||await api.hash(frozen.payload.data)!==control.remoteHash)
         throw Error('SPARK_LOCAL_HANDOFF_REMOTE_DRIFT_STOP');
       const legacy=frozen.payload;
       const controlJson=api.canonicalJson(JSON.parse(JSON.stringify(control)));
-      if(!matchesLegacyCache(local,legacy))return null;
+      if(!preserveSecondary&&!matchesLegacyCache(local,legacy))return null;
+      const cacheHash=preserveSecondary?await api.hash(secondaryCache):null;
       const snapshotHash=await api.hash(local.snapshot);
+      if(preserveSecondary&&snapshotHash===control.sourceHash&&snapshotHash!==control.remoteHash)
+        return null; // An intact cutover source still needs the original proof.
+      const cacheUnchanged=()=>{
+        context();
+        return api.canonicalJson(readSecondaryCache())===api.canonicalJson(secondaryCache);
+      };
       const metadataHash=await api.hash(Object.fromEntries(Object.entries(local).filter(([key])=>key!=='snapshot')));
       async function assertStable(){
         context();
         const current=await readLocal();context();
-        if(!clean(current)||await api.hash(current.snapshot)!==snapshotHash
+        if(!cleanLegacyCache(current)||await api.hash(current.snapshot)!==snapshotHash
           ||await api.hash(Object.fromEntries(Object.entries(current).filter(([key])=>key!=='snapshot')))!==metadataHash
-          ||!matchesLegacyCache(current,legacy))throw Error('SPARK_LOCAL_HANDOFF_DEVICE_DRIFT_STOP');
+          ||(preserveSecondary?!cacheUnchanged():!matchesLegacyCache(current,legacy)))
+          throw Error('SPARK_LOCAL_HANDOFF_DEVICE_DRIFT_STOP');
         const journal=await root.CLICK360_MODULAR_JOURNAL.open();
         try{
           const coverage=await journal.assertOwnerCoverage(ownerUid,control.businessIds);
@@ -121,7 +137,8 @@
         context();
       }
       await assertStable();
-      const result=Object.freeze({verified:true,status:'SERVER_MIRROR_VERIFIED',buildSha,
+      const result=Object.freeze({verified:true,status:preserveSecondary?'SECONDARY_CACHE_PRESERVED':'SERVER_MIRROR_VERIFIED',buildSha,
+        ...(preserveSecondary?{secondaryCache:Object.freeze(secondaryCache),cacheHash,cacheUnchanged}:{}),
         controlSourceHash:control.sourceHash,sourceHash:snapshotHash,deviceRevision:local.deviceRevision,
         deviceMetadataHash:metadataHash,businessIds:[...control.businessIds],assertStable});
       localHandoffAuthorities.set(result,{projectId,ownerUid,buildSha,assertCurrent:context});
@@ -169,7 +186,16 @@
         const contract=await scopedContract(server),contractHash=await api.hash(contract);context();
         recovery=await awaitStage('HANDOFF_LOCAL_PINS',()=>root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser}));context();
         const preserved=await awaitStage('HANDOFF_LOCAL_PINS',()=>recovery.readHandoff(authorization?.captureHash));context();
-        if(preserved?.durable!==true||!preserved.plan)throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
+        if(!preserved){
+          if(!preCutover&&typeof readSecondaryCache==='function'){
+            const originalDevice=await recovery.readDeviceIdentity();context();
+            const previous=originalDevice&&originalDevice.deviceId===control.sourceDeviceId
+              ?null:await verifyServerMirror(control,controlRef,await readLocal(),{preserveSecondary:true});
+            if(previous)return previous;
+          }
+          throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
+        }
+        if(preserved.durable!==true||!preserved.plan)throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
         const plan=preserved.plan,pin=await awaitStage('HANDOFF_LOCAL_PINS',()=>recovery.read(plan.sourceHash));context();
         if(pin?.durable!==true||pin.buildSha!==sourceBuildSha||!pin.deviceRecordMetadata
           ||pin.deviceRevision!==control.deviceRevision||pin.sourceDeviceId!==control.sourceDeviceId
