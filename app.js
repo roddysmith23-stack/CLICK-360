@@ -2351,7 +2351,9 @@ function parseMoney(value) {
   };
 
   window.addEventListener('storage', (event) => {
-    if (!activeTenantContext || event.key !== stateStorageKey() || !event.newValue) return;
+    // Modular views only accept projections from the scoped server reader.
+    if (window.click360SparkOperationalSession || indexedTenantCacheMeta?.source==='spark_operational_candidate'
+      || !activeTenantContext || event.key !== stateStorageKey() || !event.newValue) return;
     try {
       const parsed = JSON.parse(event.newValue);
       const payload = { identity: parsed?.identity, data: parsed || {} };

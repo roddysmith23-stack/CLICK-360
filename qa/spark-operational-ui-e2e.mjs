@@ -115,17 +115,25 @@ try{
       await CLICK360_V16_STORAGE.putWorkingDate(context,payload.data.businesses[1].id,'2026-09-03');
       if(stale)window.QA_OLDER_DEVICE_RECORD=await CLICK360_V16_STORAGE.getSnapshot(context);
     },{payload:stateDocument(uid,2,data).payload,stale});
-    device=await openSignedIn(browser,{width:390,height:844},undefined,{beforeSignIn:seedLegacyMirror});
+    device=await openSignedIn(browser,{width:390,height:844},undefined,{beforeSignIn:page=>seedLegacyMirror(page,{stale:true})});
     const page=device.page;
     assert(await page.evaluate(async businessId=>{
       const record=await CLICK360_V16_STORAGE.getSnapshot(click360TenantContext);
-      return record?.source==='spark_operational_candidate'&&record.uiWorkingDates[businessId]==='2026-09-03';
+      return record?.source==='spark_operational_candidate'&&!!record.legacyArchiveHash
+        &&record.uiWorkingDates[businessId]==='2026-09-03';
     },otherBusiness),'A previously used device opens the modular account without migration pins and retains its saved working date');
     const workerProof=await page.evaluate(()=>({controlled:!!navigator.serviceWorker.controller,
       sameRelease:click360ServiceWorkerRelease.buildSha===CLICK360_RELEASE_ASSETS['app.js']}));
     assert(workerProof.controlled&&workerProof.sameRelease,'Actual installed worker must match the served app before signing in');
     assert(await page.evaluate(()=>window.click360FirestoreTransport==='long_polling'),'Use the real app SDK transport, never a harness-only override');
     assert(await page.evaluate(()=>!!window.click360SparkOperationalSession&&window.click360SparkBootstrapState?.phase==='READY'),'Authentication automatically connects the modular PWA before any commercial action');
+    assert(await page.evaluate(()=>{
+      const record=window.QA_OLDER_DEVICE_RECORD;
+      const productId=record.snapshot.products[0].id;
+      window.dispatchEvent(new StorageEvent('storage',{key:`CLICK360:V16:STATE:${record.id}`,
+        newValue:JSON.stringify(record.snapshot)}));
+      return click360GetTenantState().products.find(p=>p.id===productId)?.stock===2;
+    }),'A concurrent legacy localStorage event cannot replace authoritative modular views');
     await certifyStartupAuth({browser,uid,label,output});
     device.lifecycle=[];
     page.on('crash',()=>device?.lifecycle?.push({event:'page_crash',at:Date.now()}));
