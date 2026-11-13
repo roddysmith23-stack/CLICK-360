@@ -18,6 +18,7 @@ local.movements.push({id:'local-opening',operationId:'local-opening',cashSession
     date:'2026-09-03',kind:'ingreso',amount:30,paymentType:'sale',paymentMethod:'Transferencia'});
 function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,rows=[],cache=false,buildSha='21409a1d2dc7'}={}){
   let actor=ownerUid,lease=true,revision='device-2',closed=0,imports=0;
+  let existingDevice=null;
   const calls=[],pins=new Map(),captures=new Map(),handoffs=new Map(),serverDocs=new Map();
   let afterShadow=()=>{},readHandoffCorrupt=false,serverRecords=[],afterServerRecords=()=>{},importerAuthority=null;
   const record={snapshot:local,deviceRevision:revision,baseRevision:1,pendingRemoteSync:true,cloudCapacityBlocked:true,pendingOperations:['snapshot-save-id']};
@@ -40,7 +41,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
         return {rows:scoped.slice(offset,end),next:end<scoped.length?{offset:end}:null,complete:end>=scoped.length};
       },close:()=>closed++};
   }};
-  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>({ownerUid,deviceId:'durable-device',durable:true}),
+  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>({ownerUid,deviceId:'durable-device',durable:true}),readDeviceIdentity:async()=>existingDevice,
     captureDevice:async value=>{const captureHash=await api.hash(value);captures.set(captureHash,structuredClone(value));return {captureHash,durable:true};},
     preserveCloud:async({captureHash,assertStable})=>{await assertStable();assert(captures.has(captureHash));return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,operationalCloudConfirmed:false};},
     close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true}),
@@ -61,7 +62,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
     readLocal:async()=>({...record,deviceRevision:revision})};
   return {options,record,calls,pins,captures,handoffs,serverDocs,transport,setServerRecords:rows=>serverRecords=rows,
     afterServerRecords:callback=>afterServerRecords=callback,authority:()=>importerAuthority,verify:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).verifyLocalHandoff(),
-    afterShadow:callback=>afterShadow=callback,
+    afterShadow:callback=>afterShadow=callback, existingDevice:value=>existingDevice=value,
     corruptHandoffRead:()=>readHandoffCorrupt=true,run:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).prepare(),
     actor:value=>actor=value,lease:value=>lease=value,revision:value=>revision=value,counts:()=>({closed,imports})};
 }
@@ -349,6 +350,41 @@ for(const mutation of [
   const verified=await f.verify();
   control.recordVersion=6;
   await assert.rejects(verified.assertStable(),/CONTROL_CHANGED/);
+  // Older confirmed cache has no migration pin and differs from frozen cloud.
+  // Eligibility is not a claim that its local contents match Firestore.
+  control.remoteRevision=2;
+  f.serverDocs.set(`businesses/${ownerUid}/state/main`,{revision:2,payload:{identity,data:remote}});
+  const old={...clean,snapshot:{...remote,products:[{id:'stale-product'}]},revision:1,baseRevision:1};
+  Object.assign(f.record,old);
+  const raw={primary:'previous',older:null,metadata:'original receipt'};
+  let copies=raw;
+  f.options.readSecondaryCache=()=>copies;
+  const preserved=await f.verify();
+  assert.equal(preserved.status,'SECONDARY_CACHE_PRESERVED');
+  assert.equal(preserved.sourceHash,await api.hash(old.snapshot));
+  assert.equal(preserved.cacheHash,await api.hash(raw));
+  assert.equal(preserved.controlSourceHash,control.sourceHash);
+  copies={...raw,metadata:'concurrent edit'};
+  await assert.rejects(preserved.assertStable(),/DEVICE_DRIFT_STOP/);
+  copies=null;
+  await assert.rejects(f.verify(),/PIN_REQUIRED/,'Unverified local storage must not be promoted');
+  copies=raw;
+  for(const delta of [{pendingRemoteSync:true},{cloudCapacityBlocked:true},{pendingOperations:['pending']},{revision:3},{baseRevision:0}]){
+    Object.assign(f.record,old,delta);
+    await assert.rejects(f.verify(),/PIN_REQUIRED/);
+  }
+  Object.assign(f.record,old);
+  rows.push({ownerUid,businessId:businessIds[0],operationId:'unknown',state:'unknown'});
+  await assert.rejects(f.verify(),/OUTBOX_DRIFT_STOP/);
+  rows.pop();
+  control.sourceDeviceId='original';
+  f.existingDevice({ownerUid,deviceId:'original',durable:true});
+  await assert.rejects(f.verify(),/PIN_REQUIRED/,'The migration device must not bypass its original handoff');
+  f.existingDevice(null);
+  Object.assign(f.record,old,{snapshot:local});
+  await assert.rejects(f.verify(),/PIN_REQUIRED/,'A copy of the cutover source still requires the original proof');
+  Object.assign(f.record,old,{source:'remote_applied',deviceRevision:'',revision:0,baseRevision:0});
+  assert.equal((await f.verify()).status,'SECONDARY_CACHE_PRESERVED');
 }
 for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:false},{automaticMigration:false},{pilotOwnerUids:['other']}]){
   const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';

@@ -84,12 +84,15 @@ try{
     const otherBusiness=`second-${uid}`;
     data.businesses.push({id:otherBusiness,name:'Segundo negocio sintético',status:'activo',type:'ropa',settings:{}});
     data.products.push({id:'other-product',businessId:otherBusiness,code:'OTHER-BUSINESS',name:'Producto aislado',stock:7,qty:7,price:5,cardPrice:5,cost:1});
-    await seed(env,async db=>{await setDoc(doc(db,'accountAccess',uid),{...accountAccess(uid),manualLimitOverrides:{businesses:1,workers:1,productsActive:600}});await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,1,data));});
+    await seed(env,async db=>{await setDoc(doc(db,'accountAccess',uid),{...accountAccess(uid),manualLimitOverrides:{businesses:1,workers:1,productsActive:600}});await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,2,data));
+      await setDoc(doc(db,'storageRollout/sparkV1'),{enabled:true,operationalAccess:true,automaticCutover:true,pilotOwnerUids:[uid]});
+      await setDoc(doc(db,'businesses',uid,'storageApprovals','runtimePreparation'),{captureHash:'f'.repeat(64)});
+    });
     const manifest=await globalThis.CLICK360_SPARK_MIGRATION.plan({ownerUid:uid,snapshot:data,
-      identity:stateDocument(uid,1,data).payload.identity,remoteRevision:1});
+      identity:stateDocument(uid,1,data).payload.identity,remoteRevision:2});
     await seed(env,async db=>{
       for(const row of manifest.records)await setDoc(doc(db,row.path),row.content);
-      await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:manifest.sourceHash,reconstructedHash:manifest.sourceHash,remoteHash:manifest.sourceHash,remoteRevision:1,businessIds:[uid,otherBusiness]});
+      await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:manifest.sourceHash,reconstructedHash:manifest.sourceHash,remoteHash:manifest.sourceHash,remoteRevision:2,buildSha:'2875f6e7496f',sourceDeviceId:'original',businessIds:[uid,otherBusiness]});
       for(const [moduleName,id,extra]of [['metadata','runtime',{summaryVersion:1,openCashSessionId:''}]]){
         const flat={...extra,id,ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,storageSchemaVersion:2,module:moduleName,recordVersion:1};
         await setDoc(doc(db,`${base}/${moduleName}/${id}`),await globalThis.CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity,moduleName,recordId:id}));
@@ -99,27 +102,38 @@ try{
             {identity:otherIdentity,moduleName,recordId:id}));
       }
     });
-    const seedLegacyMirror=page=>page.evaluate(async payload=>{
+    const seedLegacyMirror=(page,{stale=false}={})=>page.evaluate(async ({payload,stale})=>{
       const context={...payload.identity,authUid:payload.identity.ownerUid};
       click360SetTenantContext(context,{deferLocalLoad:true});
-      click360ApplyTenantState({...payload.data,identity:payload.identity},context);
-      await click360MarkTenantCacheSynced({revision:1,operationId:'synthetic-frozen-legacy-mirror'});
+      const old=structuredClone(payload.data);
+      if(stale)old.products[0].stock=old.products[0].qty=17;
+      click360ApplyTenantState({...old,identity:payload.identity},context);
+      await click360MarkTenantCacheSynced({revision:stale?1:2,operationId:'synthetic-frozen-legacy-mirror'});
       const record=await CLICK360_V16_STORAGE.getSnapshot(context);
       if(record?.source!=='cloud_confirmed'||record.pendingRemoteSync)throw Error('TEST_LEGACY_MIRROR_REQUIRED');
       // Keep the date check independent of the sales fixture's working date.
       await CLICK360_V16_STORAGE.putWorkingDate(context,payload.data.businesses[1].id,'2026-09-03');
-    },stateDocument(uid,1,data).payload);
-    device=await openSignedIn(browser,{width:390,height:844},undefined,{beforeSignIn:seedLegacyMirror});
+      if(stale)window.QA_OLDER_DEVICE_RECORD=await CLICK360_V16_STORAGE.getSnapshot(context);
+    },{payload:stateDocument(uid,2,data).payload,stale});
+    device=await openSignedIn(browser,{width:390,height:844},undefined,{beforeSignIn:page=>seedLegacyMirror(page,{stale:true})});
     const page=device.page;
     assert(await page.evaluate(async businessId=>{
       const record=await CLICK360_V16_STORAGE.getSnapshot(click360TenantContext);
-      return record?.source==='spark_operational_candidate'&&record.uiWorkingDates[businessId]==='2026-09-03';
+      return record?.source==='spark_operational_candidate'&&!!record.legacyArchiveHash
+        &&record.uiWorkingDates[businessId]==='2026-09-03';
     },otherBusiness),'A previously used device opens the modular account without migration pins and retains its saved working date');
     const workerProof=await page.evaluate(()=>({controlled:!!navigator.serviceWorker.controller,
       sameRelease:click360ServiceWorkerRelease.buildSha===CLICK360_RELEASE_ASSETS['app.js']}));
     assert(workerProof.controlled&&workerProof.sameRelease,'Actual installed worker must match the served app before signing in');
     assert(await page.evaluate(()=>window.click360FirestoreTransport==='long_polling'),'Use the real app SDK transport, never a harness-only override');
     assert(await page.evaluate(()=>!!window.click360SparkOperationalSession&&window.click360SparkBootstrapState?.phase==='READY'),'Authentication automatically connects the modular PWA before any commercial action');
+    assert(await page.evaluate(()=>{
+      const record=window.QA_OLDER_DEVICE_RECORD;
+      const productId=record.snapshot.products[0].id;
+      window.dispatchEvent(new StorageEvent('storage',{key:`CLICK360:V16:STATE:${record.id}`,
+        newValue:JSON.stringify(record.snapshot)}));
+      return click360GetTenantState().products.find(p=>p.id===productId)?.stock===2;
+    }),'A concurrent legacy localStorage event cannot replace authoritative modular views');
     await certifyStartupAuth({browser,uid,label,output});
     device.lifecycle=[];
     page.on('crash',()=>device?.lifecycle?.push({event:'page_crash',at:Date.now()}));
@@ -518,7 +532,7 @@ try{
     await restarted.evaluate(()=>{location.hash='#cash';});
     await restarted.locator('#closeDayBtn').waitFor({state:'visible'});
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Restart cannot write legacy');
-    const secondDevice=await openSignedIn(browser,{width:1280,height:800},undefined,{beforeSignIn:seedLegacyMirror});
+    const secondDevice=await openSignedIn(browser,{width:1280,height:800},undefined,{beforeSignIn:page=>seedLegacyMirror(page,{stale:true})});
     try{
       const observed=await secondDevice.page.evaluate(()=>{
         const state=click360GetTenantState();
@@ -526,6 +540,23 @@ try{
           stock:state.products.map(p=>[p.id,p.stock]).sort(),deleted:state.deletedProducts.map(p=>p.id).sort()};
       });
       assert(JSON.stringify(observed)===JSON.stringify(durableAfter),'An independent browser storage context sees the same authoritative commerce');
+      assert(await secondDevice.page.evaluate(async()=>{
+        const live=await CLICK360_V16_STORAGE.getSnapshot(click360TenantContext);
+        const archive=await new Promise((resolve,reject)=>{
+          const open=indexedDB.open('CLICK360_V16_DB');
+          open.onerror=()=>reject(open.error);
+          open.onsuccess=()=>{
+            const db=open.result,tx=db.transaction('tenantSnapshots','readonly');
+            const request=tx.objectStore('tenantSnapshots').get(`legacy-archive:${live.id}:${live.legacyArchiveHash}`);
+            tx.oncomplete=()=>{db.close();resolve(request.result);};
+            tx.onabort=()=>{db.close();reject(tx.error);};
+          };
+        });
+        return archive?.hash===live.legacyArchiveHash
+          &&await CLICK360_SPARK_MIGRATION.hash(archive.content)===archive.hash
+          &&JSON.stringify(archive.content.record)===JSON.stringify(window.QA_OLDER_DEVICE_RECORD)
+          &&archive.content.localStorageCopy.primary===localStorage.getItem(`CLICK360:V16:STATE:${live.id}`);
+      }),'Older device cache and raw local copy are durably preserved while modular data is active');
     }finally{await secondDevice.context.close();}
     await restarted.locator('#businessPickerTop').click();
     await restarted.locator(`[data-business-switch="${otherBusiness}"]`).click();

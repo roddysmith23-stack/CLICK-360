@@ -20,6 +20,19 @@
     });
     db.onversionchange=()=>db.close();
     const key=hash=>{if(!/^[a-f0-9]{64}$/.test(hash))throw Error('SPARK_RECOVERY_INVALID_HASH');return `${ownerUid}:${hash}`;};
+    async function readDeviceIdentity(){
+      context();
+      const row=await new Promise((resolve,reject)=>{
+        const tx=db.transaction('deviceIdentities','readonly');let result;
+        tx.objectStore('deviceIdentities').get(ownerUid).onsuccess=e=>{result=e.target.result;};
+        tx.oncomplete=()=>resolve(result);tx.onabort=()=>reject(tx.error||Error('SPARK_RECOVERY_DEVICE_IDENTITY_FAILED'));
+      });
+      context();
+      if(!row)return null;
+      if(row.ownerUid!==ownerUid||typeof row.deviceId!=='string'||!/^[a-zA-Z0-9_-]{1,120}$/.test(row.deviceId))
+        throw Error('SPARK_RECOVERY_DEVICE_IDENTITY_INVALID');
+      return {ownerUid,deviceId:row.deviceId,durable:true};
+    }
     async function deviceIdentity(preferredDeviceId=''){
       context();
       const valid=value=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,120}$/.test(value);
@@ -41,12 +54,8 @@
       });
       context();
       // Independent read after the transaction commits, not an in-memory ID.
-      const stored=await new Promise((resolve,reject)=>{
-        const tx=db.transaction('deviceIdentities','readonly');let row;
-        tx.objectStore('deviceIdentities').get(ownerUid).onsuccess=e=>row=e.target.result;
-        tx.oncomplete=()=>resolve(row);tx.onabort=()=>reject(tx.error||Error('SPARK_RECOVERY_DEVICE_IDENTITY_FAILED'));
-      });
-      context();if(stored?.ownerUid!==ownerUid||stored.deviceId!==deviceId)throw Error('SPARK_RECOVERY_DEVICE_IDENTITY_INVALID');
+      const stored=await readDeviceIdentity();
+      if(stored?.deviceId!==deviceId)throw Error('SPARK_RECOVERY_DEVICE_IDENTITY_INVALID');
       return {ownerUid,deviceId,durable:true};
     }
     async function read(sourceHash){
@@ -243,7 +252,7 @@
         ownerUid,verifiedAt,serverReadVerified:true,
         partCount:parts.length,payloadBytes:core.payloadBytes,operationalCloudConfirmed:false,cutoverPerformed:false};
     }
-    return Object.freeze({pin,read,deviceIdentity,captureDevice,readCapture,pinHandoff,readHandoff,preserveCloud,close:()=>db.close()});
+    return Object.freeze({pin,read,deviceIdentity,readDeviceIdentity,captureDevice,readCapture,pinHandoff,readHandoff,preserveCloud,close:()=>db.close()});
   }
   root.CLICK360_SPARK_RECOVERY=Object.freeze({open});
 })(typeof window==='undefined'?globalThis:window);

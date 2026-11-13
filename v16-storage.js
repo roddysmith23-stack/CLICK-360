@@ -90,6 +90,7 @@
         request.onsuccess = () => {
           const current = request.result;
           record.uiWorkingDates = current?.uiWorkingDates || {};
+          if(current?.legacyArchiveHash)record.legacyArchiveHash=current.legacyArchiveHash;
           const promotion=modularPromotions.get(metadata.modularPromotion);
           const verifiedPromotion=promotion&&current
             && JSON.stringify(current)===promotion.originalRecord
@@ -105,6 +106,15 @@
             transaction.abort();
             return;
           }
+          if(verifiedPromotion&&promotion.archive){
+            try{
+              if(!promotion.cacheUnchanged())throw Error('INDEXEDDB_HANDOFF_ARCHIVE_SOURCE_CHANGED');
+            }catch(error){failure=error;transaction.abort();return;}
+            // Archive and replace in a single transaction. Quota, abort or a
+            // concurrent edit leaves the previous record as the active copy.
+            store.add(promotion.archive);
+            record.legacyArchiveHash=promotion.archive.hash;
+          }
           store.put(record);
         };
         transaction.oncomplete = resolve;
@@ -112,7 +122,7 @@
         transaction.onerror = () => reject(transaction.error || new Error('Fallo de IndexedDB.'));
       });
     } finally { db.close(); }
-    return { id, savedAtMs: record.savedAtMs, uiWorkingDates:record.uiWorkingDates };
+    return { id, savedAtMs: record.savedAtMs, uiWorkingDates:record.uiWorkingDates, legacyArchiveHash:record.legacyArchiveHash };
   }
 
   async function putWorkingDate(context,businessId,date){
@@ -153,7 +163,8 @@
     const proof=metadata?.verifiedLocalHandoff,api=root.CLICK360_SPARK_MIGRATION;
     const projectId=root.click360Auth?.app?.options?.projectId||root.CLICK360_FIREBASE_CONFIG?.projectId;
     const user=()=>root.click360Auth?.currentUser;
-    const serverMirror=proof?.status==='SERVER_MIRROR_VERIFIED';
+    const preserveSecondary=proof?.status==='SECONDARY_CACHE_PRESERVED';
+    const serverMirror=preserveSecondary||proof?.status==='SERVER_MIRROR_VERIFIED';
     if(!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId)
       ||!api||!root.CLICK360_SPARK_RECOVERY||context.authUid!==context.ownerId
       ||user()?.uid!==context.ownerId||proof?.verified!==true||(!serverMirror&&proof.status!=='LOCAL_HANDOFF_VERIFIED')
@@ -185,9 +196,17 @@
           throw Error('INDEXEDDB_HANDOFF_ORIGINAL_PIN_REQUIRED');
       }finally{recovery.close();}
     }
+    let archive;
+    if(preserveSecondary){
+      const localStorageCopy=proof.secondaryCache;
+      if(!localStorageCopy||typeof proof.cacheUnchanged!=='function'||await api.hash(localStorageCopy)!==proof.cacheHash)
+        throw Error('INDEXEDDB_HANDOFF_ARCHIVE_SOURCE_CHANGED');
+      const content={record:current,localStorageCopy},hash=await api.hash(content);
+      archive={id:`legacy-archive:${contextId(context)}:${hash}`,hash,content};
+    }
     await proof.assertStable();
     if(user()?.uid!==context.ownerId)throw Error('INDEXEDDB_HANDOFF_ACTOR_CHANGED');
-    const receipt={};modularPromotions.set(receipt,{originalRecord:JSON.stringify(current)});
+    const receipt={};modularPromotions.set(receipt,{originalRecord:JSON.stringify(current),archive,cacheUnchanged:proof.cacheUnchanged});
     try{return await putSnapshot(context,snapshot,{...metadata,modularPromotion:receipt});}
     finally{modularPromotions.delete(receipt);}
   }
