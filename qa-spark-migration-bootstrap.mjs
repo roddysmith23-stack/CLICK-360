@@ -32,6 +32,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
     assert.equal(options,undefined,'Migration must census all local actors without claiming their rows');
     return {captureOwner:async()=>({ownerUid,rows:structuredClone(rows),recordCount:rows.length,enumerationComplete:true}),assertOwnerCoverage:async(_owner,businesses)=>{
       if(rows.some(row=>row.ownerUid===_owner&&!businesses.includes(row.businessId)))throw Error('OWNER_OUTBOX_BUSINESS_COVERAGE_REQUIRED');
+      return {enumerationComplete:true,recordCount:rows.filter(row=>row.ownerUid===_owner).length};
     },countPending:async i=>({countIsBounded:false,total:rows.filter(r=>r.businessId===i.businessId).length,
       pendingCount:rows.filter(r=>r.businessId===i.businessId).length,unknownCount:0}),countProjectionPending:async()=>0,
       listPendingPage:async(i,{limit,after})=>{
@@ -44,7 +45,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
     preserveCloud:async({captureHash,assertStable})=>{await assertStable();assert(captures.has(captureHash));return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,operationalCloudConfirmed:false};},
     close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true}),
     pinHandoff:async plan=>{const captureHash=await api.hash({kind:'READ_ONLY_HANDOFF_PLAN',ownerUid,plan});handoffs.set(captureHash,structuredClone(plan));return {captureHash,durable:true};},
-    readHandoff:async captureHash=>({captureHash,durable:true,plan:readHandoffCorrupt?{invalid:true}:structuredClone(handoffs.get(captureHash))})})};
+    readHandoff:async captureHash=>handoffs.has(captureHash)?({captureHash,durable:true,plan:readHandoffCorrupt?{invalid:true}:structuredClone(handoffs.get(captureHash))}):null})};
   globalThis.CLICK360_SPARK_IMPORTER={create:options=>{importerAuthority=options.preparationAuthority;return {readServerRecords:async()=>{afterServerRecords();return structuredClone(serverRecords);},prepareShadow:async()=>{
     imports++;const source=await options.readSource(),selected=await api.selectSource({ownerUid,...source});
     const guard=await options.readGuard();assert.equal(guard.mutationLockHeld,true);
@@ -307,6 +308,47 @@ for(const mutation of [
 ]){
   const f=await localHandoffFixture();mutation(f);const before=structuredClone(f.record);
   await assert.rejects(f.verify());assert.deepEqual(f.record,before,'Failed handoff must never replace the local source');
+}
+{
+  const rows=[],f=fixture({rows}),control={ownerUid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',
+    sourceHash:await api.hash(local),reconstructedHash:await api.hash(local),remoteHash:await api.hash(remote),
+    remoteRevision:1,buildSha:'2875f6e7496f',businessIds:[...businessIds]};
+  f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
+  f.options.matchesLegacyCache=(record,payload)=>api.canonicalJson(record.snapshot)===api.canonicalJson(payload.data);
+  f.options.readLocal=async()=>structuredClone(f.record);
+  f.serverDocs.set(`businesses/${ownerUid}/metadata/storage`,control);
+  f.serverDocs.set('storageRollout/sparkV1',{enabled:true,operationalAccess:true,automaticCutover:true,pilotOwnerUids:[ownerUid]});
+  f.serverDocs.set(`accountAccess/${ownerUid}`,{plan:'founder_legacy'});
+  const clean={snapshot:remote,source:'cloud_confirmed',deviceRevision:'second-device',pendingRemoteSync:false,cloudCapacityBlocked:false,pendingOperations:[]};
+  Object.assign(f.record,clean);
+  await assert.rejects(CLICK360_SPARK_MIGRATION_BOOTSTRAP.create({...f.options,matchesLegacyCache:undefined})
+    .verifyLocalHandoff(),/PIN_REQUIRED/,'The old startup path requires pins on a second device');
+  f.calls.length=0;
+  const proof=await f.verify();
+  assert.equal(proof.status,'SERVER_MIRROR_VERIFIED');
+  assert.equal(proof.controlSourceHash,control.sourceHash);
+  assert.equal(proof.sourceHash,control.remoteHash);
+  assert.equal(f.counts().imports,0);
+  assert(!f.calls.some(path=>path.includes('/storageApprovals/')));
+  f.record.deviceRevision='racing-save';
+  await assert.rejects(proof.assertStable(),/DEVICE_DRIFT_STOP/);
+  for(const changes of [{pendingRemoteSync:true},{cloudCapacityBlocked:true},{pendingOperations:['local-change']},{snapshot:local}]){
+    Object.assign(f.record,clean,changes);
+    const before=structuredClone(f.record);
+    await assert.rejects(f.verify(),/PIN_REQUIRED/);
+    assert.deepEqual(f.record,before);
+  }
+  Object.assign(f.record,clean);
+  rows.push({ownerUid,businessId:businessIds[0],operationId:'pending',state:'unknown'});
+  await assert.rejects(f.verify(),/OUTBOX_DRIFT_STOP/);
+  assert.equal(rows.length,1);
+  rows.pop();
+  f.serverDocs.set(`businesses/${ownerUid}/state/main`,{revision:2,payload:{identity,data:remote}});
+  await assert.rejects(f.verify(),/REMOTE_DRIFT_STOP/);
+  f.serverDocs.delete(`businesses/${ownerUid}/state/main`);
+  const verified=await f.verify();
+  control.recordVersion=6;
+  await assert.rejects(verified.assertStable(),/CONTROL_CHANGED/);
 }
 for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:false},{automaticMigration:false},{pilotOwnerUids:['other']}]){
   const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
