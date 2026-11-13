@@ -258,8 +258,8 @@
           throw Error('SPARK_BOOTSTRAP_LEGACY_LOCAL_RECONCILIATION_REQUIRED');
         await acquireLease();context();
         localHandoff=await awaitStage('VERIFY_LOCAL_HANDOFF',()=>options.verifyLocalHandoff({leaseHeld:()=>!!releaseLease&&!closed}));context();
-        if(localHandoff?.verified!==true||localHandoff.status!=='LOCAL_HANDOFF_VERIFIED'
-          ||localHandoff.sourceHash!==control.sourceHash||typeof localHandoff.assertStable!=='function'
+        if(localHandoff?.verified!==true||!['LOCAL_HANDOFF_VERIFIED','SERVER_MIRROR_VERIFIED'].includes(localHandoff.status)
+          ||(localHandoff.status==='SERVER_MIRROR_VERIFIED'?localHandoff.controlSourceHash:localHandoff.sourceHash)!==control.sourceHash||typeof localHandoff.assertStable!=='function'
           ||api.canonicalJson(localHandoff.businessIds)!==api.canonicalJson(control.businessIds))
           throw Error('SPARK_BOOTSTRAP_LOCAL_HANDOFF_NOT_VERIFIED');
       }

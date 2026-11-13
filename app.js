@@ -1824,9 +1824,35 @@ function parseMoney(value) {
     if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
     renderApp(route,{preserveActiveModal:true});
   });
+  window.click360MatchesFrozenLegacyCache=function(record,payload){
+    const context=activeTenantContext;
+    const api=window.CLICK360_SPARK_MIGRATION;
+    if(!context||!api||!tenantRuntime?.validBusinessPayload(payload,context))return false;
+    const material=snapshot=>{
+      const {activeBusinessId,updatedAt,updatedAtMs,...data}=snapshot;
+      return api.canonicalJson(data);
+    };
+    const remote=normalizeState(cloneState(payload.data));
+    remote.identity=tenantIdentity();
+    const matches=snapshot=>tenantRuntime.validBusinessPayload({identity:snapshot?.identity,data:snapshot},context)
+      &&material(snapshot)===material(remote);
+    if(!matches(record.snapshot))return false;
+    // An older browser may also have a separate localStorage copy. Check
+    // both keys before replacing the IndexedDB mirror, without deleting either.
+    const meta=JSON.parse(localStorage.getItem(cacheMetaKey(context))||'null');
+    if(meta?.pendingRemoteSync===true||meta?.cloudCapacityBlocked===true||meta?.pendingOperations?.length
+      ||localStorage.getItem(`CLICK360_TENANT:${context.tenantKey}:CORRUPT`)
+      ||localStorage.getItem(pendingProfileKey(context.authUid))
+      ||localStorage.getItem(`${LEGACY_PROFILE_PENDING_PREFIX}${context.authUid}`))return false;
+    return [stateStorageKey(),legacyStateStorageKey(context)].every(key=>{
+      const raw=localStorage.getItem(key);
+      return raw===null||matches(JSON.parse(raw));
+    });
+  };
   window.click360InstallSparkBusiness=async function({businessId,configuration,verifiedLocalHandoff=null}){
     if(!activeTenantContext||!configuration.businesses.some(b=>b.id===businessId))throw Error('SPARK_UI_BOOTSTRAP_BUSINESS_INVALID');
-    const next=cloneState(state);next.businesses=cloneState(configuration.businesses);next.activeBusinessId=businessId;
+    const next=verifiedLocalHandoff?.status==='SERVER_MIRROR_VERIFIED'?seed():cloneState(state);
+    next.businesses=cloneState(configuration.businesses);next.activeBusinessId=businessId;
     next.identity=tenantIdentity();
     // Restore global configuration leaves only. Record arrays are loaded from
     // their current modules, never a stale whole legacy snapshot.

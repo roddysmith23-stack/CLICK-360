@@ -89,7 +89,7 @@ try{
       identity:stateDocument(uid,1,data).payload.identity,remoteRevision:1});
     await seed(env,async db=>{
       for(const row of manifest.records)await setDoc(doc(db,row.path),row.content);
-      await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:manifest.sourceHash,reconstructedHash:manifest.sourceHash,businessIds:[uid,otherBusiness]});
+      await setDoc(doc(db,`businesses/${uid}/metadata/storage`),{ownerUid:uid,schemaVersion:2,storageMode:'modular',phase:'MODULAR',semanticEquality:'PASS',sourceHash:manifest.sourceHash,reconstructedHash:manifest.sourceHash,remoteHash:manifest.sourceHash,remoteRevision:1,businessIds:[uid,otherBusiness]});
       for(const [moduleName,id,extra]of [['metadata','runtime',{summaryVersion:1,openCashSessionId:''}]]){
         const flat={...extra,id,ownerUid:uid,businessId:uid,tenantKey:`owner:${uid}:business:${uid}`,storageSchemaVersion:2,module:moduleName,recordVersion:1};
         await setDoc(doc(db,`${base}/${moduleName}/${id}`),await globalThis.CLICK360_SPARK_RECORD_CODEC.pack(flat,{identity,moduleName,recordId:id}));
@@ -99,8 +99,22 @@ try{
             {identity:otherIdentity,moduleName,recordId:id}));
       }
     });
-    device=await openSignedIn(browser,{width:390,height:844});
+    const seedLegacyMirror=page=>page.evaluate(async payload=>{
+      const context={...payload.identity,authUid:payload.identity.ownerUid};
+      click360SetTenantContext(context,{deferLocalLoad:true});
+      click360ApplyTenantState({...payload.data,identity:payload.identity},context);
+      await click360MarkTenantCacheSynced({revision:1,operationId:'synthetic-frozen-legacy-mirror'});
+      const record=await CLICK360_V16_STORAGE.getSnapshot(context);
+      if(record?.source!=='cloud_confirmed'||record.pendingRemoteSync)throw Error('TEST_LEGACY_MIRROR_REQUIRED');
+      // Keep the date check independent of the sales fixture's working date.
+      await CLICK360_V16_STORAGE.putWorkingDate(context,payload.data.businesses[1].id,'2026-09-03');
+    },stateDocument(uid,1,data).payload);
+    device=await openSignedIn(browser,{width:390,height:844},undefined,{beforeSignIn:seedLegacyMirror});
     const page=device.page;
+    assert(await page.evaluate(async businessId=>{
+      const record=await CLICK360_V16_STORAGE.getSnapshot(click360TenantContext);
+      return record?.source==='spark_operational_candidate'&&record.uiWorkingDates[businessId]==='2026-09-03';
+    },otherBusiness),'A previously used device opens the modular account without migration pins and retains its saved working date');
     const workerProof=await page.evaluate(()=>({controlled:!!navigator.serviceWorker.controller,
       sameRelease:click360ServiceWorkerRelease.buildSha===CLICK360_RELEASE_ASSETS['app.js']}));
     assert(workerProof.controlled&&workerProof.sameRelease,'Actual installed worker must match the served app before signing in');
@@ -504,7 +518,7 @@ try{
     await restarted.evaluate(()=>{location.hash='#cash';});
     await restarted.locator('#closeDayBtn').waitFor({state:'visible'});
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Restart cannot write legacy');
-    const secondDevice=await openSignedIn(browser,{width:1280,height:800});
+    const secondDevice=await openSignedIn(browser,{width:1280,height:800},undefined,{beforeSignIn:seedLegacyMirror});
     try{
       const observed=await secondDevice.page.evaluate(()=>{
         const state=click360GetTenantState();

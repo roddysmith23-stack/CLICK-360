@@ -217,7 +217,7 @@ async function newAppContext(browser, viewport = { width: 1280, height: 900 }) {
   return context;
 }
 
-async function openSignedIn(browser, viewport, testEmail = email) {
+async function openSignedIn(browser, viewport, testEmail = email, {beforeSignIn} = {}) {
   const context = await newAppContext(browser, viewport);
   const page = await context.newPage();
   // Belt-and-suspenders on top of each call's own explicit timeout: this
@@ -296,6 +296,7 @@ async function openSignedIn(browser, viewport, testEmail = email) {
   // before clients.claim(). Hosted emulator QA explicitly blocks SW separately.
   if(!hostedUrl)await step('service-worker-controlled',()=>page.waitForFunction(()=>!!navigator.serviceWorker?.controller
     && window.click360ServiceWorkerRelease?.buildSha===window.CLICK360_RELEASE_ASSETS?.['app.js'], null, {timeout:60000}));
+  if(beforeSignIn)await step('prepare-existing-device-cache',()=>beforeSignIn(page));
   await step('sign-in', () => page.evaluate(({ testEmail, testPassword }) => window.click360Auth.signInWithEmailAndPassword(testEmail, testPassword), { testEmail, testPassword: password }));
   await step('hydrated-and-synced', () => page.waitForFunction(hosted => {
     if(window.click360SparkBootstrapState?.phase==='BLOCKED')throw Error(window.click360SparkBootstrapState.reason||'SPARK_BOOTSTRAP_BLOCKED');

@@ -96,7 +96,8 @@
             && record.source==='spark_operational_candidate'
             && String(current.deviceRevision||'')===String(metadata.expectedDeviceRevision||'');
           const protectedModular=current?.source==='spark_operational_candidate';
-          if ((promotion&&!verifiedPromotion)||(current?.cloudCapacityBlocked && !verifiedPromotion && (!record.cloudCapacityBlocked
+          if ((promotion&&!verifiedPromotion)||(current && !protectedModular && record.source==='spark_operational_candidate' && !verifiedPromotion)
+            ||(current?.cloudCapacityBlocked && !verifiedPromotion && (!record.cloudCapacityBlocked
             || String(current.deviceRevision || '') !== String(metadata.expectedDeviceRevision || '')))
             || (protectedModular && (record.source!=='spark_operational_candidate'
               || String(current.deviceRevision || '')!==String(metadata.expectedDeviceRevision||'')))) {
@@ -150,14 +151,15 @@
 
   async function promoteVerifiedSnapshot(context,snapshot,metadata){
     const proof=metadata?.verifiedLocalHandoff,api=root.CLICK360_SPARK_MIGRATION;
-    const projectId=root.CLICK360_FIREBASE_CONFIG?.projectId;
+    const projectId=root.click360Auth?.app?.options?.projectId||root.CLICK360_FIREBASE_CONFIG?.projectId;
     const user=()=>root.click360Auth?.currentUser;
+    const serverMirror=proof?.status==='SERVER_MIRROR_VERIFIED';
     if(!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId)
       ||!api||!root.CLICK360_SPARK_RECOVERY||context.authUid!==context.ownerId
-      ||user()?.uid!==context.ownerId||proof?.verified!==true||proof.status!=='LOCAL_HANDOFF_VERIFIED'
+      ||user()?.uid!==context.ownerId||proof?.verified!==true||(!serverMirror&&proof.status!=='LOCAL_HANDOFF_VERIFIED')
       ||typeof proof.assertStable!=='function'||metadata.source!=='spark_operational_candidate'
       ||proof.buildSha!==root.CLICK360_RELEASE_ASSETS?.['app.js'])throw Error('INDEXEDDB_VERIFIED_HANDOFF_REQUIRED');
-    if(projectId==='click-360'){
+    if(projectId==='click-360'||serverMirror){
       if(!root.CLICK360_SPARK_MIGRATION_BOOTSTRAP?.assertLocalHandoffAuthority)
         throw Error('INDEXEDDB_VERIFIED_HANDOFF_REQUIRED');
       root.CLICK360_SPARK_MIGRATION_BOOTSTRAP.assertLocalHandoffAuthority(proof,
@@ -171,16 +173,18 @@
       ||await api.hash(current.snapshot)!==proof.sourceHash
       ||await api.hash(Object.fromEntries(Object.entries(current).filter(([key])=>key!=='snapshot')))!==proof.deviceMetadataHash
       ||api.byteLength(snapshot)>8*1024*1024)throw Error('INDEXEDDB_HANDOFF_SOURCE_CHANGED');
-    const recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid:context.ownerId,resolveUser:user});
-    try{
-      const handoff=await recovery.readHandoff(proof.captureHash),source=await recovery.read(proof.sourceHash);
-      if(!handoff?.durable||!source?.durable||handoff.plan.sourceHash!==proof.sourceHash
-        ||handoff.plan.deviceMetadataHash!==proof.deviceMetadataHash
-        ||source.buildSha!==(proof.sourceBuildSha||proof.buildSha)||source.deviceRevision!==proof.deviceRevision
-        ||await api.hash(source.snapshot)!==proof.sourceHash
-        ||await api.hash(source.deviceRecordMetadata)!==proof.deviceMetadataHash)
-        throw Error('INDEXEDDB_HANDOFF_ORIGINAL_PIN_REQUIRED');
-    }finally{recovery.close();}
+    if(!serverMirror){
+      const recovery=await root.CLICK360_SPARK_RECOVERY.open({ownerUid:context.ownerId,resolveUser:user});
+      try{
+        const handoff=await recovery.readHandoff(proof.captureHash),source=await recovery.read(proof.sourceHash);
+        if(!handoff?.durable||!source?.durable||handoff.plan.sourceHash!==proof.sourceHash
+          ||handoff.plan.deviceMetadataHash!==proof.deviceMetadataHash
+          ||source.buildSha!==(proof.sourceBuildSha||proof.buildSha)||source.deviceRevision!==proof.deviceRevision
+          ||await api.hash(source.snapshot)!==proof.sourceHash
+          ||await api.hash(source.deviceRecordMetadata)!==proof.deviceMetadataHash)
+          throw Error('INDEXEDDB_HANDOFF_ORIGINAL_PIN_REQUIRED');
+      }finally{recovery.close();}
+    }
     await proof.assertStable();
     if(user()?.uid!==context.ownerId)throw Error('INDEXEDDB_HANDOFF_ACTOR_CHANGED');
     const receipt={};modularPromotions.set(receipt,{originalRecord:JSON.stringify(current)});

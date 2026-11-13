@@ -27,7 +27,7 @@
     await preparationAuthorities.get(token).verify(options);assertPreparationAuthority(token,scope,options);
   }
   function create({db,firebase,projectId,ownerUid,actorUid,deviceId,buildSha,
-    resolveUser,resolveContext,readLocal,leaseHeld,onProgress=()=>{},awaitStage=(_stage,run)=>run(),productionRecoveryOnly=false}){
+    resolveUser,resolveContext,readLocal,matchesLegacyCache,leaseHeld,onProgress=()=>{},awaitStage=(_stage,run)=>run(),productionRecoveryOnly=false}){
     if((!['demo-click360-spark-modular','click360-staging-7620168025','click-360'].includes(projectId))
       ||db.app?.options?.projectId!==projectId)throw Error('SPARK_MIGRATION_BOOTSTRAP_NONPRODUCTION_ONLY');
     const api=root.CLICK360_SPARK_MIGRATION;
@@ -87,6 +87,46 @@
       }
       return rows;
     }
+    async function verifyServerMirror(control,controlRef,local){
+      // Once cutover is committed, a second device can discard a verified
+      // mirror of the frozen legacy state without the source device's pins.
+      const clean=record=>record?.snapshot&&['remote_applied','cloud_confirmed'].includes(record.source)
+        &&record.pendingRemoteSync===false&&record.cloudCapacityBlocked===false
+        &&Array.isArray(record.pendingOperations)&&record.pendingOperations.length===0;
+      if(typeof matchesLegacyCache!=='function'||!clean(local))return null;
+      const frozen=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
+      if(frozen?.revision!==control.remoteRevision||!frozen.payload?.data
+        ||await api.hash(frozen.payload.data)!==control.remoteHash)
+        throw Error('SPARK_LOCAL_HANDOFF_REMOTE_DRIFT_STOP');
+      const legacy=frozen.payload;
+      const controlJson=api.canonicalJson(JSON.parse(JSON.stringify(control)));
+      if(!matchesLegacyCache(local,legacy))return null;
+      const snapshotHash=await api.hash(local.snapshot);
+      const metadataHash=await api.hash(Object.fromEntries(Object.entries(local).filter(([key])=>key!=='snapshot')));
+      async function assertStable(){
+        context();
+        const current=await readLocal();context();
+        if(!clean(current)||await api.hash(current.snapshot)!==snapshotHash
+          ||await api.hash(Object.fromEntries(Object.entries(current).filter(([key])=>key!=='snapshot')))!==metadataHash
+          ||!matchesLegacyCache(current,legacy))throw Error('SPARK_LOCAL_HANDOFF_DEVICE_DRIFT_STOP');
+        const journal=await root.CLICK360_MODULAR_JOURNAL.open();
+        try{
+          const coverage=await journal.assertOwnerCoverage(ownerUid,control.businessIds);
+          if(coverage?.enumerationComplete!==true||coverage.recordCount!==0)
+            throw Error('SPARK_LOCAL_HANDOFF_OUTBOX_DRIFT_STOP');
+        }finally{journal.close();}
+        if(api.canonicalJson(JSON.parse(JSON.stringify((await server(controlRef)).data())))
+          !==controlJson)
+          throw Error('SPARK_LOCAL_HANDOFF_CONTROL_CHANGED');
+        context();
+      }
+      await assertStable();
+      const result=Object.freeze({verified:true,status:'SERVER_MIRROR_VERIFIED',buildSha,
+        controlSourceHash:control.sourceHash,sourceHash:snapshotHash,deviceRevision:local.deviceRevision,
+        deviceMetadataHash:metadataHash,businessIds:[...control.businessIds],assertStable});
+      localHandoffAuthorities.set(result,{projectId,ownerUid,buildSha,assertCurrent:context});
+      return result;
+    }
     async function verifyLocalHandoff({preCutover=false}={}){
       context();
       if(productionRecoveryOnly)throw Error('SPARK_LOCAL_HANDOFF_NONPRODUCTION_ONLY');
@@ -108,16 +148,21 @@
       const policyRef=db.doc('storageRollout/sparkV1');
       let journal,recovery;
       try{
-        const policy=(await server(policyRef)).data(),control=(await server(controlRef)).data();
-        if(policy?.enabled!==true||policy.automaticCutover!==true||!Array.isArray(policy.pilotOwnerUids)||!policy.pilotOwnerUids.includes(ownerUid))
-          throw Error('SPARK_LOCAL_HANDOFF_ADMIN_APPROVAL_REQUIRED');
-        if(preCutover&&policy.automaticMigration!==true)throw Error('SPARK_AUTOMATIC_ACTIVATION_DISABLED');
-        const sourceBuildSha=control?.buildSha;
-        if(sourceBuildSha!==buildSha&&(preCutover||!compatibleCommittedHandoffBuilds.has(sourceBuildSha)))
-          throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
+        const control=(await server(controlRef)).data();
         if(control?.ownerUid!==ownerUid||control.schemaVersion!==2||control.storageMode!==(preCutover?'migrating':'modular')
           ||control.phase!==(preCutover?'READY_TO_CUTOVER':'MODULAR')||control.semanticEquality!=='PASS'||control.sourceHash!==control.reconstructedHash
           )throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
+        if(!preCutover&&Array.isArray(control.businessIds)&&control.businessIds.length&&/^[a-f0-9]{64}$/.test(control.sourceHash||'')){
+          const mirror=await verifyServerMirror(control,controlRef,await readLocal());
+          if(mirror)return mirror;
+        }
+        const policy=(await server(policyRef)).data();
+        if(policy?.enabled!==true||policy.automaticCutover!==true||!Array.isArray(policy.pilotOwnerUids)||!policy.pilotOwnerUids.includes(ownerUid))
+          throw Error('SPARK_LOCAL_HANDOFF_ADMIN_APPROVAL_REQUIRED');
+        if(preCutover&&policy.automaticMigration!==true)throw Error('SPARK_AUTOMATIC_ACTIVATION_DISABLED');
+        const sourceBuildSha=control.buildSha;
+        if(sourceBuildSha!==buildSha&&(preCutover||!compatibleCommittedHandoffBuilds.has(sourceBuildSha)))
+          throw Error('SPARK_LOCAL_HANDOFF_CONTROL_REQUIRED');
         const authorization=(await server(runtimeRef)).data(),cutover=(await server(cutoverRef)).data();
         const contract=await scopedContract(server),contractHash=await api.hash(contract);context();
         recovery=await awaitStage('HANDOFF_LOCAL_PINS',()=>root.CLICK360_SPARK_RECOVERY.open({ownerUid,resolveUser}));context();
