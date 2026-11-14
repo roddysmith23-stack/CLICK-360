@@ -34,7 +34,30 @@ try{
     const data=largeTenantData(uid);data.sales=[];data.movements=[];data.auditLogs=[];data.notifications=[];
     await seed(testEnv,async db=>{await setDoc(doc(db,'accountAccess',uid),accountAccess(uid));await setDoc(doc(db,'businesses',uid,'state','main'),stateDocument(uid,Date.now(),data));});
     let device=await openSignedIn(browser,viewport);activeDevice=device;
-    await submitProduct(device.page,{code:'R38-CORE',name:'Producto R38 sintético',stock:10});
+    // Model an acknowledged Firestore commit whose immediate client readback
+    // is temporarily unavailable. Retrying the same open form must reuse the
+    // same product/operation identity instead of creating a duplicate.
+    await route(device.page,'inventory');
+    await device.page.locator('#newProduct').click();
+    for(const [id,value] of [['pCode','R38-CORE'],['pName','Producto R38 sintético'],['pQty','10'],['pCost','4.00'],['pPrice','12.00'],['pCardPrice','12.50']])
+      await device.page.locator('#'+id).fill(value);
+    await device.page.evaluate(()=>{window.__r38OriginalProductReadback=window.click360RefreshNow;window.click360RefreshNow=async()=>false;});
+    await device.page.locator('#productForm button[type="submit"]').click();
+    await device.page.waitForFunction(()=>window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS?.outcome==='not_confirmed');
+    await device.page.waitForTimeout(100);
+    assert(await device.page.locator('#toast').textContent().then(value=>/No pudimos confirmar el guardado/.test(value)||/No pudimos confirmar el cambio en el servidor/.test(value)),
+      'uncertain commit is surfaced without claiming success');
+    const uncertainProduct=(await cloud()).payload.data.products.filter(p=>p.code==='R38-CORE');
+    assert(uncertainProduct.length===1,'a lost readback does not create a second cloud product');
+    const firstProductId=uncertainProduct[0].id;
+    assert(await device.page.locator('#productForm').count(),'the uncertain result keeps the draft open');
+    await device.page.evaluate(()=>{window.click360RefreshNow=window.__r38OriginalProductReadback;delete window.__r38OriginalProductReadback;});
+    await device.page.locator('#productForm button[type="submit"]').click();
+    await device.page.locator('#productForm').waitFor({state:'detached'});
+    const retriedProduct=(await cloud()).payload.data.products.filter(p=>p.code==='R38-CORE');
+    assert(retriedProduct.length===1,'retry uses the original product identity');
+    assert(retriedProduct[0].id===firstProductId,'retry cannot mint a new product ID');
+    console.log('PASS '+label+' lost confirmation → same-ID retry, one cloud product');
     const created=(await cloud()).payload.data.products.find(p=>p.code==='R38-CORE');assert(created,'create authoritative');
     await searchAndEdit(device.page,created.code,created.name);
     for(const stock of [17,25,31])await editStock(device.page,created,stock);
@@ -78,7 +101,9 @@ try{
       criticalGate:window.click360DebugCriticalActionGate?.(),capacity:window.click360GetCapacityStatus?.()})).catch(()=>null);
     const authoritative=await cloud().then(d=>({revision:d.revision,products:d.payload.data.products.length,product:d.payload.data.products.find(p=>p.code==='R38-CORE'),
       sessions:d.payload.data.cashSessions,openings:d.payload.data.movements.filter(row=>row.kind==='apertura')})).catch(()=>null);
-    writeFileSync(path.join(outputDir,'failure-'+Date.now()+'.json'),JSON.stringify({error:error.message,diagnostic,syncTrace,cash,authoritative},null,2));
+    const inventoryState=await activeDevice.page.evaluate(()=>({lastSaveFailure:window.click360LastSaveFailure||null,
+      confirmation:window.CLICK360_LAST_CONFIRMATION_DIAGNOSTICS||null,runtimeError:window.CLICK360_LAST_RUNTIME_ERROR||null})).catch(()=>null);
+    writeFileSync(path.join(outputDir,'failure-'+Date.now()+'.json'),JSON.stringify({error:error.message,diagnostic,syncTrace,cash,authoritative,inventoryState},null,2));
   }
   throw error;
 }finally{for(const browser of browsers)await browser.close().catch(()=>{});await testEnv?.cleanup().catch(()=>{});stopProcessTree(server);stopProcessTree(emulators);}

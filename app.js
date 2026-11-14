@@ -7504,8 +7504,16 @@ function parseMoney(value) {
     const cardPriceIn = $('#pCardPrice');
     if (cardPriceIn) cardPriceIn.oninput = () => { cardPriceIn.value = cardPriceIn.value.replace(/[^0-9.,]/g, ''); };
 
+    const draftProductId=product?.id||uid('prod');
+    let productSubmitInFlight=false;
+    let pendingProductAttempt=null;
     $('#productForm').onsubmit=async e=>{
       e.preventDefault();
+      if(productSubmitInFlight)return;
+      productSubmitInFlight=true;
+      const submitButton=$('#productForm button[type="submit"]');
+      if(submitButton){submitButton.disabled=true;submitButton.dataset.originalText=submitButton.textContent;submitButton.textContent='Guardando…';}
+      try{
       const name=$('#pName').value.trim();
       const qty=parseInt($('#pQty').value||'0',10);
       const cost=parseMoney($('#pCost').value);
@@ -7517,7 +7525,7 @@ function parseMoney(value) {
       if(!Number.isFinite(cost)||cost<0) return toast('Costo inválido','err');
       if(!Number.isFinite(price)||price<0) return toast('Precio inválido','err');
       if(!Number.isFinite(cardPrice)||cardPrice<0) return toast('Precio con tarjeta inválido','err');
-      if(codeExists(code, product?.id)) return toast('Ese código ya existe','err');
+      if(codeExists(code, product?.id||draftProductId)) return toast('Ese código ya existe','err');
       // Commercial MVP: quota blocks NEW-resource creation only -- never
       // editing an existing product, never selling, never viewing.
       {
@@ -7536,8 +7544,17 @@ function parseMoney(value) {
           if (storageQuota?.blocked) { beep('err'); return toast('Tu plan de almacenamiento de imagenes alcanzo el limite. Puedes guardar el producto sin imagen, o mejorar tu plan / solicitar mas capacidad desde "Mi plan".', 'err'); }
         }
       }
+	      // The form retains one product ID and operation identity through an
+	      // uncertain server response. A second click/retry must reconcile or
+	      // update that same logical product, never mint another Pepa.
+	      $('#pCode').value=code;
+	      const inputFingerprint=JSON.stringify({businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,cost,price,cardPrice,
+	        taxMode:$('#pTaxMode').value,notes:$('#pNotes').value.trim(),imageData});
+	      if(pendingProductAttempt&&pendingProductAttempt.inputFingerprint!==inputFingerprint)
+	        return toast('El intento anterior aún no tiene confirmación. Conserva estos datos y verifica su estado antes de cambiarlos o crear otro producto.', 'err');
+	      if(!pendingProductAttempt)pendingProductAttempt={inputFingerprint,operationId:uid('productop'),updatedAtMs:Date.now()};
 	      const previousState = cloneState(state);
-	      const updatedAtMs = Date.now();
+	      const updatedAtMs = pendingProductAttempt.updatedAtMs;
 	      const taxMode = $('#pTaxMode').value;
 	      const previousProductStock = product ? Number(product.stock ?? product.qty ?? 0) : null;
 	      // r37.2.5 (P0, real SHARY incident): `product` is the same object
@@ -7559,13 +7576,19 @@ function parseMoney(value) {
       // The modal's original product may therefore be detached, even without
       // any remote edit. Mutate the live record, but never overwrite a record
       // whose commercial fields changed while this editor was open.
-      let savedProduct = product ? state.products.find(candidate=>candidate.id===product.id && candidate.businessId===b.id) : null;
+	      let savedProduct = state.products.find(candidate=>candidate.id===(product?.id||draftProductId) && candidate.businessId===b.id) || null;
+	      const retryingExistingDraft=!product&&!!savedProduct;
+	      if(retryingExistingDraft&&JSON.stringify({businessId:b.id,code:savedProduct.code,category:savedProduct.category||'',name:savedProduct.name||'',
+	        qty:Number(savedProduct.qty??savedProduct.stock??0),cost:Number(savedProduct.cost||0),price:Number(savedProduct.price||0),
+	        cardPrice:Number(savedProduct.cardPrice??savedProduct.price??0),taxMode:savedProduct.taxMode||'inherit',notes:savedProduct.notes||'',
+	        imageData:savedProduct.imageData||''})!==inputFingerprint)
+	        return toast('El producto del intento anterior ya aparece en este dispositivo. No se creará otro registro; verifica su sincronización antes de continuar.', 'err');
       if (product && (!savedProduct || productFingerprint(savedProduct)!==productFingerprint(editOpenBaseline))) {
         return toast('Hay un conflicto de sincronización pendiente. El producto cambió mientras lo editabas. Vuelve a abrirlo para revisar el cambio; no se guardó esta edición.', 'err');
       }
 	      // Write both 'stock' (canonical, read by modular gateway) and 'qty' (legacy UI field) so both paths stay in sync.
 	      if(product) Object.assign(savedProduct,{code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData, updatedBy: authUser().name, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs});
-	      else { savedProduct = {id:uid('prod'),businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
+	      else if(!savedProduct) { savedProduct = {id:draftProductId,businessId:b.id,code,category:$('#pCat').value.trim(),name,qty,stock:qty,cost,price,cardPrice,taxMode,notes:$('#pNotes').value.trim(),imageData,createdAt:new Date(updatedAtMs).toISOString(), createdAtMs:updatedAtMs, updatedAt:new Date(updatedAtMs).toISOString(), updatedAtMs, createdBy: authUser().name}; state.products.push(savedProduct); }
 	      if (restaurantModuleEnabled()) {
 	        const ingredients = $('#pRecipeIngredients')?.value.trim() || '';
 	        const steps = $('#pRecipeSteps')?.value.trim() || '';
@@ -7573,7 +7596,7 @@ function parseMoney(value) {
 	        if (ingredients || steps) Object.assign(existingRecipe || (state.restaurantRecipes.push({ id:uid('recipe'), businessId:b.id, productId:savedProduct.id, createdAt:new Date(updatedAtMs).toISOString() }), state.restaurantRecipes.at(-1)), { name:savedProduct.name, productName:savedProduct.name, ingredients, steps, updatedAtMs });
 	        else if (existingRecipe) state.restaurantRecipes = state.restaurantRecipes.filter((recipe) => recipe.id !== existingRecipe.id);
 	      }
-	      addAudit(product ? 'product_updated' : 'product_created', {
+	      if(!retryingExistingDraft)addAudit(product ? 'product_updated' : 'product_created', {
 	        productId:savedProduct.id,
 	        entityType:'product',
 	        entityId:savedProduct.id,
@@ -7657,7 +7680,7 @@ function parseMoney(value) {
         suppressFailureToast:true,
         sparkCommand:()=>window.CLICK360_MODULAR_UI_ADAPTER.productMutationCommand({
           product:desiredProduct,previous:previousState.products.find(item=>item.id===desiredProduct.id&&item.businessId===b.id),
-          identity:window.click360SparkOperationalSession.identity,operationId:uid('productop'),date:today()
+	          identity:window.click360SparkOperationalSession.identity,operationId:pendingProductAttempt.operationId,date:today()
         })
       });
 	      if (!committed.ok && navigator.onLine && !window.click360SparkOperationalSession) {
@@ -7743,6 +7766,13 @@ function parseMoney(value) {
 	      closeModal();
 	      renderApp('inventory');
 	      if (!committed.pending) toast(product ? 'Producto actualizado y confirmado en la nube' : 'Producto creado y confirmado en la nube', 'ok');
+	      }catch(error){
+	        console.error('[inventory] product save failed', {code:String(error?.code||error?.name||'unknown').slice(0,80)});
+	        toast('No se pudo confirmar el guardado. Conserva este formulario y no crees otro producto hasta verificar el resultado.', 'err');
+	      }finally{
+	        productSubmitInFlight=false;
+	        if(submitButton?.isConnected){submitButton.disabled=false;submitButton.textContent=submitButton.dataset.originalText||'Guardar';}
+	      }
 	    };
 	  }
 	  async function deleteProduct(id){

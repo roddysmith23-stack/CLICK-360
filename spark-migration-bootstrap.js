@@ -111,8 +111,11 @@
       if(!preserveSecondary&&!matchesLegacyCache(local,legacy))return null;
       const cacheHash=preserveSecondary?await api.hash(secondaryCache):null;
       const snapshotHash=await api.hash(local.snapshot);
-      if(preserveSecondary&&snapshotHash===control.sourceHash&&snapshotHash!==control.remoteHash)
-        return null; // An intact cutover source still needs the original proof.
+      // A clean secondary install may still contain an exact copy of the
+      // original cutover snapshot. It is safe to advance it only after the
+      // transaction below archives the entire device record/cache and the
+      // owner journal is proven empty. The server modular view remains the
+      // authority; this hash match is not permission to replay/import it.
       const cacheUnchanged=()=>{
         context();
         return api.canonicalJson(readSecondaryCache())===api.canonicalJson(secondaryCache);
@@ -188,8 +191,15 @@
         const preserved=await awaitStage('HANDOFF_LOCAL_PINS',()=>recovery.readHandoff(authorization?.captureHash));context();
         if(!preserved){
           if(!preCutover&&typeof readSecondaryCache==='function'){
-            const originalDevice=await recovery.readDeviceIdentity();context();
-            const previous=originalDevice&&originalDevice.deviceId===control.sourceDeviceId
+            // Establish a durable, owner-scoped identity before classifying
+            // this browser. On a fresh Windows/Android browser the record may
+            // not exist yet; treating that absence as the source iPhone caused
+            // every clean secondary snapshot to fall through to PIN_REQUIRED.
+            const currentDevice=await recovery.deviceIdentity();context();
+            if(currentDevice?.durable!==true||currentDevice.ownerUid!==ownerUid
+              ||typeof currentDevice.deviceId!=='string'||!currentDevice.deviceId)
+              throw Error('SPARK_LOCAL_HANDOFF_DEVICE_IDENTITY_REQUIRED');
+            const previous=currentDevice.deviceId===control.sourceDeviceId
               ?null:await verifyServerMirror(control,controlRef,await readLocal(),{preserveSecondary:true});
             if(previous)return previous;
           }

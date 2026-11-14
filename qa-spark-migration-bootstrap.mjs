@@ -41,7 +41,9 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
         return {rows:scoped.slice(offset,end),next:end<scoped.length?{offset:end}:null,complete:end>=scoped.length};
       },close:()=>closed++};
   }};
-  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>({ownerUid,deviceId:'durable-device',durable:true}),readDeviceIdentity:async()=>existingDevice,
+  globalThis.CLICK360_SPARK_RECOVERY={open:async()=>({deviceIdentity:async()=>{
+      if(!existingDevice)existingDevice={ownerUid,deviceId:'durable-device',durable:true};return existingDevice;
+    },readDeviceIdentity:async()=>existingDevice,
     captureDevice:async value=>{const captureHash=await api.hash(value);captures.set(captureHash,structuredClone(value));return {captureHash,durable:true};},
     preserveCloud:async({captureHash,assertStable})=>{await assertStable();assert(captures.has(captureHash));return {status:'RECOVERY_COPY_CLIENT_VERIFIED',captureHash,operationalCloudConfirmed:false};},
     close:()=>closed++,pin:async value=>pins.set(value.sourceHash,value),read:async key=>({...pins.get(key),durable:true}),
@@ -62,7 +64,7 @@ function fixture({enabled=true,automaticShadow=true,automaticRecoveryCopy=false,
     readLocal:async()=>({...record,deviceRevision:revision})};
   return {options,record,calls,pins,captures,handoffs,serverDocs,transport,setServerRecords:rows=>serverRecords=rows,
     afterServerRecords:callback=>afterServerRecords=callback,authority:()=>importerAuthority,verify:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).verifyLocalHandoff(),
-    afterShadow:callback=>afterShadow=callback, existingDevice:value=>existingDevice=value,
+    afterShadow:callback=>afterShadow=callback, existingDevice(value){if(arguments.length)existingDevice=value;return existingDevice;},
     corruptHandoffRead:()=>readHandoffCorrupt=true,run:()=>CLICK360_SPARK_MIGRATION_BOOTSTRAP.create(options).prepare(),
     actor:value=>actor=value,lease:value=>lease=value,revision:value=>revision=value,counts:()=>({closed,imports})};
 }
@@ -380,9 +382,19 @@ for(const mutation of [
   control.sourceDeviceId='original';
   f.existingDevice({ownerUid,deviceId:'original',durable:true});
   await assert.rejects(f.verify(),/PIN_REQUIRED/,'The migration device must not bypass its original handoff');
+  f.existingDevice({ownerUid,deviceId:'secondary-device',durable:true});
+  Object.assign(f.record,old,{snapshot:local});
+  const exactCutoverCopy=await f.verify();
+  assert.equal(exactCutoverCopy.status,'SECONDARY_CACHE_PRESERVED',
+    'A clean exact copy of the source snapshot on a different durable device is archived before the server view is installed');
+  assert.equal(exactCutoverCopy.sourceHash,control.sourceHash);
+  assert.equal(f.counts().imports,0,'The historical snapshot is never replayed as a migration');
   f.existingDevice(null);
   Object.assign(f.record,old,{snapshot:local});
-  await assert.rejects(f.verify(),/PIN_REQUIRED/,'A copy of the cutover source still requires the original proof');
+  const newBrowserCopy=await f.verify();
+  assert.equal(newBrowserCopy.status,'SECONDARY_CACHE_PRESERVED',
+    'A fresh browser receives a new durable owner-scoped device identity before safely preserving its clean source copy');
+  assert.equal(f.existingDevice().deviceId,'durable-device','the fresh identity is durable before source selection');
   Object.assign(f.record,old,{source:'remote_applied',deviceRevision:'',revision:0,baseRevision:0});
   assert.equal((await f.verify()).status,'SECONDARY_CACHE_PRESERVED');
 }
