@@ -1826,7 +1826,7 @@ function parseMoney(value) {
     if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
     renderApp(route,{preserveActiveModal:true});
   });
-  window.click360MatchesFrozenLegacyCache=function(record,payload){
+  window.click360MatchesFrozenLegacyCache=function(record,payload,{snapshotOnly=false}={}){
     const context=activeTenantContext;
     const api=window.CLICK360_SPARK_MIGRATION;
     if(!context||!api||!tenantRuntime?.validBusinessPayload(payload,context))return false;
@@ -1839,6 +1839,8 @@ function parseMoney(value) {
     const matches=snapshot=>tenantRuntime.validBusinessPayload({identity:snapshot?.identity,data:snapshot},context)
       &&material(snapshot)===material(remote);
     if(!matches(record.snapshot))return false;
+    // The secondary path checks both raw copies separately and archives them.
+    if(snapshotOnly)return true;
     // An older browser may also have a separate localStorage copy. Check
     // both keys before replacing the IndexedDB mirror, without deleting either.
     const meta=JSON.parse(localStorage.getItem(cacheMetaKey(context))||'null');

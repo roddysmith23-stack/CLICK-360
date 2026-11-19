@@ -118,15 +118,12 @@ try{
       const record=await CLICK360_V16_STORAGE.getSnapshot(context);
       if(record?.source!=='cloud_confirmed'||record.pendingRemoteSync)throw Error('TEST_LEGACY_MIRROR_REQUIRED');
       if(unconfirmed){
-        const snapshot={...payload.data,identity:payload.identity};
         const source='local_change';
-        const key=`CLICK360:V16:STATE:${record.id}`;
-        localStorage.setItem(key,JSON.stringify(snapshot));
         const cache=click360ReadSecondaryLegacyCache();
         const metadataKey=`CLICK360:V16:CACHEMETA:${record.id}`;
         if(!cache?.metadata||localStorage.getItem(metadataKey)!==cache.metadata)throw Error('TEST_LEGACY_RECEIPT_REQUIRED');
         localStorage.setItem(metadataKey,JSON.stringify({...JSON.parse(cache.metadata),source,pendingRemoteSync:true}));
-        await CLICK360_V16_STORAGE.putSnapshot(context,snapshot,{source,deviceRevision:record.deviceRevision,
+        await CLICK360_V16_STORAGE.putSnapshot(context,record.snapshot,{source,deviceRevision:record.deviceRevision,
           baseRevision:2,pendingRemoteSync:true});
       }
       // Keep the date check independent of the sales fixture's working date.

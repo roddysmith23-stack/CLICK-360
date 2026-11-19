@@ -114,7 +114,8 @@
       if(preserveSecondary&&!secondaryCache){
         if(typeof control.sourceDeviceId!=='string'||!control.sourceDeviceId)return null;
         // A lost legacy confirmation can leave the data intact but the receipt
-        // stale. Only a full match against a server-bound hash can settle that.
+        // stale. Compare with the server-bound source or the verified legacy
+        // document in its normal on-device representation.
         // Check both localStorage copies independently of the IndexedDB copy.
         const matchesServer=async(snapshot,hash=undefined)=>{
           const digest=hash??await api.hash(snapshot);
@@ -122,9 +123,10 @@
           // The frozen cloud document can store identity outside payload.data.
           // Remove only that envelope duplication after matching it exactly.
           const {identity,...material}=snapshot;
-          return !!identity&&!Object.hasOwn(legacy.data,'identity')
+          if(identity&&!Object.hasOwn(legacy.data,'identity')
             &&api.canonicalJson(identity)===api.canonicalJson(legacy.identity)
-            &&await api.hash(material)===control.remoteHash;
+            &&await api.hash(material)===control.remoteHash)return true;
+          return matchesLegacyCache?.({snapshot},legacy,{snapshotOnly:true})===true;
         };
         if(!await matchesServer(local.snapshot,snapshotHash))return null;
         cacheOptions={allowUnconfirmedReceipt:true};
