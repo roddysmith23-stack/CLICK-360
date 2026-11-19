@@ -80,6 +80,12 @@ try{
     }
     await env.clearFirestore();
     const data=largeTenantData(uid);data.sales=[];data.movements=[];data.cashSessions=[];data.auditLogs=[];
+    // Use the same valid two-column paper and artwork as the staging print fixture.
+    const labelTemplate=data.settings.labelTemplates[0];
+    labelTemplate.mediaWidthMm=100;
+    labelTemplate.universalDocument.paper.mediaWidthMm=100;
+    Object.assign(labelTemplate.universalDocument.objects.find(o=>o.type==='name'),{xMm:2,yMm:25});
+    labelTemplate.universalDocument.objects.find(o=>o.type==='price').xMm=2;
     data.products[0]={...data.products[0],code:'SPARK-LIVE',price:30,cardPrice:30,stock:2,qty:2};
     const otherBusiness=`second-${uid}`;
     data.businesses.push({id:otherBusiness,name:'Segundo negocio sintético',status:'activo',type:'ropa',settings:{}});

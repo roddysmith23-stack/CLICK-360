@@ -112,6 +112,7 @@
       if(!preserveSecondary&&!matchesLegacyCache(local,legacy))return null;
       const snapshotHash=await api.hash(local.snapshot);
       if(preserveSecondary&&!secondaryCache){
+        if(typeof control.sourceDeviceId!=='string'||!control.sourceDeviceId)return null;
         // A lost legacy confirmation can leave the data intact but the receipt
         // stale. Only a full match against a server-bound hash can settle that.
         // Check both localStorage copies independently of the IndexedDB copy.
