@@ -1851,21 +1851,26 @@ function parseMoney(value) {
       return raw===null||matches(JSON.parse(raw));
     });
   };
-  window.click360ReadSecondaryLegacyCache=function(){
+  window.click360ReadSecondaryLegacyCache=function({allowUnconfirmedReceipt=false}={}){
     const context=activeTenantContext;
     if(!context||context.authUid!==context.ownerId)return null;
     const primary=localStorage.getItem(stateStorageKey());
     const older=localStorage.getItem(legacyStateStorageKey(context));
     const metadata=localStorage.getItem(cacheMetaKey(context));
-    const meta=JSON.parse(metadata||'null');
-    if(meta?.pendingRemoteSync===true||meta?.cloudCapacityBlocked===true||meta?.pendingOperations?.length
+    let meta;
+    try{meta=JSON.parse(metadata||'null');}catch{return null;}
+    if(metadata!==null&&(!meta||typeof meta!=='object'||Array.isArray(meta)))return null;
+    if((meta?.pendingRemoteSync===true&&(!allowUnconfirmedReceipt||(primary===null&&older===null)))
+      ||meta?.cloudCapacityBlocked===true||(meta?.pendingOperations!=null
+        &&(!Array.isArray(meta.pendingOperations)||meta.pendingOperations.length>0))
       ||(meta&&meta.tenantKey!==context.tenantKey)
       ||localStorage.getItem(`CLICK360_TENANT:${context.tenantKey}:CORRUPT`)
       ||localStorage.getItem(pendingProfileKey(context.authUid))
       ||localStorage.getItem(`${LEGACY_PROFILE_PENDING_PREFIX}${context.authUid}`))return null;
     for(const raw of [primary,older]){
       if(raw===null)continue;
-      const data=JSON.parse(raw);
+      let data;
+      try{data=JSON.parse(raw);}catch{return null;}
       if(!tenantRuntime?.validBusinessPayload({identity:data?.identity,data},context))return null;
     }
     return {primary,older,metadata};

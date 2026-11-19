@@ -156,6 +156,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -169,6 +171,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx --no-install playwright install chromium
+      - run: node qa/spark-secondary-device-handoff-e2e.mjs chromium
       - name: Verify real Chromium serialization and external blobs with packaged runtime
         env:
           CLICK360_RECOVERY_PYTHON: ${{ github.workspace }}/recovery-package-ci/SHARY_PC_ACQUISITION_PACKAGE/runtime/python.exe
