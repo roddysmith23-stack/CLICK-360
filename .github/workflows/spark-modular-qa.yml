@@ -24,8 +24,10 @@ jobs:
           java-version: '21'
       - run: npm ci
       - run: node qa-startup-progress.mjs
+      - run: node qa-spark-migration-bootstrap.mjs
       - run: npx playwright install --with-deps chromium firefox webkit
       - run: node qa/spark-production-local-handoff-e2e.mjs
+      - run: node qa/spark-secondary-device-handoff-e2e.mjs
       - run: npm run qa:spark
       - run: npm run qa:spark:rules
       - run: npm run qa:spark:legacy-rules

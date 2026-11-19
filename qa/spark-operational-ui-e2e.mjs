@@ -80,6 +80,12 @@ try{
     }
     await env.clearFirestore();
     const data=largeTenantData(uid);data.sales=[];data.movements=[];data.cashSessions=[];data.auditLogs=[];
+    // Use the same valid two-column paper and artwork as the staging print fixture.
+    const labelTemplate=data.settings.labelTemplates[0];
+    labelTemplate.mediaWidthMm=100;
+    labelTemplate.universalDocument.paper.mediaWidthMm=100;
+    Object.assign(labelTemplate.universalDocument.objects.find(o=>o.type==='name'),{xMm:2,yMm:25});
+    labelTemplate.universalDocument.objects.find(o=>o.type==='price').xMm=2;
     data.products[0]={...data.products[0],code:'SPARK-LIVE',price:30,cardPrice:30,stock:2,qty:2};
     const otherBusiness=`second-${uid}`;
     data.businesses.push({id:otherBusiness,name:'Segundo negocio sintético',status:'activo',type:'ropa',settings:{}});
@@ -102,7 +108,7 @@ try{
             {identity:otherIdentity,moduleName,recordId:id}));
       }
     });
-    const seedLegacyMirror=(page,{stale=false}={})=>page.evaluate(async ({payload,stale})=>{
+    const seedLegacyMirror=(page,{stale=false,unconfirmed=false}={})=>page.evaluate(async ({payload,stale,unconfirmed})=>{
       const context={...payload.identity,authUid:payload.identity.ownerUid};
       click360SetTenantContext(context,{deferLocalLoad:true});
       const old=structuredClone(payload.data);
@@ -111,10 +117,19 @@ try{
       await click360MarkTenantCacheSynced({revision:stale?1:2,operationId:'synthetic-frozen-legacy-mirror'});
       const record=await CLICK360_V16_STORAGE.getSnapshot(context);
       if(record?.source!=='cloud_confirmed'||record.pendingRemoteSync)throw Error('TEST_LEGACY_MIRROR_REQUIRED');
+      if(unconfirmed){
+        const source='local_change';
+        const cache=click360ReadSecondaryLegacyCache();
+        const metadataKey=`CLICK360:V16:CACHEMETA:${record.id}`;
+        if(!cache?.metadata||localStorage.getItem(metadataKey)!==cache.metadata)throw Error('TEST_LEGACY_RECEIPT_REQUIRED');
+        localStorage.setItem(metadataKey,JSON.stringify({...JSON.parse(cache.metadata),source,pendingRemoteSync:true}));
+        await CLICK360_V16_STORAGE.putSnapshot(context,record.snapshot,{source,deviceRevision:record.deviceRevision,
+          baseRevision:2,pendingRemoteSync:true});
+      }
       // Keep the date check independent of the sales fixture's working date.
       await CLICK360_V16_STORAGE.putWorkingDate(context,payload.data.businesses[1].id,'2026-09-03');
-      if(stale)window.QA_OLDER_DEVICE_RECORD=await CLICK360_V16_STORAGE.getSnapshot(context);
-    },{payload:stateDocument(uid,2,data).payload,stale});
+      if(stale||unconfirmed)window.QA_OLDER_DEVICE_RECORD=await CLICK360_V16_STORAGE.getSnapshot(context);
+    },{payload:stateDocument(uid,2,data).payload,stale,unconfirmed});
     device=await openSignedIn(browser,{width:390,height:844},undefined,{beforeSignIn:page=>seedLegacyMirror(page,{stale:true})});
     const page=device.page;
     assert(await page.evaluate(async businessId=>{
@@ -186,6 +201,19 @@ try{
     await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
     const created=await page.evaluate(()=>click360GetTenantState().products.find(p=>p.code==='SPARK-NEW'));
     assert((await record('products',created.id)).stock===10,'Product opening stock persisted once');
+    await page.evaluate(()=>{
+      window.QA_LABEL_PRINT_CALLS=0;
+      window.print=()=>{window.QA_LABEL_PRINT_CALLS++;};
+    });
+    await page.locator('#productSearch').fill('SPARK-NEW');
+    await page.locator(`[data-quick-print="${created.id}"]`).click();
+    await page.locator('#quickLabelQuantity').fill('2');
+    await page.locator('#quickLabelConfirm').click();
+    await page.waitForFunction(()=>window.QA_LABEL_PRINT_CALLS===1);
+    assert(await page.locator('#click360PrintPortal .labelPrintCell.filled').count()===2,
+      'Modular inventory sends exactly the requested number of labels to the browser');
+    await page.evaluate(()=>window.dispatchEvent(new Event('afterprint')));
+    assert((await record('products',created.id)).stock===10,'Printing labels does not change server inventory');
     await page.locator('#productSearch').fill('SPARK-NEW');await page.locator(`[data-edit="${created.id}"]`).click();
     await page.locator('#pName').fill('Editado sintético modular');await resetStatus();await page.locator('#productForm button[type="submit"]').click();await confirmed();
     assert((await record('products',created.id)).name==='Editado sintético modular','Product metadata edit committed');
@@ -532,7 +560,7 @@ try{
     await restarted.evaluate(()=>{location.hash='#cash';});
     await restarted.locator('#closeDayBtn').waitFor({state:'visible'});
     assert(JSON.stringify(await readCloud(env,uid))===JSON.stringify(legacyBefore),'Restart cannot write legacy');
-    const secondDevice=await openSignedIn(browser,{width:1280,height:800},undefined,{beforeSignIn:page=>seedLegacyMirror(page,{stale:true})});
+    const secondDevice=await openSignedIn(browser,{width:1280,height:800},undefined,{beforeSignIn:page=>seedLegacyMirror(page,{unconfirmed:true})});
     try{
       const observed=await secondDevice.page.evaluate(()=>{
         const state=click360GetTenantState();
@@ -590,7 +618,7 @@ try{
       reopenCreatesExactNewSession:true,
       durableProjection:true,serviceWorkerControlled:workerProof.controlled,serviceWorkerMatchesBuild:workerProof.sameRelease,
       appFirestoreTransport:'long_polling',customerCreateAndEdit:true,customerDeletePreservesHistory:true,
-      fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
+      quickLabelPrintFromModularInventory:true,fullOperationalUI:false,migration:false,physicalAcceptance:false,productionWrites:0});
     assert(device.pageErrors.length===0,JSON.stringify({pageErrors:device.pageErrors}));
     }
     // Publish the business-only mode proof with the OWNER WEB SDK/Rules, not

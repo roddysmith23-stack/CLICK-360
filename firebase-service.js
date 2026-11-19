@@ -4412,8 +4412,11 @@
             window.click360SparkCoordinator?.close();window.click360SparkCoordinator=null;
             window.click360SparkBootstrapState={phase:'BLOCKED',reason:String(error.code||error.message||'spark_bootstrap_failed')+(error.sparkStage?`:${error.sparkStage}`:'')};
             AUTH_APPROVED=false;PULL_COMPLETE=false;tenantGuard.block();
-            setSyncStatus('modular_pending','No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.');
-            showGate('No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.',ACCESS_UI_STATES.RECOVERABLE_ERROR,
+            const startupMessage=error.message==='SPARK_SECONDARY_LOCAL_REVIEW_REQUIRED'
+              ?'Esta copia local necesita revisión. Abre CLICK 360 en otro navegador o en un perfil nuevo con la misma cuenta de Google. Conserva los datos de este navegador.'
+              :'No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.';
+            setSyncStatus('modular_pending',startupMessage);
+            showGate(startupMessage,ACCESS_UI_STATES.RECOVERABLE_ERROR,
               {reason:String(error.code||error.message||'spark_bootstrap_failed')});
             STARTUP_ATTEMPT?.fail(error);
             const waiting=new Set(['SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED','SPARK_RUNTIME_ADMIN_APPROVAL_REQUIRED',

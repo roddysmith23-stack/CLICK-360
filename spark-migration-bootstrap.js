@@ -87,21 +87,22 @@
       }
       return rows;
     }
-    const cleanLegacyCache=record=>record?.snapshot&&['remote_applied','cloud_confirmed'].includes(record.source)
-      &&record.pendingRemoteSync===false&&record.cloudCapacityBlocked===false
+    const legacyCacheWithoutOutbox=record=>record?.snapshot&&record.source!=='spark_operational_candidate'
+      &&record.cloudCapacityBlocked===false
       &&Array.isArray(record.pendingOperations)&&record.pendingOperations.length===0;
+    const cleanLegacyCache=record=>legacyCacheWithoutOutbox(record)&&['remote_applied','cloud_confirmed'].includes(record.source)
+      &&record.pendingRemoteSync===false;
 
     async function verifyServerMirror(control,controlRef,local,{preserveSecondary=false}={}){
       // Post-cutover only. Exact mirrors can be replaced; older clean
       // device copies must be archived before the modular writer starts.
-      if(!cleanLegacyCache(local)||(preserveSecondary?typeof readSecondaryCache!=='function':typeof matchesLegacyCache!=='function'))return null;
-      const secondaryCache=preserveSecondary?readSecondaryCache():null;
-      if(preserveSecondary&&!secondaryCache)return null;
+      if(!legacyCacheWithoutOutbox(local)||(preserveSecondary?typeof readSecondaryCache!=='function'
+        :!cleanLegacyCache(local)||typeof matchesLegacyCache!=='function'))return null;
       // A historic sync receipt is device evidence. Keep all its bytes even
       // if the frozen cloud snapshot no longer matches that older revision.
-      if(preserveSecondary&&local.source==='cloud_confirmed'
-        &&(!Number.isSafeInteger(local.revision)||local.revision<1||local.revision>control.remoteRevision
-          ||local.baseRevision!==local.revision))return null;
+      const revisionMatchesReceipt=local.source!=='cloud_confirmed'||(Number.isSafeInteger(local.revision)
+        &&local.revision>=1&&local.revision<=control.remoteRevision&&local.baseRevision===local.revision);
+      let cacheOptions,secondaryCache=preserveSecondary&&cleanLegacyCache(local)&&revisionMatchesReceipt?readSecondaryCache():null;
       const frozen=(await server(db.doc(`businesses/${ownerUid}/state/main`))).data();
       if(frozen?.revision!==control.remoteRevision||!frozen.payload?.data
         ||await api.hash(frozen.payload.data)!==control.remoteHash)
@@ -109,22 +110,44 @@
       const legacy=frozen.payload;
       const controlJson=api.canonicalJson(JSON.parse(JSON.stringify(control)));
       if(!preserveSecondary&&!matchesLegacyCache(local,legacy))return null;
-      const cacheHash=preserveSecondary?await api.hash(secondaryCache):null;
       const snapshotHash=await api.hash(local.snapshot);
-      // A clean secondary install may still contain an exact copy of the
-      // original cutover snapshot. It is safe to advance it only after the
-      // transaction below archives the entire device record/cache and the
-      // owner journal is proven empty. The server modular view remains the
-      // authority; this hash match is not permission to replay/import it.
+      if(preserveSecondary&&!secondaryCache){
+        if(typeof control.sourceDeviceId!=='string'||!control.sourceDeviceId)return null;
+        // A lost legacy confirmation can leave the data intact but the receipt
+        // stale. Compare with the server-bound source or the verified legacy
+        // document in its normal on-device representation.
+        // Check both localStorage copies independently of the IndexedDB copy.
+        const matchesServer=async(snapshot,hash=undefined)=>{
+          const digest=hash??await api.hash(snapshot);
+          if(digest===control.sourceHash||digest===control.remoteHash)return true;
+          // The frozen cloud document can store identity outside payload.data.
+          // Remove only that envelope duplication after matching it exactly.
+          const {identity,...material}=snapshot;
+          if(identity&&!Object.hasOwn(legacy.data,'identity')
+            &&api.canonicalJson(identity)===api.canonicalJson(legacy.identity)
+            &&await api.hash(material)===control.remoteHash)return true;
+          return matchesLegacyCache?.({snapshot},legacy,{snapshotOnly:true})===true;
+        };
+        if(!await matchesServer(local.snapshot,snapshotHash))return null;
+        cacheOptions={allowUnconfirmedReceipt:true};
+        secondaryCache=readSecondaryCache(cacheOptions);
+        if(!secondaryCache)return null;
+        for(const raw of [secondaryCache.primary,secondaryCache.older]){
+          if(raw!==null&&!await matchesServer(JSON.parse(raw)))return null;
+        }
+      }
+      const cacheHash=preserveSecondary?await api.hash(secondaryCache):null;
+      // The IDB transaction archives the entire record and raw cache before
+      // installing the modular projection. Legacy commands are never replayed.
       const cacheUnchanged=()=>{
         context();
-        return api.canonicalJson(readSecondaryCache())===api.canonicalJson(secondaryCache);
+        return api.canonicalJson(readSecondaryCache(cacheOptions))===api.canonicalJson(secondaryCache);
       };
       const metadataHash=await api.hash(Object.fromEntries(Object.entries(local).filter(([key])=>key!=='snapshot')));
       async function assertStable(){
         context();
         const current=await readLocal();context();
-        if(!cleanLegacyCache(current)||await api.hash(current.snapshot)!==snapshotHash
+        if(!legacyCacheWithoutOutbox(current)||await api.hash(current.snapshot)!==snapshotHash
           ||await api.hash(Object.fromEntries(Object.entries(current).filter(([key])=>key!=='snapshot')))!==metadataHash
           ||(preserveSecondary?!cacheUnchanged():!matchesLegacyCache(current,legacy)))
           throw Error('SPARK_LOCAL_HANDOFF_DEVICE_DRIFT_STOP');
@@ -202,6 +225,8 @@
             const previous=currentDevice.deviceId===control.sourceDeviceId
               ?null:await verifyServerMirror(control,controlRef,await readLocal(),{preserveSecondary:true});
             if(previous)return previous;
+            if(currentDevice.deviceId!==control.sourceDeviceId)
+              throw Error('SPARK_SECONDARY_LOCAL_REVIEW_REQUIRED');
           }
           throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
         }

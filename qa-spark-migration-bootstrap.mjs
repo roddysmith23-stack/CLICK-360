@@ -369,11 +369,11 @@ for(const mutation of [
   copies={...raw,metadata:'concurrent edit'};
   await assert.rejects(preserved.assertStable(),/DEVICE_DRIFT_STOP/);
   copies=null;
-  await assert.rejects(f.verify(),/PIN_REQUIRED/,'Unverified local storage must not be promoted');
+  await assert.rejects(f.verify(),/SECONDARY_LOCAL_REVIEW_REQUIRED/,'Unverified local storage must not be promoted');
   copies=raw;
   for(const delta of [{pendingRemoteSync:true},{cloudCapacityBlocked:true},{pendingOperations:['pending']},{revision:3},{baseRevision:0}]){
     Object.assign(f.record,old,delta);
-    await assert.rejects(f.verify(),/PIN_REQUIRED/);
+    await assert.rejects(f.verify(),/SECONDARY_LOCAL_REVIEW_REQUIRED/);
   }
   Object.assign(f.record,old);
   rows.push({ownerUid,businessId:businessIds[0],operationId:'unknown',state:'unknown'});
@@ -397,6 +397,28 @@ for(const mutation of [
   assert.equal(f.existingDevice().deviceId,'durable-device','the fresh identity is durable before source selection');
   Object.assign(f.record,old,{source:'remote_applied',deviceRevision:'',revision:0,baseRevision:0});
   assert.equal((await f.verify()).status,'SECONDARY_CACHE_PRESERVED');
+  // The same legacy bytes were already confirmed on the server. Recover
+  // even if this browser never recorded the confirmation locally.
+  Object.assign(f.record,clean,{snapshot:{...remote,identity},source:'local_change',pendingRemoteSync:true});
+  copies={primary:JSON.stringify(f.record.snapshot),older:JSON.stringify(local),metadata:'stale sync receipt'};
+  f.options.readSecondaryCache=options=>options?.allowUnconfirmedReceipt?copies:null;
+  const recovered=await f.verify();
+  assert.equal(recovered.status,'SECONDARY_CACHE_PRESERVED');
+  assert.deepEqual(recovered.secondaryCache,copies);
+  await recovered.assertStable();
+  copies={...copies,older:JSON.stringify({...local,products:[{id:'unsynced'}]})};
+  await assert.rejects(recovered.assertStable(),/DEVICE_DRIFT_STOP/);
+  await assert.rejects(f.verify(),/SECONDARY_LOCAL_REVIEW_REQUIRED/);
+  copies={...copies,older:null};
+  f.record.snapshot={...remote,identity:{...identity,ownerId:'foreign'}};
+  await assert.rejects(f.verify(),/SECONDARY_LOCAL_REVIEW_REQUIRED/);
+  f.record.snapshot={...remote,identity};
+  f.record.pendingOperations=['unresolved-reference'];
+  await assert.rejects(f.verify(),/SECONDARY_LOCAL_REVIEW_REQUIRED/);
+  f.record.pendingOperations=[];
+  f.existingDevice({ownerUid,deviceId:'original',durable:true});
+  await assert.rejects(f.verify(),/PIN_REQUIRED/);
+  assert.equal(f.counts().imports,0);
 }
 for(const delta of [{enabled:false},{operationalAccess:false},{automaticShadow:false},{automaticMigration:false},{pilotOwnerUids:['other']}]){
   const f=fixture();f.options.projectId='click-360';f.options.db.app.options.projectId='click-360';
