@@ -12693,19 +12693,31 @@ function parseMoney(value) {
     const job = await buildUniversalLabelPrintNode(preparedJob.product, preparedJob.document);
     await waitForLabelPrintNodeReady(job.node);
     assertCurrent?.();
-    const result = await handoffPrint({
-      node:job.node.cloneNode(true),
-      media:'label',
-      mediaWidthMm:job.media.widthMm,
-      mediaHeightMm:job.media.heightMm,
-      widthMm:job.document.paper.widthMm,
-      heightMm:job.document.paper.heightMm,
-      copiesHandled:true,
-      printPlan:job.plan,
-      ...(assertCurrent?{assertCurrent}:{}),
-      filename:`CLICK360_etiquetas_${slug(preparedJob.product.name || preparedJob.product.code)}_${today()}.pdf`
-    }, providerId);
-    return { ...job, result, fingerprint:preparedJob.fingerprint };
+    // A session can change in the frames between mounting the print portal
+    // and the browser opening its dialog. Suppress stale protected content.
+    const clearOnSessionChange = () => {
+      try { assertCurrent(); } catch {
+        document.getElementById('click360PrintPortal')?.replaceChildren();
+        document.getElementById('printRoot')?.replaceChildren();
+      }
+    };
+    if (assertCurrent) window.addEventListener('beforeprint', clearOnSessionChange);
+    try {
+      const result = await handoffPrint({
+        node:job.node.cloneNode(true),
+        media:'label',
+        mediaWidthMm:job.media.widthMm,
+        mediaHeightMm:job.media.heightMm,
+        widthMm:job.document.paper.widthMm,
+        heightMm:job.document.paper.heightMm,
+        copiesHandled:true,
+        printPlan:job.plan,
+        filename:`CLICK360_etiquetas_${slug(preparedJob.product.name || preparedJob.product.code)}_${today()}.pdf`
+      }, providerId);
+      return { ...job, result, fingerprint:preparedJob.fingerprint };
+    } finally {
+      if (assertCurrent) window.removeEventListener('beforeprint', clearOnSessionChange);
+    }
   }
   window.click360ShowProtectedCatalog = async function({ host, loadCatalog, confirmAccess, isCurrent }) {
     let form;
