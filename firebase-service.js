@@ -3699,6 +3699,7 @@
       };
     }
 
+    document.getElementById('c360-protected-catalog-host')?.remove();
     const msg = document.getElementById("c360-auth-msg");
     if (msg) msg.innerHTML = message;
 
@@ -4308,6 +4309,68 @@
   window.document?.addEventListener('visibilitychange',()=>{
     if(window.document.visibilityState==='visible')resumeP0ARecovery();
   });
+  function offerProtectedCatalog(user,expectedEpoch,localReviewCode){
+    const context=ACTIVE_CONTEXT,msg=document.getElementById('c360-auth-msg');
+    if(!msg||!context||user.uid!==context.ownerUid||typeof window.click360ShowProtectedCatalog!=='function')return;
+    const host=document.createElement('section');
+    host.id='c360-protected-catalog-host';
+    const button=document.createElement('button');
+    button.type='button';
+    button.id='c360-protected-catalog';
+    button.className='c360-change-button';
+    button.textContent='Abrir inventario e imprimir etiquetas';
+    host.append(button);
+    if(/^[A-Z_]{1,40}$/.test(localReviewCode||'')){
+      const detail=document.createElement('small');
+      detail.className='fieldHint';
+      detail.textContent=`Revisión local · ${localReviewCode}`;
+      // Keep the diagnostic scoped to the same gate lifecycle as its action.
+      host.prepend(detail);
+    }
+    msg.insertAdjacentElement('afterend',host);
+    const isCurrent=()=>host.isConnected&&ACTIVE_CONTEXT===context&&isCurrentAuthEpoch(user,expectedEpoch)
+      &&activeIdentityIsValid(user)&&ACCESS_UI_STATE===ACCESS_UI_STATES.RECOVERABLE_ERROR
+      &&!AUTH_APPROVED&&!PULL_COMPLETE&&!window.click360IsMixedBuild?.();
+    const reader=window.CLICK360_SPARK_BOOTSTRAP.create({projectId:db.app.options.projectId,db,
+      actorUid:user.uid,ownerUid:context.ownerUid,resolveUser:()=>auth.currentUser,
+      resolveContext:()=>isCurrent()?context:null,catalogOnly:true});
+    async function verifyAccount(){
+      const check=()=>{if(!isCurrent())throw Error('SPARK_PROTECTED_CATALOG_CONTEXT_CHANGED');};
+      async function read(ref){
+        check();const snap=await ref.get({source:'server'});check();
+        if(snap.metadata?.fromCache!==false||snap.metadata?.hasPendingWrites!==false)
+          throw Error('SPARK_PROTECTED_CATALOG_SERVER_REQUIRED');
+        return snap;
+      }
+      const account=await read(accountAccessRef(user.uid));
+      if(account.exists){
+        const data=account.data();
+        if(!accountAccessIdentityValid(user,data))throw Error('SPARK_PROTECTED_CATALOG_ACCOUNT_REQUIRED');
+        const now=requiresFreshEntitlementClock(data)?await trustedAuthServerNowMs(user):0;
+        check();
+        if((requiresFreshEntitlementClock(data)&&!now)||!accessStateFromData(data,now).allowed)
+          throw Error('SPARK_PROTECTED_CATALOG_ACCOUNT_REQUIRED');
+      }else{
+        const legacy=(await read(db.doc(`approvedUsers/${user.uid}`))).data();
+        if(!isExplicitlyActive(legacy)||(legacy.ownerId||user.uid)!==user.uid
+          ||(legacy.businessId||user.uid)!==user.uid||(legacy.role||'owner')!=='owner')
+          throw Error('SPARK_PROTECTED_CATALOG_ACCOUNT_REQUIRED');
+      }
+    }
+    button.onclick=()=>{
+      if(!isCurrent())return;
+      window.click360ShowProtectedCatalog({host,isCurrent,
+        loadCatalog:async businessId=>{await verifyAccount();return reader.read(businessId);},
+        confirmAccess:async businessId=>{
+          await verifyAccount();const control=await reader.verify();
+          if(!control.businessIds.includes(businessId))throw Error('SPARK_PROTECTED_CATALOG_BUSINESS_REQUIRED');
+        }}).catch(()=>{
+          if(isCurrent())msg.textContent='No se pudo abrir el inventario en la nube. Intenta de nuevo con conexión.';
+        });
+    };
+    if(window.matchMedia('(max-width: 700px)').matches)
+      requestAnimationFrame(()=>{if(isCurrent())host.scrollIntoView({block:'nearest'});});
+  }
 	  async function enterApprovedApp(user, expectedEpoch = AUTH_EPOCH) {
         SPARK_APPROVAL_SUPERVISOR?.close();SPARK_APPROVAL_SUPERVISOR=null;
 		    if (!isCurrentAuthEpoch(user, expectedEpoch) || !activeIdentityIsValid(user)) return false;
@@ -4413,12 +4476,14 @@
             window.click360SparkBootstrapState={phase:'BLOCKED',reason:String(error.code||error.message||'spark_bootstrap_failed')+(error.sparkStage?`:${error.sparkStage}`:'')};
             AUTH_APPROVED=false;PULL_COMPLETE=false;tenantGuard.block();
             const startupMessage=error.message==='SPARK_SECONDARY_LOCAL_REVIEW_REQUIRED'
-              ?'Esta copia local necesita revisión. Abre CLICK 360 en otro navegador o en un perfil nuevo con la misma cuenta de Google. Conserva los datos de este navegador.'
+              ?'Esta copia local necesita revisión. Puedes consultar el inventario de la nube e imprimir etiquetas. La edición queda pausada en este dispositivo.'
               :'No pudimos terminar de sincronizar todavía. Tus datos permanecen guardados en este dispositivo.';
             setSyncStatus('modular_pending',startupMessage);
             showGate(startupMessage,ACCESS_UI_STATES.RECOVERABLE_ERROR,
               {reason:String(error.code||error.message||'spark_bootstrap_failed')});
             STARTUP_ATTEMPT?.fail(error);
+            if(error.message==='SPARK_SECONDARY_LOCAL_REVIEW_REQUIRED'&&isCurrentAuthEpoch(user,expectedEpoch))
+              offerProtectedCatalog(user,expectedEpoch,error.localReviewCode);
             const waiting=new Set(['SPARK_BOOTSTRAP_SHADOW_VERIFIED_CUTOVER_DISABLED','SPARK_RUNTIME_ADMIN_APPROVAL_REQUIRED',
               'SPARK_LOCAL_HANDOFF_APPROVAL_MISMATCH','SPARK_ACTIVATION_ADMIN_APPROVAL_CHANGED']);
             if(user.uid===ACTIVE_CONTEXT?.ownerUid&&waiting.has(String(error.code||error.message))

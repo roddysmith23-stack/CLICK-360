@@ -91,9 +91,10 @@
   }
   function create(options){
     const {projectId,db,ownerUid,actorUid,deviceId,resolveUser,resolveContext,resolveBusiness,
-      restoreLocal,readLocal,installView,installBusiness,onPhase=()=>{},onProgress=()=>{}}=options;
+      restoreLocal,readLocal,installView,installBusiness,onPhase=()=>{},onProgress=()=>{},catalogOnly=false}=options;
     if(!projects.has(projectId)||db.app?.options?.projectId!==projectId)throw Error('SPARK_BOOTSTRAP_NONPRODUCTION_ONLY');
-    if([restoreLocal,readLocal,installView,installBusiness,resolveContext,resolveBusiness,resolveUser].some(f=>typeof f!=='function'))
+    const callbacks=catalogOnly?[resolveContext,resolveUser]:[restoreLocal,readLocal,installView,installBusiness,resolveContext,resolveBusiness,resolveUser];
+    if(callbacks.some(f=>typeof f!=='function')||(catalogOnly&&actorUid!==ownerUid))
       throw Error('SPARK_BOOTSTRAP_CALLBACKS_REQUIRED');
     const api=root.CLICK360_SPARK_MIGRATION,codec=root.CLICK360_SPARK_RECORD_CODEC;
     let closed=false,flight=null,epoch=0,session=null,phase='CHECKING',deferred=false,releaseLease=null,authorityEpoch=0;
@@ -169,6 +170,47 @@
       const snap=await server(q,`module_${module}`),records=[];
       for(const document of snap.docs){records.push(await codec.unpack(document.data(),{identity,moduleName:module,recordId:document.id}));context();}
       return {records,next:records.length===limit?snap.docs.at(-1).id:null};
+    }
+    if(catalogOnly){
+      // A protected catalog has no listeners, install callbacks, recovery,
+      // journal, local cache, or writer. Firestore still enforces owner access.
+      async function verify(){
+        const [control,rollout]=await Promise.all([mode(),server(db.doc('storageRollout/sparkV1'))]);
+        const p=rollout.data();
+        if(control.storageMode!=='modular'||!Array.isArray(control.businessIds)
+          ||control.businessIds.length>20||new Set(control.businessIds).size!==control.businessIds.length
+          ||control.businessIds.some(id=>typeof id!=='string'||!id||id.length>120||id==='.'||id==='..'||id.includes('/'))
+          ||p?.enabled!==true||p.operationalAccess!==true||!Array.isArray(p.pilotOwnerUids)||!p.pilotOwnerUids.includes(ownerUid))
+          throw Error('SPARK_PROTECTED_CATALOG_ACCESS_REQUIRED');
+        context();return control;
+      }
+      return Object.freeze({verify,async read(preferredBusiness){
+        const control=await verify();
+        const businessId=preferredBusiness??control.businessIds[0];
+        if(!control.businessIds.includes(businessId))throw Error('SPARK_PROTECTED_CATALOG_BUSINESS_REQUIRED');
+        const businesses=await Promise.all(control.businessIds.map(async id=>{
+          const config=await server(db.doc(`businesses/${ownerUid}/businessUnits/${id}/storage/v2/config/main`));
+          const row=await codec.unpack(config.data(),{identity:{ownerUid,businessId:id},moduleName:'config',recordId:'main'});
+          return {id,name:row.name};
+        }));
+        async function readModule(module,maxRecords){
+          const records=[];let after=null;
+          do{
+            const result=await page(businessId,module,{after});
+            records.push(...result.records);after=result.next;
+            if(records.length>maxRecords)throw Error('SPARK_PROTECTED_CATALOG_READ_LIMIT');
+          }while(after);
+          return records.filter(row=>row.deleted!==true);
+        }
+        const [products,labelTemplates,labelProfiles]=await Promise.all([
+          readModule('products',5000),readModule('labelTemplates',300),readModule('labelProfiles',300)
+        ]);
+        const current=await verify();
+        if(!current.businessIds.includes(businessId)||current.sourceHash!==control.sourceHash
+          ||api.canonicalJson(current.businessIds)!==api.canonicalJson(control.businessIds))
+          throw Error('SPARK_PROTECTED_CATALOG_CONTROL_CHANGED');
+        return {businesses,businessId,products,labelTemplates,labelProfiles};
+      }});
     }
     async function configs(control,p){
       const businesses=[];

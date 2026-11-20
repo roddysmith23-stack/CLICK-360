@@ -92,10 +92,18 @@
       &&Array.isArray(record.pendingOperations)&&record.pendingOperations.length===0;
     const cleanLegacyCache=record=>legacyCacheWithoutOutbox(record)&&['remote_applied','cloud_confirmed'].includes(record.source)
       &&record.pendingRemoteSync===false;
+    function secondaryReview(localReviewCode){
+      throw Object.assign(Error('SPARK_SECONDARY_LOCAL_REVIEW_REQUIRED'),{localReviewCode});
+    }
 
     async function verifyServerMirror(control,controlRef,local,{preserveSecondary=false}={}){
       // Post-cutover only. Exact mirrors can be replaced; older clean
       // device copies must be archived before the modular writer starts.
+      if(preserveSecondary&&!legacyCacheWithoutOutbox(local)){
+        if(local?.cloudCapacityBlocked===true)secondaryReview('CAPACITY_PENDING');
+        if(Array.isArray(local?.pendingOperations)&&local.pendingOperations.length)secondaryReview('LOCAL_OPERATIONS_PENDING');
+        secondaryReview('LOCAL_RECORD_UNVERIFIED');
+      }
       if(!legacyCacheWithoutOutbox(local)||(preserveSecondary?typeof readSecondaryCache!=='function'
         :!cleanLegacyCache(local)||typeof matchesLegacyCache!=='function'))return null;
       // A historic sync receipt is device evidence. Keep all its bytes even
@@ -112,7 +120,7 @@
       if(!preserveSecondary&&!matchesLegacyCache(local,legacy))return null;
       const snapshotHash=await api.hash(local.snapshot);
       if(preserveSecondary&&!secondaryCache){
-        if(typeof control.sourceDeviceId!=='string'||!control.sourceDeviceId)return null;
+        if(typeof control.sourceDeviceId!=='string'||!control.sourceDeviceId)secondaryReview('SOURCE_DEVICE_UNVERIFIED');
         // A lost legacy confirmation can leave the data intact but the receipt
         // stale. Compare with the server-bound source or the verified legacy
         // document in its normal on-device representation.
@@ -128,12 +136,12 @@
             &&await api.hash(material)===control.remoteHash)return true;
           return matchesLegacyCache?.({snapshot},legacy,{snapshotOnly:true})===true;
         };
-        if(!await matchesServer(local.snapshot,snapshotHash))return null;
+        if(!await matchesServer(local.snapshot,snapshotHash))secondaryReview('LOCAL_SNAPSHOT_DIFFERS');
         cacheOptions={allowUnconfirmedReceipt:true};
         secondaryCache=readSecondaryCache(cacheOptions);
-        if(!secondaryCache)return null;
+        if(!secondaryCache)secondaryReview('BROWSER_CACHE_UNVERIFIED');
         for(const raw of [secondaryCache.primary,secondaryCache.older]){
-          if(raw!==null&&!await matchesServer(JSON.parse(raw)))return null;
+          if(raw!==null&&!await matchesServer(JSON.parse(raw)))secondaryReview('BROWSER_SNAPSHOT_DIFFERS');
         }
       }
       const cacheHash=preserveSecondary?await api.hash(secondaryCache):null;
@@ -225,8 +233,7 @@
             const previous=currentDevice.deviceId===control.sourceDeviceId
               ?null:await verifyServerMirror(control,controlRef,await readLocal(),{preserveSecondary:true});
             if(previous)return previous;
-            if(currentDevice.deviceId!==control.sourceDeviceId)
-              throw Error('SPARK_SECONDARY_LOCAL_REVIEW_REQUIRED');
+            if(currentDevice.deviceId!==control.sourceDeviceId)secondaryReview('LOCAL_RECORD_UNVERIFIED');
           }
           throw Error('SPARK_LOCAL_HANDOFF_PIN_REQUIRED');
         }
