@@ -10,7 +10,7 @@ import '../qa-emulator-process-lifecycle.mjs';
 import {assertPortsAvailable,waitForOwnedServices,stopOwnedProcessTree} from './emulator-process-lifecycle.mjs';
 import {chromium,webkit} from 'playwright';
 import {initializeTestEnvironment} from '@firebase/rules-unit-testing';
-import {doc,setDoc,getDocFromServer} from 'firebase/firestore';
+import {collection,doc,setDoc,getDocFromServer,getDocsFromServer} from 'firebase/firestore';
 import '../spark-modular-migration.js';
 import '../spark-modular-record-codec.js';
 import {certifyShadowPreparation,certifyRecoveryCopy,certifyDevicePreflight} from './spark-migration-shadow-pwa.mjs';
@@ -18,11 +18,14 @@ import {certifyRetailReport} from './spark-retail-report-pwa.mjs';
 import {certifyStartupAuth} from './startup-auth-pwa.mjs';
 import {certifyDeviceHealthUI} from './device-health-pwa.mjs';
 import {root,port,firestorePort,authPort,projectId,javaDirs,url,assert,createEmulatorUser,
-  seed,readCloud,openSignedIn,largeTenantData,stateDocument,accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
+  seed,readCloud,newAppContext,openSignedIn,emulatorOwnerEmail,emulatorPassword,largeTenantData,stateDocument,
+  accountAccess,writeEmulatorConfig} from './r38-emulator-support.mjs';
 assert(projectId==='demo-click360-spark-modular','Exact synthetic project required');
 const rules=readFileSync(path.join(root,'firestore.spark.rules'),'utf8');
 if(process.env.CLICK360_SPARK_UI_WORKER_ONLY==='1'&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
 if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
+const catalogOnly=process.env.CLICK360_SPARK_UI_CATALOG_ONLY==='1';
+if(catalogOnly&&process.env.CI==='true')throw Error('FOCUSED_DIAGNOSTIC_CANNOT_REPLACE_REQUIRED_CI');
 const diagnosticBrowser=process.env.CLICK360_SPARK_SHADOW_BROWSER;
 if(diagnosticBrowser&&(!['chromium','webkit'].includes(diagnosticBrowser)||process.env.CI==='true'
   ||process.env.CLICK360_SPARK_UI_SHADOW_ONLY!=='1'))throw Error('SHADOW_BROWSER_DIAGNOSTIC_ONLY');
@@ -44,6 +47,75 @@ async function retainLegacyConflict(page){
 async function legacyConflictRetained(page){
   assert(await page.evaluate(()=>localStorage.getItem(QA_RETAINED_LEGACY_CONFLICT.key)===QA_RETAINED_LEGACY_CONFLICT.value),
     'Successful modular commands must not clear the original legacy conflict marker');
+}
+async function certifyProtectedCatalog({browser,label,env,uid,otherBusiness,productId,seedLegacyMirror}){
+  const businessIds=[uid,otherBusiness],modules=['products','sales','movements','cashSessions','operationLedger','labelTemplates','labelProfiles'];
+  const readCommercialState=()=>seed(env,async db=>{
+    const docs=await Promise.all([doc(db,`businesses/${uid}/metadata/storage`),doc(db,`businesses/${uid}/state/main`)]
+      .map(ref=>getDocFromServer(ref)));
+    const scopes=await Promise.all(businessIds.flatMap(businessId=>modules.map(module=>
+      getDocsFromServer(collection(db,`businesses/${uid}/businessUnits/${businessId}/storage/v2/${module}`)))));
+    return {docs:docs.map(s=>s.data()),scopes:scopes.map(s=>s.docs.map(d=>[d.id,d.data()]))};
+  });
+  const before=await readCommercialState(),context=await newAppContext(browser,{width:390,height:844});
+  try{
+    const page=await context.newPage();
+    const errors=[];
+    page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(url,{waitUntil:'domcontentloaded'});
+    await page.waitForFunction(()=>typeof window.click360Auth?.signInWithEmailAndPassword==='function'
+      &&!!navigator.serviceWorker?.controller
+      &&window.click360ServiceWorkerRelease?.buildSha===window.CLICK360_RELEASE_ASSETS?.['app.js']);
+    // Local quantity differs from the frozen and authorized quantity. The
+    // unconfirmed receipt must fail the exact mirror proof and stay intact.
+    await seedLegacyMirror(page,{stale:true,unconfirmed:true});
+    const localBefore=await page.evaluate(()=>{
+      const record=window.QA_OLDER_DEVICE_RECORD;
+      return {record,state:localStorage.getItem(`CLICK360:V16:STATE:${record.id}`),
+        receipt:localStorage.getItem(`CLICK360:V16:CACHEMETA:${record.id}`)};
+    });
+    strictAssert.equal(localBefore.record.pendingRemoteSync,true);
+    strictAssert.equal(localBefore.record.snapshot.products[0].stock,17);
+    await page.evaluate(({email,password})=>click360Auth.signInWithEmailAndPassword(email,password),
+      {email:emulatorOwnerEmail,password:emulatorPassword});
+    await page.waitForFunction(()=>window.click360StartupDiagnostic?.phase==='FAILED');
+    strictAssert.match(await page.locator('#c360-startup-support').innerText(),/STARTUP_VERIFY_LOCAL_HANDOFF_SPARK_SECONDARY_LOCAL_REVIEW_REQUIRED/);
+    await page.evaluate(()=>{
+      window.QA_PROTECTED_PRINT_CALLS=0;
+      window.print=()=>{window.QA_PROTECTED_PRINT_CALLS++;};
+    });
+    await page.locator('#c360-protected-catalog').click();
+    const business=page.locator('#c360-catalog-business'),product=page.locator('#c360-catalog-product');
+    await product.locator(`option[value="${productId}"]`).waitFor({state:'attached'});
+    await business.selectOption(otherBusiness);
+    await product.locator('option[value="other-product"]').waitFor({state:'attached'});
+    strictAssert.equal(await product.locator(`option[value="${productId}"]`).count(),0,'A second business cannot borrow the first catalog');
+    await business.selectOption(uid);
+    await product.locator(`option[value="${productId}"]`).waitFor({state:'attached'});
+    await product.selectOption(productId);
+    strictAssert.equal(await page.locator('#c360-catalog-stock').innerText(),'Existencias: 2','The blocked local quantity of 17 cannot appear as verified inventory');
+    await page.locator('#c360-catalog-template').selectOption('tpl-ahora-si');
+    await page.locator('#c360-catalog-quantity').fill('2');
+    await page.locator('#c360-catalog-print').click();
+    await page.waitForFunction(()=>window.QA_PROTECTED_PRINT_CALLS===1);
+    strictAssert.equal(await page.locator('#click360PrintPortal .labelPrintCell.filled').count(),2);
+    await page.evaluate(()=>window.dispatchEvent(new Event('afterprint')));
+    const after=await page.evaluate(async()=>{
+      const record=await CLICK360_V16_STORAGE.getSnapshot(click360TenantContext);
+      return {record,state:localStorage.getItem(`CLICK360:V16:STATE:${record.id}`),
+        receipt:localStorage.getItem(`CLICK360:V16:CACHEMETA:${record.id}`),
+        writer:!!window.click360SparkOperationalSession,canMutate:click360SparkAccessGate().allowed,
+        phase:window.click360SparkBootstrapState?.phase};
+    });
+    strictAssert.deepEqual(after,{...localBefore,writer:false,canMutate:false,phase:'BLOCKED'},'Consulting and printing preserve the blocked device snapshot byte-for-byte');
+    strictAssert.deepEqual(await readCommercialState(),before,'No protected catalog read or print can change commerce');
+    await page.evaluate(()=>click360Auth.signOut());
+    await page.locator('#c360-catalog-product').waitFor({state:'detached'});
+    await page.locator('#c360-protected-catalog').waitFor({state:'hidden'});
+    strictAssert.deepEqual(errors,[]);
+    console.log(JSON.stringify({stage:'PROTECTED_CATALOG_PASS',browser:label,tenantIsolated:true,labels:2,
+      signedOutViewCleared:true,localSnapshotUnchanged:true,commercialWrites:0,writerInstalled:false}));
+  }finally{await context.close();}
 }
 const output=path.join(root,'output/playwright/spark-operational-ui');mkdirSync(output,{recursive:true});
 let ephemeralRange=null;try{ephemeralRange=readFileSync('/proc/sys/net/ipv4/ip_local_port_range','utf8').trim();}catch{}
@@ -69,17 +141,20 @@ try{
   for(const [i,browser]of browsers.entries()){
     const label=i?'webkit':'chromium';if(diagnosticBrowser&&diagnosticBrowser!==label)continue;
     console.log(`START served Spark UI ${label}`);
-    await certifyDevicePreflight({browser,env,uid,label});
+    if(!catalogOnly)await certifyDevicePreflight({browser,env,uid,label});
     if(process.env.CLICK360_SPARK_UI_PREFLIGHT_ONLY==='1'){
       results.push({browser:label,automaticDevicePreflight:true,commercialWrites:0,cutover:false});continue;
     }
-    await certifyRecoveryCopy({browser,env,uid,label});
-    await certifyShadowPreparation({browser,env,uid,label});
+    if(!catalogOnly){
+      await certifyRecoveryCopy({browser,env,uid,label});
+      await certifyShadowPreparation({browser,env,uid,label});
+    }
     if(process.env.CLICK360_SPARK_UI_SHADOW_ONLY==='1'){
       results.push({browser:label,shadowPreparation:true,fullOperationalUI:false,cutover:false,productionWrites:0});continue;
     }
     await env.clearFirestore();
     const data=largeTenantData(uid);data.sales=[];data.movements=[];data.cashSessions=[];data.auditLogs=[];
+    if(catalogOnly){data.products=data.products.slice(0,5);data.notifications=[];}
     // Use the same valid two-column paper and artwork as the staging print fixture.
     const labelTemplate=data.settings.labelTemplates[0];
     labelTemplate.mediaWidthMm=100;
@@ -130,6 +205,8 @@ try{
       await CLICK360_V16_STORAGE.putWorkingDate(context,payload.data.businesses[1].id,'2026-09-03');
       if(stale||unconfirmed)window.QA_OLDER_DEVICE_RECORD=await CLICK360_V16_STORAGE.getSnapshot(context);
     },{payload:stateDocument(uid,2,data).payload,stale,unconfirmed});
+    await certifyProtectedCatalog({browser,label,env,uid,otherBusiness,productId:data.products[0].id,seedLegacyMirror});
+    if(catalogOnly){results.push({browser:label,protectedCatalog:true,commercialWrites:0});continue;}
     device=await openSignedIn(browser,{width:390,height:844},undefined,{beforeSignIn:page=>seedLegacyMirror(page,{stale:true})});
     const page=device.page;
     assert(await page.evaluate(async businessId=>{

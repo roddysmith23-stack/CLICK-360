@@ -358,6 +358,7 @@
       root.addEventListener('afterprint', clean, { once: true });
       cleanupTimer = setTimeout(clean, 30000);
       try {
+        job.assertCurrent?.();
         root.print();
       } catch (error) {
         clean();

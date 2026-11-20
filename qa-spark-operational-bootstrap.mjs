@@ -129,10 +129,26 @@ function fixture({mode='modular',local=null,pending=0,unknown=0,replayStatus='CO
     prepareMigration,verifyLocalHandoff,installBusiness:async value=>{business=value.businessId;},installView:async()=>{observed.installed++;},
     onPhase:detail=>phases.push(detail)});
   root.click360SparkCoordinator=coordinator;
-  return {coordinator,observed,phases,writes,events,root,changeActor:value=>actor=value,
+  const catalog=()=>root.CLICK360_SPARK_BOOTSTRAP.create({projectId,db,ownerUid:'owner',actorUid,
+    resolveUser:()=>({uid:actor}),resolveContext:()=>({authUid:actor,ownerUid:'owner'}),catalogOnly:true});
+  return {coordinator,catalog,observed,phases,writes,events,root,changeActor:value=>actor=value,
     activateMode:()=>{control.storageMode='modular';control.phase='MODULAR';},
     blockReads:promise=>releaseRead=promise,blockQueries:promise=>queryBarrier=promise,
     blockModuleReads:promise=>moduleBarrier=promise,setBusy:value=>busy=value};
+}
+{
+  const modules=['products','labelTemplates','labelProfiles'];
+  const f=fixture({moduleNames:modules});
+  const catalog=f.catalog();
+  assert.equal((await catalog.read()).businessId,'business');
+  await assert.rejects(catalog.read('foreign-business'),/BUSINESS_REQUIRED/);
+  assert.equal(f.observed.restored+f.observed.installed+f.observed.created+f.observed.replayed,0);
+  f.changeActor('different-user');
+  await assert.rejects(catalog.read(),/CONTEXT_CHANGED/);
+  await assert.rejects(fixture({mode:'legacy'}).catalog().read(),/ACCESS_REQUIRED/);
+  await assert.rejects(fixture({cache:true}).catalog().read(),/SERVER_REQUIRED/);
+  await assert.rejects(fixture({productionPolicy:{}}).catalog().read(),/ACCESS_REQUIRED/);
+  assert.throws(()=>fixture({actorUid:'worker'}).catalog());
 }
 {
   const f=fixture();let release;f.blockModuleReads(new Promise(resolve=>release=resolve));

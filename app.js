@@ -658,9 +658,10 @@
     }
     _setPrintDialogState('preparing');
     try {
-      const preferences = printingPreferences();
+      const preferences = job.copiesHandled && providerId ? {} : printingPreferences();
       const selectedProvider = providerId || preferences.provider || 'system';
       const preparedJob = { ...job, copies: job.copiesHandled ? 1 : Math.max(1, Number(job.copies || preferences.copies || 1)) };
+      preparedJob.assertCurrent?.();
       if (window.CLICK360_PRINTING?.print) {
         _setPrintDialogState('open');
         const result = await window.CLICK360_PRINTING.print(selectedProvider, preparedJob);
@@ -12465,9 +12466,9 @@ function parseMoney(value) {
       contentRotation:[90,180,270].includes(Number(paper.contentRotation)) ? Number(paper.contentRotation) : 0
     };
   }
-  function resolveLabelPrintProfile(businessId, template = {}, profileId = '') {
-    const profiles = labelProfilesForBiz(businessId);
-    const deviceState = loadPrintDeviceState(businessId);
+  function resolveLabelPrintProfile(businessId, template = {}, profileId = '', catalog = null) {
+    const profiles = catalog ? catalog.labelProfiles : labelProfilesForBiz(businessId);
+    const deviceState = catalog ? {} : loadPrintDeviceState(businessId);
     const smartPrint = window.CLICK360_SMART_PRINT;
     const candidates = [profileId, template?.universalProfileId, deviceState?.universalProfileId, deviceState?.selectedProfileId].filter(Boolean);
     for (const id of candidates) {
@@ -12595,7 +12596,8 @@ function parseMoney(value) {
     businessId = currentBusiness()?.id,
     usedSlots = [],
     sourceDocument = null,
-    priceFormat = ''
+    priceFormat = '',
+    catalog = null
   } = {}) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     if (!canvasApi) throw Object.assign(new Error('El motor de etiquetas no está disponible. Recarga CLICK 360.'), { code:'label-engine-unavailable' });
@@ -12603,7 +12605,7 @@ function parseMoney(value) {
     if (product.businessId && businessId && product.businessId !== businessId) {
       throw Object.assign(new Error('El producto no pertenece al negocio activo.'), { code:'label-product-business-mismatch' });
     }
-    const templates = labelTemplatesForBiz(businessId);
+    const templates = catalog ? catalog.labelTemplates : labelTemplatesForBiz(businessId);
     const resolvedTemplate = template
       || templates.find((item) => item.id === templateId)
       || templates.find((item) => item.isDefault)
@@ -12615,7 +12617,7 @@ function parseMoney(value) {
     if (!quantityResult.valid || quantityResult.count < 1) {
       throw Object.assign(new Error(quantityResult.error || 'La cantidad debe ser un número entero válido.'), { code:'label-quantity-invalid' });
     }
-    let profile = resolveLabelPrintProfile(businessId, resolvedTemplate || {}, paperProfileId);
+    let profile = resolveLabelPrintProfile(businessId, resolvedTemplate || {}, paperProfileId, catalog);
     // Inline paper is a provisional profile, not a separate unchecked pipeline.
     // Previously count||1 printed one label for invalid quantities and bypassed
     // physical validation whenever only a source document was provided.
@@ -12687,9 +12689,10 @@ function parseMoney(value) {
       if (!canvas.width || !canvas.height) throw Object.assign(new Error('La etiqueta se renderizó vacía.'), { code:'label-canvas-empty' });
     }
   }
-  async function executeCanonicalLabelPrint(preparedJob, providerId = 'system') {
+  async function executeCanonicalLabelPrint(preparedJob, providerId = 'system', assertCurrent = null) {
     const job = await buildUniversalLabelPrintNode(preparedJob.product, preparedJob.document);
     await waitForLabelPrintNodeReady(job.node);
+    assertCurrent?.();
     const result = await handoffPrint({
       node:job.node.cloneNode(true),
       media:'label',
@@ -12699,10 +12702,122 @@ function parseMoney(value) {
       heightMm:job.document.paper.heightMm,
       copiesHandled:true,
       printPlan:job.plan,
+      ...(assertCurrent?{assertCurrent}:{}),
       filename:`CLICK360_etiquetas_${slug(preparedJob.product.name || preparedJob.product.code)}_${today()}.pdf`
     }, providerId);
     return { ...job, result, fingerprint:preparedJob.fingerprint };
   }
+  window.click360ShowProtectedCatalog = async function({ host, loadCatalog, confirmAccess, isCurrent }) {
+    let form;
+    const current = () => host.isConnected && (!form || host.contains(form)) && isCurrent();
+    const assertCurrent = () => {
+      if (!current()) throw Error('SPARK_PROTECTED_CATALOG_CONTEXT_CHANGED');
+    };
+    assertCurrent();
+    host.innerHTML = `
+      <h3>Inventario en la nube</h3>
+      <p class="fieldHint">Consulta productos e imprime etiquetas mientras se revisa la copia de este dispositivo.</p>
+      <p id="c360-catalog-status" class="cloudStatus" role="status" aria-live="polite"></p>
+      <form id="c360-catalog-form">
+        <fieldset style="border:0;padding:0;margin:0;min-width:0">
+          <div class="field"><label for="c360-catalog-business">Negocio</label><select id="c360-catalog-business"></select></div>
+          <div class="field"><label for="c360-catalog-search">Buscar producto</label><input id="c360-catalog-search" type="search" autocomplete="off" placeholder="Nombre o código"></div>
+          <div class="field"><label for="c360-catalog-product">Producto</label><select id="c360-catalog-product" required></select></div>
+          <p id="c360-catalog-stock" class="fieldHint"></p>
+          <div class="field"><label for="c360-catalog-template">Plantilla</label><select id="c360-catalog-template" required></select></div>
+          <div class="field"><label for="c360-catalog-quantity">Cantidad</label><input id="c360-catalog-quantity" type="number" min="1" max="100" step="1" inputmode="numeric" value="1" required></div>
+          <button id="c360-catalog-print" class="btn primary block" type="submit">Imprimir etiquetas</button>
+        </fieldset>
+      </form>`;
+    const find = id => host.querySelector(`#c360-catalog-${id}`);
+    const business = find('business'), search = find('search'), product = find('product'), template = find('template');
+    const status = find('status'), stock = find('stock'), print = find('print');
+    form = find('form');
+    const fields = form.querySelector('fieldset');
+    let catalog = null;
+    const options = (control, rows, describe, selected) => {
+      control.replaceChildren(...rows.map(row => new Option(describe(row), row.id, false, row.id === selected)));
+    };
+    const selectProduct = () => {
+      const selected = catalog?.products.find(row => row.id === product.value);
+      const available = selected?.stock ?? selected?.qty;
+      stock.textContent = available != null ? `Existencias: ${Number(available)}` : '';
+      print.disabled = !selected || !template.value;
+    };
+    const filterProducts = () => {
+      const term = search.value.trim().toLocaleLowerCase();
+      const visible = catalog.products.filter(row =>
+        `${row.name || ''} ${row.code || ''}`.toLocaleLowerCase().includes(term));
+      options(product, visible, row => [row.name || 'Producto', row.code].filter(Boolean).join(' · '), product.value);
+      selectProduct();
+    };
+    function failed(message) {
+      if (current()) status.textContent = message;
+      else if (host.contains(form)) host.replaceChildren();
+    }
+    async function load(businessId) {
+      assertCurrent();
+      fields.disabled = true;
+      status.textContent = 'Consultando inventario…';
+      try {
+        const response = await loadCatalog(businessId);
+        assertCurrent();
+        const id = response.businessId;
+        const scoped = rows => rows.filter(row => row.businessId === id && row.deleted !== true);
+        catalog = {
+          businessId:id,
+          products:scoped(response.products),
+          labelTemplates:scoped(response.labelTemplates),
+          labelProfiles:scoped(response.labelProfiles)
+        };
+        options(business, response.businesses, row => row.name || 'Negocio', id);
+        options(template, catalog.labelTemplates, row => row.name || 'Plantilla', catalog.labelTemplates.find(row => row.isDefault)?.id);
+        search.value = '';
+        filterProducts();
+        status.textContent = catalog.products.length === 0 ? 'Este negocio todavía no tiene productos.'
+          : catalog.labelTemplates.length === 0 ? 'Este negocio todavía no tiene plantillas guardadas.' : '';
+      } catch {
+        catalog = null;
+        product.replaceChildren();
+        template.replaceChildren();
+        selectProduct();
+        failed('No se pudo consultar el inventario. Comprueba tu conexión e inténtalo de nuevo.');
+      } finally {
+        if (current()) fields.disabled = false;
+      }
+    }
+    business.onchange = () => { if (current()) void load(business.value); };
+    search.oninput = () => { if (catalog && current()) filterProducts(); };
+    product.onchange = template.onchange = selectProduct;
+    form.onsubmit = async event => {
+      event.preventDefault();
+      if (fields.disabled || print.disabled || !catalog || !current()) return;
+      const selectedProduct = catalog.products.find(row => row.id === product.value);
+      const selectedTemplate = catalog.labelTemplates.find(row => row.id === template.value);
+      if (!selectedProduct || !selectedTemplate) return;
+      fields.disabled = true;
+      status.textContent = 'Preparando etiquetas…';
+      try {
+        const quantity = Number(find('quantity').value);
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100)
+          throw Error('SPARK_PROTECTED_CATALOG_QUANTITY_INVALID');
+        await confirmAccess(catalog.businessId);
+        assertCurrent();
+        const prepared = await prepareLabelPrintJob({
+          product:selectedProduct, template:selectedTemplate, quantity, businessId:catalog.businessId, catalog
+        });
+        const { result } = await executeCanonicalLabelPrint(prepared, 'system', assertCurrent);
+        assertCurrent();
+        status.textContent = result?.status === 'handed_off' ? 'Etiquetas enviadas al diálogo de impresión.'
+          : 'No se pudo abrir la impresión.';
+      } catch {
+        failed('No se pudieron preparar las etiquetas. Comprueba la conexión, la plantilla y la cantidad.');
+      } finally {
+        if (current()) fields.disabled = false;
+      }
+    };
+    await load();
+  };
   function showQuickLabelPrintConfirm({ product, template, profile, quantity = 1, startSlot = 1, action = 'print' } = {}) {
     return new Promise((resolve) => {
       const isPdf = action === 'pdf';
