@@ -23,7 +23,7 @@ async function waitForServer() {
 async function run(name, browserType) {
   const browser = await browserType.launch();
   try {
-    const page = await browser.newPage();
+    const page = await browser.newPage({ acceptDownloads:true });
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
     await page.goto(url, { waitUntil:'networkidle' });
@@ -54,8 +54,54 @@ async function run(name, browserType) {
     assert(results[10].patterns.length === 5 && results[10].patterns.every((pattern) => pattern === 'XX'), `${name}: qty10 pattern`);
     assert(pageErrors.length === 0, `${name}: page errors ${JSON.stringify(pageErrors)}`);
 
+    await page.emulateMedia({ media:'screen' });
+    const downloadReady = page.waitForEvent('download');
+    const pdfJob = await page.evaluate(() => window.__CLICK360_RUN_SHARY_HANDOFF__(6, 'pdf'));
+    assert(pdfJob.exported, `${name}: app PDF export failed`);
+    const download = await downloadReady;
+    const exportedPdf = (await readFile(await download.path())).toString('latin1');
+    const pages = [...exportedPdf.matchAll(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/g)];
+    assert(pages.length === 3, `${name}: 6 labels on a 2-column roll need 3 PDF pages, got ${pages.length}`);
+    for (const [, w, h] of pages) {
+      assert(Math.abs(Number(w) * 25.4 / 72 - 92) < 0.1 && Math.abs(Number(h) * 25.4 / 72 - 64) < 0.1,
+        `${name}: each PDF page must be 92×64 mm`);
+    }
+
+    const xrefOffset = Number(exportedPdf.match(/startxref\n(\d+)\n%%EOF/)?.[1]);
+    const [xref, range, , ...entries] = exportedPdf.slice(xrefOffset).split('\n');
+    assert(xref === 'xref' && range === `0 ${3 + 3 * pages.length}`, `${name}: PDF object table must include every row`);
+    for (let objectId = 1; objectId < 3 + 3 * pages.length; objectId++) {
+      const offset = Number(entries[objectId - 1]?.split(' ')[0]);
+      assert(exportedPdf.startsWith(`${objectId} 0 obj\n`, offset), `${name}: incorrect PDF object offset`);
+    }
+    // Decode the rendered file. The page tree alone cannot detect blank,
+    // compressed or cropped rows.
+    for (let row = 1; row <= pages.length; row++) {
+      const pixels = execFileSync('pdftoppm', [
+        '-f', String(row), '-l', String(row), '-r', '203', '-gray', await download.path()
+      ], { maxBuffer:1024*1024 });
+      const header = pixels.toString('ascii', 0, 64).match(/^P5\n(\d+) (\d+)\n255\n/);
+      assert(header, `${name}: PDF row ${row} could not be rasterized`);
+      const width = Number(header[1]), height = Number(header[2]);
+      const rowPixels = pixels.subarray(header[0].length);
+      const px = mm => Math.round(mm * 203 / 25.4);
+      const ink = [0, 0];
+      let outside = 0;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (rowPixels[y * width + x] >= 140) continue;
+          if (y < px(60) && x >= px(6) && x < px(46)) ink[0]++;
+          else if (y < px(60) && x >= px(50) && x < px(90)) ink[1]++;
+          else outside++;
+        }
+      }
+      assert(Math.min(...ink) > 1000 && outside <= 20,
+        `${name}: row ${row} ink must fill both stickers and stay inside (got ${ink}, outside ${outside})`);
+    }
+    await page.emulateMedia({ media:'print' });
     if (name === 'chromium') {
       await mkdir(output, { recursive:true });
+      await download.saveAs(path.join(output, 'calibracion-6-etiquetas-92x64mm.pdf'));
       await page.evaluate(() => window.__CLICK360_RUN_SHARY_HANDOFF__(4));
       const pdfPath = path.join(output, 'qty4-92x64mm.pdf');
       await page.pdf({ path:pdfPath, preferCSSPageSize:true, printBackground:true });

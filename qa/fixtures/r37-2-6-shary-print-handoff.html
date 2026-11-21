@@ -59,15 +59,16 @@
         };
       };
       window.__CLICK360_FINISH_PRINT__ = () => window.dispatchEvent(new Event('afterprint'));
-      window.__CLICK360_RUN_SHARY_HANDOFF__ = async (quantity) => {
+      window.__CLICK360_RUN_SHARY_HANDOFF__ = async (quantity, provider = 'system') => {
         window.__PRINT_CALLS__ = 0;
         capture = null;
         const documentModel = canvas.normalizeDocument({ ...persistedDocument, quantity, startSlot:1 });
         const qr = documentModel.objects.find((object) => object.type === 'qr');
         const prepared = { product, document:documentModel, quantity:{ count:quantity }, fingerprint:`qa-${quantity}` };
-        const job = await handoff.executeCanonicalLabelPrint(prepared, 'system');
+        const job = await handoff.executeCanonicalLabelPrint(prepared, provider);
         return {
           quantity,
+          exported:job.result?.status === 'exported',
           printCalls:window.__PRINT_CALLS__,
           media:job.media,
           patterns:job.plan.pages.map((page) => page.cells.map((cell) => cell.status === 'filled' ? 'X' : ' ').join('')),

@@ -27,7 +27,7 @@ assert.match(app, /data-calculator-minimize/);
 assert.match(printing, /dataset\.printReady = 'true'/);
 assert.match(printing, /dataset\.click360Printing = 'true'/);
 assert.match(printing, /pdf-render-blank/);
-assert.match(printing, /singleImagePdfBlob/);
+assert.match(printing, /imagePdfBlob/);
 
 assert.match(index, /assets\/favicon\.png\?v=commercial-1-0-5-r38-mvp-candidate/);
 assert.match(index, /apple-touch-icon" sizes="180x180"/);

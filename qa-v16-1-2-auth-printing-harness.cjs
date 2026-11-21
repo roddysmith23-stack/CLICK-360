@@ -89,7 +89,7 @@ assert(printingSource.includes("root.removeEventListener('afterprint', clean)"),
 assert(printingSource.includes('function pdfSizeMm'), 'PDF export has one physical size resolver');
 assert(printingSource.includes("if (job.media === 'label' && width && height) return { widthMm: width, heightMm: height };"), 'label PDF preserves the requested physical dimensions');
 assert(printingSource.includes("if (media.startsWith('receipt') && receiptWidth)"), 'receipt PDF preserves the requested paper width');
-assert(printingSource.includes('singleImagePdfBlob'), 'PDF export uses the rendered physical plan instead of a blank html2pdf stream');
+assert(printingSource.includes('imagePdfBlob'), 'PDF export uses the rendered physical plan instead of a blank html2pdf stream');
 assert(printingSource.includes('pdf-render-blank'), 'PDF export rejects blank rendered output');
 
 assert(app.includes('function printingView()') && app.includes('Centro de impresión'));

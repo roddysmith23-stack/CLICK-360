@@ -44,7 +44,7 @@ assert.match(printing, /click360PdfExportSurface/, 'PDF export uses an independe
 assert.match(printing, /ensureHtml2canvas/, 'PDF export loads the real html2canvas renderer before saving');
 assert.match(printing, /canvasInkBounds/, 'PDF export validates that the rendered canvas is not blank');
 assert.match(printing, /pdf-render-blank/, 'PDF export fails loudly when the receipt would be blank');
-assert.match(printing, /singleImagePdfBlob/, 'PDF export writes a real image-backed PDF instead of trusting the broken html2pdf save path');
+assert.match(printing, /imagePdfBlob/, 'PDF export writes a real image-backed PDF instead of trusting the broken html2pdf save path');
 assert.match(printing, /left:-10000px/, 'system print validates the receipt portal off-screen instead of measuring display:none content');
 assert.match(printing, /restoreMeasureStyle/, 'system print restores the printable portal before opening the browser dialog');
 assert.match(printing, /normalizedCanvas/, 'receipt PDF is normalized onto a white canvas before exporting');

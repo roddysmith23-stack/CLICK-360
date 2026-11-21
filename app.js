@@ -12471,22 +12471,41 @@ function parseMoney(value) {
     const deviceState = catalog ? {} : loadPrintDeviceState(businessId);
     const smartPrint = window.CLICK360_SMART_PRINT;
     const candidates = [profileId, template?.universalProfileId, deviceState?.universalProfileId, deviceState?.selectedProfileId].filter(Boolean);
-    for (const id of candidates) {
-      const raw = profiles.find((profile) => profile.id === id);
-      if (!raw) continue;
+    const asUniversal = raw => {
       if (raw.universalPaper) return smartPrint?.applyUniversalDeviceCalibration(raw, deviceState) || raw;
-      const normalized = smartPrint?.normalizePrintProfile(raw, businessId) || raw;
-      if (normalized?.paper) {
-        return {
-          ...normalized,
-          universalPaper:legacyPaperProfileToUniversal(normalized.paper),
-          name:normalized.name || raw.name
-        };
-      }
+      const profile = smartPrint?.normalizePrintProfile(raw, businessId) || raw;
+      return profile.paper ? {
+        ...profile,
+        universalPaper:legacyPaperProfileToUniversal(profile.paper)
+      } : null;
+    };
+    for (const id of candidates) {
+      const raw = profiles.find(profile => profile.id === id);
+      if (!raw) continue;
+      const profile = asUniversal(raw);
+      if (profile) return profile;
     }
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     const templateDoc = template?.id || template?.layout || template?.universalDocument ? universalDocumentFromTemplate(template) : null;
     const templatePaper = templateDoc?.paper;
+    // A fresh origin has no device preference. Recover a unique compatible
+    // saved profile from this business, even if an older template lacks a link.
+    // Compare effective carrier dimensions so stale historical widths are ignored.
+    if (templatePaper && smartPrint) {
+      const geometry = paper => {
+        const normalized = canvasApi.normalizePaper(paper);
+        const printPaper = canvasApi.toPrintPaper({ paper:normalized });
+        const media = smartPrint.resolvePhysicalMedia(printPaper);
+        return smartPrint.paperGeometryFingerprint({
+          ...printPaper, mediaWidthMm:media.widthMm, mediaHeightMm:media.heightMm,
+          contentRotation:normalized.contentRotation
+        }) + `|${normalized.orientation}|${normalized.shape}`;
+      };
+      const expected = geometry(templatePaper);
+      const matches = profiles.filter(profile => profile.universalPaper || profile.paper || profile.paperProfile)
+        .map(asUniversal).filter(profile => geometry(profile.universalPaper) === expected);
+      if (matches.length === 1) return matches[0];
+    }
     if (templatePaper && canvasApi) {
       // Accept template paper even with warnings (multi-column without mediaWidth gets a warning
       // but is still valid enough for a quick provisional print from the quick-print button).
@@ -12830,6 +12849,14 @@ function parseMoney(value) {
     };
     await load();
   };
+  function labelPrintSetup(profile) {
+    const paper = profile?.universalPaper;
+    if (!paper) return '';
+    const { widthMm, heightMm } = universalMediaSize({ paper });
+    const columns = paper.columns || 1;
+    const driver = profile.printer?.driverDisplayName || profile.printer?.model;
+    return `${widthMm} × ${heightMm} mm · ${columns} columna${columns === 1 ? '' : 's'}${driver ? ` · ${driver}` : ''}`;
+  }
   function showQuickLabelPrintConfirm({ product, template, profile, quantity = 1, startSlot = 1, action = 'print' } = {}) {
     return new Promise((resolve) => {
       const isPdf = action === 'pdf';
@@ -12838,10 +12865,11 @@ function parseMoney(value) {
         <div class="formGrid">
           <div class="field full"><label>Producto</label><input readonly value="${escapeHtml(product?.name || 'Producto')} (${escapeHtml(product?.code || '')})"></div>
           <div class="field full"><label>Plantilla</label><input readonly value="${escapeHtml(template?.name || 'Predeterminada')}"></div>
-          <div class="field full"><label>Papel</label><input readonly value="${escapeHtml(profileName)}"></div>
+          <div class="field full"><label>Papel</label><input readonly value="${escapeHtml(profileName)}"><small class="fieldHint">${escapeHtml(labelPrintSetup(profile))}</small></div>
           <div class="field"><label>Cantidad</label><input id="quickLabelQuantity" type="number" min="1" max="500" step="1" inputmode="numeric" value="${Math.max(1, Number(quantity) || 1)}"></div>
           <div class="field"><label>Empezar en casilla</label><input id="quickLabelStartSlot" type="number" min="1" max="120" step="1" value="${Math.max(1, Number(startSlot) || 1)}"></div>
         </div>
+        ${isPdf ? '' : '<p class="fieldHint">En el diálogo de impresión, selecciona ese tamaño de papel, escala 100 % y una copia. Indica la cantidad de etiquetas aquí.</p>'}
         <div class="labelPrimaryActions"><button type="button" class="btn" data-close>Cancelar</button><button type="button" class="btn primary" id="quickLabelConfirm">${isPdf ? `${icon('file-down')} Guardar PDF` : `${icon('printer')} Imprimir`}</button></div>`);
       $('#quickLabelConfirm').onclick = () => {
         const confirmedQuantity = Number($('#quickLabelQuantity')?.value ?? 1);
@@ -13026,7 +13054,8 @@ function parseMoney(value) {
       }
       const priceMode = template.priceFormat === 'abbr' ? 'Precio abreviado' : template.priceFormat === 'noLabel' ? 'Precio sin etiqueta' : template.priceFormat === 'cash' ? 'Solo efectivo' : 'Precio completo';
       const paperText = paper ? `${paper.widthMm}×${paper.heightMm} mm · ${columns} columna${columns === 1 ? '' : 's'}` : 'Papel por configurar';
-      summary.innerHTML = `<b>${escapeHtml(template.name || 'Plantilla')}</b><span>${escapeHtml(profile?.name || paperText)} · ${escapeHtml(priceMode)}</span>`;
+      summary.innerHTML = `<b>${escapeHtml(template.name || 'Plantilla')}</b><span>${escapeHtml(profile?.name || paperText)} · ${escapeHtml(priceMode)}</span>`
+        + (profile ? `<span>${escapeHtml(labelPrintSetup(profile))}. En la impresora, usa ese tamaño, escala 100 % y una copia.</span>` : '');
       printButton.disabled = false;
       pdfButton.disabled = false;
     };

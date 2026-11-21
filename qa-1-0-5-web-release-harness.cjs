@@ -147,7 +147,7 @@ assert.match(printing, /'position:fixed'[\s\S]*'left:0'[\s\S]*'top:0'/, 'PDF exp
 assert.match(printing, /function pdfSizeMm/, 'PDF export resolves one physical size for labels and receipts');
 assert.match(printing, /if \(media\.startsWith\('receipt'\) && receiptWidth\)/, 'thermal receipt PDFs use the requested paper width');
 assert.match(printing, /element\.scrollHeight[\s\S]*element\.scrollWidth/, 'thermal PDFs use their rendered receipt height rather than a cropped fixed page');
-assert.match(printing, /singleImagePdfBlob/, 'PDF export writes a physical image-backed PDF');
+assert.match(printing, /imagePdfBlob/, 'PDF export writes a physical image-backed PDF');
 assert.match(printing, /pdf-render-blank/, 'PDF export rejects blank rendered output');
 assert.match(printing, /dataset\.click360Printing = 'true'/, 'system print exposes a ready state before invoking the native dialog');
 assert.match(printing, /element\.dataset\.printReady = 'true'/, 'system print portal is explicitly marked ready');
