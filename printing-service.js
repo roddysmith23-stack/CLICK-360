@@ -194,9 +194,7 @@
     return bytes;
   }
 
-  function singleImagePdfBlob(canvas, widthMm, heightMm) {
-    const imageUrl = canvas.toDataURL('image/jpeg', 0.96);
-    const imageBytes = base64ToBytes(imageUrl.split(',')[1] || '');
+  function imagePdfBlob(images, widthMm, heightMm) {
     const encoder = new TextEncoder();
     const chunks = [];
     const offsets = [0];
@@ -218,24 +216,30 @@
     const imageCommandBytes = encoder.encode(imageCommand);
     addString('%PDF-1.3\n');
     addObject(1, () => addString('<< /Type /Catalog /Pages 2 0 R >>'));
-    addObject(2, () => addString('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'));
-    addObject(3, () => addString(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidthPt.toFixed(4)} ${pageHeightPt.toFixed(4)}] /Resources << /ProcSet [/PDF /ImageC] /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`));
-    addObject(4, () => {
-      addString(`<< /Type /XObject /Subtype /Image /Width ${canvas.width} /Height ${canvas.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>\nstream\n`);
-      addBytes(imageBytes);
-      addString('\nendstream');
-    });
-    addObject(5, () => {
-      addString(`<< /Length ${imageCommandBytes.length} >>\nstream\n`);
-      addBytes(imageCommandBytes);
-      addString('endstream');
+    const pageIds = images.map((_, index) => 3 + index * 3);
+    addObject(2, () => addString(`<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`));
+    images.forEach(({ bytes, width, height }, index) => {
+      const pageId = pageIds[index];
+      const imageId = pageId + 1;
+      const contentId = pageId + 2;
+      addObject(pageId, () => addString(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidthPt.toFixed(4)} ${pageHeightPt.toFixed(4)}] /Resources << /ProcSet [/PDF /ImageC] /XObject << /Im0 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`));
+      addObject(imageId, () => {
+        addString(`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.length} >>\nstream\n`);
+        addBytes(bytes);
+        addString('\nendstream');
+      });
+      addObject(contentId, () => {
+        addString(`<< /Length ${imageCommandBytes.length} >>\nstream\n`);
+        addBytes(imageCommandBytes);
+        addString('endstream');
+      });
     });
     const xrefOffset = offset;
-    addString('xref\n0 6\n0000000000 65535 f \n');
-    for (let index = 1; index <= 5; index += 1) {
+    addString(`xref\n0 ${offsets.length}\n0000000000 65535 f \n`);
+    for (let index = 1; index < offsets.length; index += 1) {
       addString(`${String(offsets[index]).padStart(10, '0')} 00000 n \n`);
     }
-    addString(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+    addString(`trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
     return new Blob(chunks, { type: 'application/pdf' });
   }
 
@@ -420,36 +424,42 @@
         'opacity:1',
         'transform:none'
       ].join(';');
-      await waitForResources(element);
       try {
+        await waitForResources(element);
         const html2canvas = await ensureHtml2canvas();
-        // Force-resolve any dark-mode CSS vars so html2canvas captures correctly
+        // Resolve dark-mode variables before rasterizing the print surface.
         element.querySelectorAll('*').forEach((el) => {
           const cs = window.getComputedStyle(el);
           const cl = cs.color; const bg = cs.backgroundColor;
           if (!el.style.color && cl && cl !== 'rgba(0, 0, 0, 0)') el.style.color = cl;
           if (!el.style.backgroundColor && bg && bg !== 'rgba(0, 0, 0, 0)') el.style.backgroundColor = bg;
         });
-        const canvas = await html2canvas(element, {
-          scale: 2,
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-          backgroundColor: '#ffffff',
-          windowWidth: Math.max(Math.ceil(element.scrollWidth), 200) + 2,
-          windowHeight: Math.max(Math.ceil(element.scrollHeight), 200) + 2,
-          x: 0,
-          y: 0,
-          scrollX: 0,
-          scrollY: 0
-        });
-        const normalized = normalizedCanvas(canvas);
-        const ink = canvasInkBounds(normalized);
-        if (ink.nonWhite < 120) {
-          throw Object.assign(new Error('El PDF renderizado quedó vacío.'), { code: 'pdf-render-blank' });
-        }
         const size = pdfSizeMm(job, element);
-        const blob = singleImagePdfBlob(normalized, size.widthMm, size.heightMm);
+        const pages = job.media === 'label' ? [...element.querySelectorAll('.labelPrintPage')] : [];
+        const images = [];
+        for (const target of pages.length > 1 ? pages : [element]) {
+          // Capturing the whole roll at once would squash its rows onto one page.
+          if (target !== element) element.replaceChildren(target);
+          const canvas = normalizedCanvas(await html2canvas(element, {
+            scale: 2,
+            useCORS: true,
+            allowTaint: true,
+            logging: false,
+            backgroundColor: '#ffffff',
+            windowWidth: Math.max(Math.ceil(element.scrollWidth), 200) + 2,
+            windowHeight: Math.max(Math.ceil(element.scrollHeight), 200) + 2,
+            x: 0,
+            y: 0,
+            scrollX: 0,
+            scrollY: 0
+          }));
+          if (canvasInkBounds(canvas).nonWhite < 120) {
+            throw Object.assign(new Error('El PDF renderizado quedó vacío.'), { code: 'pdf-render-blank' });
+          }
+          const bytes = base64ToBytes(canvas.toDataURL('image/jpeg', 0.96).split(',')[1] || '');
+          images.push({ bytes, width: canvas.width, height: canvas.height });
+        }
+        const blob = imagePdfBlob(images, size.widthMm, size.heightMm);
         downloadBlob(blob, job.filename || 'CLICK360.pdf');
         return { status: 'exported', provider: this.id };
       } finally {

@@ -55,7 +55,7 @@ try {
     await page.waitForFunction(() => document.documentElement.dataset.ready === 'true');
 
     const results = {};
-    for (const scenario of ['no_profile', 'modern_profile', 'legacy_profile', 'legacy_profile_2col', 'legacy_profile_stale_a4']) {
+    for (const scenario of ['no_profile', 'modern_profile', 'legacy_profile', 'legacy_profile_2col', 'legacy_profile_stale_a4', 'fresh_origin', 'ambiguous_origin']) {
       results[scenario] = await page.evaluate((s) => window.__CLICK360_RUN_SCENARIO__(s), scenario);
     }
     console.log('r33 profile-merge scenario results:', JSON.stringify(results, null, 1));
@@ -84,6 +84,16 @@ try {
     if (results.legacy_profile_stale_a4.prepareError) throw new Error(`legacy_profile_stale_a4: prepareLabelPrintJob threw: ${results.legacy_profile_stale_a4.prepareError}`);
     if (results.legacy_profile_stale_a4.printError) throw new Error(`legacy_profile_stale_a4: print threw: ${results.legacy_profile_stale_a4.printError}`);
     assertPageSize('legacy_profile_stale_a4', results.legacy_profile_stale_a4.pageStyleText, EXPECT_60x40);
+
+    if (results.fresh_origin.resolvedProfileId !== 'prof-shared' || results.fresh_origin.resolvedDriver !== 'Cola térmica de prueba') {
+      throw new Error('Fresh origin must recover the unique compatible shared profile and its saved driver');
+    }
+    if (results.ambiguous_origin.resolvedProfileId !== 'template-paper') {
+      throw new Error('Fresh origin with multiple compatible profiles must preserve the template selection');
+    }
+    for (const scenario of ['fresh_origin', 'ambiguous_origin']) {
+      assertPageSize(scenario, results[scenario].pageStyleText, { widthMm:92, heightMm:64 });
+    }
 
     if (errors.length) throw new Error(`browser errors: ${JSON.stringify(errors)}`);
     console.log('CLICK360_R33_PRINT_PROFILE_MERGE_E2E: PASS');

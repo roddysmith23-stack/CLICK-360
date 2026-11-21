@@ -63,6 +63,17 @@
             paper: { id: 'roll-2-40x60', mediaType: 'roll-2', labelWidthMm: 40, labelHeightMm: 60, columns: 2, rows: 1, gapHorizontalMm: 2, gapVerticalMm: 0, nominalDpi: 203 } }],
           deviceState: { selectedProfileId: 'prof-legacy-2col' }
         },
+        fresh_origin: {
+          profiles: [{ id:'prof-shared', name:'Perfil del negocio', businessId:'biz-qa',
+            printer:{ driverDisplayName:'Cola térmica de prueba' },
+            paper:{ mediaType:'roll-2', labelWidthMm:40, labelHeightMm:60, columns:2,
+              rows:1, gapHorizontalMm:4, gapVerticalMm:4, marginLeftMm:6, marginRightMm:2,
+              marginTopMm:13, marginBottomMm:2, nominalDpi:203 } }],
+          template:{ ...persistedTemplate, paperType:'custom', mediaType:'roll-2', widthMm:40,
+            heightMm:60, columns:2, rows:1, gapXmm:4, gapYmm:4, marginTopMm:13,
+            marginBottomMm:2, marginLeftMm:6, marginRightMm:2, mediaWidthMm:800 },
+          deviceState:{}
+        },
         // E) Stale/large mediaWidthMm left over from an earlier A4-sheet calibration attempt —
         // tests whether the system silently ever OVERRIDES a bad saved value (it should not; if
         // the saved profile genuinely says 210mm, using 210mm is correct behavior — this scenario
@@ -75,16 +86,18 @@
       };
 
       window.__CLICK360_RUN_SCENARIO__ = async (scenarioName) => {
-        const scenario = SCENARIOS[scenarioName];
+        const scenario = SCENARIOS[scenarioName === 'ambiguous_origin' ? 'fresh_origin' : scenarioName];
         if (!scenario) throw new Error(`unknown scenario ${scenarioName}`);
-        window.__CLICK360_TEST_PROFILES__ = scenario.profiles;
+        window.__CLICK360_TEST_PROFILES__ = scenarioName === 'ambiguous_origin'
+          ? [...scenario.profiles, { ...scenario.profiles[0], id:'prof-duplicate' }]
+          : scenario.profiles;
         window.__CLICK360_TEST_DEVICE_STATE__ = scenario.deviceState;
 
         let prepared = null;
         let prepareError = null;
         try {
           prepared = await profileMerge.prepareLabelPrintJob({
-            product, template: persistedTemplate, templateId: persistedTemplate.id,
+            product, template: scenario.template || persistedTemplate, templateId: persistedTemplate.id,
             quantity: 1, startSlot: 1, businessId: 'biz-qa', priceFormat: persistedTemplate.priceFormat
           });
         } catch (err) {
@@ -106,6 +119,7 @@
           prepareError,
           printError,
           resolvedProfileId: prepared.profile?.id || null,
+          resolvedDriver: prepared.profile?.printer?.driverDisplayName || null,
           resolvedProfileUniversalPaper: prepared.profile?.universalPaper || null,
           documentPaperWidthMm: prepared.document?.paper?.widthMm ?? null,
           documentPaperHeightMm: prepared.document?.paper?.heightMm ?? null,
