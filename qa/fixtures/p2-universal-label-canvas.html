@@ -102,7 +102,7 @@
             .outputPdf('arraybuffer');
           realPdfBytes = pdfBuffer?.byteLength || 0;
         }
-        printResult = { provider, plan, fingerprint:canvasEngine.planFingerprint(plan), widthPx:firstCanvas?.width || 0, heightPx:firstCanvas?.height || 0, nonWhitePixels:pixelCount, qrPixels, pages:plan.pages.length, exactQuantity:plan.count, realPdfBytes };
+        printResult = { provider, priceFormat:documentModel.priceFormat, plan, fingerprint:canvasEngine.planFingerprint(plan), widthPx:firstCanvas?.width || 0, heightPx:firstCanvas?.height || 0, nonWhitePixels:pixelCount, qrPixels, pages:plan.pages.length, exactQuantity:plan.count, realPdfBytes };
         output.dataset.ready = String(plan.valid && pixelCount > 20 && qrPixels > 20 && plan.count === normalized.quantity);
         return printResult;
       };
@@ -135,7 +135,7 @@
         getTemplates:() => templates,
         getProfiles:() => profiles,
         saveTemplate:async (name, documentModel, id='') => {
-          const saved = { id:id || `template-${++sequence}`, name, universalDocument:canvasEngine.normalizeDocument(documentModel) };
+          const saved = { id:id || `template-${++sequence}`, name, priceFormat:documentModel.priceFormat, universalDocument:canvasEngine.normalizeDocument(documentModel) };
           const index = templates.findIndex((item) => item.id === saved.id);
           if (index >= 0) templates[index] = saved; else templates.push(saved);
           return saved;

@@ -793,15 +793,19 @@ function parseMoney(value) {
   function fmt(value) { return `$${(Number(value)||0).toFixed(2)}`; }
   // Format price for label printing according to template priceFormat setting
   function labelFmt(product, priceFormat) {
-    const cash = Number(product?.price || 0);
-    const card = Number(product?.cardPrice || 0);
-    const hasCard = card > 0 && Math.abs(card - cash) > 0.001;
-    switch (priceFormat) {
-      case 'abbr': return hasCard ? `Ef.${fmt(cash)}·Tj.${fmt(card)}` : fmt(cash);
-      case 'noLabel': return hasCard ? `${fmt(cash)}·${fmt(card)}` : fmt(cash);
-      case 'cash': return fmt(cash);
-      default: return hasCard ? `Efectivo ${fmt(cash)} · Tarjeta ${fmt(card)}` : fmt(cash);
-    }
+    const amount = value => {
+      if (!['number', 'string'].includes(typeof value) || String(value).trim() === '') return null;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    };
+    const cash = amount(product?.price);
+    const card = amount(product?.cardPrice);
+    const cashText = cash === null ? '' : fmt(cash);
+    if (priceFormat === 'cash' || card === null || (cash !== null && Math.abs(card - cash) <= 0.001)) return cashText;
+    const cardText = fmt(card);
+    if (priceFormat === 'abbr') return [cashText && `Ef. ${cashText}`, `Tj. ${cardText}`].filter(Boolean).join(' · ');
+    if (priceFormat === 'noLabel') return [cashText, cardText].filter(Boolean).join(' · ');
+    return [cashText && `Efectivo ${cashText}`, `Tarjeta ${cardText}`].filter(Boolean).join(' · ');
   }
   function toast(msg, type='ok') {
     toastEl.textContent = msg;
@@ -10867,6 +10871,13 @@ function parseMoney(value) {
 	    });
 	    layout.name.size = Number(layout.name.size || 10) * Math.max(0.6, Math.min(1.4, Number(options.nameScale || 1)));
 	    layout.price.size = Number(layout.price.size || 10) * Math.max(0.6, Math.min(1.4, Number(options.priceScale || 1)));
+    if (window.CLICK360_UNIVERSAL_LABEL_CANVAS) {
+      const documentModel = universalDocumentFromAdvancedState(product, options);
+      await renderUniversalLabelArtwork(canvas, product, documentModel);
+      canvas.dataset.baseWidth = String(baseWidth);
+      canvas.dataset.baseHeight = String(baseHeight);
+      return { widthMm, heightMm, baseWidth, baseHeight, layout };
+    }
     const w = baseWidth * scale;
     const h = baseHeight * scale;
     canvas.width = w;
@@ -11000,7 +11011,7 @@ function parseMoney(value) {
 		          <div class="field" data-smart-step="1"><label for="labelProfileSelect">Perfil reutilizable</label><select id="labelProfileSelect"><option value="">Configuración nueva</option>${printProfileOptions}</select></div>
 		          <div class="field" data-smart-step="1"><label for="applyTemplateSelect">Diseño guardado</label><select id="applyTemplateSelect"><option value="">Nueva plantilla</option>${templateOptions}</select></div>
 		          <section class="smartPrintPanel" data-smart-step="2"><h3>¿Qué tipo de papel tienes?</h3><div class="smartMediaGrid"><button type="button" data-smart-paper="thermal-60x40">${icon('rectangle-horizontal')}<b>Rollo · 1 columna</b></button><button type="button" data-smart-paper="roll-2-custom">${icon('columns-2')}<b>Rollo · 2 columnas</b></button><button type="button" data-smart-paper="roll-3-custom">${icon('columns-3')}<b>Rollo · 3 columnas</b></button><button type="button" data-smart-paper="sheet-2">${icon('file-spreadsheet')}<b>Hoja con stickers</b></button><button type="button" data-smart-paper="round-50">${icon('circle')}<b>Redondas</b></button><button type="button" data-smart-paper="square-50">${icon('square')}<b>Cuadradas</b></button><button type="button" data-smart-paper="ticket-80">${icon('receipt')}<b>Ticket térmico</b></button><button type="button" data-smart-paper="continuous">${icon('scroll-text')}<b>Papel continuo</b></button><button type="button" data-smart-paper="unsure">${icon('circle-help')}<b>No estoy seguro</b></button><button type="button" data-smart-paper="custom">${icon('ruler')}<b>Personalizado</b></button></div><p id="smartPaperHint" class="wizardHelp">Elige el dibujo que más se parece a tu material.</p></section>
-	          <section class="labelPresetPanel" data-smart-step="4"><h3>¿Qué quieres mostrar?</h3><div class="labelPresetGrid"><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-name">QR + nombre</button><button type="button" data-label-preset="qr-price">QR + nombre + precio</button><button type="button" data-label-preset="barcode-price">Código de barras + precio</button><button type="button" data-label-preset="name-price-sku">Nombre + precio + SKU</button><button type="button" data-label-preset="compact">Completa compacta</button><button type="button" data-label-preset="custom">Personalizada segura</button></div>${product.cardPrice && product.cardPrice !== product.price ? `<div class="field" style="margin-top:10px"><label for="labelPriceFormat">Formato del precio con tarjeta</label><select id="labelPriceFormat"><option value="full">Efectivo $X · Tarjeta $Y</option><option value="abbr">Ef. $X · Tj. $Y (abreviado)</option><option value="noLabel">$X · $Y (sin etiqueta)</option><option value="cash">Solo efectivo</option></select></div>` : ''}<label class="consentCheck"><input type="checkbox" id="labelShowUrl"><span>Mostrar también el contenido del QR como texto</span></label></section>
+	          <section class="labelPresetPanel" data-smart-step="4"><h3>¿Qué quieres mostrar?</h3><div class="labelPresetGrid"><button type="button" data-label-preset="qr">Solo QR</button><button type="button" data-label-preset="qr-name">QR + nombre</button><button type="button" data-label-preset="qr-price">QR + nombre + precio</button><button type="button" data-label-preset="barcode-price">Código de barras + precio</button><button type="button" data-label-preset="name-price-sku">Nombre + precio + SKU</button><button type="button" data-label-preset="compact">Completa compacta</button><button type="button" data-label-preset="custom">Personalizada segura</button></div><div class="field" style="margin-top:10px"><label for="labelPriceFormat">Formato del precio con tarjeta</label><select id="labelPriceFormat"><option value="full">Efectivo $X · Tarjeta $Y</option><option value="abbr">Ef. $X · Tj. $Y (abreviado)</option><option value="noLabel">$X · $Y (sin etiqueta)</option><option value="cash">Solo efectivo</option></select></div><label class="consentCheck"><input type="checkbox" id="labelShowUrl"><span>Mostrar también el contenido del QR como texto</span></label></section>
 	          <section class="labelElementPanel expertOnly">
 		            <div class="field"><label for="labelElementSelect">Elemento seleccionado</label><select id="labelElementSelect"><option value="qr">QR</option><option value="barcode">Código de barras</option><option value="business">Negocio</option><option value="address">Dirección</option><option value="name">Nombre</option><option value="price">Precio</option><option value="tax">IVA</option><option value="phone">Teléfono</option><option value="social">Red social</option><option value="code">Código</option><option value="logo">Logo</option><option value="image">Imagen</option><option value="variant">Variante</option><option value="stock">Stock</option><option value="customText">Texto</option></select></div>
 	            <div class="labelQuickControls"><button type="button" id="labelSizeDown" title="Reducir">${icon('minus')}</button><button type="button" id="labelSizeUp" title="Aumentar">${icon('plus')}</button><button type="button" id="labelCenter" title="Centrar">${icon('align-center')}<span>Centrar</span></button><button type="button" id="labelToggleVisibility" title="Mostrar u ocultar">${icon('eye')}<span>Ocultar</span></button><button type="button" id="labelToggleLock" title="Bloquear posición">${icon('lock-open')}<span>Bloquear</span></button><button type="button" id="labelResetElement" title="Restablecer elemento">${icon('rotate-ccw')}<span>Restablecer</span></button></div>
@@ -11731,13 +11742,8 @@ function parseMoney(value) {
 	       const name = nameOverride || prompt('Nombre de la plantilla:', suggestedName || existing?.name || 'Mi Plantilla QR');
 		       if (!name?.trim()) return null;
 		       const currentOpts = getOptions();
-	       const universalDocument = universalDocumentFromTemplate({
-	         ...currentOpts,
-	         layout:currentOpts.layout,
-	         paperType:currentOpts.paperType,
-	         quantity:resolveLabelCopyResult($('#labelCopies')?.value, product.qty, $('#labelUseStock')?.checked === true).count,
-	         startSlot:currentOpts.startSlot
-	       });
+	       const universalDocument = universalDocumentFromAdvancedState(product, currentOpts,
+	         resolveLabelCopyResult($('#labelCopies')?.value, product.qty, $('#labelUseStock')?.checked === true).count);
 		       const tpl = {
           ...(existing || {}),
           id: existing?.id || uid('tpl'),
@@ -12253,7 +12259,7 @@ function parseMoney(value) {
 		       const canonicalDoc = universalDocumentFromAdvancedState(product, options, preflight.quantity.count);
 		       if (!canonicalDoc) return toast('El motor de etiquetas no está disponible. Recarga CLICK 360.', 'err');
 		       try {
-		         const job = await buildUniversalLabelPrintNode([{ product, copies:preflight.quantity.count }], canonicalDoc);
+		         const job = await buildUniversalLabelPrintNode([{ product, copies:preflight.quantity.count }], canonicalDoc, preflight.plan);
 		         await waitForLabelPrintNodeReady(job.node);
 		         return await handoffPrint({
 		           node:job.node.cloneNode(true), media:'label',
@@ -12470,7 +12476,7 @@ function parseMoney(value) {
     const profiles = catalog ? catalog.labelProfiles : labelProfilesForBiz(businessId);
     const deviceState = catalog ? {} : loadPrintDeviceState(businessId);
     const smartPrint = window.CLICK360_SMART_PRINT;
-    const candidates = [profileId, template?.universalProfileId, deviceState?.universalProfileId, deviceState?.selectedProfileId].filter(Boolean);
+    const candidates = [profileId, template?.universalProfileId, template?.paperProfileId, deviceState?.universalProfileId, deviceState?.selectedProfileId].filter(Boolean);
     const asUniversal = raw => {
       if (raw.universalPaper) return smartPrint?.applyUniversalDeviceCalibration(raw, deviceState) || raw;
       const profile = smartPrint?.normalizePrintProfile(raw, businessId) || raw;
@@ -12480,7 +12486,7 @@ function parseMoney(value) {
       } : null;
     };
     for (const id of candidates) {
-      const raw = profiles.find(profile => profile.id === id);
+      const raw = profiles.find(profile => profile?.id === id);
       if (!raw) continue;
       const profile = asUniversal(raw);
       if (profile) return profile;
@@ -12491,7 +12497,7 @@ function parseMoney(value) {
     // A fresh origin has no device preference. Recover a unique compatible
     // saved profile from this business, even if an older template lacks a link.
     // Compare effective carrier dimensions so stale historical widths are ignored.
-    if (templatePaper && smartPrint) {
+    if (templatePaper && smartPrint && canvasApi) {
       const geometry = paper => {
         const normalized = canvasApi.normalizePaper(paper);
         const printPaper = canvasApi.toPrintPaper({ paper:normalized });
@@ -12502,8 +12508,8 @@ function parseMoney(value) {
         }) + `|${normalized.orientation}|${normalized.shape}`;
       };
       const expected = geometry(templatePaper);
-      const matches = profiles.filter(profile => profile.universalPaper || profile.paper || profile.paperProfile)
-        .map(asUniversal).filter(profile => geometry(profile.universalPaper) === expected);
+      const matches = profiles.filter(profile => profile?.universalPaper || profile?.paper || profile?.paperProfile)
+        .map(asUniversal).filter(profile => profile?.universalPaper && geometry(profile.universalPaper) === expected);
       if (matches.length === 1) return matches[0];
     }
     if (templatePaper && canvasApi) {
@@ -12545,10 +12551,28 @@ function parseMoney(value) {
       stock: `Stock ${product.qty}`,
       customText: options.customText || ''
     };
-    Object.entries(textFor).forEach(([key, text]) => { if (layout[key]) layout[key] = { ...layout[key], text }; });
-    if (layout.logo) layout.logo = { ...layout.logo, imageData: options.businessLogo || '' };
-    if (layout.image) layout.image = { ...layout.image, imageData: product.imageData || '' };
-    return layout;
+    const width = Math.round(options.widthMm * (260 / 60));
+    const height = Math.round(options.heightMm * (380 / 88));
+    return Object.entries(layout).map(([key, element]) => {
+      const box = ['qr','barcode','logo','image'].includes(key);
+      const type = { code:'sku', logo:'image' }[key] || (box || ['name','price'].includes(key) ? key : 'text');
+      const text = textFor[key];
+      const imageData = key === 'logo' ? safeImageSrc(options.businessLogo)
+        : key === 'image' ? safeImageSrc(product.imageData) : '';
+      const widthPx = Number(element.width || 20);
+      const fontScale = key === 'name' ? Number(options.nameScale || 1) : key === 'price' ? Number(options.priceScale || 1) : 1;
+      const heightPx = box ? Number(element.height || widthPx) : Number(element.size || 10) * fontScale / 0.72;
+      const textOffset = box ? 0 : Number(options.yOffsetAdj || 0);
+      return {
+        id:key, type, text, imageData, z:element.z, rotation:element.rotation, locked:element.locked,
+        visible:element.visible !== false && (type !== 'text' || !!text) && (type !== 'image' || !!imageData)
+          && (key !== 'barcode' || options.showBarcode !== false),
+        xMm:(element.x - (box ? 0 : widthPx / 2)) * options.widthMm / width,
+        yMm:(element.y + textOffset - (box ? 0 : heightPx * 0.8)) * options.heightMm / height,
+        widthMm:widthPx * options.widthMm / width,
+        heightMm:heightPx * options.heightMm / height
+      };
+    });
   }
   function universalDocumentFromAdvancedState(product, options = {}, quantity = 1) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
@@ -12592,7 +12616,7 @@ function parseMoney(value) {
         shape:options.shape === 'square' || options.shape === 'circle' ? options.shape : 'rounded',
         contentRotation:options.contentRotation
       },
-      layout:resolvedAdvancedLayout(product, options),
+      objects:resolvedAdvancedLayout(product, options),
       quantity:Math.max(1, Number(quantity) || 1),
       startSlot:Math.max(1, Number(options.startSlot || 1))
     });
@@ -12656,7 +12680,7 @@ function parseMoney(value) {
       ? canvasApi.normalizeDocument(sourceDocument)
       : universalDocumentFromTemplate(resolvedTemplate);
     documentModel = mergeUniversalPaperIntoDocument(documentModel, profile.universalPaper);
-    const resolvedPriceFormat = priceFormat || resolvedTemplate?.priceFormat || 'full';
+    const resolvedPriceFormat = priceFormat || sourceDocument?.priceFormat || resolvedTemplate?.priceFormat || 'full';
     documentModel = canvasApi.normalizeDocument({
       ...documentModel,
       quantity:quantityResult.count,
@@ -12709,7 +12733,7 @@ function parseMoney(value) {
     }
   }
   async function executeCanonicalLabelPrint(preparedJob, providerId = 'system', assertCurrent = null) {
-    const job = await buildUniversalLabelPrintNode(preparedJob.product, preparedJob.document);
+    const job = await buildUniversalLabelPrintNode(preparedJob.product, preparedJob.document, preparedJob.plan);
     await waitForLabelPrintNodeReady(job.node);
     assertCurrent?.();
     // A session can change in the frames between mounting the print portal
@@ -12923,7 +12947,15 @@ function parseMoney(value) {
   // Accepts either a single product (legacy call shape, wrapped as one group) or an array of
   // {product, copies} groups (catalog / multi-product printing) — one canonical node builder
   // for every label print/PDF entry point in the app.
-  async function buildUniversalLabelPrintNode(productOrGroups, sourceDocument) {
+  function renderUniversalLabelArtwork(canvas, product, documentModel, renderOptions = documentModel.renderOptions || {}) {
+    return window.CLICK360_UNIVERSAL_LABEL_CANVAS.renderLabelToCanvas(canvas, documentModel, {
+      product,
+      price:labelFmt(product, documentModel.priceFormat || 'full'),
+      sku:product?.code || '',
+      qrPayload:productPayload(product)
+    }, renderOptions);
+  }
+  async function buildUniversalLabelPrintNode(productOrGroups, sourceDocument, preparedPlan = null) {
     const canvasApi = window.CLICK360_UNIVERSAL_LABEL_CANVAS;
     const sourcePriceFormat = sourceDocument?.priceFormat || 'full';
     const sourceRenderOptions = sourceDocument?.renderOptions || null;
@@ -12931,29 +12963,25 @@ function parseMoney(value) {
     const documentSnapshot = { ...canvasApi.normalizeDocument(documentModel), priceFormat:sourcePriceFormat };
     const groups = Array.isArray(productOrGroups) ? productOrGroups : [{ product: productOrGroups, copies: documentSnapshot.quantity }];
     const singleProduct = groups.length === 1 ? groups[0].product : null;
-    const plan = canvasApi.buildPrintPlan(groups, documentSnapshot, { startSlot: documentSnapshot.startSlot });
+    const plan = preparedPlan || canvasApi.buildPrintPlan(groups, documentSnapshot, { startSlot: documentSnapshot.startSlot });
     if (!plan.valid || !plan.count || !plan.pages?.length) throw Object.assign(new Error(plan.errors?.[0] || 'No hay etiquetas válidas para imprimir.'), { code:'universal-print-plan-invalid' });
     const media = universalMediaSize(documentSnapshot);
     const wrap = document.createElement('div');
     wrap.className = 'printLabels universalPrintLabels';
     wrap.dataset.printPlan = canvasApi.planFingerprint(plan);
     wrap.dataset.renderer = 'universal-mm-v2';
-    for (const page of plan.pages) {
+    for (const [index, page] of plan.pages.entries()) {
       const pageNode = document.createElement('section');
       pageNode.className = 'labelPrintPage';
-      pageNode.style.cssText = `position:relative;width:${media.widthMm}mm;height:${media.heightMm}mm;overflow:hidden;page-break-after:always;`;
+      const pageBreak = index + 1 < plan.pages.length ? 'always' : 'auto';
+      pageNode.style.cssText = `position:relative;width:${media.widthMm}mm;height:${media.heightMm}mm;overflow:hidden;page-break-after:${pageBreak};`;
       for (const cell of page.cells) {
         const cellNode = document.createElement('div');
         cellNode.className = `labelPrintCell ${cell.status}`;
         cellNode.style.cssText = `position:absolute;left:${cell.xMm}mm;top:${cell.yMm}mm;width:${documentSnapshot.paper.widthMm}mm;height:${documentSnapshot.paper.heightMm}mm;overflow:hidden;`;
         if (cell.status === 'filled') {
           const labelCanvas = document.createElement('canvas');
-          await canvasApi.renderLabelToCanvas(labelCanvas, documentSnapshot, {
-            product: cell.item.product,
-            price: labelFmt(cell.item.product, documentSnapshot.priceFormat),
-            sku: cell.item.product?.code || '',
-            qrPayload: productPayload(cell.item.product)
-          }, sourceRenderOptions || {});
+          await renderUniversalLabelArtwork(labelCanvas, cell.item.product, documentSnapshot, sourceRenderOptions || {});
           if (!labelCanvas.width || !labelCanvas.height) throw Object.assign(new Error('La etiqueta se renderizó vacía.'), { code:'universal-render-empty' });
           const image = document.createElement('img');
           image.src = labelCanvas.toDataURL('image/png');
@@ -13134,33 +13162,39 @@ function parseMoney(value) {
 
     const templates = labelTemplatesForBiz(businessId);
     const initialTemplate = templates.find((template) => template.id === initialTemplateId) || templates.find((template) => template.isDefault) || null;
-    const deviceState = loadPrintDeviceState(businessId);
     const deviceProfile = (profile) => window.CLICK360_SMART_PRINT?.applyUniversalDeviceCalibration(profile, loadPrintDeviceState(businessId)) || profile;
-    const initialProfile = deviceProfile(labelProfilesForBiz(businessId).find((profile) => profile.id === deviceState.universalProfileId) || null);
+    const templateDocument = template => {
+      const document = universalLabelDocument(template || {});
+      const profile = resolveLabelPrintProfile(businessId, template || {});
+      return { ...mergeUniversalPaperIntoDocument(document, profile?.universalPaper), priceFormat:document.priceFormat, profileId:profile?.id === 'template-paper' ? '' : profile?.id };
+    };
+    const savedProfile = resolveLabelPrintProfile(businessId, initialTemplate || {});
+    const initialProfile = savedProfile?.id === 'template-paper' ? null : savedProfile;
     const editorBusinessIsActive = () => currentBusiness()?.id === businessId;
     editor.open({
       product,
       initialTemplate,
       initialProfile,
-      initialDocument: universalLabelDocument(initialTemplate || {}),
+      initialDocument: templateDocument(initialTemplate),
+      templateDocument,
       // Single price-format source: mirrors the exact formatter buildUniversalLabelPrintNode()
       // uses at print/PDF time (labelFmt), so the editor preview never diverges from output.
-      formatPrice:() => labelFmt(product, initialTemplate?.priceFormat || 'full'),
+      formatPrice:(_value, format) => labelFmt(product, format),
       productPayload,
       readImage:(input, onImage) => readImageInput(input, onImage, { max:640, maxBytes:140 * 1024, quality:0.7 }),
       showModal,
       closeModal,
       toast,
       getTemplates:() => labelTemplatesForBiz(businessId).filter((template) => template.universalDocument || template.layout),
-      getProfiles:() => labelProfilesForBiz(businessId).filter((profile) => profile.universalPaper).map(deviceProfile),
+      getProfiles:() => labelProfilesForBiz(businessId).map(profile =>
+        resolveLabelPrintProfile(businessId, {}, profile.id)).filter(Boolean),
       selectProfile:(profileId) => {
         const next = loadPrintDeviceState(businessId);
         savePrintDeviceState({ ...next, universalProfileId:profileId || '' }, businessId);
       },
-      saveTemplate:async (name, universalDocument, templateId = '') => {
+      saveTemplate:async (name, universalDocument, templateId = '', activeProfileId = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo para guardar con seguridad.', 'err');
         state.settings ||= {}; state.settings.labelTemplates ||= [];
-        const activeProfileId=loadPrintDeviceState(businessId).universalProfileId || '';
         const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
         const existing = state.settings.labelTemplates.find((template) => template.id === templateId && template.businessId === businessId);
         const template = {
@@ -13169,7 +13203,7 @@ function parseMoney(value) {
           heightMm:universalDocument.paper.heightMm, columns:universalDocument.paper.columns, rows:universalDocument.paper.rows,
           paperType:universalDocument.paper.id, dpi:universalDocument.paper.dpi,
           renderer:'universal-mm-v2', universalProfileId:activeProfileId || '', schemaVersion:2,
-          priceFormat:existing?.priceFormat || initialTemplate?.priceFormat || 'full',
+          priceFormat:universalDocument.priceFormat || existing?.priceFormat || 'full',
           createdAt:existing?.createdAt || new Date().toISOString(), updatedAt:new Date().toISOString(), isDefault:existing?.isDefault === true
         };
         const index = state.settings.labelTemplates.findIndex((item) => item.id === template.id && item.businessId === businessId);
@@ -13223,7 +13257,7 @@ function parseMoney(value) {
         return deviceProfile(profile);
       },
       print: async (universalDocument, providerId) => {
-        const snapshot = { ...canvasApi.normalizeDocument(universalDocument), priceFormat:initialTemplate?.priceFormat || 'full' };
+        const snapshot = { ...canvasApi.normalizeDocument(universalDocument), priceFormat:universalDocument.priceFormat || 'full' };
         return printUniversalLabels(product, snapshot, providerId);
       },
       printCalibration:(universalDocument) => printUniversalCalibration(universalDocument),

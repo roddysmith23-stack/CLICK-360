@@ -55,7 +55,7 @@ context.state={settings:{labelTemplates:[structuredClone(original)],labelProfile
 Object.assign(context,{activeTemplateId:'template',editorBusinessId:identity.businessId,
   editorBusinessIsActive:()=>true,product:{qty:37},getOptions:()=>new Proxy({bgColor:'#abcdef',layout:{},widthMm:40,heightMm:30},{get:(target,key)=>target[key]??0}),
   $:()=>({value:'1',checked:false}),resolveLabelCopyResult:()=>({count:1}),
-  universalDocumentFromTemplate:input=>({quantity:input.quantity,paper:{widthMm:40,heightMm:30}}),
+  universalDocumentFromAdvancedState:(_product,_options,quantity)=>({quantity,paper:{widthMm:40,heightMm:30}}),
   refreshTemplateSelect:()=>{},refreshInventoryTemplateSection:()=>{}
 });
 const advancedStart=source.indexOf('    const persistTemplate = async ');

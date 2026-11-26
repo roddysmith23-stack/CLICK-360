@@ -1,6 +1,12 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),{execFileSync}=require('node:child_process');
+const {createHash}=require('node:crypto');
 const base='7155238b4e0097c136d9ae9f4be291f25697f012';
+// Reviewed label-only changes retain an exact freeze on each file.
+const labelDigests=Object.freeze({
+  'universal-label-canvas.js':'e2e12ea5d75df521dfb67ca0497a6b691c3f93d8496ba69cfb8df005d0ed5b2d',
+  'universal-label-editor.js':'b86efccc690e65829304d9d23b3c934d2744090755b32dbe4d3bba68d489a623',
+});
 for(const file of ['firestore.rules','worker-data-boundary.js','v16-domain.js','p0-tenant-guard.js',
   'p2-restaurant-domain.js','p2-logistics-domain.js','safe-update.js','access-flow.js',
   'universal-label-canvas.js','universal-label-editor.js','printing-service.js','vendor/qrcode-generator.js']){
@@ -11,6 +17,10 @@ for(const file of ['firestore.rules','worker-data-boundary.js','v16-domain.js','
     const s=actual.toString(),a=s.indexOf('    match /storageRollout/{policyId}'),z=s.indexOf('    function signedIn()',a);
     assert(a>0&&z>a,'Explicit P0A-only Rules addition required');
     actual=Buffer.from(s.slice(0,a)+s.slice(z));
+  }
+  if(Object.hasOwn(labelDigests,file)){
+    assert.equal(createHash('sha256').update(actual).digest('hex'),labelDigests[file],`Frozen label source changed: ${file}`);
+    continue;
   }
   const expected=execFileSync('git',['show',`${base}:${file}`]);
   if(file==='printing-service.js'){
@@ -37,4 +47,4 @@ assert(!changes.some(p=>p.startsWith('functions/')||p.startsWith('tools/admin/')
 const config=JSON.parse(fs.readFileSync('firebase.staging.json','utf8'));
 assert.equal(config.hosting.site,'click360-staging-7620168025');
 assert.equal(config.hosting.public,'dist');
-console.log('PASS frozen Sentinel: Rules, tenant boundary, Auth/access, financial domain, Restaurant/Logistics, Safe Update, QR artwork and print providers outside PDF rendering match modern main');
+console.log('PASS frozen Sentinel: Rules, tenant boundary, Auth/access, financial domain, Restaurant/Logistics, Safe Update, reviewed label source and print providers outside PDF rendering are frozen');

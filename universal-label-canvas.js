@@ -366,7 +366,7 @@
   function textValue(object, data = {}) {
     const product = data.product || {};
     if (object.type === 'name') return String(product.name || data.name || 'Producto');
-    if (object.type === 'price') return String(data.price || product.price || '0.00');
+    if (object.type === 'price') return String(data.price ?? product.price ?? '');
     if (object.type === 'sku') return String(product.code || data.sku || 'SKU');
     if (object.type === 'text') return object.text || String(data.text || 'Texto');
     return '';
@@ -383,6 +383,17 @@
     draw(-width / 2, -height / 2, width, height);
     ctx.restore();
   }
+  function fitQrBox(object, paper) {
+    const angle = object.rotation * Math.PI / 180;
+    const footprint = Math.abs(Math.cos(angle)) + Math.abs(Math.sin(angle));
+    const scaleX = paper.scaleX || 1, scaleY = paper.scaleY || 1;
+    const size = Math.min(object.widthMm, object.heightMm) * Math.min(scaleX, scaleY);
+    const side = Math.min(size, paper.widthMm / footprint, paper.heightMm / footprint);
+    const radius = side * footprint / 2;
+    const x = clamp((object.xMm + object.widthMm / 2) * scaleX, radius, paper.widthMm - radius, radius);
+    const y = clamp((object.yMm + object.heightMm / 2) * scaleY, radius, paper.heightMm - radius, radius);
+    return { ...object, xMm:x - side / 2, yMm:y - side / 2, widthMm:side, heightMm:side };
+  }
   function drawQr(ctx, value, x, y, width, height, qrStyle = {}) {
     if (typeof root.qrcode !== 'function') return false;
     try {
@@ -397,7 +408,7 @@
       // inset shrinks/grows nonlinearly with box size and can violate the
       // spec's real minimum at small sizes. The object itself is already
       // forced square (see normalizeObject), so width===height here.
-      const quietZoneModules = Math.max(0, Number(qrStyle.quietZoneModules ?? 4));
+      const quietZoneModules = Math.max(4, number(qrStyle.quietZoneModules, 4));
       const cell = Math.min(width, height) / (count + quietZoneModules * 2);
       const background = String(qrStyle.background || '#ffffff');
       const foreground = String(qrStyle.foreground || '#000000');
@@ -407,7 +418,7 @@
       const offsetX = x + quietZoneModules * cell;
       const offsetY = y + quietZoneModules * cell;
       for (let row = 0; row < count; row += 1) for (let column = 0; column < count; column += 1) {
-        if (qr.isDark(row, column)) ctx.fillRect(offsetX + column * cell, offsetY + row * cell, Math.ceil(cell), Math.ceil(cell));
+        if (qr.isDark(row, column)) ctx.fillRect(offsetX + column * cell, offsetY + row * cell, cell, cell);
       }
       return true;
     } catch { return false; }
@@ -456,9 +467,12 @@
     ctx.scale(paper.scaleX, paper.scaleY);
     for (const object of document.objects.filter((entry) => entry.visible).sort((a, b) => a.z - b.z)) {
       if (object.type === 'qr') {
-        drawRotated(ctx, object, pxPerMm, (x, y, width, height) => {
+        ctx.save();
+        ctx.scale(1 / paper.scaleX, 1 / paper.scaleY);
+        drawRotated(ctx, fitQrBox(object, paper), pxPerMm, (x, y, width, height) => {
           drawQr(ctx, payload, x, y, width, height, qrStyle);
         });
+        ctx.restore();
       } else if (object.type === 'barcode' && typeof root.JsBarcode === 'function') {
         const barcode = root.document?.createElement?.('canvas');
         if (!barcode) continue;
@@ -524,6 +538,6 @@
     VERSION, OBJECT_TYPES, MM_PER_INCH, normalizePaper, normalizeObject, normalizeDocument, normalizeLegacyLayout, defaultsForPaper,
     normalizeStyle, normalizeQrStyle, normalizeBarcodeStyle, validateQrDesign,
     createHistory, commit, undo, redo, updateObject, addObject, deleteObjects, duplicateObject, alignObjects, arrangeObject,
-    toPrintPaper, buildPrintPlan, planFingerprint, renderLabelToCanvas
+    toPrintPaper, buildPrintPlan, planFingerprint, fitQrBox, renderLabelToCanvas
   });
 })(typeof window !== 'undefined' ? window : globalThis);
