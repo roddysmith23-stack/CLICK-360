@@ -111,8 +111,8 @@ assert.match(app, /universal-mm-v2/);
 assert.match(app, /renderer:'universal-mm-v2'/);
 assert.match(app, /schemaVersion:2/);
 assert.match(app, /universalProfileId:activeProfileId/);
-assert.match(app, /const activeProfileId=loadPrintDeviceState\(businessId\)\.universalProfileId/,
-  'Universal template callback must resolve its own profile instead of a detached editor variable');
+assert.match(app, /const activeProfileId = labelProfilesForBiz\(businessId\)\.some\(profile => profile.id === profileId\)/,
+  'Universal template callback must scope the chosen profile to the current business');
 assert.match(app, /handoffPrint\(/);
 assert.match(editor, /Guardar PDF limpio/);
 assert.match(editor, /ulcSystemPrint/);
@@ -128,8 +128,8 @@ assert.match(editor, /openAdvanced/);
 assert.match(editor, /ulcSaveTemplate/);
 assert.match(editor, /ulcSaveProfile/);
 assert.match(editor, /api\.readImage/);
-assert.match(editor, /calibratedScaleX/);
-assert.match(editor, /calibratedScaleY/);
+assert.match(editor, /engine.fitQrBox\(object, paper\)/);
+assert.match(editor, /xMm:object.xMm \* paper.scaleX, yMm:object.yMm \* paper.scaleY/);
 assert.match(editor, /paper\.scaleX \|\| 1/);
 assert.match(editor, /paper\.scaleY \|\| 1/);
 assert.match(source, /willReadFrequently/);

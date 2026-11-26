@@ -155,6 +155,11 @@ async function runChromium() {
     }
 
     await page.locator('#ulcPriceFormat').selectOption('abbr');
+    await page.locator('#ulcSaveTemplate').click();
+    await page.waitForFunction(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state().templates[0]?.priceFormat === 'abbr');
+    await page.locator('#ulcPriceFormat').selectOption('cash');
+    await page.locator('[data-ulc-tpl-edit]').first().click();
+    if (await page.locator('#ulcPriceFormat').inputValue() !== 'abbr') throw new Error('Saved template did not restore the price format');
 
     await page.locator('#ulcDuplicate').click();
     await page.locator('#ulcUndo').click();

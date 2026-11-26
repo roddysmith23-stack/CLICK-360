@@ -13192,8 +13192,9 @@ function parseMoney(value) {
         const next = loadPrintDeviceState(businessId);
         savePrintDeviceState({ ...next, universalProfileId:profileId || '' }, businessId);
       },
-      saveTemplate:async (name, universalDocument, templateId = '', activeProfileId = '') => {
+      saveTemplate:async (name, universalDocument, templateId = '', profileId = '') => {
         if (!editorBusinessIsActive()) return toast('El negocio activo cambió. Reabre el lienzo para guardar con seguridad.', 'err');
+        const activeProfileId = labelProfilesForBiz(businessId).some(profile => profile.id === profileId) ? profileId : '';
         state.settings ||= {}; state.settings.labelTemplates ||= [];
         const previousState=cloneState(state),previous = [...state.settings.labelTemplates];
         const existing = state.settings.labelTemplates.find((template) => template.id === templateId && template.businessId === businessId);
