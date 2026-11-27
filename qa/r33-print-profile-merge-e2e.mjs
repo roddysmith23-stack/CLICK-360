@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from 'node:child_process';
+import assert from 'node:assert/strict';
 import path from 'node:path';
 import process from 'node:process';
-import { chromium } from 'playwright';
+import { chromium, webkit } from 'playwright';
 
 // Reproduces the real production incident: a client's saved print profile carried a stale
 // mediaWidthMm/mediaHeightMm left over from exploring an A4/sheet preset before configuring a
@@ -45,7 +46,8 @@ function assertPageSize(scenarioName, pageStyleText, expected) {
 
 try {
   await waitForServer();
-  const browser = await chromium.launch();
+  const engine = process.argv[2] === 'webkit' ? webkit : chromium;
+  const browser = await engine.launch();
   try {
     const page = await browser.newPage();
     const errors = [];
@@ -55,7 +57,7 @@ try {
     await page.waitForFunction(() => document.documentElement.dataset.ready === 'true');
 
     const results = {};
-    for (const scenario of ['no_profile', 'modern_profile', 'legacy_profile', 'legacy_profile_2col', 'legacy_profile_stale_a4', 'fresh_origin', 'ambiguous_origin']) {
+    for (const scenario of ['no_profile', 'modern_profile', 'legacy_profile', 'legacy_profile_2col', 'legacy_profile_stale_a4', 'fresh_origin', 'ambiguous_origin', 'legacy_calibrated', 'legacy_calibration_incompatible']) {
       results[scenario] = await page.evaluate((s) => window.__CLICK360_RUN_SCENARIO__(s), scenario);
     }
     console.log('r33 profile-merge scenario results:', JSON.stringify(results, null, 1));
@@ -93,6 +95,16 @@ try {
     }
     for (const scenario of ['fresh_origin', 'ambiguous_origin']) {
       assertPageSize(scenario, results[scenario].pageStyleText, { widthMm:92, heightMm:64 });
+    }
+    for (const [scenario, x, y] of [
+      ['legacy_calibrated', 5, 2],
+      ['legacy_calibration_incompatible', 6, 0]
+    ]) {
+      const result = results[scenario];
+      assert.equal(result.printError, null, scenario);
+      assertPageSize(scenario, result.pageStyleText, { widthMm:92, heightMm:64 });
+      const row = [[`${x}mm`, `${y}mm`], [`${x + 44}mm`, `${y}mm`]];
+      assert.deepEqual(result.printedRows, [row, row], scenario);
     }
 
     if (errors.length) throw new Error(`browser errors: ${JSON.stringify(errors)}`);
