@@ -2,15 +2,15 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { chromium, webkit } from 'playwright';
+import { chromium, devices, webkit } from 'playwright';
 
 const root = path.resolve(import.meta.dirname, '..');
 const port = Number(process.env.CLICK360_ARTIFACT_E2E_PORT || 4285);
 const url = `http://127.0.0.1:${port}/?v=commercial-1-0-5-r38-mvp-candidate`;
 const output = path.join(root, 'output/playwright/release-1.0.5');
 
-execFileSync('npm', ['run', 'build:static'], { cwd:root, stdio:'inherit' });
-const server = spawn(process.execPath, [path.join(root, 'node_modules/http-server/bin/http-server'), 'dist', '-p', String(port), '-c-1'], {
+execFileSync(process.execPath, [path.join(root, 'scripts/build-static-release.mjs')], { cwd:root, stdio:'inherit' });
+const server = spawn(process.execPath, [path.join(root, 'node_modules/http-server/bin/http-server'), 'dist', '-a', '127.0.0.1', '-p', String(port), '-c-1'], {
   cwd:root,
   stdio:'ignore'
 });
@@ -26,10 +26,11 @@ async function waitForServer() {
   throw new Error('Built artifact did not start.');
 }
 
-async function run(name, browserType, options = {}) {
-  const browser = await browserType.launch(options);
+async function run(name, browserType, { launch = {}, device = { viewport:{ width:390, height:844 } } } = {}) {
+  const browser = await browserType.launch(launch);
   try {
-    const page = await browser.newPage({ viewport:{ width:390, height:844 } });
+    const context = await browser.newContext(device);
+    const page = await context.newPage();
     const consoleErrors = [];
     const pageErrors = [];
     const sameOriginFailures = [];
@@ -54,10 +55,11 @@ async function run(name, browserType, options = {}) {
       const response = await fetch('manifest.webmanifest?v=commercial-1-0-5-r38-mvp-candidate');
       return { ok:response.ok, data:await response.json() };
     });
-    if (!manifest.ok || !String(manifest.data.start_url || '').includes('commercial-1-0-5-r38-mvp-candidate')) {
+    if (!manifest.ok || manifest.data.display !== 'standalone'
+      || !String(manifest.data.start_url || '').includes('commercial-1-0-5-r38-mvp-candidate')) {
       throw new Error(`${name} PWA manifest is stale`);
     }
-    if (name === 'chromium') {
+    if (browserType === chromium) {
       await page.evaluate(async () => {
         const ready = navigator.serviceWorker?.ready;
         if (!ready) throw new Error('Service Worker API unavailable');
@@ -74,7 +76,27 @@ async function run(name, browserType, options = {}) {
     if (consoleErrors.length || pageErrors.length || sameOriginFailures.length) {
       throw new Error(`${name} unexpected runtime errors: ${JSON.stringify({ consoleErrors, pageErrors, sameOriginFailures })}`);
     }
-    await page.screenshot({ path:path.join(output, `artifact-${name}-390.png`), fullPage:true });
+    await page.screenshot({ path:path.join(output, `artifact-${name}.png`), fullPage:true });
+    if (browserType === chromium) {
+      await page.waitForFunction(() => !!navigator.serviceWorker?.controller, null, { timeout:10000 });
+      await page.evaluate(() => localStorage.setItem('qa-artifact-reopen', 'retained'));
+      await context.setOffline(true);
+      await page.close();
+      const reopened = await context.newPage();
+      const offlineNavigation = await reopened.goto(url, { waitUntil:'domcontentloaded' });
+      if (!offlineNavigation?.fromServiceWorker()) throw new Error(`${name} offline shell did not come from the service worker`);
+      await reopened.waitForFunction(expected =>
+        window.CLICK360_RUNTIME_GUARD?.getReleaseMetadata?.().buildSha === expected, release.buildSha);
+      // The headless shell can retain navigator.onLine=true on a new target
+      // after the transport is already offline. This URL bypasses the worker.
+      const { retained, manifestReachable } = await reopened.evaluate(async () => ({
+        retained:localStorage.getItem('qa-artifact-reopen') === 'retained',
+        manifestReachable:await fetch('./release-manifest.json', { cache:'no-store' }).then(() => true, () => false)
+      }));
+      if (manifestReachable) throw new Error(`${name} offline transport was not isolated`);
+      if (!retained) throw new Error(`${name} offline reopening lost origin state`);
+    }
+    console.log(`RELEASE GUARDIAN PASS ${process.platform} ${name} ${browser.version()} ${release.buildSha}`);
   } finally {
     await browser.close();
   }
@@ -83,13 +105,21 @@ async function run(name, browserType, options = {}) {
 try {
   await mkdir(output, { recursive:true });
   await waitForServer();
-  await run('chromium', chromium);
-  if (process.env.SKIP_WEBKIT === '1') {
-    console.warn('WARN: WebKit unavailable in this environment — skipping WebKit built-artifact smoke tests (SKIP_WEBKIT=1).');
+  const platform = process.env.CLICK360_ARTIFACT_PLATFORM || 'default';
+  if (platform === 'windows') {
+    if (process.platform !== 'win32') throw new Error('Windows release check requires a Windows runner');
+    await run('chrome', chromium, { launch:{ channel:'chrome' }, device:devices['Desktop Chrome'] });
+    await run('msedge', chromium, { launch:{ channel:'msedge' }, device:devices['Desktop Edge'] });
+  } else if (platform === 'mac') {
+    if (process.platform !== 'darwin') throw new Error('macOS release check requires a Mac');
+    await run('chrome', chromium, { launch:{ channel:'chrome' }, device:devices['Desktop Chrome'] });
+    await run('ipad-webkit', webkit, { device:devices['iPad Pro 11'] });
+  } else if (platform === 'default') {
+    await run('chromium', chromium);
+    if (process.env.SKIP_WEBKIT !== '1') await run('webkit', webkit);
   } else {
-    await run('webkit', webkit);
+    throw new Error(`Unknown release-check platform: ${platform}`);
   }
-  console.log('CLICK 360 1.0.5 built artifact Chromium/WebKit smoke PASS');
 } finally {
   server.kill('SIGTERM');
 }

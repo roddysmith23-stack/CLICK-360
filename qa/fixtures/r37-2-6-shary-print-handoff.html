@@ -59,12 +59,19 @@
         };
       };
       window.__CLICK360_FINISH_PRINT__ = () => window.dispatchEvent(new Event('afterprint'));
-      window.__CLICK360_RUN_SHARY_HANDOFF__ = async (quantity, provider = 'system', { startSlot=1, usedSlots=[] } = {}) => {
+      window.__CLICK360_RUN_SHARY_HANDOFF__ = async (quantity, provider = 'system', { startSlot=1, usedSlots=[], codes=null } = {}) => {
         window.__PRINT_CALLS__ = 0;
         capture = null;
         const documentModel = { ...canvas.normalizeDocument({ ...persistedDocument, quantity, startSlot }), priceFormat:'abbr' };
         const qr = documentModel.objects.find((object) => object.type === 'qr');
-        const prepared = { product, document:documentModel, plan:canvas.buildPrintPlan([{ product, copies:quantity }], documentModel, { startSlot, usedSlots }), quantity:{ count:quantity }, fingerprint:`qa-${quantity}` };
+        const groups = codes
+          ? codes.map((code, index) => ({
+            product:{ ...product, id:code, code, price:12.5 + index, cardPrice:13 + index },
+            copies:1
+          }))
+          : [{ product, copies:quantity }];
+        const plan = canvas.buildPrintPlan(groups, documentModel, { startSlot, usedSlots });
+        const prepared = { product, document:documentModel, plan, quantity:{ count:quantity }, fingerprint:`qa-${quantity}` };
         const job = await handoff.executeCanonicalLabelPrint(prepared, provider);
         return {
           quantity,

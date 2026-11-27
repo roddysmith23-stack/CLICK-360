@@ -95,6 +95,20 @@ jobs:
       - run: npm run qa:simulator:quick
       - run: npm run qa:simulator:full
 
+  windows-browser-smoke:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Built PWA in Windows Chrome and Edge
+        env:
+          CLICK360_ARTIFACT_PLATFORM: windows
+        run: npm run qa:artifact:e2e
+
   labels-e2e:
     runs-on: macos-latest
     steps:
@@ -195,6 +209,7 @@ jobs:
       - web-rules-qa
       - web-simulators
       - labels-e2e
+      - windows-browser-smoke
       - recovery-tooling
       - inventory-conflict-e2e
     runs-on: ubuntu-latest
@@ -206,11 +221,12 @@ jobs:
           RULES_QA: ${{ needs.web-rules-qa.result }}
           SIMULATORS: ${{ needs.web-simulators.result }}
           LABELS: ${{ needs.labels-e2e.result }}
+          WINDOWS: ${{ needs.windows-browser-smoke.result }}
           RECOVERY: ${{ needs.recovery-tooling.result }}
           CONFLICTS: ${{ needs.inventory-conflict-e2e.result }}
         run: |
-          results="$WEB_RUNTIME $WEB_AUDIT $RULES_QA $SIMULATORS $LABELS $RECOVERY $CONFLICTS"
-          if [ "$results" != "success success success success success success success" ]; then
+          results="$WEB_RUNTIME $WEB_AUDIT $RULES_QA $SIMULATORS $LABELS $WINDOWS $RECOVERY $CONFLICTS"
+          if [ "$results" != "success success success success success success success success" ]; then
             echo "NO_GO"
             echo "Required web checks: $results"
             exit 1

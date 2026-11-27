@@ -2,7 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { RGBLuminanceSource, BinaryBitmap, HybridBinarizer, QRCodeReader } from '@zxing/library';
+import { RGBLuminanceSource, BinaryBitmap, HybridBinarizer, QRCodeReader, DecodeHintType } from '@zxing/library';
 import { chromium, firefox, webkit } from 'playwright';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -19,6 +19,73 @@ async function waitForServer() {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error('print handoff fixture did not start');
+}
+
+async function verifyRollPdf(name, file, qrCodes) {
+  const exportedPdf = (await readFile(file)).toString('latin1');
+  const pages = [...exportedPdf.matchAll(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/g)];
+  assert(pages.length === Math.ceil(qrCodes.length / 2),
+  `${name}: expected ${Math.ceil(qrCodes.length / 2)} PDF pages, got ${pages.length}`);
+  for (const [, w, h] of pages) {
+    assert(Math.abs(Number(w) * 25.4 / 72 - 92) < 0.1 && Math.abs(Number(h) * 25.4 / 72 - 64) < 0.1,
+      `${name}: each PDF page must be 92×64 mm`);
+  }
+
+  const xrefOffset = Number(exportedPdf.match(/startxref\n(\d+)\n%%EOF/)?.[1]);
+  const [xref, range, , ...entries] = exportedPdf.slice(xrefOffset).split('\n');
+  assert(xref === 'xref' && range === `0 ${3 + 3 * pages.length}`, `${name}: PDF object table must include every row`);
+  for (let objectId = 1; objectId < 3 + 3 * pages.length; objectId++) {
+    const offset = Number(entries[objectId - 1]?.split(' ')[0]);
+    assert(exportedPdf.startsWith(`${objectId} 0 obj\n`, offset), `${name}: incorrect PDF object offset`);
+  }
+  // Decode the rendered file. The page tree alone cannot detect blank,
+  // compressed or cropped rows.
+  for (let row = 1; row <= pages.length; row++) {
+    const pixels = execFileSync('pdftoppm', [
+      '-f', String(row), '-l', String(row), '-r', '203', '-gray', file
+    ], { maxBuffer:1024*1024 });
+    const header = pixels.toString('ascii', 0, 64).match(/^P5\n(\d+) (\d+)\n255\n/);
+    assert(header, `${name}: PDF row ${row} could not be rasterized`);
+    const width = Number(header[1]), height = Number(header[2]);
+    const rowPixels = pixels.subarray(header[0].length);
+    const px = mm => Math.round(mm * 203 / 25.4);
+    const ink = [0, 0];
+    let outside = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (rowPixels[y * width + x] >= 140) continue;
+        if (y < px(60) && x >= px(6) && x < px(46)) ink[0]++;
+        else if (y < px(60) && x >= px(50) && x < px(90)) ink[1]++;
+        else outside++;
+      }
+    }
+    for (const [column, origin] of [6, 50].entries()) {
+      const w = px(40), h = px(60), left = px(origin);
+      const crop = new Uint8ClampedArray(w * h);
+      for (let y = 0; y < h; y++) crop.set(rowPixels.subarray(y * width + left, y * width + left + w), y * w);
+      let qr;
+      try {
+        qr = new QRCodeReader().decode(new BinaryBitmap(new HybridBinarizer(new RGBLuminanceSource(crop, w, h))));
+      } catch (error) {
+        // Some QR masks mislead the JS port's finder on the whole sticker.
+        // Decode the raster's known QR region without text or finder noise.
+        const qrWidth = px(24), qrHeight = px(25);
+        const region = new Uint8ClampedArray(qrWidth * qrHeight);
+        for (let y = 0; y < qrHeight; y++) region.set(crop.subarray(y * w, y * w + qrWidth), y * qrWidth);
+        try {
+          const bitmap = new BinaryBitmap(new HybridBinarizer(new RGBLuminanceSource(region, qrWidth, qrHeight)));
+          qr = new QRCodeReader().decode(bitmap, new Map([[DecodeHintType.PURE_BARCODE, true]]));
+        } catch (fallbackError) {
+          throw new Error(`${name}: QR not decoded at row ${row}, column ${column + 1}`,
+            { cause:new AggregateError([error, fallbackError]) });
+        }
+      }
+      const expected = qrCodes[(row - 1) * 2 + column];
+      assert(qr.getText() === expected, `${name}: row ${row}, column ${column + 1} expected ${expected}, got ${qr.getText()}`);
+    }
+    assert(Math.min(...ink) > 1000 && outside <= 20,
+      `${name}: row ${row} ink must fill both stickers and stay inside (got ${ink}, outside ${outside})`);
+  }
 }
 
 async function run(name, browserType) {
@@ -80,7 +147,7 @@ async function run(name, browserType) {
       `${name}: print must preserve the reserved left slot, got ${JSON.stringify(reserved.patterns)}`);
     await page.evaluate(() => window.__CLICK360_FINISH_PRINT__());
     const results = {};
-    for (const quantity of [1, 2, 3, 4, 6, 10, 20]) {
+    for (const quantity of [1, 2, 3, 4, 6, 10, 20, 100]) {
       const result = await page.evaluate((value) => window.__CLICK360_RUN_SHARY_HANDOFF__(value), quantity);
       results[quantity] = result;
       assert(result.patterns.length === Math.ceil(quantity / 2), `${name}: page count for ${quantity}`);
@@ -104,6 +171,8 @@ async function run(name, browserType) {
     assert(JSON.stringify(results[4].patterns) === JSON.stringify(['XX', 'XX']), `${name}: qty4 pattern`);
     assert(JSON.stringify(results[6].patterns) === JSON.stringify(['XX', 'XX', 'XX']), `${name}: qty6 pattern`);
     assert(results[10].patterns.length === 5 && results[10].patterns.every((pattern) => pattern === 'XX'), `${name}: qty10 pattern`);
+    assert(results[100].patterns.length === 50 && results[100].patterns.every(pattern => pattern === 'XX'),
+      `${name}: a lot of 100 must occupy both columns of all 50 rows`);
     assert(pageErrors.length === 0, `${name}: page errors ${JSON.stringify(pageErrors)}`);
 
     await page.emulateMedia({ media:'screen' });
@@ -111,54 +180,34 @@ async function run(name, browserType) {
     const pdfJob = await page.evaluate(() => window.__CLICK360_RUN_SHARY_HANDOFF__(6, 'pdf'));
     assert(pdfJob.exported, `${name}: app PDF export failed`);
     const download = await downloadReady;
-    const exportedPdf = (await readFile(await download.path())).toString('latin1');
-    const pages = [...exportedPdf.matchAll(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/g)];
-    assert(pages.length === 3, `${name}: 6 labels on a 2-column roll need 3 PDF pages, got ${pages.length}`);
-    for (const [, w, h] of pages) {
-      assert(Math.abs(Number(w) * 25.4 / 72 - 92) < 0.1 && Math.abs(Number(h) * 25.4 / 72 - 64) < 0.1,
-        `${name}: each PDF page must be 92×64 mm`);
-    }
-
-    const xrefOffset = Number(exportedPdf.match(/startxref\n(\d+)\n%%EOF/)?.[1]);
-    const [xref, range, , ...entries] = exportedPdf.slice(xrefOffset).split('\n');
-    assert(xref === 'xref' && range === `0 ${3 + 3 * pages.length}`, `${name}: PDF object table must include every row`);
-    for (let objectId = 1; objectId < 3 + 3 * pages.length; objectId++) {
-      const offset = Number(entries[objectId - 1]?.split(' ')[0]);
-      assert(exportedPdf.startsWith(`${objectId} 0 obj\n`, offset), `${name}: incorrect PDF object offset`);
-    }
-    // Decode the rendered file. The page tree alone cannot detect blank,
-    // compressed or cropped rows.
-    for (let row = 1; row <= pages.length; row++) {
-      const pixels = execFileSync('pdftoppm', [
-        '-f', String(row), '-l', String(row), '-r', '203', '-gray', await download.path()
-      ], { maxBuffer:1024*1024 });
-      const header = pixels.toString('ascii', 0, 64).match(/^P5\n(\d+) (\d+)\n255\n/);
-      assert(header, `${name}: PDF row ${row} could not be rasterized`);
-      const width = Number(header[1]), height = Number(header[2]);
-      const rowPixels = pixels.subarray(header[0].length);
-      const px = mm => Math.round(mm * 203 / 25.4);
-      const ink = [0, 0];
-      let outside = 0;
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          if (rowPixels[y * width + x] >= 140) continue;
-          if (y < px(60) && x >= px(6) && x < px(46)) ink[0]++;
-          else if (y < px(60) && x >= px(50) && x < px(90)) ink[1]++;
-          else outside++;
-        }
-      }
-      for (const origin of [6, 50]) {
-        const w = px(40), h = px(60), left = px(origin);
-        const crop = new Uint8ClampedArray(w * h);
-        for (let y = 0; y < h; y++) crop.set(rowPixels.subarray(y * width + left, y * width + left + w), y * w);
-        const qr = new QRCodeReader().decode(new BinaryBitmap(new HybridBinarizer(new RGBLuminanceSource(crop, w, h))));
-        assert(qr.getText() === 'QA-001', `${name}: row ${row} has the wrong QR payload`);
-      }
-      assert(Math.min(...ink) > 1000 && outside <= 20,
-        `${name}: row ${row} ink must fill both stickers and stay inside (got ${ink}, outside ${outside})`);
-    }
+    await verifyRollPdf(name, await download.path(), Array(6).fill('QA-001'));
     if (name === 'chromium') {
       await mkdir(output, { recursive:true });
+      const codes = Array.from({ length:100 }, (_, index) => `QA-${String(index + 1).padStart(3, '0')}`);
+      const batchReady = page.waitForEvent('download');
+      const batch = await page.evaluate(async qrCodes => {
+        const printed = [];
+        const proto = CanvasRenderingContext2D.prototype;
+        const fillText = proto.fillText;
+        proto.fillText = function(text, ...args) {
+          if (String(text).startsWith('Ef. $')) printed.push(text);
+          return fillText.call(this, text, ...args);
+        };
+        try {
+          const job = await window.__CLICK360_RUN_SHARY_HANDOFF__(qrCodes.length, 'pdf', { codes:qrCodes });
+          return { exported:job.exported, printed };
+        } finally { proto.fillText = fillText; }
+      }, codes);
+      const catalogPrices = codes.map((_, index) =>
+        `Ef. $${(12.5 + index).toFixed(2)} · Tj. $${(13 + index).toFixed(2)}`);
+      assert(batch.exported, 'Chromium catalog batch PDF export failed');
+      assert(JSON.stringify(batch.printed) === JSON.stringify(catalogPrices),
+        'Each catalog label must render its own cash and card prices in order');
+      const batchPdf = await batchReady;
+      const batchPath = path.join(output, 'qa-catalog-100-etiquetas-92x64mm.pdf');
+      await batchPdf.saveAs(batchPath);
+      await verifyRollPdf('chromium catalog 100', batchPath, codes);
+      console.log('PRINT GUARDIAN: 100 unique QR in order, 50 pages at 92 × 64 mm, ink inside both columns.');
       for (const quantity of [2, 4, 10]) {
         const ready = page.waitForEvent('download');
         const job = await page.evaluate(qty => window.__CLICK360_RUN_SHARY_HANDOFF__(qty, 'pdf'), quantity);
@@ -191,7 +240,7 @@ try {
   await run('chromium', chromium);
   await run('webkit', webkit);
   await run('firefox', firefox);
-  console.log('CLICK360_R37_2_6_SHARY_PRINT_HANDOFF PASS: 92x64mm, columns x=6/50mm, qty 2/3/4/6/10, one handoff, QR 1:1');
+  console.log('CLICK360_R37_2_6_SHARY_PRINT_HANDOFF PASS: 92x64mm, columns x=6/50mm, qty 2/3/4/6/10/20/100, one handoff, QR 1:1');
 } finally {
   server.kill('SIGTERM');
 }
