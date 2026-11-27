@@ -83,11 +83,17 @@ async function run(name, browserType, { launch = {}, device = { viewport:{ width
       await context.setOffline(true);
       await page.close();
       const reopened = await context.newPage();
-      await reopened.goto(url, { waitUntil:'domcontentloaded' });
+      const offlineNavigation = await reopened.goto(url, { waitUntil:'domcontentloaded' });
+      if (!offlineNavigation?.fromServiceWorker()) throw new Error(`${name} offline shell did not come from the service worker`);
       await reopened.waitForFunction(expected =>
         window.CLICK360_RUNTIME_GUARD?.getReleaseMetadata?.().buildSha === expected, release.buildSha);
-      const retained = await reopened.evaluate(() =>
-        !navigator.onLine && localStorage.getItem('qa-artifact-reopen') === 'retained');
+      // The headless shell can retain navigator.onLine=true on a new target
+      // after the transport is already offline. This URL bypasses the worker.
+      const { retained, manifestReachable } = await reopened.evaluate(async () => ({
+        retained:localStorage.getItem('qa-artifact-reopen') === 'retained',
+        manifestReachable:await fetch('./release-manifest.json', { cache:'no-store' }).then(() => true, () => false)
+      }));
+      if (manifestReachable) throw new Error(`${name} offline transport was not isolated`);
       if (!retained) throw new Error(`${name} offline reopening lost origin state`);
     }
     console.log(`RELEASE GUARDIAN PASS ${process.platform} ${name} ${browser.version()} ${release.buildSha}`);
