@@ -88,6 +88,7 @@ async function runChromium() {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     const errors = collectUnexpectedErrors(page);
     await page.goto(url, { waitUntil: 'networkidle' });
+    if (await page.locator('#ulcPriceFormat').count() !== 1) throw new Error('El editor simple necesita el selector de precio');
 
     const first = page.locator('[data-ulc-object]').first();
     const box = await first.boundingBox();
@@ -141,18 +142,24 @@ async function runChromium() {
     const calibrated = await page.evaluate(() => {
       const object = document.querySelector('[data-ulc-object].selected');
       return {
-        left: parseFloat(object.style.left),
-        top: parseFloat(object.style.top),
-        xMm: Number(document.querySelector('#ulcX').value),
-        yMm: Number(document.querySelector('#ulcY').value),
-        scaleX: Number(document.querySelector('#ulcScaleX').value),
-        scaleY: Number(document.querySelector('#ulcScaleY').value)
+        left: parseFloat(object.style.left), top: parseFloat(object.style.top),
+        width: parseFloat(object.style.width), height: parseFloat(object.style.height),
+        stageWidth: document.querySelector('#ulcStage').clientWidth,
+        stageHeight: document.querySelector('#ulcStage').clientHeight
       };
     });
-    if (Math.abs(calibrated.left - calibrated.xMm * 3.779527559 * calibrated.scaleX) > 0.5
-      || Math.abs(calibrated.top - calibrated.yMm * 3.779527559 * calibrated.scaleY) > 0.5) {
-      throw new Error('Calibrated overlay diverged from the physical renderer.');
+    if (Math.abs(calibrated.width - calibrated.height) > 0.01 || calibrated.left < 0 || calibrated.top < 0
+      || calibrated.left + calibrated.width > calibrated.stageWidth + 1
+      || calibrated.top + calibrated.height > calibrated.stageHeight + 1) {
+      throw new Error('Calibrated QR overlay must stay square and inside the physical label.');
     }
+
+    await page.locator('#ulcPriceFormat').selectOption('abbr');
+    await page.locator('#ulcSaveTemplate').click();
+    await page.waitForFunction(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state().templates[0]?.priceFormat === 'abbr');
+    await page.locator('#ulcPriceFormat').selectOption('cash');
+    await page.locator('[data-ulc-tpl-edit]').first().click();
+    if (await page.locator('#ulcPriceFormat').inputValue() !== 'abbr') throw new Error('Saved template did not restore the price format');
 
     await page.locator('#ulcDuplicate').click();
     await page.locator('#ulcUndo').click();
@@ -163,6 +170,7 @@ async function runChromium() {
     await page.waitForSelector('#click360PrintPortal[data-ready="true"]');
 
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());
+    if (state.print?.priceFormat !== 'abbr') throw new Error('Selected price format did not reach PDF');
     if (state.print?.provider !== 'pdf' || state.print?.exactQuantity !== 3 || state.print?.pages !== 2) {
       throw new Error(`Chromium physical plan mismatch: ${JSON.stringify(state.print)}`);
     }
@@ -235,12 +243,16 @@ async function runWebKit() {
     // collapsed <details> accordion (r37 mobile-canvas fix) so the canvas
     // itself gets priority over always-visible chrome -- open it first, the
     // same tap a real mobile user would make.
+    await page.locator('.ulcLeft > summary').click();
+    await page.locator('#ulcPriceFormat').selectOption('abbr');
+    await page.locator('.ulcLeft > summary').click();
     await page.locator('.ulcQuickPrint > summary').click();
     await page.locator('#ulcQuantity').fill('2');
     await page.locator('#ulcStartSlot').fill('1');
     await page.locator('#ulcPrint').click();
     await page.waitForSelector('#click360PrintPortal[data-ready="true"]');
     const state = await page.evaluate(() => window.__CLICK360_P2_UNIVERSAL_LABEL_QA__.state());
+    if (state.print?.priceFormat !== 'abbr') throw new Error('Selected price format did not reach PDF');
     if (state.print?.provider !== 'pdf' || state.print?.exactQuantity !== 2 || state.print?.pages !== 1
       || state.print?.nonWhitePixels < 1 || state.print?.qrPixels < 1) {
       throw new Error(`WebKit physical plan mismatch: ${JSON.stringify(state.print)}`);

@@ -73,6 +73,7 @@ const pieces = [
   "function printingPreferences() { return { provider: 'system', media: 'receipt-80', copies: 1 }; }",
   'function toast(message, kind) { window.__CLICK360_PRINT_TOASTS__ = window.__CLICK360_PRINT_TOASTS__ || []; window.__CLICK360_PRINT_TOASTS__.push({ message, kind }); }',
   extractFunction('universalMediaSize'),
+  extractFunction('renderUniversalLabelArtwork'),
   extractFunction('buildUniversalLabelPrintNode'),
   extractFunction('waitForLabelPrintNodeReady'),
   extractFunction('executeCanonicalLabelPrint'),

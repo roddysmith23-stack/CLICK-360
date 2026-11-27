@@ -13,7 +13,7 @@ const rules = fs.readFileSync('firestore.rules', 'utf8');
 // handoffPrint pipeline, not the legacy printLabels() DOM builder.
 assert(app.includes('const canonicalDoc = universalDocumentFromAdvancedState(product, options, preflight.quantity.count);'),
   'advanced wizard printOne/savePdfBtn must build a canonical Universal document');
-assert(app.includes('const job = await buildUniversalLabelPrintNode([{ product, copies:preflight.quantity.count }], canonicalDoc);'),
+assert(app.includes('const job = await buildUniversalLabelPrintNode([{ product, copies:preflight.quantity.count }], canonicalDoc, preflight.plan);'),
   'advanced wizard single-print must call the canonical node builder, not printLabels()');
 assert(!/runPrintJob = async[\s\S]{0,1400}return printLabels\(/.test(app),
   'advanced wizard single-print regressed to the legacy printLabels() engine');
@@ -32,7 +32,7 @@ assert(app.includes("price: labelFmt(product, options.priceFormat || 'full'),"),
   'drawLabelOnCanvas must delegate price formatting to labelFmt(), not a local duplicate switch');
 assert(!/if \(pf === 'abbr'\) return `Ef\. \$\{cash\}/.test(app),
   'drawLabelOnCanvas must not keep its own inline dual-price switch');
-assert(app.includes("formatPrice:() => labelFmt(product, initialTemplate?.priceFormat || 'full'),"),
+assert(app.includes("formatPrice:(_value, format) => labelFmt(product, format),"),
   'Universal Label Canvas editor preview must use the same formatter as print/PDF (labelFmt)');
 
 // --- priceFormat/renderOptions must survive normalizeDocument() round-trips (the exact bug

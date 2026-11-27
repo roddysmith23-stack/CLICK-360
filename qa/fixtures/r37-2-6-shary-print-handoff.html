@@ -59,12 +59,12 @@
         };
       };
       window.__CLICK360_FINISH_PRINT__ = () => window.dispatchEvent(new Event('afterprint'));
-      window.__CLICK360_RUN_SHARY_HANDOFF__ = async (quantity, provider = 'system') => {
+      window.__CLICK360_RUN_SHARY_HANDOFF__ = async (quantity, provider = 'system', { startSlot=1, usedSlots=[] } = {}) => {
         window.__PRINT_CALLS__ = 0;
         capture = null;
-        const documentModel = canvas.normalizeDocument({ ...persistedDocument, quantity, startSlot:1 });
+        const documentModel = { ...canvas.normalizeDocument({ ...persistedDocument, quantity, startSlot }), priceFormat:'abbr' };
         const qr = documentModel.objects.find((object) => object.type === 'qr');
-        const prepared = { product, document:documentModel, quantity:{ count:quantity }, fingerprint:`qa-${quantity}` };
+        const prepared = { product, document:documentModel, plan:canvas.buildPrintPlan([{ product, copies:quantity }], documentModel, { startSlot, usedSlots }), quantity:{ count:quantity }, fingerprint:`qa-${quantity}` };
         const job = await handoff.executeCanonicalLabelPrint(prepared, provider);
         return {
           quantity,

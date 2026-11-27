@@ -31,6 +31,7 @@
           <div class="ulcFields two"><label>Orientacion<select id="ulcOrientation"><option value="portrait">Vertical</option><option value="landscape">Horizontal</option></select></label><label>DPI<input id="ulcDpi" type="number" min="72" max="1200" step="1"></label></div>
           <details class="ulcMeasurement"><summary>Medicion y calibracion</summary><p>Perfil provisional por negocio y dispositivo. Mide antes de certificar.</p><label>Perfil de impresora<select id="ulcProfiles"><option value="">Perfil nuevo</option></select></label><label>Nombre del perfil<input id="ulcProfileName" maxlength="80" placeholder="Impresora / papel"></label><div class="ulcFields two"><label>Ancho total<input id="ulcMediaWidth" type="number" min="0" max="1000" step="0.1"></label><label>Pitch mm<input id="ulcPitch" type="number" min="0" max="500" step="0.1"></label><label>Offset X<input id="ulcOffsetX" type="number" min="-50" max="50" step="0.1"></label><label>Offset Y<input id="ulcOffsetY" type="number" min="-50" max="50" step="0.1"></label><label>Escala X<input id="ulcScaleX" type="number" min="0.8" max="1.2" step="0.001"></label><label>Escala Y<input id="ulcScaleY" type="number" min="0.8" max="1.2" step="0.001"></label></div><button type="button" class="btn" id="ulcSaveProfile">Guardar perfil provisional</button><button type="button" class="btn" id="ulcCalibrationSheet">Hoja de calibracion</button></details>
           <h3>Agregar</h3><div class="ulcObjectButtons"><button type="button" data-ulc-add="qr">QR</button><button type="button" data-ulc-add="barcode">Codigo</button><button type="button" data-ulc-add="name">Nombre</button><button type="button" data-ulc-add="price">Precio</button><button type="button" data-ulc-add="sku">SKU</button><button type="button" data-ulc-add="text">Texto</button><button type="button" id="ulcAddImage">Imagen</button><input id="ulcImageInput" type="file" accept="image/*" hidden></div>
+          <label>Formato de precio<select id="ulcPriceFormat"><option value="full">Efectivo $X · Tarjeta $Y</option><option value="abbr">Ef. $X · Tj. $Y (abreviado)</option><option value="noLabel">$X · $Y (sin etiqueta)</option><option value="cash">Solo efectivo</option></select></label>
           <h3>Plantillas</h3><div id="ulcTemplateList" class="ulcTemplateList" aria-label="Plantillas guardadas"></div><div class="ulcInline"><button type="button" class="btn" id="ulcSaveTemplate">Guardar plantilla</button></div>
         </details>
         <section class="ulcCanvasRegion" aria-label="Lienzo de etiquetas">
@@ -57,6 +58,7 @@
     let gesture = null;
     let renderToken = 0;
     let activeTemplateId = String(api.initialTemplate?.id || '');
+    let priceFormat = api.initialTemplate?.priceFormat || initialBase.priceFormat || 'full';
     let activeProfileId = String(api.initialProfile?.id || '');
     // Print dialog state machine: IDLE → PREPARING → OPEN → WAITING → FINISHED
     // Prevents multiple concurrent print/PDF invocations and dialog loops after cancel.
@@ -100,7 +102,7 @@
     function setSelection(ids) { selectedIds = new Set(ids.filter((id) => objectById(id))); render(); }
     function contentData() {
       const product = api.product || {};
-      return { product, price: api.formatPrice ? api.formatPrice(product.price || 0) : String(product.price || '0.00'), sku: product.code || '', qrPayload: api.productPayload ? api.productPayload(product) : product.code || product.id || 'CLICK360' };
+      return { product, price: api.formatPrice ? api.formatPrice(product.price ?? 0, priceFormat) : String(product.price || '0.00'), sku: product.code || '', qrPayload: api.productPayload ? api.productPayload(product) : product.code || product.id || 'CLICK360' };
     }
     function ruler(length, horizontal) {
       const max = Math.ceil(length / 10) * 10;
@@ -109,7 +111,7 @@
     async function paintPreview(document, token) {
       const canvas = $('#ulcRenderCanvas');
       if (!canvas) return;
-      const dimensions = await engine.renderLabelToCanvas(canvas, document, contentData(), { dpi: 96 });
+      const dimensions = await engine.renderLabelToCanvas(canvas, document, contentData());
       if (token !== renderToken || !canvas.isConnected) return;
       canvas.style.width = `${dimensions.widthMm * pxPerMm()}px`;
       canvas.style.height = `${dimensions.heightMm * pxPerMm()}px`;
@@ -138,12 +140,14 @@
       stage.style.width = `${paper.widthMm * scale}px`; stage.style.height = `${paper.heightMm * scale}px`;
       stage.style.setProperty('--ulc-grid-size', `${document.gridMm * scale}px`);
       stage.classList.toggle('gridOff', document.gridMm <= 0);
-      const calibratedScaleX = paper.scaleX || 1;
-      const calibratedScaleY = paper.scaleY || 1;
       const objects = document.objects.filter((object) => object.visible).map((object) => {
         const selectedClass = selectedIds.has(object.id) ? ' selected' : '';
         const lockedClass = object.locked ? ' locked' : '';
-        return `<div class="ulcObject${selectedClass}${lockedClass}" data-ulc-object="${escape(object.id)}" style="left:${object.xMm * scale * calibratedScaleX}px;top:${object.yMm * scale * calibratedScaleY}px;width:${object.widthMm * scale * calibratedScaleX}px;height:${object.heightMm * scale * calibratedScaleY}px;z-index:${100 + object.z};transform:rotate(${object.rotation}deg)"><span>${escape(OBJECT_LABELS[object.type] || object.type)}</span>${selectedIds.has(object.id) && !object.locked ? '<i class="ulcResizeHandle" data-ulc-handle="resize"></i><i class="ulcRotateHandle" data-ulc-handle="rotate"></i>' : ''}</div>`;
+        const box = object.type === 'qr' ? engine.fitQrBox(object, paper) : {
+          xMm:object.xMm * paper.scaleX, yMm:object.yMm * paper.scaleY,
+          widthMm:object.widthMm * paper.scaleX, heightMm:object.heightMm * paper.scaleY
+        };
+        return `<div class="ulcObject${selectedClass}${lockedClass}" data-ulc-object="${escape(object.id)}" style="left:${box.xMm * scale}px;top:${box.yMm * scale}px;width:${box.widthMm * scale}px;height:${box.heightMm * scale}px;z-index:${100 + object.z};transform:rotate(${object.rotation}deg)"><span>${escape(OBJECT_LABELS[object.type] || object.type)}</span>${selectedIds.has(object.id) && !object.locked ? '<i class="ulcResizeHandle" data-ulc-handle="resize"></i><i class="ulcRotateHandle" data-ulc-handle="rotate"></i>' : ''}</div>`;
       }).join('');
       stage.innerHTML = `<div class="ulcRuler ulcRulerTop">${ruler(paper.widthMm, true)}</div><div class="ulcRuler ulcRulerLeft">${ruler(paper.heightMm, false)}</div><div class="ulcPaperSurface"><canvas id="ulcRenderCanvas" aria-label="Vista previa fisica de etiqueta"></canvas>${objects}</div>`;
       const properties = $('#ulcProperties');
@@ -157,6 +161,7 @@
       const profileSelect = $('#ulcProfiles');
       profileSelect.innerHTML = '<option value="">Perfil nuevo</option>' + (api.getProfiles?.() || []).map((profile) => `<option value="${escape(profile.id)}">${escape(profile.name || 'Perfil provisional')}</option>`).join('');
       profileSelect.value = activeProfileId;
+      $('#ulcPriceFormat').value = priceFormat;
       const activeProfile = (api.getProfiles?.() || []).find((profile) => profile.id === activeProfileId);
       $('#ulcProfileName').value = activeProfile?.name || `Perfil ${paper.widthMm}x${paper.heightMm} mm`;
       const token = ++renderToken;
@@ -225,7 +230,7 @@
       if (event.target.closest('#ulcPaste') && clipboard) { const next = engine.addObject(current(), clipboard.type, { ...clipboard, id: undefined, xMm: clipboard.xMm + 2, yMm: clipboard.yMm + 2 }); commit(next); setSelection([next.objects.at(-1).id]); return; }
       if (event.target.closest('#ulcFront') && primary()) { commit(engine.arrangeObject(current(), primary().id, 'front')); return; }
       if (event.target.closest('#ulcBack') && primary()) { commit(engine.arrangeObject(current(), primary().id, 'back')); return; }
-      if (event.target.closest('#ulcSaveTemplate')) { const existing = (api.getTemplates?.() || []).find((template) => template.id === activeTemplateId); const name = root.prompt('Nombre de la plantilla:', existing?.name || 'Etiqueta universal'); if (name?.trim()) { const saved = await api.saveTemplate?.(name.trim(), engine.normalizeDocument(current()), activeTemplateId); activeTemplateId = String(saved?.id || activeTemplateId); } render(); return; }
+      if (event.target.closest('#ulcSaveTemplate')) { const existing = (api.getTemplates?.() || []).find((template) => template.id === activeTemplateId); const name = root.prompt('Nombre de la plantilla:', existing?.name || 'Etiqueta universal'); if (name?.trim()) { const saved = await api.saveTemplate?.(name.trim(), { ...engine.normalizeDocument(current()), priceFormat }, activeTemplateId, activeProfileId); activeTemplateId = String(saved?.id || activeTemplateId); } render(); return; }
       if (event.target.closest('#ulcSaveProfile')) {
         const saved = await api.saveProfile?.(current(), activeProfileId, inputValue(modalRoot, 'ulcProfileName'));
         if (!saved) return;
@@ -246,14 +251,22 @@
         const template = (api.getTemplates?.() || []).find((t) => t.id === tplId);
         if (!template) { api.toast?.('Plantilla no encontrada.', 'err'); return; }
         // Load template document snapshot — does NOT change active editor state
-        const tplDoc = engine.normalizeDocument(template.universalDocument || template);
-        await executePrint(tplDoc, 'pdf');
+        const tplDoc = api.templateDocument?.(template) || engine.normalizeDocument(template.universalDocument || template);
+        await executePrint({ ...tplDoc, priceFormat:template.priceFormat || 'full' }, 'pdf');
         return;
       }
       if (tplEdit) {
         const tplId = tplEdit.dataset.ulcTplEdit;
         const template = (api.getTemplates?.() || []).find((t) => t.id === tplId);
-        if (template) { activeTemplateId = tplId; history = engine.createHistory(engine.normalizeDocument(template.universalDocument || template)); selectedIds = new Set(history.present.objects.slice(0, 1).map((object) => object.id)); render(); }
+        if (template) {
+          const snapshot = api.templateDocument?.(template) || template.universalDocument || template;
+          activeTemplateId = tplId;
+          activeProfileId = snapshot.profileId || template.universalProfileId || '';
+          priceFormat = template.priceFormat || 'full';
+          history = engine.createHistory(engine.normalizeDocument(snapshot));
+          selectedIds = new Set(history.present.objects.slice(0, 1).map((object) => object.id));
+          render();
+        }
         return;
       }
       if (tplDelete) {
@@ -273,11 +286,12 @@
       // --- Print / PDF buttons with state machine guard ---
       if (event.target.closest('#ulcPrint') || event.target.closest('#ulcSystemPrint')) {
         const mode = event.target.closest('#ulcSystemPrint') ? 'system' : 'pdf';
-        await executePrint(engine.normalizeDocument(current()), mode);
+        await executePrint({ ...engine.normalizeDocument(current()), priceFormat }, mode);
         return;
       }
     });
     modalRoot.addEventListener('change', async (event) => {
+      if (event.target.id === 'ulcPriceFormat') { priceFormat = event.target.value; render(); return; }
       if (event.target.id === 'ulcPreset') { updatePaper(PRESETS[event.target.value] || PRESETS.custom); return; }
       if (event.target.id === 'ulcProfiles') {
         activeProfileId = event.target.value || '';

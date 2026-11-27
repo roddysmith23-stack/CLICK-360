@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { RGBLuminanceSource, BinaryBitmap, HybridBinarizer, QRCodeReader } from '@zxing/library';
 import { chromium, firefox, webkit } from 'playwright';
 
 const root = path.resolve(import.meta.dirname, '..');
@@ -29,10 +30,61 @@ async function run(name, browserType) {
     await page.goto(url, { waitUntil:'networkidle' });
     await page.emulateMedia({ media:'print' });
     await page.waitForFunction(() => document.documentElement.dataset.ready === 'true');
+    const prices = await page.evaluate(() => {
+      const fmt = __CLICK360_PRINT_HANDOFF__.labelFmt;
+      const dual = { price:10, cardPrice:11, variant:'QA' };
+      return [
+        fmt(dual, 'full'), fmt(dual, 'abbr'), fmt(dual, 'noLabel'), fmt(dual, 'cash'),
+        fmt({ price:10, cardPrice:10 }, 'full'), fmt({ price:10 }, 'full'),
+        fmt({ price:10, cardPrice:0 }, 'abbr'), fmt({ price:0 }, 'full'), fmt({}, 'full')
+      ];
+    });
+    assert(JSON.stringify(prices) === JSON.stringify([
+      'Efectivo $10.00 · Tarjeta $11.00', 'Ef. $10.00 · Tj. $11.00', '$10.00 · $11.00',
+      '$10.00', '$10.00', '$10.00', 'Ef. $10.00 · Tj. $0.00', '$0.00', ''
+    ]), `${name}: historical price formats or their numeric semantics changed`);
+    const printedPrices = await page.evaluate(async () => {
+      const rendered = [];
+      const proto = CanvasRenderingContext2D.prototype;
+      const fillText = proto.fillText;
+      proto.fillText = function(text, ...args) {
+        if (String(text).includes('$')) rendered.push(text);
+        return fillText.call(this, text, ...args);
+      };
+      try { await window.__CLICK360_RUN_SHARY_HANDOFF__(2, 'system'); }
+      finally { proto.fillText = fillText; window.__CLICK360_FINISH_PRINT__(); }
+      return rendered;
+    });
+    assert(printedPrices.length === 2 && printedPrices.every(text => text === 'Ef. $12.50 · Tj. $13.00'),
+      `${name}: the two printed cells must contain both prices`);
+    const clipping = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas');
+      await CLICK360_UNIVERSAL_LABEL_CANVAS.renderLabelToCanvas(canvas, {
+        paper:{ widthMm:40, heightMm:60, scaleX:1.2, scaleY:1.1 },
+        qrStyle:{ quietZoneModules:0 },
+        objects:[{ type:'qr', xMm:17, yMm:37, widthMm:23, heightMm:23, rotation:35 }]
+      }, { qrPayload:'QA-ROTATED-EDGE' });
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const ink = (x,y) => pixels[(y * canvas.width + x) * 4] < 128;
+      let edgeInk = 0, totalInk = 0;
+      for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
+        if (!ink(x,y)) continue;
+        totalInk++;
+        if (x < 8 || x >= canvas.width - 8 || y < 8 || y >= canvas.height - 8) edgeInk++;
+      }
+      return { edgeInk, totalInk };
+    });
+    assert(clipping.totalInk > 1000 && clipping.edgeInk === 0, `${name}: calibrated rotated QR is clipped, ${JSON.stringify(clipping)}`);
+    const reserved = await page.evaluate(() => window.__CLICK360_RUN_SHARY_HANDOFF__(3, 'system', { usedSlots:[1] }));
+    assert(JSON.stringify(reserved.patterns) === JSON.stringify([' X', 'XX']),
+      `${name}: print must preserve the reserved left slot, got ${JSON.stringify(reserved.patterns)}`);
+    await page.evaluate(() => window.__CLICK360_FINISH_PRINT__());
     const results = {};
-    for (const quantity of [2, 3, 4, 6, 10]) {
+    for (const quantity of [1, 2, 3, 4, 6, 10, 20]) {
       const result = await page.evaluate((value) => window.__CLICK360_RUN_SHARY_HANDOFF__(value), quantity);
       results[quantity] = result;
+      assert(result.patterns.length === Math.ceil(quantity / 2), `${name}: page count for ${quantity}`);
+      assert(result.patterns.join('').replaceAll(' ', '').length === quantity, `${name}: filled count for ${quantity}`);
       assert(result.printCalls === 1, `${name} qty=${quantity}: exactly one browser handoff required`);
       assert(result.media.widthMm === 92 && result.media.heightMm === 64, `${name} qty=${quantity}: expected 92x64mm, got ${JSON.stringify(result.media)}`);
       assert(/@page\{size:92mm 64mm;margin:0/.test(result.pageCss), `${name} qty=${quantity}: wrong @page CSS ${result.pageCss}`);
@@ -95,13 +147,27 @@ async function run(name, browserType) {
           else outside++;
         }
       }
+      for (const origin of [6, 50]) {
+        const w = px(40), h = px(60), left = px(origin);
+        const crop = new Uint8ClampedArray(w * h);
+        for (let y = 0; y < h; y++) crop.set(rowPixels.subarray(y * width + left, y * width + left + w), y * w);
+        const qr = new QRCodeReader().decode(new BinaryBitmap(new HybridBinarizer(new RGBLuminanceSource(crop, w, h))));
+        assert(qr.getText() === 'QA-001', `${name}: row ${row} has the wrong QR payload`);
+      }
       assert(Math.min(...ink) > 1000 && outside <= 20,
         `${name}: row ${row} ink must fill both stickers and stay inside (got ${ink}, outside ${outside})`);
     }
-    await page.emulateMedia({ media:'print' });
     if (name === 'chromium') {
       await mkdir(output, { recursive:true });
+      for (const quantity of [2, 4, 10]) {
+        const ready = page.waitForEvent('download');
+        const job = await page.evaluate(qty => window.__CLICK360_RUN_SHARY_HANDOFF__(qty, 'pdf'), quantity);
+        assert(job.exported, `Diagnostic PDF export failed for ${quantity}`);
+        const pdf = await ready;
+        await pdf.saveAs(path.join(output, `calibracion-${quantity}-etiquetas-92x64mm.pdf`));
+      }
       await download.saveAs(path.join(output, 'calibracion-6-etiquetas-92x64mm.pdf'));
+      await page.emulateMedia({ media:'print' });
       await page.evaluate(() => window.__CLICK360_RUN_SHARY_HANDOFF__(4));
       const pdfPath = path.join(output, 'qty4-92x64mm.pdf');
       await page.pdf({ path:pdfPath, preferCSSPageSize:true, printBackground:true });
