@@ -76,6 +76,7 @@ const pieces = [
   extractFunction('universalPaperFromTemplate'),
   extractFunction('universalDocumentFromTemplate'),
   extractFunction('legacyPaperProfileToUniversal'),
+  extractFunction('legacyPrintCalibrationKey'),
   extractFunction('resolveLabelPrintProfile'),
   extractFunction('mergeUniversalPaperIntoDocument'),
   extractFunction('universalMediaSize'),

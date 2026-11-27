@@ -86,19 +86,33 @@
       };
 
       window.__CLICK360_RUN_SCENARIO__ = async (scenarioName) => {
-        const scenario = SCENARIOS[scenarioName === 'ambiguous_origin' ? 'fresh_origin' : scenarioName];
+        const withLegacyCalibration = ['legacy_calibrated', 'legacy_calibration_incompatible'].includes(scenarioName);
+        const scenario = SCENARIOS[withLegacyCalibration || scenarioName === 'ambiguous_origin' ? 'fresh_origin' : scenarioName];
         if (!scenario) throw new Error(`unknown scenario ${scenarioName}`);
         window.__CLICK360_TEST_PROFILES__ = scenarioName === 'ambiguous_origin'
           ? [...scenario.profiles, { ...scenario.profiles[0], id:'prof-duplicate' }]
           : scenario.profiles;
         window.__CLICK360_TEST_DEVICE_STATE__ = scenario.deviceState;
+        if (withLegacyCalibration) {
+          const profile = scenario.profiles[0];
+          const fingerprint = window.CLICK360_SMART_PRINT.paperGeometryFingerprint(profile.paper);
+          const key = `${profile.id}:${fingerprint}`.replace(/[^a-zA-Z0-9:_-]/g, '_').slice(0, 120);
+          window.__CLICK360_TEST_DEVICE_STATE__ = {
+            calibrations:{
+              [key]:{
+                geometryFingerprint:scenarioName === 'legacy_calibrated' ? fingerprint : 'otra-geometría',
+                xOffsetMm:-1, yOffsetMm:2, status:'verified'
+              }
+            }
+          };
+        }
 
         let prepared = null;
         let prepareError = null;
         try {
           prepared = await profileMerge.prepareLabelPrintJob({
             product, template: scenario.template || persistedTemplate, templateId: persistedTemplate.id,
-            quantity: 1, startSlot: 1, businessId: 'biz-qa', priceFormat: persistedTemplate.priceFormat
+            quantity: withLegacyCalibration ? 4 : 1, startSlot: 1, businessId: 'biz-qa', priceFormat: persistedTemplate.priceFormat
           });
         } catch (err) {
           prepareError = String(err?.message || err);
@@ -109,11 +123,14 @@
         let printError = null;
         let jobResult = null;
         try {
-          jobResult = await handoff.executeCanonicalLabelPrint({ product, document: prepared.document, fingerprint: 'qa' }, 'system');
+          jobResult = await handoff.executeCanonicalLabelPrint(prepared, 'system');
         } catch (err) {
           printError = String(err?.message || err);
         }
         const pageStyleText = document.getElementById('click360-print-page-style')?.textContent || '';
+        const printedRows = [...document.querySelectorAll('#click360PrintPortal .labelPrintPage')].map(page =>
+          [...page.querySelectorAll('.labelPrintCell.filled')].map(cell => [cell.style.left, cell.style.top]));
+        window.dispatchEvent(new Event('afterprint'));
         return {
           scenarioName,
           prepareError,
@@ -129,7 +146,8 @@
           documentPaperRows: prepared.document?.paper?.rows ?? null,
           preparedMediaWidthMm: prepared.media?.widthMm ?? null,
           preparedMediaHeightMm: prepared.media?.heightMm ?? null,
-          pageStyleText
+          pageStyleText,
+          printedRows
         };
       };
       document.documentElement.dataset.ready = 'true';

@@ -11259,7 +11259,7 @@ function parseMoney(value) {
 	    const calibrationKeyFor = (options) => {
 	      const fingerprint = window.CLICK360_SMART_PRINT?.paperGeometryFingerprint(smartPaperFromOptions(options))
 	        || `${options.paperType}|${options.widthMm}|${options.heightMm}|${options.columns}|${options.rows}`;
-	      return `${activePrintProfileId || options.paperType}:${fingerprint}`.replace(/[^a-zA-Z0-9:_-]/g, '_').slice(0, 120);
+	      return legacyPrintCalibrationKey(activePrintProfileId || options.paperType, fingerprint);
 	    };
 	    const loadCalibrationIntoForm = () => {
 	      const options = getOptions();
@@ -12472,6 +12472,9 @@ function parseMoney(value) {
       contentRotation:[90,180,270].includes(Number(paper.contentRotation)) ? Number(paper.contentRotation) : 0
     };
   }
+  function legacyPrintCalibrationKey(profileId, geometryFingerprint) {
+    return `${profileId}:${geometryFingerprint}`.replace(/[^a-zA-Z0-9:_-]/g, '_').slice(0, 120);
+  }
   function resolveLabelPrintProfile(businessId, template = {}, profileId = '', catalog = null) {
     const profiles = catalog ? catalog.labelProfiles : labelProfilesForBiz(businessId);
     const deviceState = catalog ? {} : loadPrintDeviceState(businessId);
@@ -12480,10 +12483,16 @@ function parseMoney(value) {
     const asUniversal = raw => {
       if (raw.universalPaper) return smartPrint?.applyUniversalDeviceCalibration(raw, deviceState) || raw;
       const profile = smartPrint?.normalizePrintProfile(raw, businessId) || raw;
-      return profile.paper ? {
-        ...profile,
-        universalPaper:legacyPaperProfileToUniversal(profile.paper)
-      } : null;
+      if (!profile.paper) return null;
+      const universalPaper = legacyPaperProfileToUniversal(profile.paper);
+      const geometryFingerprint = smartPrint?.paperGeometryFingerprint(profile.paper);
+      const key = legacyPrintCalibrationKey(profile.id, geometryFingerprint);
+      const calibration = deviceState?.calibrations?.[key];
+      if (geometryFingerprint && calibration?.geometryFingerprint === geometryFingerprint) {
+        universalPaper.xOffsetMm = calibration.xOffsetMm;
+        universalPaper.yOffsetMm = calibration.yOffsetMm;
+      }
+      return { ...profile, universalPaper };
     };
     for (const id of candidates) {
       const raw = profiles.find(profile => profile?.id === id);
