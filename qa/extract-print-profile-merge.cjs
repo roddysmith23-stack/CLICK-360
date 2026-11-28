@@ -67,7 +67,7 @@ const pieces = [
   '// Stubs — see file header. Test-controlled via window.__CLICK360_TEST_PROFILES__/__CLICK360_TEST_DEVICE_STATE__.',
   'function labelTemplatesForBiz() { return []; }',
   'function labelProfilesForBiz() { return window.__CLICK360_TEST_PROFILES__ || []; }',
-  'function loadPrintDeviceState() { return window.__CLICK360_TEST_DEVICE_STATE__ || {}; }',
+  'function loadPrintDeviceState() { window.__CLICK360_TEST_DEVICE_STATE_READS__ = (window.__CLICK360_TEST_DEVICE_STATE_READS__ || 0) + 1; return window.__CLICK360_TEST_DEVICE_STATE__ || {}; }',
   extractFunction('resolveLabelCopyResult'),
   extractFunction('safeColor'),
   extractFunction('defaultLabelLayout'),

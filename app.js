@@ -12789,18 +12789,29 @@ function parseMoney(value) {
           <div class="field"><label for="c360-catalog-product">Producto</label><select id="c360-catalog-product" required></select></div>
           <p id="c360-catalog-stock" class="fieldHint"></p>
           <div class="field"><label for="c360-catalog-template">Plantilla</label><select id="c360-catalog-template" required></select></div>
+          <div class="field"><label for="c360-catalog-profile">Perfil de papel</label><select id="c360-catalog-profile"></select></div>
           <div class="field"><label for="c360-catalog-quantity">Cantidad</label><input id="c360-catalog-quantity" type="number" min="1" max="100" step="1" inputmode="numeric" value="1" required></div>
           <button id="c360-catalog-print" class="btn primary block" type="submit">Imprimir etiquetas</button>
         </fieldset>
       </form>`;
     const find = id => host.querySelector(`#c360-catalog-${id}`);
-    const business = find('business'), search = find('search'), product = find('product'), template = find('template');
+    const business = find('business'), search = find('search'), product = find('product'), template = find('template'), profile = find('profile');
     const status = find('status'), stock = find('stock'), print = find('print');
     form = find('form');
     const fields = form.querySelector('fieldset');
     let catalog = null;
     const options = (control, rows, describe, selected) => {
       control.replaceChildren(...rows.map(row => new Option(describe(row), row.id, false, row.id === selected)));
+    };
+    const refreshProfileOptions = ({ preserveCurrent = false, autoSelectUnique = false } = {}) => {
+      const selectedTemplate = catalog?.labelTemplates.find(row => row.id === template.value);
+      const linkedProfileId = [selectedTemplate?.universalProfileId, selectedTemplate?.paperProfileId]
+        .find(id => catalog?.labelProfiles.some(row => row.id === id)) || '';
+      const currentProfileId = preserveCurrent && catalog?.labelProfiles.some(row => row.id === profile.value) ? profile.value : '';
+      const onlyProfileId = autoSelectUnique && catalog?.labelProfiles.length === 1 ? catalog.labelProfiles[0].id : '';
+      const selectedProfileId = linkedProfileId || currentProfileId || onlyProfileId;
+      options(profile, [{ id:'', name:'Usar papel de la plantilla' }, ...(catalog?.labelProfiles || [])],
+        row => row.name || 'Perfil guardado', selectedProfileId);
     };
     const selectProduct = () => {
       const selected = catalog?.products.find(row => row.id === product.value);
@@ -12836,6 +12847,7 @@ function parseMoney(value) {
         };
         options(business, response.businesses, row => row.name || 'Negocio', id);
         options(template, catalog.labelTemplates, row => row.name || 'Plantilla', catalog.labelTemplates.find(row => row.isDefault)?.id);
+        refreshProfileOptions({ autoSelectUnique:true });
         search.value = '';
         filterProducts();
         status.textContent = catalog.products.length === 0 ? 'Este negocio todavía no tiene productos.'
@@ -12852,7 +12864,13 @@ function parseMoney(value) {
     }
     business.onchange = () => { if (current()) void load(business.value); };
     search.oninput = () => { if (catalog && current()) filterProducts(); };
-    product.onchange = template.onchange = selectProduct;
+    product.onchange = selectProduct;
+    template.onchange = () => {
+      if (!catalog || !current()) return;
+      refreshProfileOptions({ preserveCurrent:true });
+      selectProduct();
+    };
+    profile.onchange = selectProduct;
     form.onsubmit = async event => {
       event.preventDefault();
       if (fields.disabled || print.disabled || !catalog || !current()) return;
@@ -12868,7 +12886,7 @@ function parseMoney(value) {
         await confirmAccess(catalog.businessId);
         assertCurrent();
         const prepared = await prepareLabelPrintJob({
-          product:selectedProduct, template:selectedTemplate, quantity, businessId:catalog.businessId, catalog
+          product:selectedProduct, template:selectedTemplate, paperProfileId:profile.value, quantity, businessId:catalog.businessId, catalog
         });
         const { result } = await executeCanonicalLabelPrint(prepared, 'system', assertCurrent);
         assertCurrent();

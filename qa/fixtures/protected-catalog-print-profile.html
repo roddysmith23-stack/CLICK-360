@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CLICK 360 protected catalog print profile QA</title>
+  <script src="../../smart-print-core.js"></script>
+  <script src="../../universal-label-canvas.js"></script>
+  <script src="generated/print-profile-merge.bundle.js"></script>
+  <script src="generated/protected-catalog-print-ui.bundle.js"></script>
+</head>
+<body>
+  <main id="catalog-host"></main>
+  <script>
+    window.__CLICK360_CATALOG_START__ = async () => {
+      const host = document.querySelector('#catalog-host');
+      const accessChecks = [];
+      const isCurrent = () => true;
+      await window.click360ShowProtectedCatalog({
+        host,
+        isCurrent,
+        confirmAccess: async businessId => { accessChecks.push(businessId); },
+        loadCatalog: async requestedBusinessId => {
+          const businessId = requestedBusinessId || 'biz-a';
+          return {
+            businessId,
+            businesses:[{ id:'biz-a', name:'Negocio A' },{ id:'biz-b', name:'Negocio B' }],
+            products:[
+              { id:'product-a', businessId:'biz-a', name:'Producto A', code:'A-1', qty:7, stock:7 },
+              { id:'product-b', businessId:'biz-b', name:'Producto B', code:'B-1', qty:4, stock:4 }
+            ],
+            labelTemplates:[
+              { id:'template-a', businessId:'biz-a', name:'Plantilla A', isDefault:true,
+                paperType:'custom', mediaType:'roll-2', widthMm:40, heightMm:60,
+                columns:2, rows:1, gapXmm:4, gapYmm:4, dpi:203,
+                layout:{ qr:{ x:20, y:30, width:100, height:100, visible:true } } },
+              { id:'template-b', businessId:'biz-b', name:'Plantilla B', isDefault:true,
+                paperType:'custom', mediaType:'roll-1', widthMm:60, heightMm:40,
+                columns:1, rows:1, dpi:203,
+                layout:{ qr:{ x:20, y:30, width:100, height:100, visible:true } } }
+            ],
+            labelProfiles:[
+              { id:'profile-a', businessId:'biz-a', name:'Rollo dos columnas A <img src=x onerror="window.__CLICK360_XSS__=true">',
+                paper:{ mediaType:'roll-2', labelWidthMm:40, labelHeightMm:60, columns:2,
+                  rows:1, gapHorizontalMm:4, gapVerticalMm:4, marginLeftMm:6,
+                  marginRightMm:2, marginTopMm:13, marginBottomMm:2, nominalDpi:203 } },
+              { id:'profile-b', businessId:'biz-b', name:'Perfil privado B',
+                paper:{ mediaType:'roll-1', labelWidthMm:60, labelHeightMm:40, columns:1, rows:1, nominalDpi:203 } },
+              { id:'deleted-a', businessId:'biz-a', name:'Perfil eliminado', deleted:true,
+                paper:{ mediaType:'roll-1', labelWidthMm:90, labelHeightMm:90, columns:1, rows:1 } },
+              { id:'foreign-profile', businessId:'biz-outside', name:'Perfil ajeno',
+                paper:{ mediaType:'roll-1', labelWidthMm:999, labelHeightMm:999, columns:1, rows:1 } }
+            ]
+          };
+        }
+      });
+      return { host, accessChecks };
+    };
+    document.documentElement.dataset.ready = 'true';
+  </script>
+</body>
+</html>
