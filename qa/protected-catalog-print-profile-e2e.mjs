@@ -38,6 +38,7 @@ try {
         if (!profile) throw new Error('protected catalog is missing the shared paper-profile selector');
         const initialProfileValues = [...profile.options].map(option => option.value);
         const initialSelectedProfileId = profile.value;
+        const initialFallbackLabel = profile.options[0]?.textContent || '';
         const profileMarkupInjected = !!host.querySelector('img') || window.__CLICK360_XSS__ === true;
         const business = host.querySelector('#c360-catalog-business');
         business.value = 'biz-b';
@@ -45,14 +46,29 @@ try {
         for (let attempt = 0; attempt < 50 && ![...profile.options].some(option => option.value === 'profile-b'); attempt += 1)
           await new Promise(resolve => setTimeout(resolve, 10));
         const businessBProfileValues = [...profile.options].map(option => option.value);
-        business.value = 'biz-a';
+        business.value = 'biz-c';
         business.dispatchEvent(new Event('change', { bubbles:true }));
-        for (let attempt = 0; attempt < 50 && ![...profile.options].some(option => option.value === 'profile-a'); attempt += 1)
+        for (let attempt = 0; attempt < 50 && ![...profile.options].some(option => option.value === 'profile-c-sheet'); attempt += 1)
           await new Promise(resolve => setTimeout(resolve, 10));
+        const businessCProfileValues = [...profile.options].map(option => option.value);
+        const incompatibleInitiallySelected = profile.value;
         const product = host.querySelector('#c360-catalog-product');
         const template = host.querySelector('#c360-catalog-template');
         const quantity = host.querySelector('#c360-catalog-quantity');
         const form = host.querySelector('#c360-catalog-form');
+        product.value = 'product-c';
+        template.value = 'template-c';
+        quantity.value = '1';
+        window.__CLICK360_CATALOG_PRINT_HANDOFF__ = null;
+        form.dispatchEvent(new Event('submit', { bubbles:true, cancelable:true }));
+        for (let attempt = 0; attempt < 50 && !window.__CLICK360_CATALOG_PRINT_HANDOFF__; attempt += 1)
+          await new Promise(resolve => setTimeout(resolve, 10));
+        const incompatibleAutomaticJob = window.__CLICK360_CATALOG_PRINT_HANDOFF__;
+        window.__CLICK360_CATALOG_PRINT_HANDOFF__ = null;
+        business.value = 'biz-a';
+        business.dispatchEvent(new Event('change', { bubbles:true }));
+        for (let attempt = 0; attempt < 50 && ![...profile.options].some(option => option.value === 'profile-a'); attempt += 1)
+          await new Promise(resolve => setTimeout(resolve, 10));
         window.__CLICK360_TEST_DEVICE_STATE_READS__ = 0;
         product.value = 'product-a';
         template.value = 'template-a';
@@ -75,8 +91,13 @@ try {
         return {
           initialProfileValues,
           initialSelectedProfileId,
+          initialFallbackLabel,
           profileMarkupInjected,
           businessBProfileValues,
+          businessCProfileValues,
+          incompatibleInitiallySelected,
+          incompatibleAutomaticProfileId:incompatibleAutomaticJob?.prepared?.profile?.id || null,
+          incompatibleAutomaticMedia:incompatibleAutomaticJob?.prepared?.media || null,
           selectedProfileId,
           resolvedProfileId:handed?.prepared?.profile?.id || null,
           preparedMedia:handed?.prepared?.media || null,
@@ -88,16 +109,21 @@ try {
         };
       });
       assert.deepEqual(result.initialProfileValues, ['', 'profile-a'], `${name}: only the active business profile and template fallback should be offered`);
-      assert.equal(result.initialSelectedProfileId, 'profile-a', `${name}: one unambiguous business profile should be the initial selection`);
+      assert.equal(result.initialSelectedProfileId, '', `${name}: an unlinked profile must not be selected implicitly`);
+      assert.equal(result.initialFallbackLabel, 'Automático (plantilla o perfil compatible)', `${name}: empty choice must describe resolver behavior`);
       assert.equal(result.profileMarkupInjected, false, `${name}: profile labels must render as text, never HTML`);
       assert.deepEqual(result.businessBProfileValues, ['', 'profile-b'], `${name}: changing business must replace the available profile scope`);
-      assert.equal(result.selectedProfileId, 'profile-a', `${name}: the unique business profile should be selected for this template`);
-      assert.equal(result.resolvedProfileId, 'profile-a', `${name}: catalog route must pass selected shared profile into production resolver`);
-      assert.deepEqual(result.preparedMedia, { widthMm:92, heightMm:64 }, `${name}: saved business carrier geometry must reach the print plan`);
+      assert.deepEqual(result.businessCProfileValues, ['', 'profile-c-sheet'], `${name}: only the selected business paper profiles should be offered`);
+      assert.equal(result.incompatibleInitiallySelected, '', `${name}: a unique unlinked sheet profile must not override a roll template at open`);
+      assert.equal(result.incompatibleAutomaticProfileId, 'template-paper', `${name}: incompatible saved media must leave the template resolver in control`);
+      assert.deepEqual(result.incompatibleAutomaticMedia, { widthMm:84, heightMm:64 }, `${name}: incompatible sheet geometry must not replace roll geometry`);
+      assert.equal(result.selectedProfileId, 'profile-a', `${name}: explicit profile selection must be preserved`);
+      assert.equal(result.resolvedProfileId, 'profile-a', `${name}: catalog route must pass explicit shared profile into production resolver`);
+      assert.deepEqual(result.preparedMedia, { widthMm:92, heightMm:64 }, `${name}: explicit profile carrier geometry must reach the print plan`);
       assert.equal(result.templateFallbackProfileId, 'template-paper', `${name}: blank selection must retain the template fallback`);
       assert.deepEqual(result.templateFallbackMedia, { widthMm:84, heightMm:64 }, `${name}: template fallback geometry must remain intact`);
       assert.equal(result.localDeviceReads, 0, `${name}: protected catalog must not read device-local print calibration`);
-      assert.deepEqual(result.accessChecks, ['biz-a', 'biz-a'], `${name}: confirm access must stay scoped to the selected business`);
+      assert.deepEqual(result.accessChecks, ['biz-c', 'biz-a', 'biz-a'], `${name}: confirm access must stay scoped to the selected business`);
       assert.deepEqual(errors, [], `${name}: browser runtime errors`);
       console.log(`PROTECTED_CATALOG_PRINT_PROFILE ${name}: PASS`);
     } finally { await browser.close(); }

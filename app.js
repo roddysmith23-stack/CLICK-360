@@ -12803,14 +12803,13 @@ function parseMoney(value) {
     const options = (control, rows, describe, selected) => {
       control.replaceChildren(...rows.map(row => new Option(describe(row), row.id, false, row.id === selected)));
     };
-    const refreshProfileOptions = ({ preserveCurrent = false, autoSelectUnique = false } = {}) => {
+    const refreshProfileOptions = ({ preserveCurrent = false } = {}) => {
       const selectedTemplate = catalog?.labelTemplates.find(row => row.id === template.value);
       const linkedProfileId = [selectedTemplate?.universalProfileId, selectedTemplate?.paperProfileId]
         .find(id => catalog?.labelProfiles.some(row => row.id === id)) || '';
       const currentProfileId = preserveCurrent && catalog?.labelProfiles.some(row => row.id === profile.value) ? profile.value : '';
-      const onlyProfileId = autoSelectUnique && catalog?.labelProfiles.length === 1 ? catalog.labelProfiles[0].id : '';
-      const selectedProfileId = linkedProfileId || currentProfileId || onlyProfileId;
-      options(profile, [{ id:'', name:'Usar papel de la plantilla' }, ...(catalog?.labelProfiles || [])],
+      const selectedProfileId = linkedProfileId || currentProfileId;
+      options(profile, [{ id:'', name:'Automático (plantilla o perfil compatible)' }, ...(catalog?.labelProfiles || [])],
         row => row.name || 'Perfil guardado', selectedProfileId);
     };
     const selectProduct = () => {
@@ -12847,7 +12846,7 @@ function parseMoney(value) {
         };
         options(business, response.businesses, row => row.name || 'Negocio', id);
         options(template, catalog.labelTemplates, row => row.name || 'Plantilla', catalog.labelTemplates.find(row => row.isDefault)?.id);
-        refreshProfileOptions({ autoSelectUnique:true });
+        refreshProfileOptions();
         search.value = '';
         filterProducts();
         status.textContent = catalog.products.length === 0 ? 'Este negocio todavía no tiene productos.'
